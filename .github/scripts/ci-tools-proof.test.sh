@@ -48,10 +48,14 @@ repeat() {
   for ((i = 0; i < $1; i++)); do printf '%s\n' "$2"; done
 }
 
-# legitimate_log: 65 records of a run that must pass. Merge_group run 42975857631, job
+# legitimate_log: 66 records of a run that must pass. Merge_group run 42975857631, job
 # 130374882879 (`tool-fallback`, success, head 9300f28b1c) read 65 records on a runner, and the
 # three that carry the name are the one case that keeps the pinned ladder, at 63 s, 0 s and 1 s
-# (records 18 to 20 of its listing). This log keeps those three as they are and puts the other
+# (records 18 to 20 of its listing). That case now makes a fourth fetch: the blob request to
+# ghcr.io follows no redirect, since it carries the pull token, so the store ghcr.io's 307 points
+# at, pkg-containers.githubusercontent.com, is read in a call of its own (ci-tools-proof.sh's
+# LADDER_RECORDS says where). This log keeps the first two as they are, writes the third, the
+# blob that read 1 s, as the blob request at 0 s and the store's read at 1 s, and puts the other
 # 62 in three shapes that no refusal of the verb reads: 18 refusals of the faulted release host,
 # 11 refusals of the dead address and 33 fetches that served the bytes. That listing mixes its
 # hosts in another order; the verb reads no order. Every case below is built from this one log.
@@ -60,7 +64,8 @@ legitimate_log() {
   printf '%s\n' \
     "seconds=63 decision=full host=github.com exit=22 full-ladder=crane-head" \
     "seconds=0 decision=full host=ghcr.io exit=0 full-ladder=crane-head" \
-    "seconds=1 decision=full host=ghcr.io exit=0 full-ladder=crane-head"
+    "seconds=0 decision=full host=ghcr.io exit=0 full-ladder=crane-head" \
+    "seconds=1 decision=full host=pkg-containers.githubusercontent.com exit=0 full-ladder=crane-head"
   repeat 11 "seconds=0 decision=shortened host=127.0.0.1 exit=7 full-ladder=none"
   repeat 33 "seconds=1 decision=full host=registry.npmjs.org exit=0 full-ladder=none"
 }
@@ -91,15 +96,15 @@ echo "case: a legitimate log passes"
 run_report "$log"
 check "exits 0" "$(is "$status" 0)"
 check "prints the count it read beside the bound" \
-  "$(contains "$out" "3 of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to 3")"
+  "$(contains "$out" "4 of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to 4")"
 check "prints the closing sentence" "$(contains "$out" "$closing")"
 
 echo "case: one record more than the bound is refused"
-fourth="seconds=0 decision=full host=ghcr.io exit=0 full-ladder=crane-head"
-run_report "$log"$'\n'"$fourth"
+fifth="seconds=0 decision=full host=ghcr.io exit=0 full-ladder=crane-head"
+run_report "$log"$'\n'"$fifth"
 check "exits 1" "$(is "$status" 1)"
 check "names the count it read and the bound" \
-  "$(contains "$out" "4 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
+  "$(contains "$out" "5 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 4 this rig holds that count to, and the names they carried it under are: crane-head")"
 check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 
@@ -110,13 +115,13 @@ echo "case: a log whose every record carries the name is refused"
 run_report "$(repeat 65 "seconds=63 decision=full host=github.com exit=22 full-ladder=crane-head")"
 check "exits 1" "$(is "$status" 1)"
 check "names the count it read and the bound" \
-  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
+  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 4 this rig holds that count to, and the names they carried it under are: crane-head")"
 # The verb's header and the ladder-report step's comment say the count prints on every run that
 # reads the log through, whether that reading passes or refuses. The legitimate case holds the
 # passing half; this assertion holds the refusing half, and it is what reddens when that line
 # moves onto the pass path.
 check "prints the count it read beside the bound, on a run that refuses" \
-  "$(contains "$out" "65 of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to 3")"
+  "$(contains "$out" "65 of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to 4")"
 check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 
@@ -132,7 +137,7 @@ check "exits 1" "$(is "$status" 1)"
 check "the under-floor refusal speaks" \
   "$(contains "$out" "measured 10 s, under the floor of 45 s, so it stopped driving the real ladder")"
 check "the count refusal speaks beside it" \
-  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to")"
+  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 4 this rig holds that count to")"
 check "no refusal speaks beside those two" "$(is "$(error_count "$out")" 2)"
 
 echo "case: a log with no record of that name still refuses for the old reason"

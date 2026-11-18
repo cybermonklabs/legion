@@ -68,8 +68,22 @@ heavy run goes where your deployment's instructions say.
   server is the roles container's launcher's job — it runs `legion-testpg ensure` before any role
   starts and again every 15 seconds — so wait about that interval and try again. Never start a
   server of your own beside it, and never reach for another DSN. Still refused after that wait:
-  report it, with the error you got and the port you used, as a fault of the pod rather than of
-  your change.
+  report it, with the error you got, the port you used and the server's log lines from the minute
+  it failed (next bullet), as a fault of the pod rather than of your change.
+- The server's log is the read-only file `$LEGION_TEST_PG_LOG` names
+  (`tail -n 200 "$LEGION_TEST_PG_LOG"`). For every connect the server takes, the process it starts
+  for it writes a `connection received: host=127.0.0.1 port=<client port>` line, then
+  `connection ready` with the setup and fork times, and a `disconnection` line at the end. A
+  connect that failed with lines of its own failed in the server, and the log says why; one the
+  server could not start a process for leaves `could not fork new process for connection`
+  instead. A connect with neither line at the time it failed never reached the server: a burst of
+  more connects at once than the server's listen queue (about 940) is dropped before the server
+  sees it, and libpq reports such a connect as `server closed the connection unexpectedly` or
+  waits until its own timeout. Open the connections in smaller steps, or retry them. Your login
+  holds `pg_monitor`, so `pg_stat_activity` also shows the detail of connections under the other
+  logins of the server, such as the ones a suite creates. `LEGION_TEST_PG_LOG` unset: a server
+  you started yourself (next bullet) logs to `$LEGION_TESTPG_DIR/server.log`; with the DSN your
+  pod set and no such variable, your pod's image predates the log, so report without it.
 - `LEGION_TEST_PG_DSN` unset: your deployment has not turned the pod's server on, so no launcher
   is starting one and nothing will appear while you wait. With `legion-testpg` on `PATH`, start
   one yourself on the issue's volume: the directory it defaults to is a 1 MiB filesystem your
@@ -453,13 +467,13 @@ the five priced options with their measurements, and what the clients cost the i
 
 ## Before you measure Oh My Pi's binary
 
-Read Oh My Pi's source first, from the fork (`sjawhar/oh-my-pi`) at the tag `.omp-pin` names, not
-from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin` reads
-`github:sjawhar/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text, so find it
-rather than type it:
+Read Oh My Pi's source first, from the fork (`cybermonklabs/oh-my-pi`) at the tag `.omp-pin` names,
+not from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin`
+reads `github:cybermonklabs/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text,
+so find it rather than type it:
 
 ```text
-$ git ls-remote --tags https://github.com/sjawhar/oh-my-pi.git 'v<version>'
+$ git ls-remote --tags https://github.com/cybermonklabs/oh-my-pi.git 'v<version>'
 ```
 
 Search that source by the name of a construct or a setting, never by its value: one value is

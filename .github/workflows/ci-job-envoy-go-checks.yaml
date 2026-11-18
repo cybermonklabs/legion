@@ -31,6 +31,14 @@ env:
 
 jobs:
   envoy-go-checks:
+    # ubuntu-24.04, the runner release-envoy-listener.yaml builds the release's listener archives
+    # on. The pack step below builds those archives as the release does, with no CGO_ENABLED, and
+    # Go turns cgo on for a native build where gcc is present and off for a cross build: on this
+    # runner that gives the release's own pair, an amd64 listener linked against glibc and a
+    # static arm64 one. On ubuntu-24.04-arm the same step built the reverse pair (measured on run
+    # 44082892660's artifact), so a failure of the release's build mode would pass the pull
+    # request and fail the release after the merge. The job therefore stays on the x86_64 pool,
+    # which changes nothing a release ships.
     runs-on: ubuntu-24.04
     # The builds below download the envoy module's dependencies and compile ./cmd/listener for
     # each release architecture, so the job restores go-envoy, the family whose entry holds that
@@ -102,8 +110,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -189,6 +197,21 @@ jobs:
         working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener
+        working-directory: packages/envoy
+      # Every package of the module, its tests included, as macOS compiles it: the agent-secrets
+      # command ships for darwin (.github/agent-secrets-client-targets.json), and a file with no
+      # build constraint that uses a symbol only a `//go:build linux` file defines compiles on this
+      # runner and nowhere else. The vet runs once per tag set .github/scripts/go_build_tags.py
+      # reads off the module's own build constraints, so a file under a tag that lands later, or
+      # under a negated one, is vetted too rather than passed over in silence. One
+      # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      - name: Vet envoy for darwin, its tagged tests included
+        run: |
+          flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r flag; do
+            echo "Vetting for darwin with $flag"
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
         working-directory: packages/envoy
       # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
       - name: Pack envoy binaries

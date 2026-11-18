@@ -245,9 +245,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Type check the three script directories that are no workspace, as ci.yaml's `test` job does
 
-- `(cd packages/daemon && go vet -tags e2e ./...)`
+- `(cd packages/daemon && go vet -tags e2e ./... && flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64) && while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./... || exit 1; done <<< "$flags")`
 
-  What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included
+  What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included, as linux and as darwin compile it, the darwin vet once per tag set that script reads off the module's build constraints
 
 - `(cd <package> && bun run test)`
 
@@ -270,17 +270,22 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The browser suite is no `bun run test` at all — `bun run e2e` and `bun run e2e:clock` in packages/dispatch build @legion/contracts and the SPA and run Playwright, and refuse before they start a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
   `bun run e2e` runs the default selection and `bun run e2e:clock` the three wall-clock projects, which are out of that selection because their rows are read from the clock and need the machine to themselves, so the two commands together are the whole suite.
 
-- `legion start [--config <legion.yaml>] [--check-config]`
+- `legion start [--config <legion.yaml>]`
 
   Run the daemon in the foreground for the project that file names (./legion.yaml by default);
   with `LEGION_LISTEN_FD=<n>` it serves its API on that inherited listening socket instead of binding, and refuses to start unless the file's `bind` and `port` name the socket's address (docs/deployment.md "Serving on a socket the harness holds");
-  --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
+  `--check-config` is refused with exit 2 and a line naming `legion config check`, the command that checks a file without starting the daemon
+
+- `legion config check [--config <legion.yaml>]`
+
+  Check that file (./legion.yaml by default) as boot reads it, starting nothing and running none of its key commands, and print its `Config OK` line (exit 0) or the first refusal (exit 1);
+  it never reads `LEGION_LISTEN_FD`, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
 
 - `legion status <team>`
 
   Check daemon status
 
-- `legion status <issue> <status>`
+- `legion issue status <issue> <status>`
 
   The operator's: set an issue's Dispatch lifecycle status (`todo|backlog|icebox`) from an operator shell;
   `--operator-token-file <file>` is required (the controller sets a status through its `legion` tool's `set_status`, never from bash)
@@ -300,7 +305,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   a forget or a start the machine refuses after the claim was stopped is answered 200, with that refusal and the state it left the claim in printed under the claim's line, because the request changed the claim: a suspended claim is started by running the same command again, and a claim left in another state, such as `launching` with its launch tried again at the probe interval, starts by itself;
   `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux");
   a failed claim carries the one cause word the daemon failed it under, which `legion claims list` prints after the claim's state word, `-` where the daemon holds none, and which `--json` gives with the sentence beside it, the moment and the four counts;
-  a held issue has a release that costs nothing besides this retry: `legion status <KEY> todo` on a tree's own root releases the hold, returning the issue to the phase it was held from and starting that phase's worker at the same generation, in the same pod and at the same place in the admission line
+  a held issue has a release that costs nothing besides this retry: `legion issue status <KEY> todo` on a tree's own root releases the hold, returning the issue to the phase it was held from and starting that phase's worker at the same generation, in the same pod and at the same place in the admission line
 
 - `legion claims compact --operator-token-file <file> --claim <token>`
 
@@ -377,7 +382,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   either runtime — the operator starts the interactive controller on their own machine:
   reads the strict operator-side file (deploy/kubernetes/daemon/controller.yaml.example), refuses an operator token file others can read, then a stdin that is not a terminal (given the positional word below and no terminal, Oh My Pi would run headless print mode, which would run the start command after the mint revoked the running controller), finds the real gh its session's `gh` wrapper runs (`LEGION_GH_PATH`, or the first `gh` on PATH but its own wrapper;
-  refused when there is none or that first `gh` is a script, a gh wrapper that would answer in place of the review App), fetches the controller secret from POST /legion/v1/controller/secret with that token as a bearer, then the controller's GitHub credential from POST /legion/v1/controller/github-credential with that secret (the review App's read-only gh files for every owner of the project, one directory per owner under `<state_dir>/gh`, each token reaching that owner's repositories alone, `GH_CONFIG_DIR` naming the first owner's, refreshed every minute while Oh My Pi runs, logged to `<state_dir>/github-credential.log`;
+  refused when there is none or that first `gh` is a script, a gh wrapper that would answer in place of the review App), fetches the controller secret from POST /legion/v1/controller/secret with that token as a bearer, then the controller's GitHub credential from POST /legion/v1/controller/github-credential with that secret (the review App's read-only gh files for every owner that App is installed on, one directory per owner under `<state_dir>/gh`, each token reaching every repository that owner's installation holds, `GH_CONFIG_DIR` naming the first owner's, refreshed every minute while Oh My Pi runs, logged to `<state_dir>/github-credential.log`;
   against a daemon with no GitHub App it says so and empties the directory;
   any other refusal after the mint exits 1 with Oh My Pi never started), launches Oh My Pi in the foreground with the shared controller environment and the positional word `/legion-controller-start`, the pi-legion command that sends the controller's start message once Oh My Pi's startup is over, exits with its code
 
@@ -385,25 +390,29 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   the `gh` first on every tmux pane's and pod's PATH (a script in the pane's launcher directory, `/opt/legion/bin/gh` in the image) runs it, never a person:
   it runs the real gh (LEGION_GH_PATH) with GH_CONFIG_DIR at a directory of the role's gh bundle (LEGION_GH_OWNERS_DIR:
-  one directory per GitHub owner of the project and one more per owner a configured rename moved a repository away from while the project serves the name it moved to, the role App's write token for the issue's repository alone standing in two of them, the directory named for the issue's recorded owner and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
-  beside them a `<owner>/<repo>` directory for each other repository the owner serving the issue's repository serves and for each the recorded owner serves, read-only over the one repository its own name resolves to;
-  and every other owner's directory read-only over the repositories that owner serves, or, for an owner only a rename puts in the bundle, over those of the owner its repository moved to):
-  the repository's own directory where the command names one repository and the bundle holds that directory, and its owner's otherwise, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
+  one directory per GitHub owner the role's App is installed on, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's own recorded owner;
+  each directory of a workflow role's bundle holds one token of the role's own App, minted on that owner's installation with the role's own permissions, and none a read-only one, which the controller's holds in every directory;
+  a token reaches every repository that installation holds and no fewer, the account having chosen that set when it installed the App, so a role writes in every repository its App reaches;
+  the directory of an owner a rename moved a repository away from, where the App is not installed on that owner, holds the token of the owner the repository moved to;
+  a workflow role's GH_CONFIG_DIR names the directory its issue's repository routes to, and a controller's its default owner's):
+  the directory of the owner of the repository the command names, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
   -R/--repo before or after the command, a repository or owner argument, before `--` or as a clone's or fork's first after it, a github.com URL argument (for a pr command or agent-task view only a pull request's, any other naming a branch of its own repository), every one of a slot gh's usage takes several of, agent-task view's OWNER/REPO#N, `gh api`'s `repos/orgs/users/<owner>/` endpoint and a search endpoint's q, a search query's plain repo:/owner:
   qualifiers, the options naming a repository, an owner, a team or an issue by URL;
   and the command's own repository whenever gh resolves it, because no argument names it, or whatever names it for `repo set-default`:
-  GH_REPO for a command that reads it, gh api's `{owner}`/`:owner` placeholders among them, and otherwise every github.com remote and gh-resolved setting of the working directory, read with gh's own URL parser), at the issue owner's when the command names no repository at all and the working directory names none;
+  GH_REPO for a command that reads it, gh api's `{owner}`/`:owner` placeholders among them, and otherwise every github.com remote and gh-resolved setting of the working directory, read with gh's own URL parser), at GH_CONFIG_DIR's when the command names no repository at all and the working directory names none;
   the real gh runs with GH_PATH at that wrapper, so the git gh runs itself (a clone, a fork's parent, `pr checkout`) asks `legion gh auth git-credential`, which answers as `legion git-credential` does, and with gh's update check and prompts off;
   it sends nothing when only gh's help or `gh --version` alone runs;
-  it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one naming two owners (an option or another repository naming one owner while gh acts on another's repository among them), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are");
-  under a set GH_TOKEN or GITHUB_TOKEN it runs only the guard's own visibility reads (REST and GraphQL, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names) with that token (`ghVisibilityRead`), the shared check's own visibility read, the exact `gh api rate_limit` and `gh auth git-credential`, and refuses every other call
+  it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one whose repositories route to two directories of the bundle (two owners' repositories, an option or another repository naming one owner while gh acts on another's repository among them, or a repository a configured rename moved beside another of the owner it moved from; each repository is routed on its own, so a moved repository named by both of its names is one directory), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are");
+
+  - under a set GH_TOKEN or GITHUB_TOKEN it runs only the guard's own visibility reads (REST and GraphQL, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names) with that token (`ghVisibilityRead`), the shared check's own visibility read, the exact `gh api rate_limit` and `gh auth git-credential`, and refuses every other call
 
 - `legion gh`'s visibility guard, rate-limit wait and call log
 
   the guard keeps public repository visibility answers for the pod and reads private or internal visibility on every call it guards;
   where GitHub refuses the REST read for a rate limit (read with `internal/githubrest`'s model: a 429, or a 403 with no requests left, a `Retry-After`, or a message naming the secondary limit or its abuse detection mechanism), the limit is the secondary one where the message names it, whatever `X-RateLimit-Remaining` says (octokit's throttling plugin reads a message saying `secondary rate` that way, and `internal/githubrest` reads the older name, `abuse detection mechanism`, the same way), or where the answer has a `Retry-After` or no `X-RateLimit-Remaining: 0`, and the core limit otherwise (no such message, no requests left and no `Retry-After`); the guard waits once only for a core limit's reset or a secondary limit's `Retry-After`, and only when that wait is at most two minutes and the caller's bound leaves room for it and the reads after it; a secondary limit not waited for, or still refused after the wait, goes at once to an unauthenticated `git ls-remote`, never to GraphQL, which shares that limit, and that `ls-remote` makes no API request, so the guard does not wait for the reset GitHub asks a caller with no requests left to wait for before its next API request, and its exit 0 alone reads public; a core limit not waited for, or still refused, is read through GitHub's GraphQL API with the repository's own token, taking its public, private or internal, and only where GraphQL's own limit is spent too through that `git ls-remote`; any other outcome refuses the call, naming the limit, with a core limit's reset in UTC, or that GitHub gave none, and a secondary limit's `Retry-After` wait where it has one;
+  where gh's REST read fails on its network connection before GitHub answers anything (gh prints one line for the request, ending in a TLS handshake timeout, an I/O timeout, a connection reset or refused, or the HTTP client's own timeout), or the guard's own time limit on gh stops it before GitHub sent a status line (that limit keeps part of the caller's time for the reads after gh), the guard makes the same REST read with curl, which does not use Go's TLS, and sends the token gh would have sent (the caller's `GH_TOKEN` or `GITHUB_TOKEN`, else what `gh auth git-credential get` answers, which `legion gh` reads from the bundle without asking GitHub) on curl's standard input, never in its arguments or its environment, and never a token that holds a line break; curl does not keep the caller's `SSLKEYLOGFILE`; curl's public, private or internal is taken as gh's is; no GraphQL read is made on this path, because that read goes through gh too, unless curl meets a spent core rate limit: then the rate-limit reads above follow, whose first is GraphQL's through gh; where curl is not on PATH, no token can be read, or curl cannot connect either, the guard runs the unauthenticated `git ls-remote`, which can prove only public; where too little of the caller's time is left for curl, and for any other outcome, the call is refused;
   `legion gh` answers the shared check's own visibility read (`gh api --hostname github.com repos/<slug> --jq .visibility` with `PUBLIC_LEAK_CHECK_VISIBILITY_READ`) itself by that same rule, read fresh: it neither takes nor keeps the guard's kept public, because the check counts the commits of another remote it reads public as held and does not scan them, so for that read a false public is the leak; it prints the word with exit 0, or nothing with exit 1, which the check reads as an unknown visibility;
-  each user-initiated wrapped call appends a line to a 1 MiB-bounded log, `$XDG_STATE_HOME/legion-gh/calls.log` (`appendGhCallLog`, `packages/daemon/cmd/legion/gh.go`), serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source (`checked-only` for a call the shared check alone read) and exit status, never argument text or a response body
+  each user-initiated wrapped call appends a line to a 1 MiB-bounded log, `$XDG_STATE_HOME/legion-gh/calls.log` (`appendGhCallLog`, `packages/daemon/cmd/legion/gh.go`), serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source (`checked-only` for a call the shared check alone read, `rest-curl` for an answer read through curl) and exit status, never argument text or a response body; every `auth git-credential` request writes such a line too, the token request of the curl read above among them
 
 - `legion gh`'s path for a call that writes nothing
 
@@ -429,7 +438,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion git-credential get|store|erase`
 
   every shared clone's git credential helper (`!legion git-credential`, with credential.useHttpPath on), and, as `legion gh auth git-credential`, the helper of the git gh runs itself;
-  git runs it, never a person: `get` answers https://github.com with the token of the repository the requested path names, from that repository's own directory of LEGION_GH_OWNERS_DIR where the bundle holds one and from the owner's otherwise, and from nothing else, answering nothing (exit 1, naming why) for any other host, a request with no path, or an owner the bundle holds no directory for; `store` and `erase` write nothing
+  git runs it, never a person: `get` answers https://github.com with the token of the owner the requested path names, from that owner's directory of LEGION_GH_OWNERS_DIR and from nothing else, answering nothing (exit 1, naming why) for any other host, a request with no path, or an owner the bundle holds no directory for; `store` and `erase` write nothing
 
 - `legion sessions import --dsn-file <url file> --claims <claims.json|-> [--tree <KEY>] [--tree-volume <dir>]`
 
@@ -458,7 +467,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - version
 
-  - config-reference
+  - config
 
   - start
 
@@ -469,6 +478,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   - legions
 
   - status
+
+  - issue
 
   - restart
 
@@ -516,14 +527,14 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - `workspace-init cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]` is a repository cache pod's one process, a bare clone on the cache's own volume fetched from GitHub every `--refresh` and served to its repository's issue pods as `GET /tar` (its refs, its packs and each pack's index), with `GET /readyz` its readiness and `GET /healthz` its health, `/tar` answering only the bearer token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds and `/healthz`, which holds nothing secret, any request (docs/kubernetes.md "The repository cache")
 
-  - `legion controller start` resolves `omp_invocation` as the daemon does, with no pinned default, reads the project's repository mapping from the daemon's unauthenticated `GET /legion/v1/state` first, since the controller's addressing names it (an empty or all-refused mapping still launches and the addressing says so;
+  - `legion controller start` resolves `omp_invocation` as the daemon does, with no pinned default, reads the project's repository mapping from the daemon's unauthenticated `GET /legion/v1/state` first, as a check that the daemon answers as a conforming one does before the mint revokes the running controller (an empty or all-refused mapping still launches, since the mapping decides nothing of the controller's addressing, which names the owners the credential route answers the review App installed on, `installed`, that the controller's gh bundle holds a directory for;
     a daemon that does not answer, or a body without a usable mapping, refuses, with nothing minted or written), and refuses before its one capability-minting daemon call, by launching the operator's Oh My Pi as the controller will run, a pi-legion it does not load, or loads speaking another daemon API contract, or loads without pi-envoy or with a pi-envoy at another plugin interface version, or beside the pre-split package;
     that call names the contract, and the daemon refuses another with 409, naming both, before it mints a capability, so a `legion` and a daemon of different releases never revoke the running controller;
     and its controller registers on `/legion/v1/claims/register`, which refuses another contract naming both
 
-  - `legion start --check-config` validates a file without running its key commands
+  - `legion config check` validates a file without running its key commands
 
-  - `legion status <issue> <status> --operator-token-file <file> [--config|--port]` sets a status from an operator shell over the operator bearer, whose file `legion status` and `legion claims` refuse when its group or others can read it, as `controller start` does
+  - `legion issue status <issue> <status> --operator-token-file <file> [--config|--port]` sets a status from an operator shell over the operator bearer, whose file `legion issue status` and `legion claims` refuse when its group or others can read it, as `controller start` does
 
 - `bash scripts/e2e/stage1-skeleton.sh`
 
@@ -567,7 +578,7 @@ LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic 
 - `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_RUNTIME_IDENTITY_KIND=aws-iam-role LEGION_E2E_PLATFORM=eks LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REPO_SECOND_OWNER=<owner>/<name> LEGION_E2E_PREVIOUS_IMAGE=<worker image of main at contract 37 or 38, before one container@sha256> bash scripts/e2e/stage4a-sandbox-runtime.sh`
 
   Stage 4a's live proof, devbox only: the Go Agent Sandbox runtime on the production cluster (namespace legion) through the Legion daemon's restricted identity, on the operator fixture's pod and a providers Secret of its own, every check of the run under `session_store: postgres` against a scratch Postgres the script starts on the devbox's private address at `LEGION_E2E_SESSION_DB_PORT` (a port the Legion nodes can reach), where each claim's session is recorded as `legion sessions import` copies one
-  — install check, the image probe with the daemon's own command (and its refusal once the operator's overlay drops a role an agent names), gVisor, every container's reservation with no affinity, the operator's ServiceAccount and token, the pod baseline, the provider key reaching the agent alone, suspend/resume, same-agent refusal (a session the table lacks), kill, relaunch before registration, independent provisioning (two issues of one tree, each Sandbox owning no claim template and each pod on a disk of its own, named for the pod and owned by it), an issue on a second owner's repository reading sjawhar/legion-smoke read-only through its gh and git and refused a push there, the repository cache (the first issue pod's launch makes it and fills its feed from it alone, its Service is the one the controller made, a second pod streams its feed from it and asks GitHub for the delta alone, the cache's tar refuses a request without its token, and an issue whose pod and disk are deleted is provisioned again through it onto a commit of its pushed branch that neither the default branch nor the cache holds), re-adoption with a resume into the replacement pod on a disk of a new uid, the orphan sweep taking the swept issue's pod and the disk that pod owned, a release that ends one role and leaves the pod and its disk, a tree cleanup that takes both, an issue closed with `SuspendIssue` whose Sandbox, pod and disk all go and whose resume brings every one of them back afresh with `LEGION_WORKSPACE_RECREATED=true`, and a namespace left as it was;
+  — install check, the image probe with the daemon's own command (and its refusal once the operator's overlay drops a role an agent names), gVisor, every container's reservation with no affinity, the operator's ServiceAccount and token, the pod baseline, the provider key reaching the agent alone, suspend/resume, same-agent refusal (a session the table lacks), kill, relaunch before registration, independent provisioning (two issues of one tree, each Sandbox owning no claim template and each pod on a disk of its own, named for the pod and owned by it), an issue on a second owner's repository reading sjawhar/legion-smoke through its gh and git and served the receive-pack advertisement (200) for it with no push made, its gh bundle holding one directory per owner account its App is installed on, the repository cache (the first issue pod's launch makes it and fills its feed from it alone, its Service is the one the controller made, a second pod streams its feed from it and asks GitHub for the delta alone, the cache's tar refuses a request without its token, and an issue whose pod and disk are deleted is provisioned again through it onto a commit of its pushed branch that neither the default branch nor the cache holds), re-adoption with a resume into the replacement pod on a disk of a new uid, the orphan sweep taking the swept issue's pod and the disk that pod owned, a release that ends one role and leaves the pod and its disk, a tree cleanup that takes both, an issue closed with `SuspendIssue` whose Sandbox, pod and disk all go and whose resume brings every one of them back afresh with `LEGION_WORKSPACE_RECREATED=true`, and a namespace left as it was;
   this is the aws-private-ip/gateway shape
   — LEGION_E2E_PLATFORM=gke-autopilot LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernetes-service-account LEGION_E2E_POD_REACHABILITY=bridge LEGION_E2E_MODEL_ROUTE=key-file (no LEGION_E2E_MODEL_GATEWAY_URL/AUDIENCE) proves the same runtime against a cluster whose pods cannot reach the devbox at all (scripts/e2e/README.md)
 
@@ -585,25 +596,38 @@ projects:
   WIDGETS: { production_check: off }
 ```
 
-A project's repositories are Dispatch's mapping (Settings → Repositories → Projects), one of them the project's default;
+Dispatch's mapping (Settings → Repositories → Projects) names the project's default repository and the repositories the daemon prepares before an issue names one;
 `legion.yaml` names none, and refuses `projects.<KEY>.repo`.
-Its one exception names no repository of the project either:
-`projects.<KEY>.commit_issue_trailer_repos` selects, among the repositories Dispatch maps to the project, the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends;
-a name the project does not serve selects nothing, and boot warns about it.
-The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated`, serves each mapped repository both GitHub Apps are installed on, and leaves out, and reports in `legion state --json` (`repositories.refused`), one either App is missing from.
-A repository whose installation read GitHub does not answer (any failure but a 404) is left out for now the same way and read again, 30 s doubling to 10 min, until GitHub answers;
-a served one whose read fails stays served.
+An issue may name any `owner/name`, and the daemon records and runs it where both role Apps are installed.
+Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation and keeps no list of owners.
+An account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, from the next bundle the daemon builds, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+The account's name joins the owners that each later launch of that App's roles is told in its `Legion addressing` line.
+Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's next refresh.
+Under `runtime: kubernetes` the daemon opens one update round over each live issue pod once both role Apps are installed on the account, since an issue pod projects only the directories that both Apps' bundles hold.
+The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
+An uninstall opens no round and replaces no pod: the next bundle holds no directory for the account, a pane loses its directory at the next refresh, and a running pod keeps one that the daemon refreshes no more.
+The one exception is the account that holds the role's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
+Until then every bundle built for that role succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built for that role fails, no refresh writes any of its directories, and the pane or pod keeps its last tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
+A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
+`projects.<KEY>.commit_issue_trailer_repos` is the one key of `legion.yaml` that names repositories: the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends.
+A pane stamps the commit when its launch's repository is one of those names, and boot checks each name against the mapping alone, which catches a typo.
+The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated`, and reads each repository's installation of both GitHub Apps.
+`legion state --json` reports each repository with each App's installation, and lists under `repositories.refused` one a role App is not installed on.
+A repository whose installation read GitHub does not answer (any failure but a 404) is refused for now the same way and read again, 30 s doubling to 10 min, until GitHub answers;
+one already read as installed stays as it was read.
 A repository whose default-branch read GitHub refuses for its rate limit (a 429, or a 403 whose headers or body name the limit) never stops the boot:
 one the daemon holds a default branch for, from its last read or a record of an issue on it, is served on that branch and read again once the limit resets (a record that names the repository by the other name of a pair in `repository_renames`, below, holds none for it);
 one it holds none for is waited out for as long as GitHub asks (the `Retry-After` it names, else until the reset when no call is left, at most an hour, else a minute), with one log line that names the repository, the limit's headers and the time it waits until, and is then read once more, and left out for now and read again as above if GitHub still does not answer.
 A repository that moved is named in `repository_renames`, a top-level key of `legion.yaml` (`- from: <old owner>/<name>` with `to: <new owner>/<name>`), and the daemon then treats the pair's two names as one repository wherever it compares a name, so the trees it recorded under the old name take the events GitHub sends under the new one, a pull request open at the transfer included.
 The equivalence is read-side only and rewrites no record, so keep the pair configured for as long as any record names the old repository;
-it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion start --check-config` prints one line per pair.
+it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion config check` prints one line per pair.
 
 `projects.<KEY>.production_check` decides whether a merge that closes one of the project's issues opens a production check and who works it:
 it takes `off` or `tester`, is `tester` by default, and the loader refuses every other value, naming the key and the value it read.
 `projects.<KEY>.deploys` is still accepted and read for nothing, since another repository's deployment still sets it:
-the loader warns once per project that sets it, `legion start` logs each warning as it boots, and `legion start --check-config` prints each after its `Config OK` line and exits 0.
+the loader warns once per project that sets it, `legion start` logs each warning as it boots, and `legion config check` prints each after its `Config OK` line and exits 0.
 
 ## Version Control
 
@@ -741,6 +765,13 @@ Each item below names a task and where its code is, then notes on it.
 
   React SPA and native Dispatch server; `bun run dispatch:local` runs it here, seeded and signed in
 
+- Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`
+
+  A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads once a minute, one replica at a time under a lease (`sampler.go`), recording what changed.
+  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, and `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the sampler recorded.
+  `legion/metrics/` computes the four Legion delivery metrics from the same records (`Read`, then `Compute`), and no route serves them: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today.
+  The web side is the Settings page's Legion section, where a person names a project's daemon (`packages/dispatch/web/src/features/settings/LegionDaemonsSection.tsx`, `useLegionDaemons.ts` beside it); no page draws the board
+
 - Dispatch's document editor — `packages/proof-editor/`
 
   The editor entry, typed blocks and block ids, source-only.
@@ -776,7 +807,9 @@ Each item below names a task and where its code is, then notes on it.
   Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
   a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
   A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
-  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
+  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split.
+  That page says each Go cache family is keyed on the Go version alone and never on go.sum; `go-envoy-infra` is the exception, keyed on the hash of its module files too, with `ci-caches.yaml`'s `envoy-infra-superseded` job deleting the entry each fill replaces, for the reason `ci-caches.yaml`'s `envoy-infra` job gives;
+  the page keeps its text, because no role writes under `docs/solutions/`.
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
 
@@ -1009,7 +1042,7 @@ The record is that result and the pull request: a closed issue takes a result fo
 
 Statuses above are native Dispatch issue statuses, not GitHub labels
 — the daemon writes `in_progress`/`testing`/`needs_review`/`retro` through its outbox (a `dispatch_status` row it delivers to Dispatch) for the issues it runs, and a human may set any lifecycle status from the Dispatch dashboard.
-The controller moves an issue to `todo`/`backlog`/`icebox` through its `legion` tool's `set_status`, and an operator through `legion status <issue> <status> --operator-token-file <file>`.
+The controller moves an issue to `todo`/`backlog`/`icebox` through its `legion` tool's `set_status`, and an operator through `legion issue status <issue> <status> --operator-token-file <file>`.
 A human can also close an issue into `done` and reopen it into `backlog` from the Dispatch dashboard.
 
 **Handover:** the daemon (`packages/daemon`) works only the issues handed to it with the Dispatch label `legion` (in any case), so it can share a Dispatch project with humans and other agents;
@@ -1193,7 +1226,7 @@ A decision no person made (a deployment that gates no step) is not relayed.
 A session's reply on such an ask is not relayed either: the daemon logs `workflow: a session's reply on a parked tree is not relayed`, the reply stays on the Dispatch ask for the person who asked, and the controller's walk skips it.
 The controller sets the root `todo` when the park is its own hold and a decision gives its work a next step.
 Its own hold is a park by `session legion-daemon:<PROJECT>` with the controller's comment `Parked by Legion while it waits on: …` beside it, which the controller posts when it parks a tree on a person's `Park it` answer to its ask about a hold, a failed architect or an event outside Legion.
-Every other park — a person's, another session's, and an operator's `legion status`, which the daemon writes under the same session with no mark — stays parked until a person sets the root to `todo`, the daemon queues a person's approval of its spec (above), or a person asks the controller to start it.
+Every other park — a person's, another session's, and an operator's `legion issue status`, which the daemon writes under the same session with no mark — stays parked until a person sets the root to `todo`, the daemon queues a person's approval of its spec (above), or a person asks the controller to start it.
 The controller says so in a comment, and the start task names the decision then.
 The controller answers a question on the question's own ask, from the record when the record holds the answer, and otherwise says that `todo` on the root brings its architect back to answer.
 Its parked-root walk, at its start and on each `tick`, finds a decision sent while no controller ran.

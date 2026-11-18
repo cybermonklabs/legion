@@ -17,7 +17,7 @@ import (
 // that reads its value. The table is the only way the loader dispatches a top-level key — readKeys
 // looks each key up in it and calls its Read, and a key the table does not list falls through to
 // the warned, migration and tossed classification — so a new key is a new row here, never a new
-// case. `legion config-reference --json` prints the table, the documentation site's configuration
+// case. `legion config reference --json` prints the table, the documentation site's configuration
 // reference is generated from that output, and TestNoKeyBypassesTheKeyTable holds internal/config
 // to it: a key the loader dispatches with no row, and a row with no description, each fail the
 // build.
@@ -111,7 +111,7 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
 
 // topLevelKeys is every top-level key of legion.yaml, grouped by what the keys settle, which is the
-// order `legion config-reference --json` prints them in: the project and where the daemon keeps
+// order `legion config reference --json` prints them in: the project and where the daemon keeps
 // its state and listens, how many issues run at once, the controller, the deployment's
 // instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
 // projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
@@ -197,7 +197,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -237,7 +237,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -266,7 +266,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, narrowed to the repositories that agent works.",
+			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
 		{
@@ -439,7 +439,7 @@ type member struct {
 
 // memberGroup is one mapping of nested keys: the dotted path an operator writes them under, with
 // `<KEY>` for a project key and `[]` for a sequence entry, and the keys the mapping may carry. A
-// group's path begins with the top-level key it belongs to, which is how `legion config-reference
+// group's path begins with the top-level key it belongs to, which is how `legion config reference
 // --json` prints each nested key under its own top-level key.
 type memberGroup struct {
 	Path    string
@@ -510,7 +510,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
-			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; each must be one Dispatch maps to this project."},
+			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the boot checks each name against Dispatch's mapping for this project and warns about one it does not find, which catches a typo, and a pane working that repository stamps its commits all the same."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",
@@ -853,7 +853,7 @@ var nestedByPath = func() map[string]*memberGroup {
 	return byPath
 }()
 
-// ConfigKey is one top-level key as `legion config-reference --json` prints it: the key table's
+// ConfigKey is one top-level key as `legion config reference --json` prints it: the key table's
 // own four columns, and beneath them the nested keys that belong to this key, so a generator of
 // the documentation site renders one section per top-level key and one table of the nested keys
 // under it. Nested is never null.
@@ -876,7 +876,7 @@ type ConfigNestedKey struct {
 	Description string `json:"description"`
 }
 
-// ConfigReference is the key table as `legion config-reference --json` prints it: every top-level
+// ConfigReference is the key table as `legion config reference --json` prints it: every top-level
 // key in table order, each with its described nested keys in nestedKeys order. It reads no file
 // and no daemon.
 func ConfigReference() []ConfigKey {

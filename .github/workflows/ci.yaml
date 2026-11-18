@@ -72,10 +72,18 @@ name: CI
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
-# entry, keyed on the Go version its job's setup-go installed, so it is
+# entry per runner architecture, keyed on the runner's architecture and on the Go version its
+# job's setup-go installed: a build cache holds the objects of the architecture that compiled
+# them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and
+# none of its objects, so each family is filled on every runner one of its jobs runs on. An
+# entry is
 # refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 # build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-# go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
+# go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
+# the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the
+# same vet for darwin took with nothing cached, so its key carries the hash of its module files
+# too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how). The
+# fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
 # older Go built, and no step of this workflow saves a family any more (the two check actions
@@ -102,6 +110,34 @@ name: CI
 # one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched
 # on. check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a
 # composite action's, so this paragraph is the one record of the two actions' restores and saves.
+#
+# Runners: a job of this workflow, or of a workflow it calls, runs on ubuntu-24.04-arm unless it
+# needs an x86_64 machine, and runs on ubuntu-24.04 then. The two pools queue apart, and both
+# queue. On 2026-11-16 a job of this repository waited 456 s for an ubuntu-24.04 runner at the
+# median and 678 s at the 90th percentile, and the jobs every run waits on twice (`changes` at
+# the start, and `ci-ok` after the last job ends) paid that x86_64 wait both times. On the run
+# that first moved jobs here (run 44069656523, 2026-11-17), the 24 arm64 jobs waited 217 s at the
+# median and 542 s at most, the 19 x86_64 ones 890 s and 1428 s: an arm64 job that starts with
+# twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
+# `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
+# ubuntu-24.04, each a reason of its own machine and not of the job's code:
+#   * a tool whose .github/ci-tools.yaml row is an x86_64 build alone: changie (test), crane
+#     (ci-images), mise and jj (pi-shared), elan (airlock-lean);
+#   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
+#     daemon-go, plugin-pack, pi-envoy and pi-legion;
+#   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
+#     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
+#   * an image of this repository built for linux/amd64: worker-image, browser-image, and
+#     envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+#   * envoy-go-checks, whose pack step builds the release's listener archives with no
+#     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
+#     for a native build and off for a cross build, so only an x86_64 runner builds the release's
+#     own pair (ci-job-envoy-go-checks.yaml says what the arm64 runner built instead);
+#   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
+#     half.
+# Every Go cache family carries the runner's architecture in its key, as the paragraph above
+# says, so a job moved from one runner to the other reads a cold entry until
+# .github/workflows/ci-caches.yaml fills its family on the runner it moved to.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -563,8 +599,13 @@ jobs:
             # The envoy packages the daemon module compiles (`go list -deps -test` of
             # packages/daemon's ./..., with and without -tags e2e).
             daemon_envoy_deps: &daemon_envoy_deps
+              # The broker address every broker client holds, which prints only its redacted form
+              # (internal/redact) and whose calls follow no redirect (internal/redirects).
+              - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
+              # The cobra conformance harness cmd/legion's tests drive the built legion with.
+              - 'packages/envoy/clitest/*'
               - 'packages/envoy/daemonpermissions/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
@@ -625,6 +666,8 @@ jobs:
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
@@ -696,6 +739,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -807,6 +851,7 @@ jobs:
               - 'packages/daemon/internal/wakepace/*'
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
+              - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
@@ -832,6 +877,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -1129,13 +1176,15 @@ jobs:
               - '!packages/envoy/**/*_test.go'
               # END generated
 
-            # `go vet -tags e2e ./...` in packages/daemon.
+            # `go vet -tags e2e ./...` in packages/daemon, as linux and as darwin compile it, the
+            # darwin vet once per tag set .github/scripts/go_build_tags.py reads off the module.
             typecheck:
               - *ci_router
               - '.github/workflows/ci-job-typecheck.yaml'
               - *go_workspace
               - 'packages/daemon/**'
               - *daemon_envoy_deps
+              - '.github/scripts/go_build_tags.py'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/**/*_test.go'
@@ -1561,35 +1610,41 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-filters.test.sh'
-              # :75-76 symlink the script and the three modules it runs on into every fixture.
+              # :75-79 symlink the script and the modules it runs on into every fixture.
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
-              # :2172 imports the table to derive the plain step's -run lists, and :2579 holds
+              - '.github/scripts/go_build_tags.py'
+              # :2432 imports the table to derive the plain step's -run lists, and :2876-2911 holds
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
               - 'AGENTS.md'
+              # It runs the darwin vet step's own run text over a module with a negated tag.
+              - '.github/workflows/ci-job-typecheck.yaml'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ts-filters.test.sh'
-              # :47 symlinks the script, the engine it borrows the changes job's filters from
-              # and the path model both import into every fixture.
+              # :50 symlinks the script, the engine it borrows the changes job's filters from,
+              # the path model both import and the Go build-tag module the engine imports into
+              # every fixture.
               - '.github/scripts/check-ts-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_build_tags.py'
             go_test_step_expansion_test: &go_test_step_expansion_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
               # :38 loads the script by path, and the script imports the engine, which imports
-              # the path model.
+              # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_build_tags.py'
               # Its last case reads the two step lines the reader exists for, out of the files
               # that hold them.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
@@ -1978,6 +2033,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -2160,6 +2216,10 @@ jobs:
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # The one corpus both clients read: src/__tests__/wire.test.ts:23-29 reads the Go
+              # package's own testdata by relative path, that file itself and never a copy, so a
+              # field added there must start this job.
+              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             # The private workspace package both Oh My Pi plugins import, and the jj
             # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
             # that runs the real jj.
@@ -2629,6 +2689,8 @@ jobs:
               - '.github/workflows/ci-job-envoy-infra-go.yaml'
               - *go_workspace
               - 'packages/envoy/infra/**'
+              # Its darwin vet takes its tag sets from this script.
+              - '.github/scripts/go_build_tags.py'
               - *dispatch_server
               - *listener_command
               - 'packages/envoy/daemonpermissions/*'
@@ -2684,11 +2746,15 @@ jobs:
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
               # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/docs/approval_carry_test.go:26,
-              # internal/cistore/settlement_fixture_test.go:57.
+              # internal/cistore/settlement_fixture_test.go:57,
+              # internal/dispatch/legion/golden_state_test.go:29 (the daemon's state golden, which
+              # packages/daemon/internal/api/state_golden_test.go writes, so a change to the
+              # daemon's state shape must start this job as well as the daemon's).
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
+              - 'packages/contracts/fixtures/daemon-api/state.json'
               # The daemon's own fixture, the server.started envelope its intake decodes:
               # internal/dispatch/startup/started_test.go:379 reads it and
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
@@ -2722,7 +2788,8 @@ jobs:
               - '!packages/envoy/infra/**/*_test.go'
               # END generated
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
+            # checks, the shell-script tests, the vet of the module as darwin compiles it,
+            # and the build and pack of the envoy commands,
             # with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
             # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
             # run this is (envoy-go's unit step leaves them out), the architecture-note check over
@@ -2730,8 +2797,8 @@ jobs:
             # .github/actions/architecture-check, and the spec-file check over its .dispatch/spec
             # through the composite action .github/actions/spec-check. gofmt -l . walks every .go
             # file under packages/envoy, those tests and the scripts they drive live there, and
-            # `go build ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as
-            # the two actions' builds of their commands do.
+            # `go build ./cmd/dispatch ./cmd/listener` and the darwin vet compile packages of that
+            # module alone, as the two actions' builds of their commands do.
             envoy_go_checks:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-checks.yaml'
@@ -2755,6 +2822,8 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
+              # Its darwin vet takes its tag sets from this script.
+              - '.github/scripts/go_build_tags.py'
               # The steps "Check this repository's architecture notes with the composite action"
               # and "Check this repository's spec files with the composite action" run the two
               # actions from this checkout: each one's action.yml and the check.sh beside it, and
@@ -2788,15 +2857,22 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the committed
-            # copies its text checks hold to the texts they copy, so the module's other files -
-            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
+            # every package of this module it imports - and the committed copies its text checks
+            # hold to the texts they copy; and its credential-argument check reads every text file
+            # of the repository, so `**` below selects the job for every change but one under
+            # docs/plans or docs/superpowers. The patterns after it name what the other checks
+            # read, which `**` covers too, so that each read keeps its reason here.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
+              # credential_argument_test.go:143,174 lists every file git tracks or would track and
+              # reads each of them, but docs/plans and docs/superpowers, which are dated history.
+              - '**'
+              - '!docs/plans/**'
+              - '!docs/superpowers/**'
               # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
               # of the phrase it reads in place of importing internal/workflow (:23-24), and the
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
@@ -3144,6 +3220,7 @@ jobs:
               # The infra module's copy of the stop budget, which
               # cmd/listener/infra_stop_budget_test.go:18 reads and holds to stopBudget.
               - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
+              - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/internal/broker/proof/*'
               # The token client cmd/listener trades its broker tokens through, with the wire
               # corpus its tests replay.
@@ -3179,6 +3256,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               # cmd/listener/dispatch_kept_role_test.go drives Dispatch's outbox end to end, so the
               # serverchange soak compiles this package: a change to it must re-run that soak.
@@ -3203,6 +3281,7 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
@@ -3218,6 +3297,7 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
@@ -3417,8 +3497,8 @@ jobs:
               - *bun_install
               - 'packages/envoy-client/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
-              # @legion/broker-client/token-client, and this job runs that package's own typecheck
-              # and tests.
+              # @legion/broker-client/token-client, so this job's typecheck and tests compile them.
+              # That package's own typecheck and tests are the broker-client job's.
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
@@ -3459,10 +3539,6 @@ jobs:
               # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
               # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
-              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
-              # reads the Go package's own testdata by relative path, that file itself and never a
-              # copy, so a field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
               # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
@@ -3502,6 +3578,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
+              - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets-devrelay/**/*_test.go'
@@ -3553,6 +3630,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
@@ -3621,6 +3699,7 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               - *go_workspace
+              - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -3694,6 +3773,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/horizontest/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
+              - 'packages/envoy/internal/dispatch/legion/metrics/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/*'
@@ -3733,6 +3814,7 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
@@ -3758,6 +3840,7 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/broker/**/*_test.go'
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
@@ -3792,6 +3875,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
@@ -3814,6 +3898,7 @@ jobs:
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
               - '!packages/envoy/internal/ratelimit/**/*_test.go'
+              - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/roles/**/*_test.go'
               - '!packages/envoy/internal/routing/**/*_test.go'
               - '!packages/envoy/internal/serverwait/**/*_test.go'
@@ -3984,6 +4069,7 @@ jobs:
               - 'packages/daemon/internal/wakepace/*'
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
+              - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
@@ -4009,6 +4095,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -4058,6 +4146,7 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-broker-multiprocess.yaml'
               - *go_workspace
+              - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
@@ -4117,6 +4206,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -4128,6 +4218,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
+              - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -4206,6 +4297,7 @@ jobs:
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/natsversion/**'
+              - 'packages/envoy/brokeraddr/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
@@ -4245,6 +4337,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
+              - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
@@ -4341,6 +4434,7 @@ jobs:
               - 'go.work.sum'
               - 'packages/envoy/*'
               - 'packages/envoy/agentloop/**'
+              - 'packages/envoy/brokeraddr/**'
               - 'packages/envoy/brokerclient/**'
               - 'packages/envoy/brokertest/**'
               - 'packages/envoy/clitest/**'
@@ -4390,18 +4484,22 @@ jobs:
             # commands expand over), every workflow file, and the check's own script, engine, data,
             # rules and path model.
             ci_filters:
-              # The directory rather than the four workflows the check names one by one (this
-              # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
+              # The directory rather than the workflows the check names one by one in
+              # ci_job_reads.py's reads for this gate: its rules read every
               # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
-              # this one that runs on merge_group - and a rule that refuses a new workflow has to
-              # run on the change that adds one, which a list of the names already there cannot
-              # select.
+              # this one that runs on merge_group, check_cache_round_trip holds every workflow's
+              # restore of a family ci-caches.yaml fills to the fill's key, and ci_only_documents
+              # reads them all to find the files only this one calls - and a rule that reads a
+              # workflow has to run on the change that adds or edits one, which a list of the
+              # names already there cannot select.
               - '.github/workflows/**'
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
+              # ci_job_reads.py runs it for each darwin vet's tag sets, and rule 20 imports it.
+              - '.github/scripts/go_build_tags.py'
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'
               - '.github/envoy-infra-targets.json'
@@ -4657,11 +4755,11 @@ jobs:
   # The same two halves of the Bun install, proved again on an arm64 runner.
   # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
   # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
-  # python3 with PyYAML. No other step of this repository that runs on ubuntu-24.04-arm imports
-  # yaml, so nothing says that runner image carries it until the arm64 leg of
-  # .github/workflows/release-envoy-listener.yaml runs, which happens on a push to main and so
-  # only after a merge. This job says it on the pull request instead, and a release that would
-  # have failed on the first push fails here.
+  # python3 with PyYAML. Every job of this file that runs on ubuntu-24.04-arm and installs Bun
+  # makes that same read, so a runner image without PyYAML fails all of them; what this job adds is
+  # the second half, the install from npm when the release asset serves nothing, which no other
+  # arm64 job drives and which the arm64 leg of .github/workflows/release-envoy-listener.yaml would
+  # otherwise meet first, on a push to main and so only after a merge.
   # It proves both halves: the healthy path, where the release asset serves Bun and the action's
   # fourth step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
   # job uses, where the release hosts answer nothing and the second source serves the same
@@ -5054,10 +5152,11 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
-  # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
-  # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
-  # cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves
+  # envoy-go's fast half: the Go format check, the two generated-code checks, the shell-script
+  # tests, the vet of the module as darwin compiles it, and the build and pack of
+  # the envoy commands. It also runs the tests of internal/dispatch/architecture/notes,
+  # internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
+  # whose one run this is (envoy-go's unit step leaves
   # them out), the architecture-note check over this repository's own .dispatch/architecture
   # through the composite action .github/actions/architecture-check, and the spec-file check over
   # its .dispatch/spec through the composite action .github/actions/spec-check, both of which
@@ -5065,9 +5164,10 @@ jobs:
   # container-backed NATS matrix and the integration suite) is one of the nine slow suites,
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
-  # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module). It also runs the guard that no CI file of this
-  # repository compares the spec files with the approved spec.
+  # restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
+  # every package of the envoy module) and of dispatch-browser.yaml's Go-building jobs. It also
+  # runs the guard that no CI file of this repository compares the spec files with the approved
+  # spec.
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5096,8 +5196,9 @@ jobs:
   # The envoy-infra Pulumi plugin's module (packages/envoy/infra). It is not in the root go.work:
   # its own go.work binds it and packages/envoy, so Pulumi's requirements never move the versions
   # the Envoy binaries and the daemon build with, and every go command below runs in that
-  # workspace. Vet compiles the files behind the live-test tags (pulumilive, natslive) too. The unit
-  # tests start no container; the natslive files run in a step of their own against real
+  # workspace. Vet compiles the files behind the live-test tags (pulumilive, natslive) too, as
+  # linux and as darwin compile them. The unit tests start no container; the natslive files run
+  # in a step of their own against real
   # nats-server and Postgres, on testnats.Image, testnats.HubImage and testpg.Image, pulled first
   # for the reason .github/actions/pull-test-images gives. That step runs only the tests the tag
   # adds, one call per package: the unit step above already ran every untagged test of core, seed
@@ -5721,7 +5822,10 @@ jobs:
   # A job of its own waits for a runner, and that wait is the cost of this shape: it is created
   # with the run but starts only once the last of its needs has ended, when the pool is busiest
   # with the next wave. docs/solutions/github/join-a-job-to-the-ci-router.md holds every reading
-  # of it. The shape is kept because a late verdict is right while one in another workflow's
+  # of it. This job runs on ubuntu-24.04-arm because it needs nothing of an x86_64 machine, and
+  # that pool queues apart from the x86_64 one and is idle by the time the last need ends: on the
+  # run this file's "Runners" paragraph measures, it started 14 s after it was created. The shape
+  # is kept because a late verdict is right while one in another workflow's
   # suite blocks the head until a person re-runs it. What this job cannot do, and the
   # ci-ok-report step every other job ends with still does, is post the failing ci-ok of a
   # merge-group run one job's result has already decided: this job waits for every job of the

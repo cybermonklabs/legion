@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-go:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
@@ -83,8 +83,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -167,14 +167,14 @@ jobs:
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
       # none skips. go test reports a skip as a pass, so this step is where the broker's packages
       # run: it runs ./internal/broker/... with -json, which the unit step above leaves out, fails
-      # on a failed test, and fails on any skipped test there, FuzzAirlock apart (it needs a built
-      # Lean model of the airlock, and the airlock-lean job runs it). A report it cannot read prints
-      # database_skips=UNKNOWN and fails too. database-skips.sh's -timeout of 15 minutes bounds each
-      # package's test binary, and the packages run several at a time, so one that starts late ends
-      # up to 15 minutes after its own start: the step's own limit of 25 minutes leaves a package
-      # that starts within the first 10 its whole -timeout, and so its dump. Measured on a loaded
-      # dev box on 2026-11-16: 331 s for the whole step, the slowest package,
-      # internal/broker/helper, 329 s.
+      # on a failed test, and fails on any skipped test there, FuzzAirlock and
+      # TestModelAgreesOnHostShapes apart (each needs a built Lean model of the airlock, and the
+      # airlock-lean job runs both). A report it cannot read prints database_skips=UNKNOWN and fails
+      # too. database-skips.sh's -timeout of 15 minutes bounds each package's test binary, and the
+      # packages run several at a time, so one that starts late ends up to 15 minutes after its own
+      # start: the step's own limit of 25 minutes leaves a package that starts within the first 10
+      # its whole -timeout, and so its dump. Measured on a loaded dev box on 2026-11-16: 331 s for
+      # the whole step, the slowest package, internal/broker/helper, 329 s.
       - name: Count the database broker suites' skips
         timeout-minutes: 25
         run: packages/envoy/scripts/database-skips.sh

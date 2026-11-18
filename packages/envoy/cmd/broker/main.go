@@ -678,15 +678,16 @@ func main() {
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
 	}
@@ -888,7 +889,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -911,6 +912,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -1094,6 +1096,7 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
 // unretried too: each holds the one pointer, which typeMinters' copies keep.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
@@ -1103,7 +1106,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
 		Minters: typeMinters(
-			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
+			githubApp,
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
 			// The google-service-account minter takes the deployment's binding of each such
@@ -1115,6 +1118,10 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
 			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
+		// A GitHub App token a release minted and hands to nobody - a release that failed after
+		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
+		// endpoint and retry.
+		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,

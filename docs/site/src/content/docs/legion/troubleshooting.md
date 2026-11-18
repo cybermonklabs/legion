@@ -16,7 +16,7 @@ directory; `<KEY>` is an issue key such as `WIDGETS-12`.
 the environment and the files the configuration names, and starts nothing:
 
 ```sh
-legion start --config legion.yaml --check-config
+legion config check --config legion.yaml
 ```
 
 | It says | What to do |
@@ -30,7 +30,7 @@ legion start --config legion.yaml --check-config
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
-| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the project's repositories are Dispatch's mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
+| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
@@ -82,10 +82,10 @@ cluster and the image:
   recovers it from Dispatch's listing once GitHub answers, with nothing to move. A
   `child-release-stalled` notice that names such a repository says which parent to release first:
   the recovery records no child under a parent that is not `todo`.
-- **A stamped repository the project does not serve.** `workflow: commit_issue_trailer_repos names
-  a repository this project does not serve, so no pane stamps a commit with the issue key for it`,
-  with the repository and the project: `projects.<KEY>.commit_issue_trailer_repos` only selects
-  among the repositories Dispatch maps to the project, so this name selects nothing. It is a
+- **A stamped repository the mapping does not hold.** The boot says once, naming the repository
+  and the project, that `projects.<KEY>.commit_issue_trailer_repos` names a repository Dispatch
+  does not map to the project. A pane still stamps a commit for that repository when it works it,
+  so the line catches a typo and nothing else. It is a
   warning, not a refusal — the boot's check reads no Dispatch, and a repository mapped the day
   after the file is written is no fault of the file. Map the repository to the project in
   Dispatch, or take the name out.
@@ -291,8 +291,8 @@ Check, in order:
    root the daemon recorded that a person moved back to `triage` is never queued again: it runs
    again only from `todo`. In `backlog` or `icebox` it does not run.
 3. **The project and its repository.** The issue's project must be the daemon's, under `projects`
-   in `legion.yaml`, and its repository one the daemon serves. An issue whose repository resolves to
-   none, or to one not mapped to the project, or left out for a missing App, is not admitted: the
+   in `legion.yaml`. The issue may name any `owner/name`, whether or not Dispatch maps it to the project. An issue
+   whose repository resolves to none, or to one a role App is not installed on, is not admitted: the
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
    changes. Set the issue's repository (the issue header's Repository picker, or
    `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
@@ -475,8 +475,8 @@ where the decision was made. For a question, it is a reply on the question's own
 it or says that `todo` on the root brings the architect back to answer. It says what the controller
 judged. The tree stays parked when the park is not the controller's own hold, the park with its
 `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
-or an operator's `legion status` (the comment names who, and the tree runs when a person sets it to
-`todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
+or an operator's `legion issue status` (the comment names who, and the tree runs when a person sets
+it to `todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
 parked too when the decision is older than the park, when the root is `done` or `triage`, or when
 the decision only questions the work. When the controller was down, its next start walks the parked
 roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
@@ -649,8 +649,8 @@ stands:
   catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
-  legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
-  legion status <KEY> todo    --config legion.yaml --operator-token-file operator-token
+  legion issue status <KEY> backlog --config legion.yaml --operator-token-file operator-token
+  legion issue status <KEY> todo    --config legion.yaml --operator-token-file operator-token
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
@@ -669,12 +669,12 @@ prints each one it retried, and exits 1 naming each it refused: run it once the 
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
 claim, which is retired rather than failed, so name that one with `--claim`.
 
-A held issue has one more release, and it costs nothing. `legion status <KEY> todo` on the tree's
-own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's worker
-starts with its task, and the generation, the review rounds, the pod and the issue's place in the
-admission line stay as they were. A person's move of the root to `todo` in the Dispatch dashboard
-and the controller's own `set_status` do the same, since all three write the one status the
-daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
+A held issue has one more release, and it costs nothing. `legion issue status <KEY> todo` on the
+tree's own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's
+worker starts with its task, and the generation, the review rounds, the pod and the issue's place in
+the admission line stay as they were. A person's move of the root to `todo` in the Dispatch
+dashboard and the controller's own `set_status` do the same, since all three write the one status
+the daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
 generation, which is what the restart above does.
 
@@ -1541,7 +1541,8 @@ is changed to.
 
 The daemon owns a running tree's status. A status an agent session writes on a running root is set
 back, and the tree's architect is told who wrote it. A person's move in the Dispatch dashboard, the
-controller's `set_status`, or `legion status` from an operator's shell, is what takes a tree out.
+controller's `set_status`, or `legion issue status` from an operator's shell, is what takes a
+tree out.
 
 A person's move between the workflow's own statuses on a running issue does not stick either. The
 daemon's status repair runs at each boot and then every `controller_wake_interval_seconds` (an
@@ -1716,7 +1717,7 @@ notice comes once per handoff commit, from whichever read finds it first.
   `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
   where the cut comes too late to return a wedged handler's message while an operator is still
   looking. At the ten-minute floor that line names the floor as what decided the limit; above
-  it, `legion start --check-config` prints the same sentence, which an operator can read before
+  it, `legion config check` prints the same sentence, which an operator can read before
   a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
   and one more for the fact's transaction and its wait on the apply lock, never below ten
   minutes, so `worker_rpc_timeout_seconds` is the key that changes it.

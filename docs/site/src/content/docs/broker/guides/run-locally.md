@@ -116,10 +116,11 @@ that account reaches. `dispatch` reaches all of them: the approval, denial and l
 Dispatch's server calls, the machine-login and grant revocations beside them, and the two OAuth
 routes below. `listener`, whose token is `$DEV_BROKER_DIR/listener-token`, reaches
 `POST /v1/oauth/introspect` alone, since the Envoy listener reads a token back and relays nobody's
-decision. On any other of those routes it is refused by name:
+decision. On any other of those routes it is refused by name. `curl -H @-` reads the header from
+standard input, so the token is in no command line another process can read:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/listener-token")" "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER"
+$ printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/listener-token")" | curl -s -H @- "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER"
 {"code":"ACCOUNT_LACKS_POWER","error":"the caller \"listener\" may not call GET /v1/pending","answer_id":"e288edff6253ddc22cc3bc93e480eb42"}
 ```
 
@@ -357,10 +358,12 @@ audience (`$DEV_BROKER_DIR/pod-token`, the token a daemon enrolls the pod with) 
 pod may write under. The script makes that call before it prints `ready.`, which is the
 `registered the exchange pod to write under example-worker-session` line above. Making it again
 extends the registration, which lasts 24 hours from each write, and the same call with another
-name is how you add one:
+name is how you add one. The body carries a token too, so it goes on standard input
+(`--data @-`), and the header from a file curl reads (`-H @<(printf …)`, a bash process
+substitution), which keeps both tokens out of every command line:
 
 ```console
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/registrar-token")" -H 'Content-Type: application/json' -d "{\"pod_token\": \"$(cat "$DEV_BROKER_DIR/pod-token")\", \"session\": \"example-worker-session\"}" "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions"
+$ printf '{"pod_token": "%s", "session": "example-worker-session"}' "$(cat "$DEV_BROKER_DIR/pod-token")" | curl -s -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/registrar-token")") -H 'Content-Type: application/json' --data @- "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions"
 {"pod_uid":"87f7f873-65a4-47a7-b54d-abe68ac9db83","session":"example-worker-session","expires_at":"2026-10-31T00:20:03.764291Z"}
 ```
 
@@ -377,10 +380,10 @@ trade again on, since a pod's trade can reach the broker before its registration
 ```
 
 Either listed caller reads a minted token back (`POST /v1/oauth/introspect` with the token in the
-form). Here the `listener` token, which may do that and nothing else:
+form, sent the same way). Here the `listener` token, which may do that and nothing else:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/listener-token")" -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
+$ printf 'token=%s' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/listener-token")") --data @- "$AGENT_SECRETS_URL/v1/oauth/introspect"
 {"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","projects":["EXAMPLE"],"exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
 ```
 
@@ -392,8 +395,8 @@ broker's tokens relays a decision, so it takes the caller token, and the `listen
 introspection says `active: false` from the moment it commits:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d "token=<access token>&token_type_hint=access_token&client_id=dispatch-token-exchange" "$AGENT_SECRETS_URL/v1/oauth/revoke"
-$ curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
+$ printf 'token=%s&token_type_hint=access_token&client_id=dispatch-token-exchange' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") --data @- "$AGENT_SECRETS_URL/v1/oauth/revoke"
+$ printf 'token=%s' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") --data @- "$AGENT_SECRETS_URL/v1/oauth/introspect"
 {"active":false}
 ```
 
@@ -402,7 +405,7 @@ that the token not work — holds either way. A token issued to another client t
 names is `400`:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d "token=<access token>&client_id=agent-secrets-helper" "$AGENT_SECRETS_URL/v1/oauth/revoke"
+$ printf 'token=%s&client_id=agent-secrets-helper' "<access token>" | curl -s -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") --data @- "$AGENT_SECRETS_URL/v1/oauth/revoke"
 {"error":"unauthorized_client","error_description":"The client is not authorized to request a token using this method. Make sure that client id and secret are correctly specified and that the client exists.","answer_id":"1b8f254014120af2c5d4442558531dd7"}
 ```
 
@@ -492,7 +495,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s characters, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-20 characters, starting ghs
+22 characters, starting ghs
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
@@ -583,7 +586,7 @@ value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy passw
 command's call to S goes through the broker:
 
 ```console
-$ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s characters, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; curl -sS https://s.airlock.test/read -H "Authorization: Bearer $AIRLOCK_DEMO_TOKEN"'
+$ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s characters, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS https://s.airlock.test/read -H @-'
 agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 AIRLOCK_DEMO_TOKEN: 58 characters, starting agent
 the s stand-in answered
@@ -609,7 +612,7 @@ alone, so the proxy refuses a `POST /write` with it, names the rule that refused
 refusal with its answer id:
 
 ```console
-$ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H "Authorization: Bearer $AIRLOCK_SCOPED_TOKEN"'
+$ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'printf "Authorization: Bearer %s" "$AIRLOCK_SCOPED_TOKEN" | curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H @-'
 agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 airlock: not allowed by rule (answer 920e65ea84ffcaae7eb60c224f5d340b)
  (403)
