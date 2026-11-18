@@ -309,7 +309,10 @@ of an account paired with itself can log in as that account: the pair registers 
 `BROKER_SERVICE_LOGINS` lists it. So each such pod can release every registration that account
 wrote, a sibling's included, by session name alone. It needs no token of that sibling. The token
 exchange then refuses the sibling's trade under that name until the account registers that pod
-and name again. A deployment that wants its pods kept apart pairs no account with itself.
+and name again. Every pod that runs as any registrar's account can log in as that account in the
+same way and release every registration that account wrote. So list as a registrar only an
+account whose pods may end the trades of every pod that account registers. An account paired with
+itself is the common case of an account whose pods may not.
 
 An account `BROKER_EXCHANGE_READ_ACCOUNTS` lists (below) is refused `409 SESSION_FIXED`, as is an
 account whose `BROKER_EXCHANGE_ACCOUNTS` entry fixes a session: such an entry fixes the session its

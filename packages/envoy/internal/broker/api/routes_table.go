@@ -220,7 +220,10 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // that account wrote of the names it sends, whichever of its pods wrote it. So every pod of an
 // account paired with itself in BROKER_POD_REGISTRARS logs in as that registrar and can release
 // every registration the account wrote, by session name alone, with no token of the pod whose
-// trade it ends; a deployment that wants its pods kept apart pairs no account with itself.
+// trade it ends. Every pod that runs as any registrar's account logs in as that registrar in the
+// same way and can release every registration that account wrote. So a deployment lists as a
+// registrar only an account whose pods may end the trades of every pod that account registers. An
+// account paired with itself is the common case of an account whose pods may not.
 func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)

@@ -7174,7 +7174,9 @@ It is a class rather than a power of `accountAuth`'s because the two lists are t
 a deployment's daemon registering the pods it starts is not a caller that relays a person's decisions, and putting it on `BROKER_API_ACCOUNTS` would hand it the approval relays.
 A `serviceAuth` login is all a release needs, since a release touches only the registrations of the account the caller logs in as (`releasePodSessions`), while a registration needs an entry of `BROKER_POD_REGISTRARS` too (`registerPodSession`), since a session pod logs in as a service as well.
 That account, not the caller's pod, is the registrar, so every pod of an account paired with itself can release every registration that account wrote, by session name alone, with no token of the pod whose trade it ends.
-A deployment that wants its pods kept apart pairs no account with itself.
+Every pod that runs as any registrar's account logs in as that registrar and can release every registration that account wrote.
+So a deployment lists as a registrar only an account whose pods may end the trades of every pod that account registers.
+An account paired with itself is the common case of an account whose pods may not.
 `renewAuth` alone adds `ENROLLMENT_NOT_LIVE` for a valid session proof that names an ended enrollment.
 A store that cannot answer while authenticating is a 503 naming it.
 Every answer of the port but those net/http writes itself before any handler runs passes `answer.Middleware` (`internal/broker/answer`), which `cmd/broker` installs around the mux itself, inside `withRequestDeadline`, which writes no answer:
@@ -7354,7 +7356,7 @@ It is not one `insert … on conflict do update … where excluded.generation >=
 The Legion daemon sends a role's launch generation, so a write its old incarnation sent, which the broker commits after the new incarnation's, cannot put the old key back for a renewal interval; a session watch sends none and writes 0, as every row was before the column.
 A registrar's generation for one pod and session must therefore never go down: a lower one is not applied until the row has lapsed and the sweep has deleted it, or the registrar has released it.
 Each write is logged with what it did, since these lines are the one record of who may write under which name:
-an applied write at INFO as `broker: registered a pod to write under a session name`, naming `registrar`, `sent_thumbprint` and `sent_generation` beside the stored `thumbprint` and `generation`, and `replaced_thumbprint` when it bound the row to another key;
+an applied write at INFO as `broker: registered a pod to write under a session name`, naming `registrar`, `sent_thumbprint` and `sent_generation` beside the stored `thumbprint` and `generation`, and `replaced_thumbprint` when it took a key off the row: when it bound the row to another key, and when it took a key-bound row whole (a released row, another registrar's lapsed row or a row of no registrar), a write that names no key included;
 a write the generation rule refused at WARN as `broker: a pod's session registration was not written: the registration holds a later generation`, naming the same five.
 A write that names neither, of a row that names neither, logs the line it logged before either existed, `service`, `account`, `pod` and `session` alone, with no `registrar` (R9, `TestARegistrationNamingNoKeyAndNoGenerationLogsAsBefore`).
 A write refused because another registrar holds the name logs `broker: a pod's session registration was refused: another registrar holds the session name` at WARN, naming `service`, `registrar`, `holder`, `account`, `pod` and `session`.
@@ -7381,7 +7383,9 @@ It is a `serviceAuth` route too, and `BROKER_POD_REGISTRARS` does not gate it: a
 A release is that account's (`registrar.Subject`), not a pod's: it releases every live registration of each named session that the account wrote, whichever pod of the account logged in to write it.
 So every pod of an account paired with itself in `BROKER_POD_REGISTRARS`, which `BROKER_SERVICE_LOGINS` lists so that the pair registers anything, logs in as that registrar.
 Each such pod can release every registration that account wrote, by session name alone, with no token of the pod whose trade it ends.
-A deployment that wants its pods kept apart pairs no account with itself.
+Every pod that runs as any registrar's account logs in as that registrar in the same way and can release every registration that account wrote.
+So a deployment lists as a registrar only an account whose pods may end the trades of every pod that account registers.
+An account paired with itself is the common case of an account whose pods may not.
 The body is exactly `{"sessions": [...]}`, within `readJSON`'s 1 MiB, and a list that is missing, `null` or empty, or that holds more than `maxReleasedSessions` (4096) entries counted as sent, is `400 SESSIONS_INVALID`, naming the count.
 An entry that is not a string is `400 INVALID_REQUEST`, and so is a `null` entry, whose refusal names its index (`podSessionReleaseBody.UnmarshalJSON`).
 `readJSON` alone, decoding into a `[]string`, would read a `null` entry as the empty string, and the route would answer `200` to a body outside its shape.

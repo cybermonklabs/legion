@@ -689,14 +689,14 @@ func (g *graph) resolve(info funcInfo, params map[string][]string, visiting map[
 				if err != nil {
 					return nil, err
 				}
+				if !other.funcs.declares(s.callee) {
+					return nil, fmt.Errorf("%s: %s declares no %s, which pageAnswerers names", s.at, s.dir, s.callee)
+				}
 				cg = other
 			}
 			callee, err := cg.funcs.decl(s.callee)
-			switch {
-			case err != nil:
+			if err != nil {
 				return nil, fmt.Errorf("%s: %w", s.at, err)
-			case callee == nil:
-				return nil, fmt.Errorf("%s: %s declares no %s, which pageAnswerers names", s.at, s.dir, s.callee)
 			}
 			calleeInfo, err := cg.collect(cg.src.fileOf(callee), callee.Body, callee.Type.Params)
 			if err != nil {

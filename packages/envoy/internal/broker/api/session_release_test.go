@@ -98,15 +98,17 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 // (one name sent 4097 times, since the bound counts entries as sent), a missing sessions, a null
 // one and a body of null are each 400 SESSIONS_INVALID naming the count, an unknown field is 400
 // INVALID_REQUEST, a list of one null and B's list of its own S3 and a null are each 400
-// INVALID_REQUEST naming the null's index, since a null is no name, and an account
-// BROKER_SERVICE_LOGINS does not list is 403 ACCOUNT_NOT_LISTED; 4096 entries of a name B holds
-// no registration of are admitted and release nothing. B releasing [S1, S3, S3] is answered
-// {sessions: 2, released: 1}: its own S3, and none of A's rows of S1, whose pods still trade. A,
-// once the list no longer names it, releasing [S2, S1, "has space", "", "\u0000"] is answered
-// {sessions: 5, released: 3}, and the same again, which leaves each release mark where the first
-// call put it: a release is not gated by BROKER_POD_REGISTRARS, and a name no registration could
-// have taken is released with nothing to release, a NUL byte, which Postgres refuses in text,
-// included. No row's expires_at moved.
+// INVALID_REQUEST naming the null's index, since a null is no name, an entry that is a number
+// and a body that is a string are each 400 INVALID_REQUEST with encoding/json's whole text, which
+// names podSessionReleaseBody and its sessions field, and an account BROKER_SERVICE_LOGINS does
+// not list is 403 ACCOUNT_NOT_LISTED; 4096 entries of a name B holds no registration of are
+// admitted and release nothing. B releasing [S1, S3, S3] is answered {sessions: 2, released: 1}:
+// its own S3, and none of A's rows of S1, whose pods still trade. A, once the list no longer names
+// it, releasing [S2, S1, "has space", "", "\u0000"] is answered {sessions: 5, released: 3}, and
+// the same again, which leaves each release mark where the first call put it: a release is not
+// gated by BROKER_POD_REGISTRARS, and a name no registration could have taken is released with
+// nothing to release, a NUL byte, which Postgres refuses in text, included. No row's expires_at
+// moved.
 func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 	var registrars api.PodRegistrars
 	ts := newTestServerWith(t, func(d *api.Deps) { registrars = d.PodRegistrars })
@@ -165,6 +167,19 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 		}
 		if c.names != "" && !strings.Contains(refusal.Error, c.names) {
 			t.Errorf("a release with %s is refused %q, want it to name %q", c.name, refusal.Error, c.names)
+		}
+	}
+	// encoding/json's error is the text of these two refusals. It names the body's type and field,
+	// and a client reads it, so the test holds each refusal to its whole text.
+	for _, c := range []struct{ name, body, refusal string }{
+		{"an entry that is a number", `{"sessions":[1]}`,
+			"body must be one valid JSON object: json: cannot unmarshal number into podSessionReleaseBody.sessions.0 of type string"},
+		{"a body that is a string", `"x"`,
+			"body must be one valid JSON object: json: cannot unmarshal string into Go value of type api.podSessionReleaseBody"},
+	} {
+		status, body := ts.releasePodSessions(t, daemonB, json.RawMessage(c.body))
+		if refusal := decode[wireError](t, body); status != http.StatusBadRequest || refusal.Code != "INVALID_REQUEST" || refusal.Error != c.refusal {
+			t.Errorf("a release with %s = %d %s %q, want 400 INVALID_REQUEST %q", c.name, status, refusal.Code, refusal.Error, c.refusal)
 		}
 	}
 	ts.releases(t, "B's release of 4096 entries of a name it holds no registration of", daemonB, slices.Repeat([]string{"unheld-g1"}, 4096), 1, 0)

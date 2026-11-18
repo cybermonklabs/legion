@@ -248,41 +248,36 @@ const maxReleasedSessions = 4096
 
 // podSessionReleaseBody is POST /v1/oauth/exchange/pod-sessions/release's exact shape.
 type podSessionReleaseBody struct {
-	// The session names whose registrations the caller releases: 1 to 4096 entries, counted as
-	// sent, each a string, so a null entry is refused. Any string is a name: one the registration
-	// route could never have taken (empty, over 200 bytes, or with white space or an unprintable
-	// character, a NUL byte among them) matches no registration, so it is released with nothing
-	// to release, and a name given twice counts once. The broker drops such a name before it
-	// queries its store, which is also what keeps a NUL byte, which Postgres refuses in text,
-	// from failing the release.
+	// The session names whose registrations by the caller's login account the call releases: 1 to
+	// 4096 entries, counted as sent, each a string, so a null entry is refused. Any string is a
+	// name: one the registration route could never have taken (empty, over 200 bytes, or with
+	// white space or an unprintable character, a NUL byte among them) matches no registration, so
+	// it is released with nothing to release, and a name given twice counts once. The broker drops
+	// such a name before it queries its store, which is also what keeps a NUL byte, which Postgres
+	// refuses in text, from failing the release.
 	Sessions []string `json:"sessions"`
 }
 
-// UnmarshalJSON reads a release's body as readJSON reads every body, one JSON value with no field
-// the body does not declare, and refuses a null entry of sessions, naming its index. Decoded into
-// a []string, as readJSON alone would, a null entry is the empty string, which is a name released
-// with nothing to release, so {"sessions": [null]} would be answered 200 for a body outside the
-// route's shape, where {"sessions": [1]} is refused. The refusal is a decode error, so readJSON
-// answers it 400 INVALID_REQUEST, as it answers an entry that is not a string. readJSON's own
-// DisallowUnknownFields does not reach a method of this kind, which decodes the bytes it is
-// handed itself, so the decoder here sets its own. A sessions that is absent or null, and a body
-// of null, which encoding/json hands this method too, leave Sessions nil, which the handler
-// refuses 400 SESSIONS_INVALID with the count.
+// UnmarshalJSON reads a release's body as readJSON reads every body, with no field the body does
+// not declare, and refuses a null entry of sessions, naming its index. Decoded into a []string, as
+// readJSON alone would, a null entry is the empty string, which is a name released with nothing to
+// release, so {"sessions": [null]} would be answered 200 for a body outside the route's shape,
+// where {"sessions": [1]} is refused. The refusal is a decode error, so readJSON answers it 400
+// INVALID_REQUEST, as it answers an entry that is not a string. readJSON's own
+// DisallowUnknownFields does not reach a method of this kind, which decodes the bytes it is handed
+// itself, so the decoder here sets its own. A sessions that is absent or null, and a body of null,
+// which encoding/json hands this method too, leave Sessions empty, which the handler refuses 400
+// SESSIONS_INVALID with the count.
 func (b *podSessionReleaseBody) UnmarshalJSON(data []byte) error {
-	var sent struct {
+	// It shadows the package type: encoding/json names this type and field in a refusal a client reads.
+	type podSessionReleaseBody struct {
 		Sessions []*string `json:"sessions"`
 	}
+	var sent podSessionReleaseBody
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&sent); err != nil {
 		return err
-	}
-	if decoder.More() {
-		return errors.New("body must contain one JSON value")
-	}
-	if sent.Sessions == nil {
-		b.Sessions = nil
-		return nil
 	}
 	sessions := make([]string, len(sent.Sessions))
 	for i, session := range sent.Sessions {
@@ -300,9 +295,9 @@ func (b *podSessionReleaseBody) UnmarshalJSON(data []byte) error {
 type podSessionReleaseResponse struct {
 	// The number of distinct session names the request asked to release.
 	Sessions int `json:"sessions"`
-	// The number of the caller's live registrations of those names that are released after the
-	// call, by this call or an earlier one: 0 for names the caller holds no registration of, which
-	// are released all the same.
+	// The number of live registrations of those names that the caller's login account wrote and
+	// that are released after the call, by this call or an earlier one: 0 for names that account
+	// holds no registration of, which are released all the same.
 	Released int `json:"released"`
 }
 
@@ -322,10 +317,13 @@ type podSessionReleaseResponse struct {
 // the account logged in to write it. So every pod of an account paired with itself in
 // BROKER_POD_REGISTRARS, which BROKER_SERVICE_LOGINS lists so that the pair registers anything,
 // logs in as that registrar and can release every registration that account wrote, by session
-// name alone, with no token of the pod whose trade it ends; a deployment that wants its pods kept
-// apart pairs no account with itself. The caller stops every write of the names it releases
-// first, its renewal and any write in flight: a registration write by the caller after the
-// release makes that registration live again.
+// name alone, with no token of the pod whose trade it ends. Every pod that runs as any registrar's
+// account logs in as that registrar in the same way and can release every registration that
+// account wrote. So a deployment lists as a registrar only an account whose pods may end the
+// trades of every pod that account registers. An account paired with itself is the common case of
+// an account whose pods may not. The caller stops every write of the names it releases first, its
+// renewal and any write in flight: a registration write by that account after the release makes
+// that registration live again.
 //
 // The body is exactly {"sessions": [...]}, at most 1 MiB (413 REQUEST_TOO_LARGE above it); an
 // unknown field, a body that is not JSON, and an entry that is not a string are 400
@@ -339,18 +337,18 @@ type podSessionReleaseResponse struct {
 // query, where it would fail the release as a 500.
 //
 // The release is one transaction (oauthstore.Store.ReleasePodSessions): every live registration of
-// each named session that the caller registered is marked released, once, so a repeat does not
-// move the mark. Nothing is deleted and no expiry moves, and no registration of another registrar
-// is touched or revealed. The answer is 200 {"sessions", "released"}: the number of distinct
-// names asked, and the number of the caller's live registrations of those names that are released
-// after the call. A 200 means every named session is released: from its commit on, the exchange
-// refuses each registration of each named session that the caller registered (a permanent
-// invalid_grant); the rows stay until they expire, at most oauthstore.PodSessionRetention after
-// their last write, and keep each name bound to the caller until then, so no other registrar
-// takes it; and the caller's later registration write of a pod and name makes that one
-// registration live again and nothing else. released: 0, for a name the caller holds no
-// registration of, is still released. A repeat of the call answers the same and changes nothing,
-// so a retry after a lost answer is safe.
+// each named session that the caller's login account wrote is marked released, once, so a repeat
+// does not move the mark. Nothing is deleted and no expiry moves, and no registration of another
+// registrar is touched or revealed. The answer is 200 {"sessions", "released"}: the number of
+// distinct names asked, and the number of live registrations of those names that the caller's
+// login account wrote and that are released after the call. A 200 means every named session is
+// released: from its commit on, the exchange refuses each registration of each named session that
+// the caller's login account wrote (a permanent invalid_grant); the rows stay until they expire, at
+// most oauthstore.PodSessionRetention after their last write, and keep each name bound to that
+// account until then, so no other registrar takes it; and a later registration write of a pod and
+// name by that account makes that one registration live again and nothing else. released: 0, for a
+// name that account holds no registration of, is still released. A repeat of the call answers the
+// same and changes nothing, so a retry after a lost answer is safe.
 //
 // Every other answer releases nothing: the refusals above, a 5xx, and a 404 or 405 from a broker
 // of an older build or with no OAuth provider, which mounts no /v1/oauth/ route. Only a 200 says

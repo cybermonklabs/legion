@@ -6,7 +6,7 @@ body: |-
   account>` pairs, the registration route's authority. `BROKER_POD_REGISTRATION_AUDIENCE` is a
   second audience that only the registration route accepts for the pod token in its body, and
   the broker refuses to start when it equals another audience of the cluster's tokens.
-  `POST /v1/oauth/exchange/pod-sessions/release` releases the session names that the calling
-  daemon registered: the exchange then refuses each of those registrations with a permanent
-  `invalid_grant`, and the rows keep each name bound to that daemon until they expire. A release
+  `POST /v1/oauth/exchange/pod-sessions/release` releases the session names that the caller's
+  login account registered: the exchange then refuses each of those registrations with a permanent
+  `invalid_grant`, and the rows keep each name bound to that account until they expire. A release
   revokes no access token that the exchange already issued.
