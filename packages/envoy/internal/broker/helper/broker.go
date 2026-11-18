@@ -1152,8 +1152,9 @@ func (b *Broker) settleRefused(ctx context.Context, cred *machineCredential) err
 // watchExpiry warns a day (expiryWarning) before cred lapses, at once when less than that is left,
 // and drops cred when it reaches its expiry (dropExpired), as a broker refusal would: the login
 // renews itself only while a refresh reaches the broker, and from then on no session can enroll
-// until a human approves a new machine login. It ends early, silently, once the helper stops
-// holding cred (a refusal, a refresh, or a newer login).
+// under this machine's credential until a human approves a new machine login (a person signed in
+// on the machine still enrols under their own sign-in). It ends early, silently, once the helper
+// stops holding cred (a refusal, a refresh, or a newer login).
 //
 // In identity mode there is no warning at all, only the drop. The credential this machine's
 // identity token trades for lives as long as that token, which Google bounds at an hour, so a
