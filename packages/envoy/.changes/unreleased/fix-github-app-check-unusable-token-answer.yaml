@@ -15,7 +15,8 @@ body: |-
   proxy's refused tunnel, a certificate the broker did not trust), and every request of a release,
   is sent again as before. The give-back of a grant's minted values, for a release that failed or a
   name behind the airlock, runs in the background, so that release answers without waiting on
-  GitHub; the revoke of an unusable answer's token, and of the tokens a release minted for the
-  installations before one that failed, happens before the mint answers. A token whose answer does
-  not name it, and a revoke GitHub does not confirm, are logged at WARN, and that token stays live
-  until it lapses, within the hour GitHub gives it.
+  GitHub, and makes one attempt of each revoke, so it takes nothing from the retry budget the
+  mints a caller waits on draw from; the revoke of an unusable answer's token, and of the tokens a
+  release minted for the installations before one that failed, happens before the mint answers. A
+  token whose answer does not name it, and a revoke GitHub does not confirm, are logged at WARN,
+  and that token stays live until it lapses, within the hour GitHub gives it.

@@ -15,8 +15,10 @@ import (
 // TestGiveBackRevokesEveryTokenOfAReleasedValue: GiveBack is what the broker calls for a github-app
 // value a release minted and then hands to nobody, because a later name of the grant failed. It
 // sends GitHub the revoke of each installation's token in the value, under a bound of its own that
-// the caller's context does not end, and logs each revoke GitHub does not confirm with the secret's
-// name and never the token. A value that is no such object holds nothing it can name.
+// the caller's context does not end, and logs at WARN each revoke GitHub does not confirm with the
+// secret's name and never the token. Nobody waits on a give-back, so each revoke is made once and
+// never again after a failure: a retry would draw on the budget the live mints retry from. A value
+// that is no such object holds nothing it can name.
 func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -40,12 +42,16 @@ func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 			github.mu.Lock()
 			github.refusing = refused
 			github.mu.Unlock()
+			before := github.revoked()
 
 			ended, cancel := context.WithCancel(t.Context())
 			cancel()
 			app.GiveBack(ended, "APP_KEY", minted.Value)
 			app.GiveBack(ended, "APP_KEY", "not a value Mint answers")
 
+			if sent := github.revoked() - before; sent != len(tokens) {
+				t.Fatalf("GiveBack sent GitHub %d revokes for %d tokens; want one each, since a give-back is not retried", sent, len(tokens))
+			}
 			want := 0
 			if refused {
 				want = 2
@@ -53,8 +59,8 @@ func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 			if live := github.live(t, tokens); len(live) != want {
 				t.Fatalf("%d of the release's tokens are live after GiveBack under an ended context, want %d", len(live), want)
 			}
-			if said := strings.Count(logged.String(), saysNotRevokedUnreleased); said != want || (want > 0 && !strings.Contains(logged.String(), "name=APP_KEY")) {
-				t.Fatalf("log = %q; want %d lines saying %q, naming APP_KEY", logged.String(), want, saysNotRevokedUnreleased)
+			if lines, warnings := warned(logged.String(), saysNotRevokedUnreleased); lines != want || warnings != want || (want > 0 && !strings.Contains(logged.String(), "name=APP_KEY")) {
+				t.Fatalf("log = %q; want %d lines saying %q at WARN, naming APP_KEY: %d lines say it, %d of them at WARN", logged.String(), want, saysNotRevokedUnreleased, lines, warnings)
 			}
 			for _, token := range tokens {
 				if strings.Contains(logged.String(), token) {

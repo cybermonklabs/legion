@@ -258,11 +258,11 @@ const missingActionsMessage = "broker: a GitHub App installation does not hold a
 
 // revokeInstallationToken asks GitHub to revoke token, as the token itself
 // (DELETE /installation/token), for a token Mint minted and will not release, retried as the
-// mint's other calls are and from the same wait budget. It runs to its own bound even once ctx
-// ends, since GitHub honours an unreleased token for an hour otherwise. A 401 or a 404 to an
-// attempt after the first answers nil, since an earlier attempt may have revoked the token and
-// lost its answer; one to the first attempt stays a refusal, since nothing in this revoke can
-// have revoked a token minted moments before.
+// mint's other calls are and from the same wait budget, or made once for a give-back (startOnce).
+// It runs to its own bound even once ctx ends, since GitHub honours an unreleased token for an
+// hour otherwise. A 401 or a 404 to an attempt after the first answers nil, since an earlier
+// attempt may have revoked the token and lost its answer; one to the first attempt stays a
+// refusal, since nothing in this revoke can have revoked a token minted moments before.
 func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry, token string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
@@ -403,15 +403,17 @@ func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, minted
 // nobody (requests.Machine.GiveBacks): the broker's release of a grant that failed after this name
 // was minted, or that holds this name behind the airlock, whose session gets placeholders while the
 // proxy mints a value of its own. Each revoke runs under the detached bound a release's revoke has,
-// whatever ctx does, and one GitHub does not confirm is logged with name= (revokedUnreleasedMessage)
-// and leaves its token live until it lapses. A value that is no such object names no token, and
-// is left alone.
+// whatever ctx does, in one attempt (startOnce): nobody waits on it, and a retry would draw on the
+// process-wide budget the mints a caller waits on retry from, which a GitHub outage leaves short
+// while every airlock release of a github-app name gives a token back. A revoke GitHub does not
+// confirm is logged with name= (revokedUnreleasedMessage) and leaves its token live until it
+// lapses. A value that is no such object names no token, and is left alone.
 func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
 	var minted githubMintedInstallations
 	if json.Unmarshal([]byte(value), &minted) != nil {
 		return
 	}
-	m.revokeUnreleased(ctx, m.Retry.start(typeGitHubApp), minted, "name", name)
+	m.revokeUnreleased(ctx, m.Retry.startOnce(typeGitHubApp), minted, "name", name)
 }
 
 // Mint returns a token and expiry for every installation of the App in req.Value that is not

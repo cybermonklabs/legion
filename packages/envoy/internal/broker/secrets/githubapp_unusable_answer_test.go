@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -458,6 +459,23 @@ const (
 	saysUnrevokable          = "cannot revoke, since the answer it holds does not name it"
 )
 
+// warned is how many lines of log say says, and how many of those are written at WARN, as a
+// text handler writes the level and then the message. operate.md lists each line a token nobody
+// holds writes among the lines worth alerting on, at WARN, so a line that says it at another
+// level is one such an alert misses.
+func warned(log, says string) (lines, warnings int) {
+	warn := regexp.MustCompile(`level=WARN msg="[^"]*` + regexp.QuoteMeta(says))
+	for line := range strings.Lines(log) {
+		if strings.Contains(line, says) {
+			lines++
+			if warn.MatchString(line) {
+				warnings++
+			}
+		}
+	}
+	return lines, warnings
+}
+
 // TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack: GitHub mints a token when it answers a token
 // request 201, before the answer reaches the minter, so an answer that is lost, cut off, past the
 // minter's cap, undecodable, without an expiry or without a token leaves a live token at GitHub
@@ -650,12 +668,13 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 				}
 			}
 			for _, line := range tc.says {
-				if !strings.Contains(logged.String(), line) {
-					t.Fatalf("log = %q; want a line saying %q", logged.String(), line)
+				if lines, warnings := warned(logged.String(), line); lines == 0 || warnings != lines {
+					t.Fatalf("log = %q; want a line saying %q, at WARN: %d lines say it, %d of them at WARN", logged.String(), line, lines, warnings)
 				}
 			}
-			if said := strings.Contains(logged.String(), saysUnrevokable); said != tc.unrevokable {
-				t.Fatalf("log = %q; a line saying the token cannot be revoked: %t, want %t", logged.String(), said, tc.unrevokable)
+			lines, warnings := warned(logged.String(), saysUnrevokable)
+			if said := lines > 0; said != tc.unrevokable || warnings != lines {
+				t.Fatalf("log = %q; a line saying the token cannot be revoked: %t, want %t; %d lines say it, %d of them at WARN", logged.String(), said, tc.unrevokable, lines, warnings)
 			}
 		})
 	}

@@ -1239,8 +1239,12 @@ before a connection, since GitHub may have received it whole and minted a token 
 will never hold, whatever the broker's own write reported. The same call that failed before a
 connection, because its name did not resolve, its connection or a proxy's tunnel could not be
 made, or the broker did not trust GitHub's certificate, minted nothing and is retried as any other
-call is. A TLS record error or alert counts as a failure after the request went out, since either
-can come after the handshake.
+call is. A TLS record error or alert after the handshake counts as a failure after the request
+went out; a TLS failure during the handshake comes before a connection, so the call is retried.
+The revokes of a give-back, which return to GitHub a token a release minted and handed to nobody
+(after a release that failed, and after every session release of a github-app name behind the
+airlock), are made once each and never retried, so they take nothing from the retry budget below.
+A revoke GitHub does not confirm is logged, and its token lapses within its hour.
 
 - Each call gets at most 3 attempts, each under a 5-second timeout.
 - Before the second attempt the broker waits a time drawn at random from 0 to 2 seconds, and
