@@ -136,10 +136,11 @@ const (
 // The login need not be a superuser: one with CREATEROLE creates the role and grants it to itself
 // with SET, which Postgres 16 and later give such a creator only on a grant of its own (the create
 // gives it ADMIN alone), and with INHERIT, which `drop owned by` of the role needs when the
-// cleanup makes one. A login that cannot create a role skips the test. A role spans the cluster,
-// so its cleanup is registered as soon as it exists (dropRoleAfterTestDatabase): it drops the test
-// database first, which takes the role's grants and everything it owns there with it, and then the
-// role, whatever failed first.
+// cleanup makes one. A login that cannot create a role skips the test, and fails it on GitHub
+// Actions, whose server has that privilege (skipOutsideCI). A role spans the cluster, so its
+// cleanup is registered as soon as it exists (dropRoleAfterTestDatabase): it drops the test
+// database first, which takes the role's grants and everything it owns there with it, and then
+// the role, whatever failed first.
 func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pause pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
@@ -147,7 +148,7 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 	if _, err := s.Pool.Exec(ctx, "create role "+role+" nologin"); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
-			t.Skipf("the test server's login cannot create the role the fleet read's pause runs as (it needs CREATEROLE or superuser): %v", err)
+			skipOutsideCI(t, "the test server's login cannot create the role the fleet read's pause runs as (it needs CREATEROLE or superuser): %v", err)
 		}
 		t.Fatalf("create the fleet read's pause role: %v", err)
 	}
