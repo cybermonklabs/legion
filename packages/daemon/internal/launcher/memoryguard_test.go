@@ -2254,7 +2254,7 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 				{9282, 106 * time.Millisecond}, {9039, 111 * time.Millisecond}, {8719, 105 * time.Millisecond}},
 			stall:   58900 * time.Microsecond,
 			grown:   []uint64{4, 56, 70, 128, 133, 134, 134},
-			newRead: "4:1",
+			newRead: "1:1",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
 				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
@@ -2294,7 +2294,7 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 				{9168, 103 * time.Millisecond}, {8848, 103 * time.Millisecond}},
 			stall:   84800 * time.Microsecond,
 			grown:   []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
-			newRead: "4:1",
+			newRead: "1:1",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
 				{1712, "grew-since-kill", "reading", 0}, {1711, "grew-since-kill", "reading", 0}, {1710, "grew", "reading", 0},
@@ -2339,6 +2339,33 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			want: []guardEnded{
 				{1715, "new", "reread", 0}, {1714, "grew-since-kill", "reading", 0}, {1713, "grew", "reading", 0},
 				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
+				{parent, "largest", "reading", 0},
+			},
+		},
+		{
+			// rnr56's three forks start between the band's last two readings, which read each once
+			// at its parent's size, so each ranked at nothing at that read; the growers start after
+			// the band's last reading. At 43213c99 the reads of the parent and the three forks
+			// spent the interval, the search read nothing, and the parent ended 120.1 ms after the
+			// reading at the mark (new_read=3:0). A launcher test reaches no read of the guard's but
+			// Observe, so the interval the reads took passes there: the guard reads the parent, the
+			// first of its reads always, and then a grower, which the search takes before the forks
+			// (INFRA-3531 R1 of spec version 38), and ends it.
+			name: "the forks ranking at nothing at their band read and the reads at the mark taking the interval (rnr56)",
+			band: []guardReplayReading{{7754, 0}, {8129, 102 * time.Millisecond}, {8368, 103 * time.Millisecond},
+				{8368, 101 * time.Millisecond}, {8368, 102 * time.Millisecond}, {8368, 104 * time.Millisecond},
+				{8411, 102 * time.Millisecond}},
+			forksAt: 6,
+			mark:    guardReplayReading{8643, 121 * time.Millisecond},
+			after: []guardReplayReading{{9378, 266 * time.Millisecond}, {9219, 108 * time.Millisecond}, {9456, 104 * time.Millisecond},
+				{9361, 106 * time.Millisecond}, {9198, 103 * time.Millisecond}, {8878, 104 * time.Millisecond}},
+			block:   2412277760,
+			stall:   memoryguard.ControllerDefaults().Interval,
+			grown:   []uint64{4, 70, 70, 134, 134, 198, 198},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
+				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
 				{parent, "largest", "reading", 0},
 			},
 		},
@@ -2608,6 +2635,78 @@ func guardHeldBeside(t *testing.T, started ...guardProcess) (*guardRig, *lockedB
 	pod.setAnon(3500 * guardMiB)
 	rig.tick()
 	return rig, log
+}
+
+// In the controller's tree, at the reading at the mark, where none of the held processes grew, the
+// guard reads the processes new to the stay in three groups (INFRA-3531 R1 of spec version 38):
+// those with one band read that held memory of their own at it, then those started since the
+// band's last reading, then those with one band read that ranked at nothing at it, forks whose
+// parent's size covered their own. The python3 program pid 1700, pool.py of 1 GiB, runs through
+// the band; before the band's last reading pid 1710, python3 worker.py of 100 MiB, starts, and
+// pid 1700 forks pid 1701, which runs its program and reports its 1 GiB as its own; after it pid
+// 1730, python3 grow.py of 50 MiB, starts. A launcher test reaches no read of the guard's but
+// Observe, so in the cases where the reading at the mark takes one interval there, before the guard
+// reads anything, the first group a case holds is the one read: the guard reads one process new to
+// the stay and no more where it holds memory of its own. Pid 1710 ends where it is held; without
+// it pid 1730 ends, found by the search, before pid 1701 is read; with pid 1701 alone the guard
+// reads it, it ranks at nothing, and the largest, pid 1700, ends. Where the reading takes no time
+// the guard reads all three and ends pid 1710. Each line says what the reads at the mark read
+// (new_read).
+func TestControllerPodMemoryGuardReadsAtTheMarkTheNewWithMemoryOfTheirOwnThenTheStartedSinceThenTheForks(t *testing.T) {
+	withOwn := guardProcess{pid: 1710, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "worker.py"}, anon: 100 * guardMiB}
+	fork := guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB}
+	started := guardProcess{pid: 1730, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 50 * guardMiB}
+	interval := memoryguard.ControllerDefaults().Interval
+	for _, tc := range []struct {
+		name    string
+		held    []guardProcess
+		started []guardProcess
+		stall   time.Duration
+		want    guardEnded
+		newRead string
+	}{
+		{"each group, the reads taking no time", []guardProcess{withOwn, fork}, []guardProcess{started}, 0,
+			guardEnded{1710, "new", "search", 0}, "3:2"},
+		{"each group, the reading at the mark one interval", []guardProcess{withOwn, fork}, []guardProcess{started}, interval,
+			guardEnded{1710, "new", "reread", 0}, "1:1"},
+		{"no held process with memory of its own, the reading at the mark one interval", []guardProcess{fork}, []guardProcess{started}, interval,
+			guardEnded{1730, "new", "search", 0}, "1:1"},
+		{"a fork alone, the reading at the mark one interval", []guardProcess{fork}, nil, interval,
+			guardEnded{1700, "largest", "reread", 0}, "1:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+			pod.add(guardProcess{pid: 1700, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+			rig := useGuardPod(t, pod, nil)
+			var stall atomic.Int64
+			built := newMemoryGuard
+			newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+				cfg.Observe = func(time.Time, uint64, uint64) { rig.clock.advance(time.Duration(stall.Load())) }
+				return built(cfg)
+			}
+			t.Cleanup(func() { newMemoryGuard = built })
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			for _, reading := range []uint64{3300, 3350} {
+				pod.setAnon(reading * guardMiB)
+				rig.tick()
+			}
+			pod.add(tc.held...)
+			pod.setAnon(3400 * guardMiB)
+			rig.tick()
+			pod.add(tc.started...)
+			pod.setAnon(3500 * guardMiB)
+			stall.Store(int64(tc.stall))
+			rig.tick()
+			if got := guardEndedLines(log); !slices.Equal(got, []guardEnded{tc.want}) {
+				t.Fatalf("at the mark the guard ended %+v, want %+v; its log:\n%s", got, tc.want, rig.log())
+			}
+			if got := guardNewRead(log, tc.want.pid); got != tc.newRead {
+				t.Fatalf("the ended line of pid %d says new_read=%s, want %s", tc.want.pid, got, tc.newRead)
+			}
+		})
+	}
 }
 
 // In the controller's tree, a new process that runs its parent's executable with other arguments,
