@@ -215,7 +215,8 @@ test("a stale change says the answer changed", async () => {
 
   try {
     await user.click(await view.findByRole("button", { name: "Change answer" }));
-    await user.click(view.getByRole("radio", { name: "Hold" }));
+    // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await view.findByRole("radio", { name: "Hold" }));
     await user.click(view.getByRole("button", { name: "Save answer" }));
     expect(
       await view.findByText("The answer changed since you opened it; here is the current one.")
@@ -247,7 +248,8 @@ for (const [code, message] of [
     );
     try {
       await user.click(await view.findByRole("button", { name: "Change answer" }));
-      await user.click(view.getByRole("radio", { name: "Hold" }));
+      // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+      await user.click(await view.findByRole("radio", { name: "Hold" }));
       await user.click(view.getByRole("button", { name: "Save answer" }));
       expect(await view.findByText(message)).toBeTruthy();
       // The refusal meets the same send again, so the form it was sent from closes.
@@ -267,7 +269,8 @@ test("mode change opens the seeded form only when the viewer can change the answ
   try {
     expect(await editable.view.findByRole("button", { name: "Save answer" })).toBeTruthy();
     expect(editable.view.queryByText(/Answered by/)).not.toBeInTheDocument();
-    const ship = editable.view.getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = (await editable.view.findByRole("radio", { name: "Ship" })) as HTMLInputElement;
     expect(ship.checked).toBe(true);
   } finally {
     editable.view.unmount();

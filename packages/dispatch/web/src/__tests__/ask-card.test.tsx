@@ -1543,7 +1543,8 @@ test("an answered ask records a chosen Other answer under an Other label, not as
   try {
     const card = view.getByTestId("ask-ask-1");
     expect(await within(card).findByText("Other")).toBeTruthy();
-    expect(within(card).getByText("Neither, let's wait a week")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(card).findByText("Neither, let's wait a week")).toBeTruthy();
   } finally {
     view.unmount();
   }
@@ -2415,7 +2416,8 @@ test("the compact card's note disclosure leaves the reader in the field it revea
     // The close moves nobody: the reader is left on the control they pressed, which a press
     // focuses.
     expect(disclosure).toHaveFocus();
-    const ship = within(card).getByRole("radio", { name: "Ship" });
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = await within(card).findByRole("radio", { name: "Ship" });
     await user.click(ship);
     expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
     expect(ship).toHaveFocus();
