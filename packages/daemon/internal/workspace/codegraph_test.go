@@ -55,16 +55,22 @@ esac
 }
 
 // codegraphEnvironments returns the variables of each environment stubCodegraph recorded beside
-// callLog, one map per invocation, read whole by name (envlisting).
+// callLog, one map per invocation, read whole by name (envlisting). It lists callLog's directory
+// and keeps the names that start with callLog's own, rather than matching a glob: a temporary
+// directory can hold a glob character ([, * or ?), and a pattern built on it would not compile.
 func codegraphEnvironments(t *testing.T, callLog string) []map[string]string {
 	t.Helper()
-	files, err := filepath.Glob(callLog + ".env.*")
+	entries, err := os.ReadDir(filepath.Dir(callLog))
 	if err != nil {
 		t.Fatal(err)
 	}
+	prefix := filepath.Base(callLog) + ".env."
 	var envs []map[string]string
-	for _, file := range files {
-		listing, err := os.ReadFile(file)
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		listing, err := os.ReadFile(filepath.Join(filepath.Dir(callLog), entry.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +192,13 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 // other secret (GH_TOKEN here, standing in for any of them), and codegraph must never see it —
 // only the minimal PATH/HOME/DO_NOT_TRACK set codegraphEnvironment names.
 func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
-	callLog := filepath.Join(t.TempDir(), "calls.log")
+	// The call log sits under a directory whose name holds a glob character, as a machine's
+	// temporary directory can, so the recorded environments must be read without a pattern.
+	logDir := filepath.Join(t.TempDir(), "tmp-glob[x")
+	if err := os.Mkdir(logDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	callLog := filepath.Join(logDir, "calls.log")
 	stubCodegraph(t, callLog)
 	// Unique values, so that only a variable they reached can hold one (envlisting).
 	token, grant := envlisting.Unique("ghs_"), envlisting.Unique("grant-")

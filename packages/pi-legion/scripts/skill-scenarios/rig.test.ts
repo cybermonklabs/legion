@@ -784,10 +784,19 @@ echo done
     );
     expect(existsSync(path.join(skills, "writing-plans/SKILL.md"))).toBe(true);
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
-    const env = readFileSync(path.join(bin, "env.txt"), "utf8");
-    expect(env).toContain("ENVOY_URL=http://127.0.0.1:1\n");
-    expect(env).toContain("OMP_PROFILE=skills-s1\n");
-    expect(env).toContain(`HOME=${label}/home\n`);
+    // Each variable is read whole, by name: a substring would also match a longer name such as
+    // X_OMP_PROFILE, and env can print any variable first.
+    const env = new Map(
+      readFileSync(path.join(bin, "env.txt"), "utf8")
+        .split("\n")
+        .flatMap((line): [string, string][] => {
+          const eq = line.indexOf("=");
+          return eq > 0 ? [[line.slice(0, eq), line.slice(eq + 1)]] : [];
+        })
+    );
+    expect(env.get("ENVOY_URL")).toBe("http://127.0.0.1:1");
+    expect(env.get("OMP_PROFILE")).toBe("skills-s1");
+    expect(env.get("HOME")).toBe(`${label}/home`);
     expect(readFileSync(path.join(label, "built-from"), "utf8")).toContain(
       "superpowers-skill writing-plans "
     );
