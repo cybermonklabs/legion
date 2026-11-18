@@ -1553,11 +1553,12 @@ Versions are applied by their number, not by file name, and the store's tests re
 **A recorded version under another file.**
 `schema_migrations` records each applied migration's version and its identity: the file's name, without its directory, in `name`, and the sha256 of its whole text, in lower-case hex, in `checksum`.
 The runner adds the two nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
-it takes `ACCESS EXCLUSIVE` on `schema_migrations` for a catalog change that rewrites no row, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
+it takes `ACCESS EXCLUSIVE` on `schema_migrations`, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
+Adding the two columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
 Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
 In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
 
-- A row with no name, which is every row a runner before this one wrote, and one written by hand, is filled with the file's identity and never refused.
+- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with the file's identity and never refused; a name that is not null, the empty string included, is judged like any other.
   Each fill logs `pgmigrate: recorded the identity of a migration applied before the runners recorded identities` at INFO, with the table, the version, the name and the checksum.
 
 - A row that records the file's own identity passes.
@@ -1575,18 +1576,20 @@ migrations refused, none applied: version 20261117022936 is recorded as 20261117
 ```
 
 A file whose replaces lines name other identities adds `, whose replaces lines name only <identity>` after its own.
-A row another process records between the boot's first judgment and the migration of its version is judged the same way when the runner comes to that migration, and its refusal reads `apply migration <version>: check migration: version …`.
+The runner gives the key back between that judgment and each migration, so another process can record any version in between: before it applies a migration, the runner judges every row again against its whole set, and applies nothing while any row is refused, in either apply mode.
+Such a refusal reads `apply migration <version>: check migration: version …`, and the migrations the boot applied before it stay applied.
 What the operator does:
 
 - A database that ran another branch's or an earlier commit's migration, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
 
-- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own, anywhere in the file; the next boot moves the row and logs both identities.
-  The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way.
+- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line.
+  The next boot moves the row and logs both identities.
+  The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A file may carry several, one for each identity a database may record.
 
 Every row production holds was written before the runners recorded identities, so its first boot of this runner fills each from the file the release ships and refuses none.
 A migration edited in place that reaches a database before this runner does is filled with its edited identity there; one edited after this runner's first boot needs its replaces line.
-`DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions dispatch`, from `packages/envoy`, reads in a read-only transaction what the next boot would do with each row, and exits 1 when a recorded version has no file or a row would be refused (`pgmigrate.CheckVersions`).
+`DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions dispatch`, from `packages/envoy`, reads in a read-only transaction what the next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
 
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.

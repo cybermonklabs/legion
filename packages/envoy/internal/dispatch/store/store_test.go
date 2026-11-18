@@ -976,7 +976,7 @@ func migrateThrough(t *testing.T, store *Store, maxVersion int) {
 		if migration.Version > maxVersion {
 			break
 		}
-		if err := store.applyMigration(ctx, migration); err != nil {
+		if err := store.applyMigration(ctx, migrations, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}

@@ -1,12 +1,17 @@
 package pgmigrate
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testpg"
 )
 
 // sha256Hex is the checksum a runner records of text, computed apart from checksumOf so the test
@@ -17,16 +22,15 @@ func sha256Hex(text string) string {
 }
 
 // Load gives each file its name and the sha256 of its whole text, and reads every replaces line,
-// however many there are, as Postgres reads a comment: a line of the same form inside a string
-// literal or a dollar-quoted body is the literal's text, and declares nothing. The control is a
-// file with no replaces line, which declares none.
+// however many there are, as Postgres reads a comment. A literal that holds the same words in the
+// middle of a line is the literal's text and declares nothing. The control is a file with no
+// replaces line, which declares none.
 func TestLoadReadsEachFilesIdentityAndItsReplacesLines(t *testing.T) {
 	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	text := "-- replaces: 0002_second.up.sql sha256:" + a + "\n" +
 		"create table second (id integer);\n" +
 		"-- replaces: 0002_old_name.up.sql sha256:" + b + "\n" +
-		"select '\n-- replaces: 0002_in_a_literal.up.sql sha256:" + a + "\n';\n" +
-		"create function f() returns int language sql as $$\n-- replaces: 0002_in_a_body.up.sql sha256:" + b + "\nselect 1 $$;\n"
+		"select 'see -- replaces: 0002_in_a_literal.up.sql sha256:" + a + "';\n"
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql":  file("create table first (id integer)"),
 		"migrations/0002_second.up.sql": file(text),
@@ -43,11 +47,46 @@ func TestLoadReadsEachFilesIdentityAndItsReplacesLines(t *testing.T) {
 	}
 	want := []Identity{{Name: "0002_second.up.sql", Checksum: a}, {Name: "0002_old_name.up.sql", Checksum: b}}
 	if !reflect.DeepEqual(got[1].Replaces, want) {
-		t.Errorf("0002's replaces = %+v, want %+v: the two comment lines, not the literal's or the body's", got[1].Replaces, want)
+		t.Errorf("0002's replaces = %+v, want %+v: the two comment lines, not the literal's text", got[1].Replaces, want)
 	}
 	if id := got[1].Identity(); id.Name != "0002_second.up.sql" || id.Checksum != sha256Hex(text) {
 		t.Errorf("Identity() = %+v", id)
 	}
+}
+
+// A line that reads as a replaces line but that Postgres reads as part of a literal is refused at
+// load, naming the file and the line: inside a string, inside a dollar-quoted body, and between
+// the parts of a continued string, whose comment Postgres reads inside the string's token. Read
+// as declaring nothing, it would neither save the database its author meant it to nor be refused
+// when malformed. The control is the same line on a line of its own outside the literal, which
+// loads and declares the identity.
+func TestLoadRefusesAReplacesLinePostgresReadsAsPartOfALiteral(t *testing.T) {
+	line := "-- replaces: 0002_second.up.sql sha256:" + strings.Repeat("0", 64)
+	for name, text := range map[string]string{
+		"inside a string":             "select '\n" + line + "\n';\n",
+		"inside a dollar-quoted body": "create function f() returns int language sql as $$\n" + line + "\nselect 1 $$;\n",
+		"inside a continued string":   "select 'a'\n" + line + "\n'b';\n",
+		"indented inside a string":    "select '\n  " + line + "\n';\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			migrations, err := Load(fstest.MapFS{"migrations/0002_second.up.sql": file(text)}, "migrations")
+			if err == nil {
+				t.Fatalf("Load accepted %q: %+v", text, migrations)
+			}
+			if !strings.Contains(err.Error(), "migration 0002_second.up.sql line 2 reads as a replaces line, but Postgres reads it as part of") {
+				t.Errorf("Load = %v, want it to name the file, line 2 and the literal", err)
+			}
+		})
+	}
+	t.Run("control: the same line outside the literal", func(t *testing.T) {
+		got, err := Load(fstest.MapFS{"migrations/0002_second.up.sql": file("select 'a'\n'b';\n" + line + "\n")}, "migrations")
+		if err != nil {
+			t.Fatalf("Load refused the line outside the literal: %v", err)
+		}
+		if len(got[0].Replaces) != 1 {
+			t.Errorf("replaces = %+v, want the one line", got[0].Replaces)
+		}
+	})
 }
 
 // A comment that begins with replaces:, in any case, is a replaces line, and one not written in
@@ -102,12 +141,13 @@ func TestReconcileJudgesEachRecordedRowAgainstItsFile(t *testing.T) {
 		fixes   []Fix
 		refused []string
 	}{
-		"its own identity":              {row: Recorded{Version: 2, Identity: own}},
-		"no name":                       {row: Recorded{Version: 2}, fixes: []Fix{{Version: 2, To: own}}},
-		"a replaced identity":           {row: Recorded{Version: 2, Identity: earlier}, fixes: []Fix{{Version: 2, From: earlier, To: own}}},
-		"a version with no file":        {row: Recorded{Version: 7, Identity: other}},
-		"another name":                  {row: Recorded{Version: 2, Identity: other}, refused: []string{"version 2 is recorded as " + other.String(), "file of version 2 is " + own.String(), "-- replaces: " + other.String()}},
-		"the replaced name, other text": {row: Recorded{Version: 2, Identity: Identity{Name: own.Name, Checksum: strings.Repeat("3", 64)}}, refused: []string{"whose replaces lines name only " + earlier.String()}},
+		"its own identity":               {row: Recorded{Version: 2, Identity: own}},
+		"a null name":                    {row: Recorded{Version: 2, Unnamed: true}, fixes: []Fix{{Version: 2, To: own}}},
+		"an empty name that is not null": {row: Recorded{Version: 2, Identity: Identity{Checksum: own.Checksum}}, refused: []string{"version 2 is recorded as  sha256:" + own.Checksum}},
+		"a replaced identity":            {row: Recorded{Version: 2, Identity: earlier}, fixes: []Fix{{Version: 2, From: earlier, To: own}}},
+		"a version with no file":         {row: Recorded{Version: 7, Identity: other}},
+		"another name":                   {row: Recorded{Version: 2, Identity: other}, refused: []string{"version 2 is recorded as " + other.String(), "file of version 2 is " + own.String(), "-- replaces: " + other.String()}},
+		"the replaced name, other text":  {row: Recorded{Version: 2, Identity: Identity{Name: own.Name, Checksum: strings.Repeat("3", 64)}}, refused: []string{"whose replaces lines name only " + earlier.String()}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fixes, err := Reconcile(set, []Recorded{tc.row})
@@ -128,8 +168,83 @@ func TestReconcileJudgesEachRecordedRowAgainstItsFile(t *testing.T) {
 		})
 	}
 	// One refused row refuses every fix the other rows needed: nothing is written.
-	fixes, err := Reconcile(set, []Recorded{{Version: 2}, {Version: 2, Identity: other}})
+	fixes, err := Reconcile(set, []Recorded{{Version: 2, Unnamed: true}, {Version: 2, Identity: other}})
 	if err == nil || fixes != nil {
 		t.Errorf("Reconcile of a row to fill beside a refused one = %+v, %v; want the refusal and no fix", fixes, err)
 	}
+}
+
+// CheckVersions says "not OK" for each fault alone, and for a check that compared nothing, and
+// refuses a connection whose search_path names no schema. Each row builds one database: the
+// control, a version table recording both files under their own identities, reads OK; then one
+// fault each, which must turn the verdict by itself. An absent table and an empty one each read as
+// nothing checked, not as a clean audit, so a check pointed at the wrong database cannot pass.
+func TestCheckVersionsSaysNotOKForEachFaultAloneAndForNothingChecked(t *testing.T) {
+	ctx := context.Background()
+	set := []Migration{
+		{Version: 1, Name: "0001_a.up.sql", Checksum: sha256Hex("a")},
+		{Version: 2, Name: "0002_b.up.sql", Checksum: sha256Hex("b")},
+	}
+	const table = "versions_check"
+	create := "create table " + table + " (version bigint primary key, applied_at timestamptz not null default now(), " + IdentityColumns + ")"
+	both := "insert into " + table + " (version, name, checksum) values (1, '0001_a.up.sql', '" + sha256Hex("a") + "'), (2, '0002_b.up.sql', '" + sha256Hex("b") + "')"
+	for name, tc := range map[string]struct {
+		setup      []string
+		ok         bool
+		refusals   int
+		noFile     int
+		nothing    bool
+		reportLine string
+	}{
+		"control: both files under their own identities": {setup: []string{create, both}, ok: true, reportLine: "versions: ok"},
+		"a refused row alone": {setup: []string{create, both, "update " + table + " set name = '0002_other.up.sql' where version = 2"},
+			refusals: 1, reportLine: "versions: REFUSED version 2 is recorded as 0002_other.up.sql"},
+		"a version with no file alone": {setup: []string{create, both, "insert into " + table + " (version) values (3)"},
+			noFile: 1, reportLine: "versions: NO FILE version 3"},
+		"an empty table":  {setup: []string{create}, nothing: true, reportLine: "versions: NOTHING CHECKED: " + table + " records no version"},
+		"an absent table": {nothing: true, reportLine: "versions: NOTHING CHECKED: " + table + " records no version"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn := connect(t, ctx, testpg.URL(t))
+			for _, statement := range tc.setup {
+				if _, err := conn.Exec(ctx, statement); err != nil {
+					t.Fatalf("%s: %v", statement, err)
+				}
+			}
+			check, err := CheckVersions(ctx, conn, set, table)
+			if err != nil {
+				t.Fatalf("CheckVersions: %v", err)
+			}
+			var report strings.Builder
+			check.Write(&report)
+			t.Logf("report:\n%s", report.String())
+			if check.OK() != tc.ok || len(check.Refusals) != tc.refusals || len(check.NoFile) != tc.noFile || (check.Recorded == 0) != tc.nothing {
+				t.Errorf("ok %v, refusals %d, no file %v, recorded %d; want ok %v, refusals %d, no file %d, nothing recorded %v",
+					check.OK(), len(check.Refusals), check.NoFile, check.Recorded, tc.ok, tc.refusals, tc.noFile, tc.nothing)
+			}
+			if !strings.Contains(report.String(), tc.reportLine) {
+				t.Errorf("report = %q, want it to say %q", report.String(), tc.reportLine)
+			}
+			if wantVerdict := map[bool]string{true: "versions: ok\n", false: "versions: NOT OK\n"}[tc.ok]; !strings.HasSuffix(report.String(), wantVerdict) {
+				t.Errorf("report ends %q, want %q", report.String(), wantVerdict)
+			}
+		})
+	}
+	t.Run("a search_path that names no schema", func(t *testing.T) {
+		url := testpg.URL(t)
+		config, err := pgx.ParseConfig(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.RuntimeParams["search_path"] = "no_such_schema_4520"
+		conn, err := pgx.ConnectConfig(ctx, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close(context.Background()) })
+		check, err := CheckVersions(ctx, conn, set, table)
+		if err == nil || !strings.Contains(err.Error(), "current_schema() is null") {
+			t.Fatalf("CheckVersions = %+v, %v; want a refusal naming the null current_schema()", check, err)
+		}
+	})
 }

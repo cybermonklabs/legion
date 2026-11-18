@@ -793,7 +793,7 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	t.Cleanup(second.Pool.Close)
 	applied := make(chan error, 2)
 	for _, booting := range []*Store{first, second} {
-		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
+		go func(booting *Store) { applied <- booting.applyMigration(ctx, migrations, pending) }(booting)
 	}
 	waiting := waitForWaitingRunners(t, records, 2, migrationKeyQueueBound)
 	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {

@@ -203,7 +203,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 			t.Fatalf("boot over rows that record no name: %v", err)
 		}
 		want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second},
-			pgmigrate.Recorded{Version: 3, Identity: third}, pgmigrate.Recorded{Version: 99})
+			pgmigrate.Recorded{Version: 3, Identity: third}, pgmigrate.Recorded{Version: 99, Unnamed: true})
 		if n := count(backfillMessage); n != 2 {
 			t.Errorf("the boot logged %d fills; want 2, one for each of versions 1 and 2", n)
 		}
@@ -211,7 +211,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 			t.Fatalf("second boot: %v", err)
 		}
 		want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second},
-			pgmigrate.Recorded{Version: 3, Identity: third}, pgmigrate.Recorded{Version: 99})
+			pgmigrate.Recorded{Version: 3, Identity: third}, pgmigrate.Recorded{Version: 99, Unnamed: true})
 		if n := count(backfillMessage); n != 2 {
 			t.Errorf("after the second boot the fills logged are %d; want the first boot's 2 and no more", n)
 		}
@@ -272,13 +272,15 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 	})
 }
 
-// CheckVersionsOfAnEarlierRunner holds pgmigrate.CheckVersions, through check, to the database an
-// earlier runner leaves after it applied the whole set: migrate applies the set, and the identity
-// columns are then taken off table, so every row records a version and no name, as on a database
-// that main's runner from before identities migrated. The check finds a file for every version and
-// a fill for every row and refuses nothing; after one more boot of this runner every row records
-// its file's own identity. The controls show that the check can fail: a row recording another
-// file's name is refused, and a version with no file in the set is named.
+// CheckVersionsOfAnEarlierRunner holds pgmigrate.CheckVersions, through check, to the shape of the
+// table an earlier runner leaves after it applied the whole set: migrate, this branch's own
+// runner, applies the set, and the identity columns are then taken off table, so every row
+// records a version and no name, as on a database that main's runner from before identities
+// migrated. This simulates that table's shape; it does not run main's runner. The check finds a
+// file for every version and a fill for every row and refuses nothing; after one more boot of
+// this runner every row records its file's own identity. Two controls, each alone, show that the
+// check can fail for each reason it exists for: a row recording another file's name is refused,
+// and, with that row put back, a version with no file in the set is named.
 func CheckVersionsOfAnEarlierRunner(t *testing.T, table string, s IdentityStore, migrate func(context.Context) error, check func(context.Context) (*pgmigrate.VersionCheck, error), files int) {
 	t.Helper()
 	ctx := context.Background()
@@ -312,16 +314,28 @@ func CheckVersionsOfAnEarlierRunner(t *testing.T, table string, s IdentityStore,
 		t.Errorf("after the boot: ok %v, %d recorded, %d matching, %d fills; want ok and every one of the %d files matching",
 			after.OK(), after.Recorded, after.Matching, len(after.Backfills), files)
 	}
-	if _, err := s.Exec(ctx, "update "+table+" set name = 'renamed.up.sql' where version = (select min(version) from "+table+")"); err != nil {
+	var first int
+	var name string
+	if err := s.QueryRow(ctx, "select version, name from "+table+" order by version limit 1").Scan(&first, &name); err != nil {
+		t.Fatalf("control: read the first row: %v", err)
+	}
+	if _, err := s.Exec(ctx, "update "+table+" set name = 'renamed.up.sql' where version = $1", first); err != nil {
 		t.Fatalf("control: record another name: %v", err)
+	}
+	refused := read("control: a refused row alone")
+	if refused.OK() || len(refused.Refusals) != 1 || !strings.Contains(refused.Refusals[0].Error(), "renamed.up.sql") || len(refused.NoFile) != 0 {
+		t.Errorf("control, a refused row alone: ok %v, refusals %v, no file %v; want not ok, the renamed row refused and no version without a file",
+			refused.OK(), refused.Refusals, refused.NoFile)
+	}
+	if _, err := s.Exec(ctx, "update "+table+" set name = $2 where version = $1", first, name); err != nil {
+		t.Fatalf("control: put the name back: %v", err)
 	}
 	if _, err := s.Exec(ctx, "insert into "+table+" (version) values (2147483000)"); err != nil {
 		t.Fatalf("control: record a version with no file: %v", err)
 	}
-	control := read("control")
-	if control.OK() || len(control.Refusals) != 1 || !strings.Contains(control.Refusals[0].Error(), "renamed.up.sql") ||
-		len(control.NoFile) != 1 || control.NoFile[0] != 2147483000 {
-		t.Errorf("control: ok %v, refusals %v, no file %v; want not ok, the renamed row refused and version 2147483000 named as having no file",
-			control.OK(), control.Refusals, control.NoFile)
+	noFile := read("control: a version with no file alone")
+	if noFile.OK() || len(noFile.Refusals) != 0 || len(noFile.NoFile) != 1 || noFile.NoFile[0] != 2147483000 {
+		t.Errorf("control, a version with no file alone: ok %v, refusals %v, no file %v; want not ok, no refusal, and version 2147483000 named as having no file",
+			noFile.OK(), noFile.Refusals, noFile.NoFile)
 	}
 }

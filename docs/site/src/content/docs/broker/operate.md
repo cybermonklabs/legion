@@ -1610,10 +1610,11 @@ What you do depends on how the database came to hold another file:
   create it empty, and start the broker, which migrates it from the first file. Never reset the
   production database this way; a refusal there is a release to stop and investigate.
 - **The file was edited or renamed on purpose**, and the database already holds the schema it
-  means: add the line the refusal names, alone on a line of its own, to the file, and ship it. The
-  next start moves the row to the file's own name and checksum. The line names a file of the same
-  version and 64 lower-case hex digits; a line that begins `-- replaces:` and is written any other
-  way stops every start, naming the file and the line.
+  means: add the line the refusal names, alone on a line of its own and outside every quoted
+  string or function body, to the file, and ship it. The next start moves the row to the file's
+  own name and checksum. The line names a file of the same version and 64 lower-case hex digits;
+  a line that begins `-- replaces:` and is written any other way, or that sits inside a quoted
+  string or a function body, stops every start, naming the file and the line.
 
 The check that a start makes reads what the database records without changing it, so you can take
 it before a deploy from a checkout of the release you mean to ship, in `packages/envoy`:
@@ -1623,7 +1624,8 @@ DATABASE_URL='<the broker database URL>' go run ./internal/pgmigrate/cmd/version
 ```
 
 It prints what the next start would do with each version, and exits 1 when a version would be
-refused or has no file in that release.
+refused or has no file in that release, or when the table records nothing, which it prints as
+`NOTHING CHECKED`: a check of the wrong database must not read as a clean one.
 
 ## The audit record
 

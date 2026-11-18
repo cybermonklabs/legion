@@ -72,8 +72,8 @@ type Migration struct {
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
 //     given as text (checkCensus);
 //   - a -- replaces: line is not written as `-- replaces: <version>_<name>.up.sql sha256:<hex>`,
-//     alone on its line with 64 lower-case hex digits, or names a file of another version
-//     (readReplaces);
+//     alone on its line with 64 lower-case hex digits, names a file of another version, or stands
+//     where Postgres reads it as part of a literal rather than as a comment (readReplaces);
 //   - a forward migration or a census cannot be read.
 //
 // It reports every problem it finds and returns no migration when it finds one, so a runner that

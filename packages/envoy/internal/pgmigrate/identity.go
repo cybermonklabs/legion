@@ -47,24 +47,35 @@ const replacesMarker = "replaces:"
 // line's first byte, naming a forward migration's file and its sha256 in lower-case hex.
 var replacesForm = regexp.MustCompile(`^-- replaces: ([^\s/]+\.up\.sql) sha256:([0-9a-f]{64})$`)
 
+// isReplacesComment says whether text, from a -- on, reads as a replaces line, well formed or not.
+func isReplacesComment(text string) bool {
+	return strings.HasPrefix(text, "--") && hasPrefixFold(strings.TrimLeft(text[2:], " \t\f\v"), replacesMarker)
+}
+
 // readReplaces reads the replaces lines of the forward migration name, of version version and
 // text sql: each -- comment that declares the identity of an earlier file the migration replaces
-// (Migration.Replaces). It reads the text as Postgres reads it (scanSQL), so a line of that form
-// inside a string or a dollar-quoted body declares nothing. It refuses a line that is not of
-// replacesForm, and one that names a file of another version: a runner judges the row of a
-// version against the file of that version alone, so such a line could never match.
+// (Migration.Replaces). It reads the text as Postgres reads it (scanSQL). It refuses a line that
+// is not of replacesForm, and one that names a file of another version: a runner judges the row
+// of a version against the file of that version alone, so such a line could never match. It
+// also refuses a line that reads as a replaces line but where Postgres reads no comment of its
+// own: inside a string literal or a dollar-quoted body, or between the parts of a continued
+// string ('a' <newline> -- … <newline> 'b'), whose comments the string's token holds. Read as
+// declaring nothing, such a line would neither save the database its author meant it to nor be
+// refused when it is malformed.
 func readReplaces(name string, version int, sql string) ([]Identity, error) {
 	if !containsFold(sql, replacesMarker) {
 		return nil, nil
 	}
 	var replaces []Identity
 	var problems []error
+	// Where each replaces-shaped comment the scanner hands out starts.
+	comments := map[int]bool{}
 	_ = scanSQL(sql, func(token sqlToken) error {
 		text := sql[token.start:token.end]
-		if token.kind != sqlComment || !strings.HasPrefix(text, "--") ||
-			!hasPrefixFold(strings.TrimLeft(text[2:], " \t\f\v"), replacesMarker) {
+		if token.kind != sqlComment || !isReplacesComment(text) {
 			return nil
 		}
+		comments[token.start] = true
 		line := 1 + strings.Count(sql[:token.start], "\n")
 		match := replacesForm.FindStringSubmatch(text)
 		if match == nil || token.start > 0 && sql[token.start-1] != '\n' {
@@ -83,6 +94,19 @@ func readReplaces(name string, version int, sql string) ([]Identity, error) {
 		replaces = append(replaces, Identity{Name: match[1], Checksum: match[2]})
 		return nil
 	})
+	for start, line := 0, 1; start < len(sql); line++ {
+		end := len(sql)
+		if newline := strings.IndexByte(sql[start:], '\n'); newline >= 0 {
+			end = start + newline
+		}
+		text := strings.TrimLeft(sql[start:end], " \t\f\v")
+		if at := end - len(text); isReplacesComment(text) && !comments[at] {
+			problems = append(problems, fmt.Errorf(
+				"migration %s line %d reads as a replaces line, but Postgres reads it as part of a string literal, a dollar-quoted body or a continued string, where it declares nothing: put it on a line of its own outside every literal",
+				name, line))
+		}
+		start = end + 1
+	}
 	if len(problems) > 0 {
 		return nil, errors.Join(problems...)
 	}
@@ -142,11 +166,26 @@ func AddIdentityColumns(columns map[string]string) []string {
 	return clauses
 }
 
-// Recorded is one row of a runner's version table. Identity is zero where the row records no
-// name: every row a runner wrote before the runners recorded identities, and one written by hand.
+// Recorded is one row of a runner's version table. Unnamed is true where the row's name is null:
+// every row a runner wrote before the runners recorded identities, and one written by hand. A
+// name that is not null, the empty string included, is an identity like any other.
 type Recorded struct {
 	Version  int
 	Identity Identity
+	Unnamed  bool
+}
+
+// recordedRow is the row of version whose name and checksum columns read name and checksum, nil
+// for a null.
+func recordedRow(version int, name, checksum *string) Recorded {
+	row := Recorded{Version: version, Unnamed: name == nil}
+	if name != nil {
+		row.Identity.Name = *name
+	}
+	if checksum != nil {
+		row.Identity.Checksum = *checksum
+	}
+	return row
 }
 
 // Fix is a write a runner makes to one row of its version table before it applies anything. From
@@ -157,7 +196,8 @@ type Fix struct {
 	From, To Identity
 }
 
-// Backfill says whether the fix fills a row that recorded no name.
+// Backfill says whether the fix fills a row that recorded no name. A move's From is an identity a
+// file's replaces line names, which always has one.
 func (f Fix) Backfill() bool { return f.From.Name == "" }
 
 // Reconcile judges each recorded row against the set's file of its version, and answers the writes
@@ -167,8 +207,8 @@ func (f Fix) Backfill() bool { return f.From.Name == "" }
 //   - left as it is where no file of the set has its version, as the runners have always left
 //     it: a database that a later release migrated and an earlier one runs over, as an image
 //     rollback does, records versions the earlier set does not hold;
-//   - backfilled with the file's identity where it records no name. Nothing says which file
-//     wrote it, so it is never refused;
+//   - backfilled with the file's identity where its name is null. Nothing says which file wrote
+//     it, so it is never refused;
 //   - left as it is where it records the file's own identity;
 //   - moved to the file's own identity where it records, name and checksum both, an identity the
 //     file declares it replaces (Migration.Replaces);
@@ -196,7 +236,7 @@ func judge(migrations []Migration, recorded []Recorded) (fixes []Fix, refusals [
 		}
 		own := migration.Identity()
 		switch {
-		case row.Identity.Name == "":
+		case row.Unnamed:
 			fixes = append(fixes, Fix{Version: row.Version, To: own})
 		case row.Identity == own:
 		case slices.Contains(migration.Replaces, row.Identity):
@@ -259,18 +299,12 @@ func ReadRecorded(ctx context.Context, q Querier, table string) ([]Recorded, err
 		return nil, fmt.Errorf("read %s: %w", table, err)
 	}
 	recorded, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Recorded, error) {
-		var r Recorded
+		var version int
 		var name, checksum *string
-		if err := row.Scan(&r.Version, &name, &checksum); err != nil {
-			return r, err
+		if err := row.Scan(&version, &name, &checksum); err != nil {
+			return Recorded{}, err
 		}
-		if name != nil {
-			r.Identity.Name = *name
-		}
-		if checksum != nil {
-			r.Identity.Checksum = *checksum
-		}
-		return r, nil
+		return recordedRow(version, name, checksum), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", table, err)
@@ -302,29 +336,27 @@ func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrat
 	return versions, fixes, nil
 }
 
-// RecheckRecorded is a runner's judgment, on q, of what its version table records of the one
-// migration it is about to apply, for a runner that releases its advisory lock between its first
-// judgment of the table (ReconcileRecorded) and each migration, as Dispatch's does: another process
-// may have recorded the version in between. applied is false where the table records no row of
-// the version. Where it does, the row is judged as Reconcile judges it: a refusal is the error,
-// and a fix is written and answered, for LogFixes once q's transaction commits.
-func RecheckRecorded(ctx context.Context, q versionTable, table string, migration Migration) (applied bool, fixes []Fix, err error) {
+// RecheckRecorded is a runner's judgment, on q, of its version table before it applies migration,
+// for a runner that releases its advisory lock between its first judgment of the table
+// (ReconcileRecorded) and each migration, as Dispatch's does: another process may have recorded
+// any version in between, this one or another. Where the table records migration's version, that
+// row is judged as Reconcile judges it, applied is true, and nothing else is read: the runner
+// applies nothing. Where it does not, the runner is about to apply migration, so every row is
+// judged again against migrations, the runner's whole set (ReconcileRecorded), and a refusal of
+// any of them is the error: no migration is applied while the table records a version under an
+// identity the set refuses. Either way a fix is written and answered, for LogFixes once q's
+// transaction commits.
+func RecheckRecorded(ctx context.Context, q versionTable, table string, migrations []Migration, migration Migration) (applied bool, fixes []Fix, err error) {
 	var name, checksum *string
 	err = q.QueryRow(ctx, "select name, checksum from "+pgx.Identifier{table}.Sanitize()+" where version = $1::bigint", migration.Version).Scan(&name, &checksum)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil, nil
+		_, fixes, err = ReconcileRecorded(ctx, q, table, migrations)
+		return false, fixes, err
 	}
 	if err != nil {
 		return false, nil, fmt.Errorf("read what %s records of migration %s: %w", table, migration.Name, err)
 	}
-	row := Recorded{Version: migration.Version}
-	if name != nil {
-		row.Identity.Name = *name
-	}
-	if checksum != nil {
-		row.Identity.Checksum = *checksum
-	}
-	fixes, err = Reconcile([]Migration{migration}, []Recorded{row})
+	fixes, err = Reconcile([]Migration{migration}, []Recorded{recordedRow(migration.Version, name, checksum)})
 	if err != nil {
 		return true, nil, err
 	}
@@ -388,12 +420,21 @@ type VersionCheck struct {
 	Refusals []error
 }
 
-// OK says whether the table holds only versions the set has files for and the runner's next boot
-// refuses none of them.
-func (c *VersionCheck) OK() bool { return len(c.Refusals) == 0 && len(c.NoFile) == 0 }
+// OK says whether the table records at least one version, holds only versions the set has files
+// for, and the runner's next boot refuses none of them. A table that records nothing, or does not
+// exist, is not OK: the check compared nothing, and a clean report of nothing would read the same
+// as a clean report of a migrated database.
+func (c *VersionCheck) OK() bool {
+	return c.Recorded > 0 && len(c.Refusals) == 0 && len(c.NoFile) == 0
+}
 
 // Write prints the check, one fact to a line, ending with its verdict.
 func (c *VersionCheck) Write(w io.Writer) {
+	if c.Recorded == 0 {
+		fmt.Fprintf(w, "versions: NOTHING CHECKED: %s records no version or does not exist on this connection's search_path, so no row was compared with a file; the next boot would apply every migration\n", c.Table)
+		fmt.Fprintln(w, "versions: NOT OK")
+		return
+	}
 	fmt.Fprintf(w, "versions: %s records %d versions: %d record their file's own identity, %d record no name and are filled from this build's file at the next boot, %d record an identity a file replaces and move to it, %d have no file, %d refuse\n",
 		c.Table, c.Recorded, c.Matching, len(c.Backfills), len(c.Moves), len(c.NoFile), len(c.Refusals))
 	for _, fix := range c.Moves {
@@ -418,13 +459,23 @@ func (c *VersionCheck) Write(w io.Writer) {
 // CheckVersions reads the version table table on conn's database, in a read-only transaction of
 // its own, and says what the runner would do with each row at its next boot against migrations
 // (VersionCheck). It writes nothing, and needs no column the runners add, so it reads a database
-// that a runner from before identities migrated as well as one this runner did.
+// that a runner from before identities migrated as well as one this runner did. A connection
+// whose search_path names no schema that exists cannot be checked, since neither the table nor
+// anything else resolves there, and the runner could create nothing on it: that is an error, not
+// an empty check.
 func CheckVersions(ctx context.Context, conn *pgx.Conn, migrations []Migration, table string) (*VersionCheck, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("begin a read-only transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	var schema *string
+	if err := tx.QueryRow(ctx, "select current_schema()").Scan(&schema); err != nil {
+		return nil, fmt.Errorf("read the connection's schema: %w", err)
+	}
+	if schema == nil {
+		return nil, fmt.Errorf("the connection's search_path names no schema that exists, so current_schema() is null: neither %s nor any table resolves, and the runner can create neither; name an existing schema in the search_path", table)
+	}
 	recorded, err := ReadRecorded(ctx, tx, table)
 	if err != nil {
 		return nil, err

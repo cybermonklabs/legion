@@ -19,8 +19,8 @@ Every wait for that key polls `pg_try_advisory_lock` with nothing open between t
 The concurrent mode drops an INVALID index of the migration's own name on its own table and builds it again, refuses an index of that name on another table with an explicit `DROP INDEX CONCURRENTLY` recovery command, and refuses a relation of that name that is no index by name, to be renamed or removed, instead of recording a skipped, incomplete build as success.
 
 `schema_migrations` records each applied migration's version and its identity: the file's name (`name`) and the sha256 of its whole text (`checksum`), which the runner adds to a table an earlier runner made.
-Before it applies anything, under the migration key, the runner judges every recorded row against this build's file of its version (`pgmigrate.Reconcile`).
-A row with no name, as every row an earlier runner wrote, is filled from the file and never refused, and each fill is logged.
+Before it applies anything, under the migration key, the runner judges every recorded row against this build's file of its version (`pgmigrate.Reconcile`), and it judges them all again before each migration it applies, since it gives the key back in between and another process may have recorded a version.
+A row whose name is null, as every row an earlier runner wrote, is filled from the file and never refused, and each fill is logged.
 A row that names an identity the file declares in a `-- replaces: <name> sha256:<hex>` line moves to the file's own identity, logged with both.
 A version with no file is left as it is.
 Any other row refuses the boot, and nothing applies:

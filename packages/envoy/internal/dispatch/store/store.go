@@ -149,7 +149,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 		return err
 	}
 	for _, migration := range migrations {
-		if err := s.applyMigration(ctx, migration); err != nil {
+		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 		}
 	}
@@ -384,20 +384,20 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 	return nil
 }
 
-// applyMigration applies one migration, trying it again while its lock wait outlasts
-// lock_timeout, up to pgmigrate.LockTimeoutAttempts times, holding nothing between attempts.
-// A concurrent build's retry first drops an INVALID index of the migration's own name the
-// previous attempt left on the migration's own table, then builds the index again.
+// applyMigration applies one migration of migrations, the boot's whole set, trying it again while
+// its lock wait outlasts lock_timeout, up to pgmigrate.LockTimeoutAttempts times, holding nothing
+// between attempts. A concurrent build's retry first drops an INVALID index of the migration's own
+// name the previous attempt left on the migration's own table, then builds the index again.
 // A migration that times out on every attempt fails the runner and boot with it.
-func (s *Store) applyMigration(ctx context.Context, migration pgmigrate.Migration) error {
+func (s *Store) applyMigration(ctx context.Context, migrations []pgmigrate.Migration, migration pgmigrate.Migration) error {
 	return pgmigrate.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
-		return s.applyMigrationOnce(ctx, migration)
+		return s.applyMigrationOnce(ctx, migrations, migration)
 	})
 }
 
-func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migration) error {
+func (s *Store) applyMigrationOnce(ctx context.Context, migrations []pgmigrate.Migration, migration pgmigrate.Migration) error {
 	if migration.NonTransactional {
-		return s.applyNonTransactionalMigration(ctx, migration)
+		return s.applyNonTransactionalMigration(ctx, migrations, migration)
 	}
 	// A migration is a transaction like any other, so it is marked like any other: nothing it
 	// runs may take a second pooled connection while it is open. The key is taken first, on the
@@ -416,16 +416,18 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 			return fmt.Errorf("pin the runner's settings: %w", err)
 		}
 		// The key was released after prepareVersionTable judged the table, so another process may
-		// have recorded this version since: RecheckRecorded judges that row as prepareVersionTable
-		// judged the rest. Both statements cast the version, because pgx encodes it for the column
-		// it finds: a database widened by a boot whose statement this connection has not prepared
-		// again would otherwise refuse a 14-digit version as too large for an int4.
-		applied, recorded, err := pgmigrate.RecheckRecorded(ctx, tx, versionTable, migration)
+		// have recorded any version since. RecheckRecorded judges this version's row where there is
+		// one, and, before this migration applies, every row against the whole set again, so no
+		// migration is applied while the table records a version under an identity the set refuses.
+		// Its statements cast the version, because pgx encodes it for the column it finds: a
+		// database widened by a boot whose statement this connection has not prepared again would
+		// otherwise refuse a 14-digit version as too large for an int4.
+		applied, recorded, err := pgmigrate.RecheckRecorded(ctx, tx, versionTable, migrations, migration)
 		if err != nil {
 			return fmt.Errorf("check migration: %w", err)
 		}
+		fixes = recorded
 		if applied {
-			fixes = recorded
 			return nil
 		}
 		if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
@@ -453,7 +455,7 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 //
 // The key is taken by polling here too (lockMigrations), and this is the site whose build the
 // polling exists for: it holds the key while CREATE INDEX CONCURRENTLY runs.
-func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pgmigrate.Migration) error {
+func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations []pgmigrate.Migration, migration pgmigrate.Migration) error {
 	pooled, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -474,13 +476,14 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pg
 	if err := pgmigrate.PinSession(ctx, conn); err != nil {
 		return fmt.Errorf("pin the runner's settings: %w", err)
 	}
-	// As in applyMigrationOnce; a fill or a move commits as its own statement here.
-	applied, fixes, err := pgmigrate.RecheckRecorded(ctx, conn, versionTable, migration)
+	// As in applyMigrationOnce. Each fill or move commits as its own statement here, so it is
+	// logged at once, whether or not the build then succeeds.
+	applied, fixes, err := pgmigrate.RecheckRecorded(ctx, conn, versionTable, migrations, migration)
 	if err != nil {
 		return fmt.Errorf("check migration: %w", err)
 	}
+	pgmigrate.LogFixes(versionTable, fixes)
 	if applied {
-		pgmigrate.LogFixes(versionTable, fixes)
 		return nil
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {

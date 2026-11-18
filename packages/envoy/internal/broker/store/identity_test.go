@@ -40,9 +40,10 @@ func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
 	})
 }
 
-// A database that main's runner from before identities migrated, as every production row is
-// today, records a version for every file of the shipped set and no name: the first boot of this
-// runner fills every row and refuses none (pgmigratetest.CheckVersionsOfAnEarlierRunner).
+// The table main's runner from before identities leaves, as every production row is today,
+// records a version for every file of the shipped set and no name: the first boot of this runner
+// fills every row and refuses none (pgmigratetest.CheckVersionsOfAnEarlierRunner, which simulates
+// that table's shape with this runner and does not run main's).
 func TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated(t *testing.T) {
 	s := emptySchemaStore(t)
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")

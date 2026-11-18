@@ -6,9 +6,10 @@
 //	DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions dispatch
 //	DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions broker
 //
-// It exits 0 when every recorded version has a file in this build and the next boot refuses
-// none, 1 when a version has no file or a row would be refused (the report names each), and 2
-// when the check could not be taken.
+// It exits 0 when the table records at least one version, every recorded version has a file in
+// this build and the next boot refuses none; 1 when a version has no file, a row would be refused
+// (the report names each) or the table records nothing, which it reports as NOTHING CHECKED; and
+// 2 when the check could not be taken, as on a search_path that names no schema.
 package main
 
 import (
