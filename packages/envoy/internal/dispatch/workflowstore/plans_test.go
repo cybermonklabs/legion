@@ -566,6 +566,81 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	}
 }
 
+// Of plans of one generation the read takes the one made last, and of those made at one moment
+// the one of the greatest id. LEG-1's four plans were made at minutes in neither ascending nor
+// descending order as written, and its plan made last has neither the least nor the greatest id,
+// so a read that took the plan made first, or the least or the greatest id where the moments
+// differ, lists another plan; LEG-2's four, made at one moment, have ids in neither order as
+// written, so a read that took the least id lists another. The order the statement answers the
+// rows in is the database's, so this test cannot set which plan is the first or the last row;
+// TestAPlanIsNewerByGenerationThenMadeThenID holds the comparison for every pair of plans.
+func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	seedIssues(t, pool, "LEG",
+		seededIssue{"LEG-1", "done", new(t0.Add(5 * time.Hour))},
+		seededIssue{"LEG-2", "done", new(t0.Add(6 * time.Hour))},
+	)
+	madeLast := "3a000000-0000-4000-8000-000000000000"
+	putPlan(t, pool, defaultPlan("5a000000-0000-4000-8000-000000000000", "LEG-1", 2), minute(40))
+	putPlan(t, pool, defaultPlan(madeLast, "LEG-1", 2), minute(60))
+	putPlan(t, pool, defaultPlan("9a000000-0000-4000-8000-000000000000", "LEG-1", 2), minute(30))
+	putPlan(t, pool, defaultPlan("1a000000-0000-4000-8000-000000000000", "LEG-1", 2), minute(50))
+	greatestID := "9b000000-0000-4000-8000-000000000000"
+	putPlan(t, pool, defaultPlan("3b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
+	putPlan(t, pool, defaultPlan(greatestID, "LEG-2", 3), minute(70))
+	putPlan(t, pool, defaultPlan("1b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
+	putPlan(t, pool, defaultPlan("5b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
+
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	if err != nil {
+		t.Fatalf("read the plans of LEG: %v", err)
+	}
+	got := make([]string, len(read))
+	for index, issue := range read {
+		plan := "none"
+		if issue.Plan != nil {
+			plan = planText(*issue.Plan)
+		}
+		got[index] = issue.Issue + " " + plan
+	}
+	want := []string{
+		"LEG-2 " + planText(defaultPlanRead(greatestID, "LEG-2", 3)),
+		"LEG-1 " + planText(defaultPlanRead(madeLast, "LEG-1", 2)),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the read lists\n%s\nwant LEG-2's plan of the greatest id and LEG-1's plan made last\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A plan is newer than one of a lower generation, then, of one generation, than one made earlier,
+// then, made at one moment, than one of a lesser id, whatever the keys after the first that differs
+// say. Of these plans, listed oldest first, each is newer than every plan before it, than none after
+// it and not than itself, and newer than nil, the read's plan before its first row; so the read
+// takes one plan of an issue whatever order its rows come in.
+func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
+	plans := []madePlan{
+		{plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1}, made: minute(50)},
+		{plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2}, made: minute(10)},
+		{plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2}, made: minute(30)},
+		{plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2}, made: minute(30)},
+		{plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3}, made: minute(0)},
+	}
+	text := func(plan madePlan) string {
+		return fmt.Sprintf("generation %d made %s id %s", plan.plan.Generation, plan.made.Format(time.RFC3339), plan.plan.ID)
+	}
+	for older := range plans {
+		if !plans[older].newerThan(nil) {
+			t.Errorf("the plan of %s is not newer than nil", text(plans[older]))
+		}
+		for newer := range plans {
+			if got, want := plans[newer].newerThan(&plans[older]), newer > older; got != want {
+				t.Errorf("the plan of %s newer than the plan of %s: %t, want %t", text(plans[newer]), text(plans[older]), got, want)
+			}
+		}
+	}
+}
+
 // since and until bound the close: an issue closed at since is listed and one closed at until is
 // not.
 func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
