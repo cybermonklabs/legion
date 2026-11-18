@@ -1711,6 +1711,36 @@ export class DispatchApiClient {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
   }
 
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  it and when it last changed, or `null` for a project that names none. There is no list of
+   *  every project's daemon, so the Settings page's daemon section reads this once per project
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. A key that is not a
+   *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
+  }
+
+  /** Names the daemon a project's state is read from, and answers the row as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/legion/daemon",
+      { key: project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
+   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
+  }
+
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
    *  A session another group holds is `409 SESSION_IN_GROUP`; a name another group has, or that is
    *  the title of a session outside the group, is `409` as well, the message naming which. */

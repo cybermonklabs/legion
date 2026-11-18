@@ -56,7 +56,7 @@ func newSignInRig(t *testing.T, answer func(n int, form url.Values) (int, map[st
 			Store:     store,
 			Machine:   &scriptedSource{token: "this-machine's-identity-token", tokenType: oauthwire.SubjectTokenTypeGoogle, describe: "this machine"},
 			Flow:      flow,
-			BrokerURL: broker.URL(),
+			BrokerURL: broker.Address(),
 		},
 	}
 }
