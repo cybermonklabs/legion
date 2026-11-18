@@ -849,7 +849,9 @@ go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
 grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
 go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 callout=$(../../{TAGGED_TESTS} natslive ./internal/broker/natscallout)
-go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/"""
+go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/
+reach=$(../../{TAGGED_TESTS} natslive ./internal/integration)
+go test -count=1 -timeout 5m -tags natslive -run "$reach" -v ./internal/integration/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
@@ -1464,6 +1466,7 @@ def hold_web_fixture_tests():
 
 
 hold_web_fixture_tests()
+INTEGRATION_STEP = "Integration test envoy (a real NATS server, in the test process)"
 
 
 # Every top-level function declaration, test or not: a gofmt'd file puts the `func` of one in
@@ -2575,7 +2578,7 @@ GATES = [
     ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
-        step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
+        step_run("envoy-go", INTEGRATION_STEP,
                  "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
         step_run("envoy-go", "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
                  ["./agentloop/"], tags="modellive", mode="vet"),
@@ -2610,17 +2613,21 @@ GATES = [
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
         # test of internal/bus that needs a real server image, natsgrant's daemon grant held to its
-        # projects behind an auth callout on the hub's image, and the auth service's check that the
-        # deployed server lets an empty allow list through, which its guard refuses. The rest of
-        # internal/testnats, natsgrant and internal/broker/natscallout runs in the unit step; the
-        # rest of internal/bus runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the race lane's
-        # packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry per step,
-        # checks the testnats, natsgrant and natscallout half.
+        # projects behind an auth callout on the hub's image, the auth service's check that the
+        # deployed server lets an empty allow list through, which its guard refuses, and the check
+        # that each connection the real auth service admits on the hub's image reaches only its
+        # token's projects (internal/integration). The rest of internal/testnats, natsgrant and
+        # internal/broker/natscallout runs in the unit step, and the rest of internal/integration in
+        # the integration step; the rest of internal/bus runs in envoy-go-race, since
+        # UNIT_TEST_PATTERN leaves the race lane's packages out of the unit step, and the envoy_go
+        # entry of TAG_RUNS, one entry per step, checks the testnats, natsgrant, natscallout and
+        # integration half.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
             (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
             (ENVOY, ["./internal/broker/natscallout/"], "go test -tags natslive ./internal/broker/natscallout/", {"tags": "natslive"}),
+            (ENVOY, ["./internal/integration/"], "go test -tags natslive ./internal/integration/", {"tags": "natslive"}),
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
@@ -3185,7 +3192,8 @@ TAG_RUNS = [
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's, ./natsgrant's and ./internal/broker/natscallout's untagged tests",
+           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's, ./natsgrant's and ./internal/broker/natscallout's "
+           f"untagged tests, and its \"{INTEGRATION_STEP}\" ./internal/integration's",
            job_file("envoy-go")),
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
            f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
