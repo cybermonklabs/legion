@@ -941,13 +941,19 @@ func ipBlockPeers(cidrs []string) networkingv1.NetworkPolicyPeerArray {
 }
 
 // dispatchNEGAnnotation is the cloud.google.com/neg annotation that has GKE make a standalone
-// network endpoint group named name for the app's Service on 8766
-// (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg), with the name written
-// as JSON writes a string, though negNameRule leaves nothing in it to escape.
+// network endpoint group named name for the app's Service on 8766, pre-provisioned in every zone
+// of the cluster's region (`"zones":["*"]`), so a load balancer's backends can name the group in
+// each zone whether or not a node runs there yet; without it GKE makes the group only in zones
+// that have nodes (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg,
+// "Pre-provisioning empty NEGs": GKE 1.36.2-gke.3104000 or later, a Preview feature). The name is
+// written as JSON writes a string, though negNameRule leaves nothing in it to escape.
 func dispatchNEGAnnotation(name string) string {
-	value, err := json.Marshal(map[string]map[string]map[string]string{"exposed_ports": {"8766": {"name": name}}})
+	value, err := json.Marshal(struct {
+		ExposedPorts map[string]map[string]string `json:"exposed_ports"`
+		Zones        []string                     `json:"zones"`
+	}{map[string]map[string]string{"8766": {"name": name}}, []string{"*"}})
 	if err != nil {
-		panic(err) // a map of strings always marshals
+		panic(err) // a struct of strings always marshals
 	}
 	return string(value)
 }

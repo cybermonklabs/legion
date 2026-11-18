@@ -67,14 +67,22 @@ func TestDispatchAdmitsTheLoadBalancersRanges(t *testing.T) {
 	policyIngressRules(t, m, "example-dispatch", 1)
 }
 
-// The app's Service carries cloud.google.com/neg naming the endpoint group and the port 8766, and
-// nothing else beside it. Control: without the name it carries no annotation at all.
+// The app's Service carries cloud.google.com/neg naming the endpoint group and the port 8766, with
+// the group pre-provisioned in every zone of the region (`"zones":["*"]`), and nothing else beside
+// it: the annotation is exactly that JSON, so a field GKE does not read cannot slip in. Control:
+// without the name it carries no annotation at all.
 func TestDispatchNamesItsNetworkEndpointGroup(t *testing.T) {
 	annotations := appServiceAnnotations(t, dispatchEntranceArgs())
 	require.Len(t, annotations, 1)
-	var neg map[string]map[string]map[string]string
-	require.NoError(t, json.Unmarshal([]byte(annotations["cloud.google.com/neg"].(string)), &neg))
-	require.Equal(t, map[string]map[string]map[string]string{"exposed_ports": {"8766": {"name": dispatchNEGName}}}, neg)
+	value := annotations["cloud.google.com/neg"].(string)
+	require.Equal(t, `{"exposed_ports":{"8766":{"name":"`+dispatchNEGName+`"}},"zones":["*"]}`, value)
+	var neg struct {
+		ExposedPorts map[string]map[string]string `json:"exposed_ports"`
+		Zones        []string                     `json:"zones"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(value), &neg))
+	require.Equal(t, map[string]map[string]string{"8766": {"name": dispatchNEGName}}, neg.ExposedPorts)
+	require.Equal(t, []string{"*"}, neg.Zones)
 
 	control := dispatchEntranceArgs()
 	control.NetworkEndpointGroupName = ""

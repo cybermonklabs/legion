@@ -812,9 +812,15 @@ admits the `allowedNamespaces` alone, none when it names none, and a deployment 
 with a NetworkPolicy of its own, since policies add up. `networkEndpointGroupName` names the
 [standalone network endpoint group](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg)
 GKE makes for the app's Service on 8766, which the load balancer takes as its backend: the Service
-carries `cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}}}`. It is a Compute Engine
-resource name, a lowercase letter, then up to 62 lowercase letters, digits or hyphens, the last not a
-hyphen. With both unset, the component renders what it rendered before they existed.
+carries `cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}},"zones":["*"]}`. The
+`zones` wildcard has GKE pre-provision the group, empty until a pod runs there, in every zone of the
+cluster's region, so the load balancer's backend service can name the group in each zone; without
+it GKE makes the group only in zones that have nodes, and a backend naming another zone's group
+names one that does not exist. Pre-provisioning needs GKE 1.36.2-gke.3104000 or later and is a
+Preview feature; each empty group counts against the project's regional quota for network endpoint
+groups. The name is a Compute Engine resource name, a lowercase letter, then up to 62 lowercase
+letters, digits or hyphens, the last not a hyphen. With both unset, the component renders what it
+rendered before they existed.
 
 `iapAudience`, unset by default, turns on the IAP door: a browser reaches Dispatch through
 [Identity-Aware Proxy](https://cloud.google.com/iap/docs/signed-headers-howto) on the
