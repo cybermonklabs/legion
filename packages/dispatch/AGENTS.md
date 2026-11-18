@@ -2583,7 +2583,14 @@ stack's fake and
 requires that stack's server's `GET /api/v1/agents` to list it, then clears the fake: a server
 that reads another Envoy listener refuses the run naming the fake's port, rather than answering
 every row from sessions none of them seeded. Tests seed live sessions and their capabilities with
-`setLiveSessions`, change their scripted 200/404 send response with `setSessionSendStatus`, hold
+`setLiveSessions`, change their scripted send response with `setSessionSendStatus` (`200` takes
+the send; `404` is `no live session`, after which Dispatch publishes a targeted message on the
+session's agent subject itself and records it queued, which `listQueuedMessages`
+(`GET /api/v1/messages/_test/queued`) lists, while a mention fails; `503` is a listener behind
+its starting gate, which fails the attempt once Dispatch's take-over window has passed, so a row
+that reads a failed targeted message and its Retry stages `503`; `setSessionRecord(id, "absent")`
+is a session no store of the listener holds at all, which Dispatch queues a targeted message for
+in the same way, with no send), hold
 every send to a session before it is answered with `setSessionSendDelay` (a listener slow to take
 it; Dispatch's listener client gives up on an answer at 5 s, so a hold meant to end in a delivery
 stays under that), and inspect targeted sends with `getSentMessages`, which records each send as it

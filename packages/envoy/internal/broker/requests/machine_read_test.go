@@ -389,13 +389,14 @@ func TestAJudgedRecordAndItsGrantNameTheJudge(t *testing.T) {
 	judge := record.JudgeActor(judgeModel)
 
 	judged := pendingJudgeable(t, m, session, key, "INFRA-1353 wants it", 600, "DEEL_API_KEY")
-	byTheJudge, err := m.ApplyJudgeDecision(t.Context(), *judged.RecordID, judgeModel, map[string]any{"verdict": "approve"})
+	byTheJudge, err := m.ApplyJudgeDecision(t.Context(), *judged.RecordID, judgeModel, map[string]any{"verdict": "grant"})
 	if err != nil || byTheJudge.GrantID == "" {
 		t.Fatalf("ApplyJudgeDecision = %+v, %v; want a grant", byTheJudge, err)
 	}
 
 	own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 	ownRequest := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+	handOver(t, m, *ownRequest.RecordID)
 	byOwner, err := m.ApplyDecision(t.Context(), *ownRequest.RecordID, true, fixtureOperator)
 	if err != nil || byOwner.GrantID == "" {
 		t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)

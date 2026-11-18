@@ -18,14 +18,13 @@ everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which
 requests need whom.
 
-Some requests are decided before you see them. Where the deployment configures a model judge, it
-takes one narrow class of the requests that would wait for you — one secret, 15 minutes at most
-and no more than the secret's airlock rules let the judge decide, and a reason naming a Dispatch
-issue that is not done — and approves such a request or leaves it here for you. It never denies.
-A request it approved is gone from your Inbox, and its page's **State** line reads
-`approved by the model judge judge:<model id> at <time>`, with no person beside it. Click
-**Approve** on a page you opened before the judge decided and you read
-`already decided: granted (approved by judge:<model id> at <time>)`: your click changed nothing.
+Some requests never reach you. Where the deployment configures a model judge, a request for keys
+whose airlock rules entry gives the judge seconds, none of them an administrator's, is the judge's
+to decide: it grants or refuses it, each key against the guidance you gave in the rules file, and
+while it decides the request is on no list. A request the judge cannot decide comes to you once,
+as an ordinary card. If you open such a request's page while the judge holds it, the page is
+read-only and says the judge is deciding it. A judged grant's **State** line reads
+`approved by the model judge judge:<model id> at <time>`, with no person beside it.
 The grant is still yours to end: it records you as its
 approver, or anyone for a shared secret, so it is on your Settings page, where the row reads
 **Approved by** `judge:<model id>`, and `agent-secrets grant revoke` ends it

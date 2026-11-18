@@ -29,8 +29,9 @@
 # brokers name those fronts as their public and proxy URLs; that --keep-values, --no-kind,
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
 # one; that the pod session's enrolment id is written beside its key where
-# AGENT_SECRETS_KEY_DIR names it; that a usage error exits 2; and that the cleanup stops every
-# process the run started and drops the database it created.
+# AGENT_SECRETS_KEY_DIR names it; that the session's renewer runs against the API front with that
+# key directory and the pod's token file; that a usage error exits 2; and that the cleanup stops
+# every process the run started, the renewer among them, and drops the database it created.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -107,22 +108,32 @@ exit 0
 NOTHING
     ;;
   */agent-secrets)
-    # Only `keygen --out <dir>` is ever run by the stack: it makes the session key and prints
-    # its thumbprint, which the enrolment sends.
+    # The stack runs two forms: `keygen --out <dir>`, which makes the session key and prints its
+    # thumbprint, which the enrolment sends; and `renew --pod-token-file <file>`, the session's
+    # renewer, which records what it was started with and stays alive until it is stopped.
     cat >"$out" <<'AGENTSECRETS'
 #!/usr/bin/env bash
-if [[ "${1:-}" != keygen ]]; then
-  echo "fake agent-secrets: unexpected form $*" >&2
-  exit 2
-fi
-dir=""
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == --out ]]; then dir="$2"; shift; fi
-  shift
-done
-mkdir -p "$dir"
-printf 'a fake session key\n' >"$dir/key.pem"
-printf 'the-session-key-thumbprint\n'
+case "${1:-}" in
+  keygen)
+    dir=""
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --out ]]; then dir="$2"; shift; fi
+      shift
+    done
+    mkdir -p "$dir"
+    printf 'a fake session key\n' >"$dir/key.pem"
+    printf 'the-session-key-thumbprint\n'
+    ;;
+  renew)
+    printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
+    printf '%s\n' "$* url=${AGENT_SECRETS_URL:-} key_dir=${AGENT_SECRETS_KEY_DIR:-}" >>"${DEV_AIRLOCK_TEST_RENEW_CALLS:?}"
+    exec sleep 999999
+    ;;
+  *)
+    echo "fake agent-secrets: unexpected form $*" >&2
+    exit 2
+    ;;
+esac
 AGENTSECRETS
     ;;
   */dev-oidc-issuer)
@@ -216,8 +227,10 @@ cat <<REPORT
   "github_app_id": "123456",
   "github_app_key_file": "$dir/github-app.pem",
   "model_answer_url": "http://127.0.0.1:$$/answers/model",
-  "dispatch_open_issue": "INFRA-1353",
-  "dispatch_done_issue": "INFRA-1200",
+  "dispatch_open_issue": "ACME-1353",
+  "dispatch_done_issue": "ACME-1200",
+  "dispatch_answered_ask": "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+  "dispatch_ask_answered_by": "approver@example.test",
   "stands": {
     "s": {"address": "127.0.0.1:1001", "url": "https://127.0.0.1:1001", "records_url": "http://127.0.0.1:$$/records/s"},
     "t": {"address": "127.0.0.1:1002", "url": "https://127.0.0.1:1002", "records_url": "http://127.0.0.1:$$/records/t"},
@@ -249,6 +262,7 @@ readonly log="${temporary_dir}/run.log"
 readonly psql_calls="${temporary_dir}/psql-calls"
 readonly curl_calls="${temporary_dir}/curl-calls"
 readonly stands_calls="${temporary_dir}/stands-calls"
+readonly renew_calls="${temporary_dir}/renew-calls"
 readonly pids_file="${temporary_dir}/pids"
 
 # run_stack starts dev-airlock.sh in the background with every call file emptied, and sets the
@@ -258,10 +272,12 @@ run_stack() {
   : >"$psql_calls"
   : >"$curl_calls"
   : >"$stands_calls"
+  : >"$renew_calls"
   : >"$pids_file"
   PATH="${fake_bin_dir}:${PATH}" TMPDIR="$run_tmpdir" DEV_BROKER_POSTGRES_URL="$admin_url" \
     DEV_AIRLOCK_TEST_PSQL_CALLS="$psql_calls" DEV_AIRLOCK_TEST_CURL_CALLS="$curl_calls" \
     DEV_AIRLOCK_TEST_STANDS_CALLS="$stands_calls" DEV_AIRLOCK_TEST_PIDS="$pids_file" \
+    DEV_AIRLOCK_TEST_RENEW_CALLS="$renew_calls" \
     bash "$driver" "$@" >"$log" 2>&1 &
   driver_pid=$!
 }
@@ -439,20 +455,21 @@ printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s to 
   "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
   "$approver" "$service" "$admin_max_grant"
 
-# What a check needs to drive the judge: the three stands' records, the answer route and the
-# two issues the Dispatch stand holds.
+# What a check needs to drive the judge: the three stands' records, the answer route, the two
+# issues the Dispatch stand holds and the answered ask on the open one.
 records_url="$(exported AIRLOCK_RECORDS_URL)"
 for want in "AIRLOCK_MODEL_RECORDS=$records_url/records/model" \
   "AIRLOCK_DISPATCH_RECORDS=$records_url/records/dispatch" \
   "AIRLOCK_METADATA_RECORDS=$records_url/records/metadata" \
   "AIRLOCK_MODEL_ANSWER_URL=$model_answer_url" \
-  "AIRLOCK_DISPATCH_OPEN_ISSUE=INFRA-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=INFRA-1200"; do
+  "AIRLOCK_DISPATCH_OPEN_ISSUE=ACME-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=ACME-1200" \
+  "AIRLOCK_DISPATCH_ANSWERED_ASK=4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"; do
   if [[ "$(exported "${want%%=*}")" != "${want#*=}" ]]; then
     echo "FAIL: the banner exports ${want%%=*}=$(exported "${want%%=*}"); want ${want#*=}" >&2
     exit 1
   fi
 done
-printf 'PASS: the banner exports the three stands'"'"' records, the route a check sets the model'"'"'s answer at (%s) and the two issues the Dispatch stand holds\n' \
+printf 'PASS: the banner exports the three stands'"'"' records, the route a check sets the model'"'"'s answer at (%s), the two issues the Dispatch stand holds and the ask its approver answered\n' \
   "$model_answer_url"
 
 mapfile -t broker_lines < <(grep -o 'fake broker: .*' "$log")
@@ -542,6 +559,22 @@ if [[ "$(cat "$key_dir/enrollment" 2>/dev/null)" != "the-pod-enrollment" || ! -s
   exit 1
 fi
 printf 'PASS: a pod session is enrolled at the API front under the registrar account, and its id is written beside the key in AGENT_SECRETS_KEY_DIR (%s)\n' "$key_dir"
+
+# The renewer: the session's lease is renewed for as long as the run lasts, by one
+# `agent-secrets renew` against the API front, with the key directory the enrolment wrote into
+# and the pod's own token file, which is how the Legion worker shim renews a pod's.
+mapfile -t renewals <"$renew_calls"
+if [[ "${#renewals[@]}" -ne 1 || "${renewals[0]}" != "renew --pod-token-file $dev_broker_dir/pod-token url=$api_front_url key_dir=$key_dir" ]]; then
+  printf 'FAIL: the run started %d renewers, want one started as "%s"; it started: %s\n' \
+    "${#renewals[@]}" "renew --pod-token-file $dev_broker_dir/pod-token url=$api_front_url key_dir=$key_dir" "${renewals[*]:-none}" >&2
+  exit 1
+fi
+if ! grep -q "session renewer: .*agent-secrets renew --pod-token-file $dev_broker_dir/pod-token" "$log"; then
+  echo "FAIL: the banner names no session renewer" >&2
+  exit 1
+fi
+printf 'PASS: the session'"'"'s lease is renewed by one agent-secrets renew against the API front, with its key directory and the pod'"'"'s token file (%s)\n' \
+  "$dev_broker_dir/pod-token"
 
 # The cleanup: every process this run started is gone, and the database it created is dropped.
 mapfile -t started_pids <"$pids_file"

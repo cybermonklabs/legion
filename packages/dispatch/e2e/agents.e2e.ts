@@ -11,9 +11,11 @@ import {
   isBroadcastInput,
   pickAgentFilter,
   postedBroadcasts,
+  QUEUED,
   refuseBroadcasts,
   setLiveSessions,
   setSessionLive,
+  setSessionRecord,
   shownAgentRows,
   toggleAgentGroup,
 } from "./agents";
@@ -28,6 +30,7 @@ import {
   getAgentStates,
   listAgentMessages,
   putAgentState,
+  queuedEnvelopesOf,
   replyToMessageDelivery,
 } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -347,6 +350,84 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
     await expect(inbox.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// INFRA-3740: a person's message to an agent that neither the listener's registry nor its
+// known-session store holds any more - its session ended after the page listed it - is queued
+// rather than failed. Dispatch makes no send, since its registry read answers `no live session`,
+// and publishes on the session's own agent subject the envelope the listener's send would have
+// stored, so the listener gives it up with the agent wake and the session reads it when it runs
+// again. The card reads the one queued sentence a person reads for every stopped session. The
+// harness runs Dispatch with NATS disabled, so the row reads what the server published from its
+// test hook rather than from a stream.
+// SLOW(>=2s): the Agents page's load and an opened card, then a send Dispatch answers only after
+// it has read the ended session again within the harness's half-second take-over window.
+test("a message to an agent no store knows any more is queued for it, and its card says so", async ({
+  browser,
+}) => {
+  // This Planner takes Send, so a plain message to it goes as Send; the one above takes only
+  // Aside and BTW, and a plain message to it would go as Aside.
+  await setLiveSessions([{ ...planner, capabilities: ["aside", "btw", "steer"] }]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/agents");
+    const card = agentRow(page, planner.session_id);
+    await card.getByRole("button", { exact: true, name: "Planner" }).click();
+    const composer = card.getByRole("textbox", { name: "Comment" });
+    await expect(composer).toBeVisible();
+    // The session ends after the page listed it, with no record left in the registry or the
+    // known-session store, so the page still offers it Send and the registry read Dispatch makes
+    // before it sends answers 404 `no live session`.
+    await setSessionRecord(planner.session_id, "absent");
+
+    const body = "Pick up the release notes when you are back.";
+    const sent = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/v1/agents/${planner.session_id}/messages`)
+    );
+    await composer.fill(body);
+    await composer.press("Control+Enter");
+    const response = await sent;
+    expect(response.status()).toBe(201);
+    expect(keyedWrite(response.request())).toEqual({
+      input: { body, delivery: "steer" },
+      key: expect.any(String),
+    });
+    const message = (await response.json()) as {
+      deliveries: { delivery: string; state: string }[];
+      id: string;
+    };
+    expect(message.deliveries).toEqual([
+      expect.objectContaining({ delivery: "steer", state: "queued" }),
+    ]);
+
+    const conversation = card.getByRole("list", { name: "Conversation with Planner" });
+    await expect(conversation).toContainText(body);
+    await expect(conversation.getByText(QUEUED("Planner"), { exact: true })).toBeVisible();
+    await expect(conversation).not.toContainText("Failed");
+    expect(
+      (await getSentMessages()).filter((send) => send.target_session === planner.session_id)
+    ).toEqual([]);
+
+    // What Dispatch published is the envelope the listener's send would have stored: on the
+    // session's own subject, under the send's dedupe key, carrying the delivery frame.
+    const queued = await queuedEnvelopesOf(message.id);
+    expect(queued).toEqual([
+      expect.objectContaining({
+        dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,
+        source: "dispatch",
+        subject: `notifications.agent.${planner.session_id}`,
+      }),
+    ]);
+    expect(JSON.parse(queued[0]?.payload ?? "null")).toMatchObject({
+      delivery: { mode: "steer" },
+      event: { payload: { id: message.id }, type: "message.created" },
+    });
   } finally {
     await alice.close();
   }

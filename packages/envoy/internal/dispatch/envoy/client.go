@@ -687,12 +687,32 @@ func unavailableGetStatus(response *http.Response, route string) error {
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
+// sendSource is the source every send Dispatch makes through the listener names itself by.
+const sendSource = "dispatch"
+
+// EnvelopeMessage is the message the listener's send route stores for input
+// (contracts.AgentSendEnvelope): from Dispatch, with the frame as its payload whole, an empty one
+// included, and the delivery's urgency and expects_reply. Send writes its body from it, and
+// Dispatch's own queued copy of a send for a session no store of the listener's holds is built
+// from it, so the copy carries what the send would have.
+func (input SendInput) EnvelopeMessage() contracts.Message {
+	payload := string(input.Payload)
+	return contracts.Message{
+		Source:       sendSource,
+		Text:         input.Message,
+		Payload:      &payload,
+		Urgency:      input.Urgency,
+		ExpectsReply: input.ExpectsReply,
+	}
+}
+
 // Send delivers a Dispatch frame to an already-resolved session. The answer says what that
 // session was when the listener stored the message: connected, or stopped and stored for its own
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
 // instead, 409 with the listener's reason "the session is stopped", which arrives here as that
 // reason alone (listenerResponseError).
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
+	message := input.EnvelopeMessage()
 	body, err := json.Marshal(struct {
 		TargetSession  string                 `json:"target_session"`
 		Source         string                 `json:"source"`
@@ -704,12 +724,12 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		ConnectedOnly  bool                   `json:"connected_only,omitempty"`
 	}{
 		TargetSession:  input.TargetSession,
-		Source:         "dispatch",
-		Message:        input.Message,
-		Payload:        string(input.Payload),
+		Source:         message.Source,
+		Message:        message.Text,
+		Payload:        *message.Payload,
 		IdempotencyKey: input.IdempotencyKey,
-		Urgency:        input.Urgency,
-		ExpectsReply:   input.ExpectsReply,
+		Urgency:        message.Urgency,
+		ExpectsReply:   message.ExpectsReply,
 		ConnectedOnly:  input.ConnectedOnly,
 	})
 	if err != nil {
