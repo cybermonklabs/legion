@@ -961,8 +961,9 @@ func clusteredHubListenerCredentialFor(l *ClusteredHubListenerArgs, path string)
 	}
 	seen := make(map[string]int, len(l.OidcAccounts))
 	for i, account := range l.OidcAccounts {
-		namespace, name, found := strings.Cut(strings.TrimPrefix(account, "system:serviceaccount:"), ":")
-		if !strings.HasPrefix(account, "system:serviceaccount:") || !found || !dnsLabel(namespace) || !dnsSubdomain(name) {
+		rest, prefixed := strings.CutPrefix(account, "system:serviceaccount:")
+		namespace, name, found := strings.Cut(rest, ":")
+		if !prefixed || !found || !dnsLabel(namespace) || !dnsSubdomain(name) {
 			return nil, core.InputErrorf(path+".oidcAccounts", "%s.oidcAccounts[%d] %q must be system:serviceaccount:<namespace>:<name>, a ServiceAccount's subject", path, i, account)
 		}
 		if first, repeated := seen[account]; repeated {
