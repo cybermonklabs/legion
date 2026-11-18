@@ -110,11 +110,14 @@ import type {
  * Print and JSON mode prompt right after their own awaits that follow it (`print-mode.ts`, MCP
  * readiness and a tool refresh, 426-430; `session.prompt`, 495-497, at the pinned tag), and that
  * prompt throws `AgentBusyError` (`agent-session.ts` 9559-9566 at the pinned tag) if a wake
- * started a turn first. A terminal applies its plan-mode default and subscribes to the agent
- * only after the drain (`interactive-mode.ts`
- * ~2458-2498), so a wake's turn could start ahead of both. In those modes, and on a context with
- * no `mode`, an idle card is an aside with `triggerTurn` from the start unless the start-turn mark
- * holds.
+ * started a turn first. A terminal subscribes to the agent before its startup hooks run, and runs
+ * its whole init, the hooks, its mode, its plan-mode default and the draft included, inside
+ * `sends.withHeld` (`interactive-mode.ts` 2473, 2866-2869 and 2928 at the pinned tag): every
+ * extension send of its startup, an idle card's own `triggerTurn` included, starts only once init
+ * has subscribed and settled the mode, and the terminal tracks and drains no send
+ * (`extension-ui-controller.ts` 1758 at the pinned tag), so that turn holds none of its startup
+ * back. In those modes, and on a context with no `mode`, an idle card is therefore an aside with
+ * `triggerTurn` from the start unless the start-turn mark holds.
  *
  * So with mode "rpc", or in any mode while the start-turn mark holds, a card that finds the host
  * idle while the phase holds goes as a `followUp` with no `triggerTurn`: on an idle host that
