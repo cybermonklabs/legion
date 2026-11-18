@@ -79,6 +79,20 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 	}
 }
 
+// A client a signal ended after it printed its refusal keeps that refusal beneath the signal, as
+// a client that exited keeps it (failure): `run tmux list-panes: signal: killed` alone says nothing
+// of why.
+func TestRunTmuxKeepsWhatAClientASignalEndedPrinted(t *testing.T) {
+	client := fakeTmuxClient(t, t.TempDir(), "echo 'no server running on /tmp/tmux-1000/legion-test' >&2; kill -KILL $$")
+	r := &Runtime{tmuxPath: client, commandTimeout: time.Minute, environ: []string{"PATH=" + os.Getenv("PATH")}}
+
+	_, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
+
+	if want := "run tmux list-panes: signal: killed\nno server running on /tmp/tmux-1000/legion-test"; err == nil || err.Error() != want {
+		t.Errorf("runTmux = %v, want %q", err, want)
+	}
+}
+
 // A kill of a pane whose process was never recorded that its timeout ended says so, rather than
 // that tmux exited -1 with nothing on stderr.
 func TestKillUnrecordedNamesItsTimeoutNotAnExit(t *testing.T) {

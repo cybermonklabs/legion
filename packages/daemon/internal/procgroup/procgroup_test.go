@@ -203,6 +203,40 @@ func TestEndedTellsAnExitOfTheCommandsOwnFromASignalsDeath(t *testing.T) {
 	}
 }
 
+// Said puts what a command a signal ended printed beneath the signal, trimmed and wrapped or not,
+// and leaves every other error as it is: an exit (its caller reads the output beside the status),
+// a start that failed, nil, and a signal's death that printed nothing or only space.
+func TestSaidPutsWhatACommandASignalEndedPrintedBeneathTheSignal(t *testing.T) {
+	terminated := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	exitedThree := exec.Command("sh", "-c", "exit 3").Run()
+	notStarted := exec.Command("/nonexistent/widget").Run()
+	for _, row := range []struct {
+		name   string
+		err    error
+		output string
+		want   string // "" for err unchanged
+	}{
+		{"a signal's death that printed", terminated, "  refused: no server running\n", "signal: terminated\nrefused: no server running"},
+		{"a wrapped signal's death that printed", fmt.Errorf("run widget: %w", terminated), "refused", "run widget: signal: terminated\nrefused"},
+		{"a signal's death that printed only space", terminated, " \n", ""},
+		{"an exit that printed", exitedThree, "refused", ""},
+		{"a start that failed", notStarted, "refused", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got := Said(row.err, row.output)
+			switch {
+			case row.want == "" && got != row.err:
+				t.Errorf("Said(%v, %q) = %v, want the error unchanged", row.err, row.output, got)
+			case row.want != "" && (got == nil || got.Error() != row.want || !errors.Is(got, terminated)):
+				t.Errorf("Said(%v, %q) = %v, want %q wrapping the signal's error", row.err, row.output, got, row.want)
+			}
+		})
+	}
+	if got := Said(nil, "refused"); got != nil {
+		t.Errorf("Said(nil, …) = %v, want nil", got)
+	}
+}
+
 // Run starts cmd through the caller's Starter and calls its done only once the wait has read the
 // exit, which is what keeps a PID 1 reaper's hold on the child until then; a start that fails is
 // answered as it is, with no wait and no done; NoReaper is cmd.Run's own start; and no Starter at

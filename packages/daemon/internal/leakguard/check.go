@@ -265,17 +265,14 @@ func (g *Guard) shared(ctx context.Context, what string, c child) error {
 // for. A check the caller's context stopped is said in the failure's own sentence, which names
 // the check, the time it ran and its bound, with nothing beneath it: the stop's own error would
 // say the same again, with the program's file name for its subject. Any other error stays
-// beneath the sentence that the check could not be run, with what the check printed before it:
-// one a signal ended (procgroup.Err) may have said why first.
+// beneath the sentence that the check could not be run, with what the check printed before a
+// signal ended it (procgroup.Said).
 func sharedNotRun(what string, err error, printed string) error {
 	var stopped *stoppedError
 	if errors.As(err, &stopped) {
 		return &SetupFailure{What: what, Why: stopped.said("the shared public leak check")}
 	}
-	if trimmed := strings.TrimSpace(printed); trimmed != "" {
-		err = fmt.Errorf("%w\n%s", err, trimmed)
-	}
-	return &SetupFailure{What: what, Why: "the shared public leak check could not be run", Err: err}
+	return &SetupFailure{What: what, Why: "the shared public leak check could not be run", Err: procgroup.Said(err, printed)}
 }
 
 // readStatus is what a status of the shared check means, for a shape that has no further status

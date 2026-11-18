@@ -528,7 +528,7 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	case ctx.Err() == nil && killed():
 		r.err = fmt.Errorf("timed out after %s", budget)
 	case procgroup.Err(err) != nil:
-		r.err = procgroup.Err(err)
+		r.err = procgroup.Said(procgroup.Err(err), r.output())
 	default:
 		r.exit = cmd.ProcessState.ExitCode()
 	}

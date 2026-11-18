@@ -758,14 +758,11 @@ func checkedResult(argv []string, result Result, err error) (Result, error) {
 }
 
 // runFailure is a run that answered no status of its own, as an error naming the command: `run
-// <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it, which may
-// say why it was failing. The runner leaves that stderr out of its own error, so a caller whose
-// command can echo a credential scrubs result.Stderr before it reaches here (transferWithRetries).
+// <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it
+// (procgroup.Said). The runner leaves that stderr out of its own error, so a caller whose command
+// can echo a credential scrubs result.Stderr before it reaches here (transferWithRetries).
 func runFailure(argv []string, result Result, err error) error {
-	if report := strings.TrimSpace(result.Stderr); report != "" && procgroup.Ended(err).Signal != "" {
-		return fmt.Errorf("run %s: %w\n%s", strings.Join(argv, " "), err, report)
-	}
-	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
+	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), procgroup.Said(err, result.Stderr))
 }
 
 func commandFailure(argv []string, result Result) error {
@@ -867,7 +864,7 @@ func ConfigureRepositoryCredential(ctx context.Context, run Runner, cloneDir str
 		argv := []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}
 		result, err := runCommand(ctx, run, argv, nil, cloneDir)
 		if err != nil {
-			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, err)
+			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, runFailure(argv, result, err))
 		}
 		if result.TimedOut {
 			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, commandFailure(argv, result))

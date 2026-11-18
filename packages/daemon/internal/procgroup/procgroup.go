@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -210,6 +211,19 @@ func Ended(err error) Ending {
 		return Ending{Exited: ended}
 	}
 	return Ending{Signal: ended.String()}
+}
+
+// Said is err with output beneath it, on a line of its own, when err is a signal's death (Ended)
+// and output, trimmed, says anything: a command a signal ended answered no status, but what it
+// printed before the signal may say why it was failing, and a caller that propagates err alone
+// would drop it, where the same command's failed exit carries it. Any other err is returned
+// unchanged: an exit's caller reads the output beside its status itself, and a command that never
+// started printed nothing. A caller whose command can print a credential scrubs output first.
+func Said(err error, output string) error {
+	if trimmed := strings.TrimSpace(output); trimmed != "" && Ended(err).Signal != "" {
+		return fmt.Errorf("%w\n%s", err, trimmed)
+	}
+	return err
 }
 
 // Starter starts cmd and answers done, which the caller calls once cmd.Wait has read cmd's exit,

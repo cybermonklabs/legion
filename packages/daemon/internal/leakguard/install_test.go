@@ -427,13 +427,14 @@ func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
 	}
 }
 
-// A --help run that ends with no exit of its own has printed nothing, but the install's refusal
+// A --help run that ends with no exit of its own has answered no shape, but the install's refusal
 // names why it ended rather than a check that answered nothing. One that something else killed
-// (another drain's signal, the kernel's out-of-memory kill) is refused naming the kill, so the
-// person reading the claim's cause looks for what killed it, not at the check. One the install's
-// own context ended is refused naming the context, since that end is what killed the run
-// (verifyServed reads it before the run's error). The stand-in writes its pid and waits; each row
-// ends it its own way.
+// (another drain's signal, the kernel's out-of-memory kill) is refused naming the kill, with what
+// it printed before it beneath (procgroup.Said), so the person reading the claim's cause looks for
+// what killed it and sees what the check said first. One the install's own context ended is
+// refused naming the context, since that end is what killed the run (verifyServed reads it before
+// the run's error). The stand-in prints a line, writes its pid and waits; each row ends it its own
+// way.
 func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -447,7 +448,7 @@ func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 					t.Fatalf("kill the --help run %d: %v", pid, err)
 				}
 			},
-			want: "the served check could not be run: signal: terminated",
+			want: "the served check could not be run: signal: terminated\nLEAK CHECK: reading the rules",
 		},
 		{
 			name: "the install's context ended",
@@ -458,7 +459,7 @@ func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			parent := t.TempDir()
 			pidFile := filepath.Join(parent, "help-pid")
-			body := served(t, wholeCheck(t, "#!/bin/sh\necho $$ >'"+pidFile+"'\nexec sleep 30\n"))
+			body := served(t, wholeCheck(t, "#!/bin/sh\necho 'LEAK CHECK: reading the rules' >&2\necho $$ >'"+pidFile+"'\nexec sleep 30\n"))
 			dir := filepath.Join(parent, "leak-check")
 			ctx, cancel := context.WithCancel(bound(t))
 			defer cancel()

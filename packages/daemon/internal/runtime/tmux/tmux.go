@@ -462,7 +462,7 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 		return res, nil
 	}
 	if runErr := procgroup.Err(err); runErr != nil {
-		return result{}, fmt.Errorf("run tmux %s: %w", verb(argv), runErr)
+		return result{}, fmt.Errorf("run tmux %s: %w", verb(argv), procgroup.Said(runErr, res.stderr))
 	}
 	res.exitCode = cmd.ProcessState.ExitCode()
 	return res, nil

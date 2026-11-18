@@ -142,10 +142,7 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 		report += "\n" + note
 	}
 	if runErr != nil && !timedOut {
-		if report != "" {
-			return "", fmt.Errorf("run %s: %w\n%s", command, runErr, report)
-		}
-		return "", fmt.Errorf("run %s: %w", command, runErr)
+		return "", fmt.Errorf("run %s: %w", command, procgroup.Said(runErr, report))
 	}
 	if timedOut {
 		message := fmt.Sprintf("Command timed out after %s s (ran %.1f s): %s",

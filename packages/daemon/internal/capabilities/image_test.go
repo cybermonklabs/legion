@@ -585,6 +585,19 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	}
 }
 
+// A command a signal ended after it printed (Oh My Pi killed after it named the overlay it could
+// not read) fails naming the signal, with what it printed beneath, as its failed exit would carry
+// it: the run's error is the whole of what the check reports for it (ran.failure).
+func TestRunKeepsWhatACommandASignalEndedPrinted(t *testing.T) {
+	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+
+	r := img.runWithin(context.Background(), time.Minute, "sh", "-c", "echo 'cannot read overlay.yml' >&2; kill -KILL $$")
+
+	if want := "signal: killed\ncannot read overlay.yml"; r.err == nil || r.err.Error() != want || r.failure() != want {
+		t.Errorf("run = error %v, failure %q; want %q", r.err, r.failure(), want)
+	}
+}
+
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
 // assertions by design (a backgrounded sleep standing in for a command's own lingering child).
 func killPIDFile(t *testing.T, pidFile string) {

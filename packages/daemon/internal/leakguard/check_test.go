@@ -289,6 +289,40 @@ func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	}
 }
 
+// A read of the guard's that a signal ended after its gh or git printed (the kernel's out-of-memory
+// kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
+// carries it: the gh visibility read, its GraphQL read, the read with no credential and a git read
+// of a push's records. Each row's stand-in is the one program it names, first on PATH, printing a
+// line and killing itself.
+func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
+	const slug = "invented-org/invented-repo"
+	killsItself := func(t *testing.T, name, said string) *Guard {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\necho '"+said+"' >&2\nkill -KILL $$\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+	}
+	said := "error connecting to api.github.com for " + slug
+	for _, row := range []struct {
+		name, program string
+		read          func(g *Guard) error
+	}{
+		{"the gh visibility read", "gh", func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
+		{"the GraphQL read", "gh", func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
+		{"the read with no credential", "git", func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
+		{"a git read of a push's records", "git", func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := row.read(killsItself(t, row.program, said))
+			if want := "signal: killed\n" + said; err == nil || err.Error() != want {
+				t.Errorf("read = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
