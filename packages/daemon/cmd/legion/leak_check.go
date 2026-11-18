@@ -30,8 +30,26 @@ var leakCheckStdin io.Reader = os.Stdin
 // runLeakCheck is `legion leak-check`, the image's shell door to packages/daemon/internal/leakguard:
 // the guard the daemon runs in process is the one a pod's git hook and a pod's own scripts run
 // here, so one set of rules answers for every write.
+//
+// The guard starts each of its children, the shared check among them, in a process group of its
+// own (leakguard's Guard.run), which none of the terminal's signals reach: git runs its pre-push
+// hook, and so this command, in the terminal's foreground group with git. So the guard runs under
+// a context that ends on a SIGINT or a SIGTERM (main's signal.NotifyContext) and on a SIGHUP, which
+// this command catches while it runs (hangupCancels), and the end of that context stops the
+// child's group. Without the SIGHUP, a pane that closes during a push would kill this command
+// where it stood and leave the shared check running, reparented and waited for by nobody. A
+// signal that ended the context ends the command with 128+<signal> (endedBySignal) rather than
+// with the setup failure its stopped check reads as, which refuses the push either way.
 func runLeakCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "leak-check", leakCheckCommands, args, stdout, stderr)
+	guarded, stop := hangupCancels(ctx)
+	status := runSubcommand(guarded, "leak-check", leakCheckCommands, args, stdout, stderr)
+	// A signal taken after the guard answered is read here too: nothing else ends the command on
+	// a SIGHUP this took, and git, in the same group, was sent it as well.
+	stop()
+	if ended, ok := signalled(guarded); ok {
+		return ended
+	}
+	return status
 }
 
 // runLeakCheckPrePush is the hook's half: git hands it the remote's name and URL and the update
@@ -57,12 +75,16 @@ func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer
 		return leakCheckReport(stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
 	guard := leakguard.New(leakguard.Options{})
-	return leakCheckReport(stderr, "", guard.Push(ctx, leakguard.PushRequest{
+	err = guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
 		URL:     url,
 		Updates: updates,
-	}))
+	})
+	if status, ok := signalled(ctx); ok {
+		return status
+	}
+	return leakCheckReport(stderr, "", err)
 }
 
 // runLeakCheckText is the text half: the whole of standard input is the text, its first line the
@@ -86,7 +108,11 @@ func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) i
 		return leakCheckReport(stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
 	}
 	guard := leakguard.New(leakguard.Options{})
-	return leakCheckReport(stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
+	err = guard.Text(ctx, leakguard.TextRequest{Text: string(text)})
+	if status, ok := signalled(ctx); ok {
+		return status
+	}
+	return leakCheckReport(stderr, kind, err)
 }
 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write

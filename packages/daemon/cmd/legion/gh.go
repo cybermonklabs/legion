@@ -613,14 +613,15 @@ func endedBySignal(cause error) (status int, ok bool) {
 var errHangup = errors.New(syscall.SIGHUP.String() + " signal received")
 
 // hangupCancels is ctx, cancelled with errHangup as well when a SIGHUP reaches this process before
-// stop is called. It is for work of this command's own that runs in a process group of its own:
-// the help reads (readGhHelp) and the leak guard's children (leakguard's Guard.run starts each
-// with procgroup.Configure under the context it is given). A pane that closes sends its SIGHUP to
-// the terminal's foreground group, which that work is not in, and main catches no SIGHUP, so
-// without this the signal would kill this process where it stood and leave the group running,
-// reparented and waited for by nobody. stop ends the watch and cancels the context, and a call
-// after the first does nothing. A SIGHUP that arrived just before stop is still read as one, so a
-// caller reads the context's cause after stop, and finds errHangup there whenever this took one.
+// stop is called. It is for a command's own work that runs in a process group of its own: `legion
+// gh`'s help reads (readGhHelp), and the leak guard's children, which `legion gh` and `legion
+// leak-check` both run (leakguard's Guard.run starts each with procgroup.Configure under the
+// context it is given). A pane that closes sends its SIGHUP to the terminal's foreground group,
+// which that work is not in, and main catches no SIGHUP, so without this the signal would kill
+// this process where it stood and leave the group running, reparented and waited for by nobody.
+// stop ends the watch and cancels the context, and a call after the first does nothing. A SIGHUP
+// that arrived just before stop is still read as one, so a caller reads the context's cause after
+// stop, and finds errHangup there whenever this took one.
 //
 // Where this process was started with SIGHUP ignored it is ctx itself and arms nothing, for the
 // reason runGhChild arms no forwarding of it there: arming it would undo a `nohup gh …`.
