@@ -23,12 +23,19 @@ body: |-
     not in the new tier, so where every process new to the stay ranks at nothing, the tiers below
     decide. The parent ranks at its whole size, so where nothing grew a pool's parent can be ended
     before its forks, and its end frees nothing while they hold the pages. Growth, the floor and
-    each line's sizes count every process whole. A pod short of CPU takes its readings 170 to more
-    than 300 ms apart, so the 300 ms window can hold one read and show no growth, which is why growth
-    since a kill comes before size. That tier measures growth since the rise's first kill, not the
-    previous one, because growers that step every 250 ms in step with each other show no step in the
-    100 ms after the previous kill: two kills after a fall went to a pool's parent and a sleeping
-    fork while the growers rose from 90.6% to 95.9% of a 4 GiB limit, 7.3 and 40.9 MiB below the
+    each line's sizes count every process whole. At the mark, with each `smaps` it reads again of a
+    process the band read running its parent's program, the guard reads that process's `exe` link
+    and arguments again, within the same budgets, before the discount applies: a process that has
+    run another program since ranks by its whole size, and one whose `exe` link cannot be read is
+    left out of that decision. The band can read a process between its fork and its exec, and a run
+    at 4 GiB ended the probe's parent first 115.1 ms after the mark while growers so read ranked at
+    nothing. After a kill, a process whose program differs from the one the decision read takes
+    its first read after the kill as its size as of the kill. A pod short of CPU takes its readings
+    170 to more than 300 ms apart, so the 300 ms window can hold one read and show no growth, which
+    is why growth since a kill comes before size. That tier measures growth since the rise's first
+    kill, not the previous one, because growers that step every 250 ms in step with each other show
+    no step in the 100 ms after the previous kill: two kills after a fall went to a pool's parent
+    and a sleeping fork while the growers rose from 90.6% to 95.9% of a 4 GiB limit, 7.3 and 40.9 MiB below the
     kill point. Whether the guard goes on after a kill is still decided by growth since the
     previous kill. To know what grew, the guard reads the sizes of what it may end at each reading
     in the band of 10% of the limit below the mark and after a kill, and none below the band. At the
@@ -81,17 +88,20 @@ body: |-
     process first (`grew`, `new`, `grew-since-kill` or `largest`), `sizes=`, where the sizes it was
     chosen by came from (`band`, the band's sizes alone at the mark; `reread`, with `smaps` read
     again there; `search`, with processes started since the band's last reading; `reading`, the
-    reading the kill is sent at), and `less_parent=`, what the order took off a fork's size, 0 where
-    it took nothing; the microVM guest watch's lines write `rule=kernel sizes=kernel less_parent=0`.
-    The `stopped for this rise` line now ends with `unread_processes=`, which names each process
-    the guard could not read, in pid order: `<pid>:<bytes>` where its `stat` reads a state other
-    than `Z` and its `smaps` reads, a bare `<pid>` otherwise, and `none` where there is none; its
-    other fields are unchanged. The guard never ends such a process, and a process whose `exe` or
-    `ns/pid` answers `ENOENT` now counts unread unless it has ended, where the scan used to leave it
-    out with no line. Under gVisor three kinds stay unread, a stated limit: a process whose main
-    thread exited while another thread holds its memory, a process that is not dumpable outside the
-    role namespaces (such as what a `kubectl exec` shell runs), and a process being killed. The
-    settings and their defaults are unchanged.
+    reading the kill is sent at), `less_parent=`, what the order took off a fork's size, 0 where it
+    took nothing, and `new_read=`, `<reached>:<own>` for a first kill the reads at the mark decided
+    (how many processes new to the stay they read, and how many of them hold memory of their own)
+    and `-` for every other kill; the microVM guest watch's lines write
+    `rule=kernel sizes=kernel less_parent=0 new_read=-`. The `stopped for this rise` line now ends
+    with `unread_processes=`, which names each process the guard could not read, in pid order:
+    `<pid>:<bytes>` where its `stat` reads a state other than `Z` and its `smaps` reads, a bare
+    `<pid>` otherwise, and `none` where there is none; its other fields are unchanged. The guard
+    never ends such a process, and a process whose `exe` or `ns/pid` answers `ENOENT` now counts unread
+    unless it has ended, where the scan used to leave it out with no line. Under gVisor three kinds
+    stay unread, a stated limit: a process whose main thread exited while another thread holds its
+    memory, a process that is not dumpable outside the role namespaces (such as what a
+    `kubectl exec` shell runs), and a process being killed. The settings and their defaults are
+    unchanged.
 time: 2026-11-17T09:37:25Z
 custom:
     Issue: pr4273
