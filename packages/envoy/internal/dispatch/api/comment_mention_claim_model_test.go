@@ -62,7 +62,9 @@ import (
 //     thing that takes milliseconds or seconds - a try and its re-read, the refresh, a park's
 //     timer, at most two seconds (mentionOrderRetryMax) - ends no later than the slot after the
 //     one it began in, so time moves on no further while one is still to end; a locked section
-//     and the sweep's hand-off take microseconds, so time moves on none while one waits;
+//     and the sweep's hand-off take microseconds, so time moves on none while one waits, but a
+//     statement may run while a goroutine waits for the lock, as a goroutine waiting for a core
+//     may for milliseconds (enabled);
 //   - a claim and the moment it is read are each known to a slot, so a claim read one lease and
 //     part of a slot after it was written may be live or lapsed: the model reads it as the sender's
 //     own statements would have it - live, or free when another holds it - and as the sweep would
@@ -332,6 +334,11 @@ type cmG struct {
 	// lock, and readFailed whether that answer was a failure.
 	answered   *cmRead
 	readFailed bool
+	// tried is that the try of the send it carries has answered, from that answer until it starts
+	// another try or next hands it its next send: a sender whose serve reaches one lock site both
+	// before a try and after it, as one that reads an unknown claim again before its park does,
+	// acts there on which it is.
+	tried bool
 }
 
 // cmSweep is the delivery sweep between its two statements: it claimed comment's attempt, which
@@ -831,7 +838,7 @@ func (r *cmRun) settle() {
 				return
 			}
 			r.tries[c] = &cmTry{g: g, began: r.slot, item: a.item, reply: a.try}
-			g.last, g.done, g.carried = c, false, a.item
+			g.last, g.done, g.carried, g.tried = c, false, a.item, false
 			r.log("%s starts %s's try, carrying claim %s", r.gName(g), a.item.comment.ID, r.name(a.item.claimed))
 		case a.reread != nil && g.refresh:
 			r.refresh.read = r.newRead(a.named, a.reread)
@@ -896,6 +903,9 @@ func (r *cmRun) apply(s cmStep) {
 			strings.HasPrefix(g.site, "claimedDuring:")
 		// The goroutine acts under this lock on what it was answered last.
 		g.answered, g.readFailed = nil, false
+		if strings.HasPrefix(g.site, "next:") {
+			g.tried = false
+		}
 		parking := strings.HasPrefix(g.site, "park:")
 		if parking {
 			// The park records the claim the try took (park).
@@ -970,7 +980,7 @@ func (r *cmRun) apply(s cmStep) {
 	case cmTryAnswers:
 		try := r.tries[s.comment]
 		delete(r.tries, s.comment)
-		try.g.done = !try.answer.waits
+		try.g.done, try.g.tried = !try.answer.waits, true
 		try.g.ended = nil
 		if try.took && try.answer.waits {
 			try.g.ended = try
@@ -1181,13 +1191,13 @@ func (r *cmRun) checkDropped() {
 	}
 }
 
-// enabled is every step the run may take next, but for those it defers while a locked section
-// waits: an outbox send (cmPublish, cmPublishBetween) and a re-read's reading of the rows
-// (cmRereadRuns, cmRefreshRereadRuns). A locked section reads neither the outbox nor the rows, and
-// those steps change only what no locked section reads and no check compares, so taking one of
-// them before a locked section reaches the state taking it after does, through states that break
-// the same checks; and a locked section always ends, its goroutine coming to a statement or
-// ending, so each of them is taken in time.
+// enabled is every step the run may take next. A statement - a try, a re-read's reading of the
+// rows, a refresh's write, an outbox send - may run while a goroutine waits for the sender's lock:
+// a goroutine that could take the lock may still wait milliseconds for a core, as long as a
+// statement takes, so a refresh may re-read a row and write it again between a try's answer and
+// the park that records the try's claim
+// (TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark). Time moves on a
+// slot only while no goroutine waits for the lock: nothing waits that long.
 func (r *cmRun) enabled() []cmStep {
 	if r.ended() || r.fault != "" {
 		return nil
@@ -1198,13 +1208,12 @@ func (r *cmRun) enabled() []cmStep {
 	}
 	mayFail := r.readFailures < r.v.readFailures
 	// Time moves on only while nothing that began a slot ago is still to end, and while no
-	// locked section and no hand-off waits, which take microseconds.
-	locks := false
+	// goroutine waits for the lock and no hand-off waits, which take less than a slot.
 	waits := len(r.sweeps) > 0
 	for i, g := range r.gs {
 		if g.lock != nil {
 			steps = append(steps, cmStep{kind: cmLockRuns, g: i})
-			waits, locks = true, true
+			waits = true
 		}
 		if g.refresh && g.born < r.slot {
 			waits = true
@@ -1218,9 +1227,7 @@ func (r *cmRun) enabled() []cmStep {
 		waits = waits || try.began < r.slot
 		switch {
 		case try.read != nil && !try.read.ran:
-			if !locks {
-				steps = append(steps, cmStep{kind: cmRereadRuns, comment: c})
-			}
+			steps = append(steps, cmStep{kind: cmRereadRuns, comment: c})
 		case try.read != nil:
 			steps = append(steps, cmStep{kind: cmRereadAnswers, comment: c})
 			if mayFail {
@@ -1239,9 +1246,7 @@ func (r *cmRun) enabled() []cmStep {
 	if f := r.refresh; f != nil {
 		switch {
 		case f.read != nil && !f.read.ran:
-			if !locks {
-				steps = append(steps, cmStep{kind: cmRefreshRereadRuns})
-			}
+			steps = append(steps, cmStep{kind: cmRefreshRereadRuns})
 		case f.read != nil:
 			steps = append(steps, cmStep{kind: cmRefreshRereadAnswers})
 			if mayFail {
@@ -1263,10 +1268,10 @@ func (r *cmRun) enabled() []cmStep {
 	if !waits && r.slot+1 < r.slots && (r.refresh == nil || (r.slot+1)%cmSlots != 0) {
 		steps = append(steps, cmStep{kind: cmTimePasses})
 	}
-	if !r.published && !locks {
+	if !r.published {
 		steps = append(steps, cmStep{kind: cmPublish})
 	}
-	if !r.publishedBetween && !locks {
+	if !r.publishedBetween {
 		steps = append(steps, cmStep{kind: cmPublishBetween})
 	}
 	for c := range 2 {

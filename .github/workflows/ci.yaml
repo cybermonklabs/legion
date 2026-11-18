@@ -45,7 +45,7 @@ name: CI
 # nothing about it, and a gate in
 # .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 # rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-# event must hold back, as the nine slow suites' pull-request case is (the comment on them
+# event must hold back, as the ten slow suites' pull-request case is (the comment on them
 # below). The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 # CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 # every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -66,7 +66,8 @@ name: CI
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 # listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-# builds the test binary of every package of the envoy module, and the binaries, multiprocess
+# builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
+# the API's of that set, and the binaries, multiprocess
 # and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 # broker's commands out of that same set), go-envoy-infra
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
@@ -184,6 +185,7 @@ env:
       "envoy-go-checks": "envoy_go_checks",
       "envoy-infra-go": "envoy_infra_go",
       "text-checks": "text_checks",
+      "envoy-go-claim-model": "envoy_go_claim_model",
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
@@ -366,7 +368,7 @@ jobs:
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
+      # The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
       # a pull request runs them only when it carries the label `full-ci`. Each is false on a
       # pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -384,9 +386,10 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.text_checks }}
-      # Seven slow suites, gated as the comment above `envoy_go` says.
+      # Eight slow suites, gated as the comment above `envoy_go` says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go_race_api || 'false' }}
+      envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go_claim_model || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter2.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter2.outputs.dispatch_multiprocess || 'false' }}
@@ -417,8 +420,8 @@ jobs:
       tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.tool_fallback }}
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.proof_sdk_offline }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
-      # the eight outputs the nine slow suites run behind. On a pull request without that
-      # label each of those eight is `false` whether its paths matched or not, so a reader of the
+      # the nine outputs the ten slow suites run behind. On a pull request without that
+      # label each of those nine is `false` whether its paths matched or not, so a reader of the
       # outputs alone cannot tell "the filter said no" from "the label is absent"; with this
       # beside them ci-ok's report tells the two apart and says which
       # (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
@@ -2724,13 +2727,6 @@ jobs:
               # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
               # alone must start both jobs, or the side it disagrees with stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              # Its race-impossible step runs the API's claim model in ./internal/dispatch/api, so
-              # it compiles that package's tests, which read these:
-              # internal/dispatch/api/delivery_live_diff_test.go:982,1013, and openapi_test.go:199-200,
-              # whose TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed
-              # document through a path built relative to the test binary.
-              - 'packages/contracts/fixtures/live/**'
-              - 'packages/contracts/schemas/dispatch-openapi.json'
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -3815,6 +3811,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_search_test.go'
+              - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_sql_test.go'
               - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_test.go'
               - '!packages/envoy/internal/dispatch/api/copy_lock_order_test.go'
               - '!packages/envoy/internal/dispatch/api/decision_block_route_guard_test.go'
@@ -3871,6 +3868,122 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/roleholder/**/*_test.go'
+              # END generated
+            # The mention sender's claim model's own job: `go test -run` of its two tests in
+            # ./internal/dispatch/api. A -run moves no closure, so this is what the package's plain
+            # test build reads. packages/envoy stays a wide root, as text_checks' does: the !race
+            # source guards that build compiles walk every non-test .go file of the module, infra
+            # and testdata included, and the package's test closure reaches embedded files,
+            # migrations and goldens across it.
+            envoy_go_claim_model:
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
+              - *go_workspace
+              - 'packages/envoy/**'
+              # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the step compiles
+              # with the rest of that package.
+              - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/openapi_test.go:199-200, whose
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
+              # at run time; the step compiles it with the rest of that package.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
+              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/agentloop/**/*_test.go'
+              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/clitest/**/*_test.go'
+              - '!packages/envoy/cmd/**/*_test.go'
+              - '!packages/envoy/dispatchbody/**/*_test.go'
+              - '!packages/envoy/going/**/*_test.go'
+              - '!packages/envoy/infra/**/*_test.go'
+              - '!packages/envoy/internal/broker/**/*_test.go'
+              - '!packages/envoy/internal/brokerclient/**/*_test.go'
+              - '!packages/envoy/internal/brokertoken/**/*_test.go'
+              - '!packages/envoy/internal/bus/**/*_test.go'
+              - '!packages/envoy/internal/cistore/**/*_test.go'
+              - '!packages/envoy/internal/cmdtest/**/*_test.go'
+              - '!packages/envoy/internal/config/**/*_test.go'
+              - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/ctxlock/**/*_test.go'
+              - '!packages/envoy/internal/dedupe/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/config/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/dashboard/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/delivery/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/deliveryaudit/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/docs/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/events/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/files/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/model/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/redeliver/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/routes/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/store/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/text/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/envconf/**/*_test.go'
+              - '!packages/envoy/internal/fileowner/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
+              - '!packages/envoy/internal/ghrename/**/*_test.go'
+              - '!packages/envoy/internal/googleidentity/**/*_test.go'
+              - '!packages/envoy/internal/goroutinetest/**/*_test.go'
+              - '!packages/envoy/internal/integration/**/*_test.go'
+              - '!packages/envoy/internal/kvwatch/**/*_test.go'
+              - '!packages/envoy/internal/legionagents/**/*_test.go'
+              - '!packages/envoy/internal/logging/**/*_test.go'
+              - '!packages/envoy/internal/mcpbridge/**/*_test.go'
+              - '!packages/envoy/internal/metrics/**/*_test.go'
+              - '!packages/envoy/internal/oidc/**/*_test.go'
+              - '!packages/envoy/internal/pglisten/**/*_test.go'
+              - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/ratelimit/**/*_test.go'
+              - '!packages/envoy/internal/redact/**/*_test.go'
+              - '!packages/envoy/internal/roles/**/*_test.go'
+              - '!packages/envoy/internal/routing/**/*_test.go'
+              - '!packages/envoy/internal/runnerlog/**/*_test.go'
+              - '!packages/envoy/internal/serverwait/**/*_test.go'
+              - '!packages/envoy/internal/session/**/*_test.go'
+              - '!packages/envoy/internal/smoke/**/*_test.go'
+              - '!packages/envoy/internal/stacktest/**/*_test.go'
+              - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/internal/testtmp/**/*_test.go'
+              - '!packages/envoy/internal/textcheck/**/*_test.go'
+              - '!packages/envoy/internal/verify/**/*_test.go'
+              - '!packages/envoy/internal/webhook/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
+              - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
@@ -5129,7 +5242,7 @@ jobs:
   # through the composite action .github/actions/architecture-check, and the spec-file check over
   # its .dispatch/spec through the composite action .github/actions/spec-check, both of which
   # other repositories can call. The slow half below (the module's unit tests, the
-  # container-backed NATS matrix and the integration suite) is one of the nine slow suites,
+  # container-backed NATS matrix and the integration suite) is one of the ten slow suites,
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
   # restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
@@ -5280,6 +5393,21 @@ jobs:
       actions: read
       checks: write
     uses: ./.github/workflows/ci-job-envoy-go-race-api.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The mention sender's claim model alone, on a runner of its own: its search takes every core
+  # the runner has for as long as it runs, which beside envoy-go's other steps would put its
+  # minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
+  # carries a Postgres service.
+  envoy-go-claim-model:
+    needs: changes
+    if: needs.changes.outputs.envoy_go_claim_model == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-claim-model.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -5854,6 +5982,7 @@ jobs:
       - text-checks
       - envoy-go-race
       - envoy-go-race-api
+      - envoy-go-claim-model
       - envoy-go-race-docs
       - envoy-go-docs-finalizers
       - dispatch-memory

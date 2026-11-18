@@ -18,7 +18,8 @@ name: CI caches
 # its job gives): go-notices (lint's notices step), go-daemon (typecheck,
 # daemon-go and
 # pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers,
-# listener-server-change, envoy-e2e-local and envoy-session-stall), go-envoy-test (envoy-go, and
+# listener-server-change, envoy-e2e-local and envoy-session-stall), go-envoy-test (envoy-go,
+# envoy-go-claim-model, which builds the API's test binary of that set, and
 # the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which
 # ci.yaml's dispatch-browser job calls: those three build the Dispatch server and the real
 # broker's commands, whose packages the go-envoy entry's build of the listener and natsd alone

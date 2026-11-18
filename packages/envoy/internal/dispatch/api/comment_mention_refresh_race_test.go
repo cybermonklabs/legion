@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -219,6 +220,49 @@ func publishIssueEvents(t *testing.T, database *store.Store, issueKey string) {
 	}
 }
 
+// parkGate is the sender's lock with a gate before park's: once armed, the first Lock park calls
+// tells the test it has arrived and waits, holding no lock, until the test releases the gate.
+// Every other Lock takes the mutex alone. The gate is released when the test ends at the latest,
+// so no lane goroutine is left waiting at it.
+type parkGate struct {
+	sync.Mutex
+	armed    atomic.Bool
+	arrived  chan struct{}
+	open     chan struct{}
+	releases sync.Once
+}
+
+func newParkGate(t *testing.T) *parkGate {
+	gate := &parkGate{arrived: make(chan struct{}), open: make(chan struct{})}
+	t.Cleanup(gate.release)
+	return gate
+}
+
+//go:noinline
+func (g *parkGate) Lock() {
+	if g.armed.Load() && lockCaller() == "park" && g.armed.CompareAndSwap(true, false) {
+		close(g.arrived)
+		<-g.open
+	}
+	g.Mutex.Lock()
+}
+
+func (g *parkGate) release() {
+	g.releases.Do(func() { close(g.open) })
+}
+
+// lockCaller is the name of the function that called the Lock that calls lockCaller.
+//
+//go:noinline
+func lockCaller() string {
+	var pc [1]uintptr
+	if runtime.Callers(3, pc[:]) == 0 {
+		return ""
+	}
+	frame, _ := runtime.CallersFrames(pc[:]).Next()
+	return frame.Function[strings.LastIndex(frame.Function, ".")+1:]
+}
+
 // A refresh that lands while a send's first try is in flight - after the try took the attempt's
 // claim for itself and before its park records that claim - and one after the park leave the
 // sender recording the claim the row carries: its refreshes go on writing the row through a
@@ -226,22 +270,23 @@ func publishIssueEvents(t *testing.T, database *store.Store, issueKey string) {
 // one posted after it. The send, the refreshes and the rule are the server's own, on the
 // database. The control row runs the refresh after the park alone.
 //
-// The window between the try's answer and its park has no failing run, from this test or from
-// the claim model. Before this change serve marked the try done (trying(false)) one step before
-// park recorded the try's claim, and a refresh that re-read the claim in that step could record the
-// try's claim and write the row past it, which park then set back. That step holds no lock and
-// calls none of the sender's send, refresh, reread or timer functions, so no test of the real lane
-// can land a refresh in it, and the claim model, whose steps stop only inside those functions, has
-// no step there either. The fix is structural: serve no longer marks the try done, and park clears
-// the mark under the lock it records the claim under (mentionSender.park), so the window is gone.
-// This test passes before the change too, and guards the behaviour around that window.
+// The last row lands the refresh in the window's last step: the try has answered and serve has
+// gone on to park, which waits at the sender's lock (parkGate) while the refresh runs, a refresh
+// whose answer was lost during the try having left the claim unknown. Before this change serve
+// marked the try done (trying(false)) before park took that lock to record the try's claim, so
+// this refresh re-read the row, recorded the try's claim and wrote the row past it, and park then
+// set the record back to the try's claim: the sender trusted a claim the row no longer carried,
+// and no refresh wrote that row again. Now the try stays marked in flight until park records its
+// claim under that lock (mentionSender.park), so the refresh re-reads nothing there.
 func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		during bool
+		name    string
+		during  bool
+		between bool
 	}{
 		{name: "control: the refresh runs after the park alone"},
 		{name: "a refresh whose answer is lost and another land during the try, then one after the park", during: true},
+		{name: "a refresh whose answer is lost lands during the try, another as park waits for the lock, then one after the park", between: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -254,17 +299,21 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			// unsureDuring is whether the lost refresh left the claim unsure while the try was in
 			// flight; park's timer, which the test receives, orders its write before the read.
 			var unsureDuring bool
+			gate := newParkGate(t)
 			var sender *mentionSender
 			sender = newMentionSender(served.lifetime, time.Hour,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					again, waits := served.sendCommentMention(ctx, item)
-					if tc.during && item.heldFor == "" && refreshed.CompareAndSwap(false, true) {
+					if (tc.during || tc.between) && item.heldFor == "" && refreshed.CompareAndSwap(false, true) {
 						// The try took the attempt's claim and found the earlier events owed;
 						// its answer has not reached the lane yet.
 						lose.Store(true)
 						sender.refreshHeldClaims(ctx)
 						_, unsureDuring = recordedClaim(sender, item.key())
-						sender.refreshHeldClaims(ctx)
+						if tc.during {
+							sender.refreshHeldClaims(ctx)
+						}
+						gate.armed.Store(tc.between)
 					}
 					return again, waits
 				},
@@ -276,6 +325,9 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 					return written, err
 				},
 				served.rereadMentionClaims, served.releaseMentionClaims)
+			// No goroutine of the sender's takes its lock before a send is queued: keepClaims's
+			// first refresh is an hour away.
+			sender.mu = gate
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
 			sender.after = func(_ time.Duration, f func()) { timers <- f }
@@ -286,9 +338,21 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			// claims its attempt and parks, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh beside a try and its park", "before")
 			a1 := postMentionOfS1(t, handler, issue.Key, "first")
-			unpark := <-timers
 			key := mentionKey{comment: a1, target: "session:s1", attempt: 1}
-			if tc.during && !unsureDuring {
+			if tc.between {
+				select {
+				case <-gate.arrived:
+				case <-time.After(30 * time.Second):
+					t.Fatal("A-1's park never reached the sender's lock after its try")
+				}
+				sender.refreshHeldClaims(ctx)
+				recorded, unsure := recordedClaim(sender, key)
+				t.Logf("as park waits for the lock, the refresh leaves the sender recording %v (unsure %t), the row carrying %v",
+					recorded, unsure, attemptClaimedAt(t, database, a1, "session:s1"))
+				gate.release()
+			}
+			unpark := <-timers
+			if (tc.during || tc.between) && !unsureDuring {
 				t.Fatal("the refresh whose answer was lost during the try left A-1's claim known: the case is not the one under test")
 			}
 			sender.refreshHeldClaims(ctx)

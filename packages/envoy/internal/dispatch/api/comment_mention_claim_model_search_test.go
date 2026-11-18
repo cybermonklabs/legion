@@ -139,7 +139,7 @@ func (r *cmRun) key() string {
 			}
 			fmt.Fprintf(&b, "g%d %s %v %t finished %d", i, at, g.lane, g.givenUp, finished)
 		} else {
-			fmt.Fprintf(&b, "g%d %s %v %t %s", i, at, g.lane, g.givenUp, send(g.carried))
+			fmt.Fprintf(&b, "g%d %s %v %t %t %s", i, at, g.lane, g.givenUp, g.tried, send(g.carried))
 		}
 		if g.ended != nil {
 			fmt.Fprintf(&b, " ended %s", send(g.ended.answer.item))
@@ -322,11 +322,12 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // the spec puts outside this change: the table counts those runs in their own column, and they
 // fail nothing.
 //
-// CI runs three periods, about two and a half minutes on two cores, which is enough for a refresh
-// to land between a try and its park and for a send to park after a failed read; the full run
-// (ENVOY_MENTION_ORDER_MODEL=full) runs five periods and the outage runs, and CI guards what only
-// they reach with TestALostRefreshNeverRevivesALapsedClaim and
-// TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim on the database.
+// CI runs three periods (the envoy-go-claim-model job), which is enough for a refresh to re-read
+// and write a row between a try's answer and its park and for a send to park after a failed read;
+// the full run (ENVOY_MENTION_ORDER_MODEL=full) adds the outage pair at four periods, enough for a
+// claim to lapse and the sweep to hand its send back, and CI guards what only they reach with
+// TestALostRefreshNeverRevivesALapsedClaim, TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
+// and TestAHandOffAfterTheRetryCheckIsNotDropped on the database.
 func TestTheMentionSenderClaimModel(t *testing.T) {
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",
@@ -348,15 +349,13 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 		{v: cmBlindRepair, periods: 3, breaks: []string{"stale"}},
 	}
 	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
-		// A claim lapses only after a lease with no committed refresh, and the refresh before
-		// this change then wrote it again: that takes a claim a lease and a slot old, so five
-		// periods at least.
-		runs = []modelRun{
-			{v: cmAsBuilt, periods: 5},
-			{v: cmBlindRepair, periods: 5, breaks: []string{"stale"}},
-			{v: cmOutage, periods: 5},
-			{v: cmOldStatements, periods: 5, breaks: []string{"stale", "dropped", "order"}},
-		}
+		// A claim lapses only after a lease with no committed refresh, and the sweep then takes
+		// its attempt: four periods reach that, the refresh before this change writing the lapsed
+		// claim again, and a hand-off landing after a send's retry check.
+		runs = append(runs,
+			modelRun{v: cmOutage, periods: 4},
+			modelRun{v: cmOldStatements, periods: 4, breaks: []string{"stale", "dropped", "order"}},
+		)
 	}
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | held behind event 0 | A-2 first by the sweep after its claim lapsed | time |")

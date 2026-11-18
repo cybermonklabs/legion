@@ -35,16 +35,16 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's runs of 10, 5 and 10 minutes, which is 26; after that step's 5
-    # minutes (its measured 2 before the API's claim model joined it, the model's 2 min 30 s, and
-    # the API's test build) the unit step's own 20 is 26; after the unit step, which runs strictly
+    # plain race-impossible step's runs of 10 and 10 minutes, which is 21; after that step's 2
+    # minutes (measured before the API's claim model joined it, which runs in envoy-go-claim-model
+    # now) the unit step's own 20 is 23; after the unit step, which runs strictly
     # fewer packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 46 (two packages, which go test starts at once
+    # exceed that, the store-form count's own 5 is 43 (two packages, which go test starts at once
     # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
-    # database skip count's own timeout-minutes of 25 is 66
+    # database skip count's own timeout-minutes of 25 is 63
     # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
     # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10
-    # and the bus matrix's own 5 are 62, and the integration step's 5 makes 67.
+    # and the bus matrix's own 5 are 59, and the integration step's 5 makes 64.
     timeout-minutes: 70
     services:
       postgres:
@@ -110,16 +110,13 @@ jobs:
       # and the documents package measures the heap a room keeps, which the detector's shadow
       # memory and instrumentation move. Those are out of the race build altogether
       # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
-      # it (raceEnabled), so this is their full-size run. The API's mention sender claim model
-      # (TestTheMentionSenderClaimModel) is out of the race build too: it searches every
-      # interleaving of the sender's own code, which the detector slows some sevenfold - 28 s
-      # plain and 193 s under -race on four cores of a dev box, against envoy-go-race-api's 30
-      # minutes, which its 25 minutes already near. The API's eight source guards, and
-      # one_expression_guard_test.go beside them, carry that tag too and are deliberately not
-      # here: they read the module's source, the text-check job runs their seventeen tests by name,
-      # and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of this step rather than
-      # have each of them run twice. It comes before the unit step for the reason the API
-      # package's own run did: run beside the other package binaries,
+      # it (raceEnabled), so this is their full-size run. The API's mention sender claim model is
+      # out of the race build too, and runs in a job of its own, envoy-go-claim-model, as the
+      # API's eight source guards and one_expression_guard_test.go, which carry that tag as well,
+      # run in the text-check job: ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave
+      # exactly those tests out of this step rather than have each of them run twice. It comes
+      # before the unit step for the reason the API package's own run did: run beside the other
+      # package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
@@ -127,13 +124,10 @@ jobs:
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
       # either and missing here fails the ci-filters job naming this step. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s; and on a dev box at GOMAXPROCS=2, the claim model's three periods 2 min 30 s, the
-      # sender as built and its blind control together. So 10 minutes each for the bus and the
-      # documents package is ample, and the model's 5 is twice its run.
+      # 127 s, so 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 5m -run '^(TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
