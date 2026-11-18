@@ -1,5 +1,14 @@
 kind: Fixed
-body: A keyed Dispatch write whose caller the keyed layer could not resolve, because the sign-in issuer, a session store or a service-account token's issuer was down for a moment, no longer runs with no key when the handler's own lookup of the caller then succeeds. The handler is handed the layer's refusal as the caller, so the attempt is refused exactly as before with nothing kept under the key, and the client's retry under the same `Idempotency-Key` writes once instead of a second time.
+body: |-
+  A keyed Dispatch write (a `POST` or `PATCH` with an `Idempotency-Key`) is refused as it was before
+  #4350 when the keyed layer cannot resolve its caller, or when its body declared no length and ran
+  past the route's limit: the route's own answer again, such as `403 REPLY_FORBIDDEN` on the message
+  and comment replies and `403 ACCEPT_FORBIDDEN` on a delivery's accept for a request with no
+  `Authorization`, or a missing object's `404`, where #4350 answered `401`, `503`, `500` or `413`
+  in the keyed layer. Nothing the handler makes in those cases lands without the key: it meets a
+  caller the layer could not resolve as the layer's refusal, and any transaction it opens that wrote
+  is refused at its commit. So a caller whose lookup fails once and then succeeds still writes once
+  when it resends under the key.
 time: 2026-11-18T12:09:44.668131759Z
 custom:
     Issue: pr4411

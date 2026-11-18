@@ -1,0 +1,1794 @@
+{
+  "PATCH /api/v1/artifacts/{id} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/artifacts/{id} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/artifacts/{id} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/artifacts/{id} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/artifacts/{id} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/artifacts/{id} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/artifacts/{id} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/asks/{id} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/comments/{id} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/delivery/session-groups/{id} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/issues/{key} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/me/agent-tokens/{id} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "PATCH /api/v1/priorities/{id} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"artifact blob exceeds 25 MB\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"artifact blob exceeds 25 MB\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/artifacts | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/agents/{session_id}/messages | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/approval-requests | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"ARTIFACT_NOT_FOUND\",\"error\":\"artifact not found\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/asks | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"ARTIFACT_NOT_FOUND\",\"error\":\"artifact not found\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/comments | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/edits | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/plan-reviews | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/rebuild | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/reviews | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/artifacts/{id}/versions/{number}/reviews | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/asks/{id}/answer | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/asks/{id}/decline | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/asks/{id}/resolve | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/broadcasts | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/broadcasts | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/broadcasts | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/broadcasts | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/broadcasts | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/broadcasts | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/broadcasts | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/accept | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/deliveries | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reject | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"NOT_FOUND\",\"error\":\"not found\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reopen | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | an undeclared body past the route's limit": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | no Authorization": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | the sign-in issuer down": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/reply | the store down": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/comments/{id}/resolve | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-grants/{id}/revoke | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-requests/machine-lookup | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/approve | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/credential-requests/{id}/deny | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/delivery/session-groups | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/going/requests | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/going/requests | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/going/requests | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/going/requests | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/going/requests | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/going/requests | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/going/requests | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"artifact blob exceeds 25 MB\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"artifact blob exceeds 25 MB\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/edits | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/artifacts/{slug}/versions | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/asks | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/claim | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/comments | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"request body exceeds 1576960 bytes: a handoff body is at most 262144 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | an undeclared body past the route's limit": {
+    "status": 403,
+    "body": "{\"code\":\"HANDOFF_FORBIDDEN\",\"error\":\"a handoff is written by an agent session under a bearer token, naming itself in actor\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/handoffs/{phase} | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/messages | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/issues/{key}/results | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/machine-logins/{id}/revoke | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"request body exceeds 6292480 bytes\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"request body exceeds 6292480 bytes\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/markdown/round-trip | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/me/agent-tokens | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/me/inbox/dismiss | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/me/inbox/read | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | an undeclared body past the route's limit": {
+    "status": 403,
+    "body": "{\"code\":\"ACCEPT_FORBIDDEN\",\"error\":\"accept requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | no Authorization": {
+    "status": 403,
+    "body": "{\"code\":\"ACCEPT_FORBIDDEN\",\"error\":\"accept requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | the sign-in issuer down": {
+    "status": 403,
+    "body": "{\"code\":\"ACCEPT_FORBIDDEN\",\"error\":\"accept requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/deliveries/{attempt}/accept | the store down": {
+    "status": 403,
+    "body": "{\"code\":\"ACCEPT_FORBIDDEN\",\"error\":\"accept requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | an undeclared body past the route's limit": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | no Authorization": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | the sign-in issuer down": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/messages/{id}/reply | the store down": {
+    "status": 403,
+    "body": "{\"code\":\"REPLY_FORBIDDEN\",\"error\":\"reply requires an agent bearer token\"}\n"
+  },
+  "POST /api/v1/priorities | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/priorities | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/priorities | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/priorities | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/priorities | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/priorities | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/priorities | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"SOURCE_NOT_FOUND\",\"error\":\"no architecture source configured for TEST\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-source/sync | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"SOURCE_NOT_FOUND\",\"error\":\"no architecture source configured for TEST\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/sync | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"SOURCE_NOT_FOUND\",\"error\":\"no architecture source from owner/repo configured for TEST\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"artifact blob exceeds 25 MB\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"artifact blob exceeds 25 MB\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/edits | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/artifacts/{slug}/versions | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/projects/{key}/related | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | an undeclared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/results/{id}/retract | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | a bad token": {
+    "status": 401,
+    "body": "{\"code\":\"UNAUTHORIZED\",\"error\":\"invalid bearer token\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | a declared body past the route's limit": {
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | an undeclared body past the route's limit": {
+    "status": 404,
+    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | no Authorization": {
+    "status": 401,
+    "body": "{\"code\":\"NO_IDENTITY\",\"error\":\"unauthorized\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | the service-account issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"OIDC_ISSUER_UNAVAILABLE\",\"error\":\"the service-account token issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | the sign-in issuer down": {
+    "status": 503,
+    "body": "{\"code\":\"SIGNIN_UNAVAILABLE\",\"error\":\"the sign-in issuer cannot be reached; try again in a minute\"}\n"
+  },
+  "POST /api/v1/signins/{id}/revoke | the store down": {
+    "status": 500,
+    "body": "{\"code\":\"INTERNAL\",\"error\":\"internal server error\"}\n"
+  }
+}

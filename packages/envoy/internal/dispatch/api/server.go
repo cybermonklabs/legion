@@ -1037,10 +1037,9 @@ func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value
 // place, so a retry goes out on the new cookie before this tab knows. A request whose caller is
 // another person, or no person at all (a bearer), is answered 409 LOGIN_CHANGED before anything
 // runs - before its Idempotency-Key is read, so its key is untouched. A caller that resolves to
-// nobody (a lapsed cookie) is passed on to the 401 written further in - the keyed layer's for a
-// keyed write, the handler's for any other - so a write a session lapsed under waits for the
-// sign-in that follows. A request without the header - the dispatch command, an agent, a script -
-// is not checked. Logins are compared as model.CanonicalLogin compares them.
+// nobody (a lapsed cookie) is left to the route's own refusal, a 401, so a write a session lapsed
+// under waits for the sign-in that follows. A request without the header - the dispatch command,
+// an agent, a script - is not checked. Logins are compared as model.CanonicalLogin compares them.
 func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pressed := r.Header.Values(contracts.DispatchLoginHeader)

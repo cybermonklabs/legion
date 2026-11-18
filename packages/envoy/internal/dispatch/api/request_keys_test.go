@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -1013,14 +1012,6 @@ func (f flakyVerifier) Verify(ctx context.Context, token string) (oidc.Claims, e
 		return issuerDownVerifier{}.Verify(ctx, token)
 	}
 	return oidc.Claims{Subject: serviceTokenSubject}, nil
-}
-
-// storeDownIdentity is a cookie identity whose session store does not answer: CookieIdentity
-// hands the store's own error on, which no handler names and every one answers 500 INTERNAL.
-type storeDownIdentity struct{}
-
-func (storeDownIdentity) Login(*http.Request) (string, error) {
-	return "", errors.New("read the session generation: the test's session store is down")
 }
 
 // INFRA-840, found by the review of #4140. The keyed layer resolved a keyed write's caller and,

@@ -91,8 +91,7 @@ const (
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes
 // service-account token and the shared token each name no project and prove no session, so a
 // request presenting no DPoP-bound token is outside both checks. A credential that does not
-// resolve is outside them too: its refusal is written further in, by the keyed layer for a keyed
-// write and by the handler for any other.
+// resolve is outside them too: its own refusal is the handler's to write.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	if _, presented := brokertoken.Presented(r); !presented {
 		return model.Actor{}, false

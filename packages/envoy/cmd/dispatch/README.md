@@ -3385,7 +3385,7 @@ Each item below names a status and code, then its meaning.
 
   The write names its presser in `Dispatch-Login` (every write the page makes does, `POST`, `PATCH`, `PUT` and `DELETE` alike) and its caller is someone else, or no person at all (any bearer):
   nothing ran and the key was not read, so it is untouched.
-  A caller that resolves to nobody (a lapsed cookie) gets the `401` written further in instead, the keyed layer's for a keyed write and the handler's for any other, and a write without the header is not checked.
+  A caller that resolves to nobody (a lapsed cookie) gets the route's own `401` instead, and a write without the header is not checked.
   The page drops every write that login pressed.
 
 - `400 REQUEST_BODY_UNREADABLE`
@@ -3414,11 +3414,12 @@ a broadcast answers once its messages are committed, with its deliveries behind 
 
 The layer reads a keyed body before its handler runs, spooling at most the route's own limit:
 26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`), 1 MiB for every other.
-A body past it is answered its route's `413` by the layer itself, and the handler does not run.
+A body that declares a length past it is answered its route's `413` by the layer itself, and the handler does not run.
+One that declared no length and runs past it as it is spooled goes to its handler whole, as it always did, and so does a request whose caller the layer could not resolve: each is answered as it always was, with no key claimed, and nothing its handler makes can land without the key.
 A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 
-Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the refusal of a caller it could not resolve, or the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
+Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the `413` of a body that declares a length past its route's limit, or anything a request gets that the layer hands its handler with no key claimed (a caller it could not resolve, an undeclared body past the limit), none of which it judges the key for - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
 A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other:
 the agents' client resends a failed write only against a Dispatch whose answer carried the echo in the last five minutes, or whose `/healthz` said so in that time (`packages/envoy-client/README.md`).
 

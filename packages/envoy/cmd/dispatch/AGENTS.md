@@ -749,8 +749,7 @@ which the delivery sweep also finishes on its own. Keys belong to the caller's l
 A write without the header runs unkeyed, as before. `PUT` and `DELETE` take no key. Every write
 route, `PUT` and `DELETE` included, that names its presser in `Dispatch-Login` runs only as that
 person: another person, or any bearer, is `409 LOGIN_CHANGED` before anything runs, its key
-untouched; a caller that resolves to nobody is passed on to the `401` written further in, the
-keyed layer's for a keyed write and the handler's for any other (`refuseChangedLogin`,
+untouched; a caller that resolves to nobody keeps the route's own `401` (`refuseChangedLogin`,
 `api/server.go`).
 
 | Path | Method | Access | Purpose |
