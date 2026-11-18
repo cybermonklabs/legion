@@ -994,6 +994,7 @@ jobs:
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
+              - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_app_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_cache_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_displaced_test.go'
@@ -1090,6 +1091,7 @@ jobs:
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
+              - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
               - '!packages/daemon/internal/dispatch/**/*_test.go'
               - '!packages/daemon/internal/experiment/**/*_test.go'
               - '!packages/daemon/internal/fixtureenv/**/*_test.go'
@@ -5330,7 +5332,9 @@ jobs:
   # two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
   # from the first-rollout build's, and each direction's page served by one build against the other
   # build's server. Playwright installs as it does for dispatch-browser-multiprocess, and the rows
-  # get a database of their own, since they truncate it.
+  # get a database of their own, since they truncate it. In a merge-group run the called file's
+  # dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
+  # build, beside this job and not after it (that job's comment says why).
   dispatch-two-builds:
     needs: changes
     if: needs.changes.outputs.dispatch_two_builds == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

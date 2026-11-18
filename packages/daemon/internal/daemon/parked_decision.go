@@ -190,9 +190,10 @@ func (r *outbox) settleTold(ctx context.Context, row record.OutboxRow, payload r
 	if payload.CatchUp == nil || payload.CatchUp.Kept == nil {
 		return nil
 	}
-	// A catch-up is enqueued for the root whose tree it states (workflow.QueueCatchUp), so the
-	// row's issue is that root; the key is the one its publish went out under, a re-held copy's
-	// being the row it copies (record.Notice.Published).
+	// A catch-up is enqueued on the issue whose architect it tells (workflow.QueueCatchUp): a
+	// root's for its tree, a child's for its own subtree. Only a root's carries kept decisions, so
+	// the row's issue here is that root; the key is the one its publish went out under, a re-held
+	// copy's being the row it copies (record.Notice.Published).
 	root := row.Issue
 	_, key := payload.Published(row.ID)
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
