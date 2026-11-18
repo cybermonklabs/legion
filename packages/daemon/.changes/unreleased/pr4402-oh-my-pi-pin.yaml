@@ -1,17 +1,22 @@
 kind: Changed
 body: |-
-    The worker image carries Oh My Pi `18.18.6-sami.20261118-101239` of cybermonklabs/oh-my-pi,
+    The worker image carries Oh My Pi `18.18.6-sami.20261118-112021` of cybermonklabs/oh-my-pi,
     which `.omp-pin` names. That build knows `secrets.maskSessionStore`, refuses to open its SQL
-    session store under a login whose default is read-only, pauses automatic Hindsight recall
-    for a minute after a recall fails, and holds a lease per session in a new table,
-    `omp_session_leases`, so a second live process cannot write the same session. Its database's
-    owner login makes that table and its index before a pod's agent login starts the build, or the
-    agent login makes them as its own. Every launch that resumes a recorded Oh My Pi session now
-    runs with `OMP_SESSION_EXCLUSIVE=1`, so a resume of a session another live process still holds
-    exits non-zero after a wait of up to 35 s, and the daemon retries it, instead of moving the
-    role onto a new session id it never recorded; `runtime.tmux.pane_env` and
-    `runtime.kubernetes.pod.env` refuse that name. The image build fails when the pinned
-    `omp --help` lists no `--session-id`. Every bash call of a role's or the controller's Oh My Pi
+    session store under a login whose default is read-only, on a hot standby, or on tables that
+    carry a column, a default, a trigger, a rule or row-level security it does not declare, names
+    its tables `public.<table>`, pauses automatic Hindsight recall for a minute after a recall
+    fails, and holds a lease per session in a new table, `omp_session_leases`, so a second live
+    process cannot write the same session. Before a deployment's pods start that build, run the
+    lease table's statements from its `docs/session.md` as each session database's owner login, or
+    the first agent login to start it makes the table and its index as their owner. Every launch
+    that resumes a recorded Oh My Pi session now runs with `OMP_SESSION_EXCLUSIVE=1`, so on SQL
+    storage a resume of a session another live process still holds exits non-zero after a wait of
+    up to 35 s, and the daemon retries it, instead of moving the role onto a new session id it
+    never recorded. A resume after the process that held the session was killed waits up to 30 s
+    for its lease to expire before the agent starts. `runtime.tmux.pane_env`,
+    `runtime.kubernetes.pod.env` and either runtime's `provider_keys` refuse that name, and
+    `legion controller start` drops it from the environment it inherits. The image build fails when
+    the pinned `omp --help` lists no `--session-id`. Every bash call of a role's or the controller's Oh My Pi
     now starts with `set +e +u +o pipefail;`, so a `set -e`, `set -u` or `set -o pipefail` in one
     call no longer cuts a later call. The worker stream keeps the `code` that Oh My Pi gives a
     refused or failed prompt (`session_busy`, `cost_cap`), which no daemon decision reads. The
