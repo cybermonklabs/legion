@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 )
 
 func executable(t *testing.T, dir, name string) string {
@@ -221,7 +222,8 @@ func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jj --version never ran: %v", err)
 	}
-	if strings.Contains(string(seen), "seed-value") || !strings.Contains(string(seen), "PATH=") {
-		t.Errorf("jj --version's environment carries a NATS seed (or is not the daemon's):\n%s", seen)
+	vars := envlisting.Vars(string(seen))
+	if name, leaked := envlisting.HoldingValue(vars, "pane-seed-value", "daemon-seed-value"); leaked || vars["PATH"] == "" {
+		t.Errorf("jj --version's environment carries a NATS seed in %s (or is not the daemon's):\n%s", name, seen)
 	}
 }

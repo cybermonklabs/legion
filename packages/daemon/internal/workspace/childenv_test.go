@@ -4,9 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 )
 
 // git and jj, which run in a managed repository's checkout, start without either raw NATS seed the
@@ -22,7 +23,8 @@ func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if strings.Contains(result.Stdout, "seed-value") || !strings.Contains(result.Stdout, "PATH=") {
-		t.Errorf("git's environment carries a NATS seed (or is not the daemon's):\n%s", result.Stdout)
+	vars := envlisting.Vars(result.Stdout)
+	if name, leaked := envlisting.HoldingValue(vars, "pane-seed-value", "daemon-seed-value"); leaked || vars["PATH"] == "" {
+		t.Errorf("git's environment carries a NATS seed in %s (or is not the daemon's):\n%s", name, result.Stdout)
 	}
 }

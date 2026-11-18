@@ -3,8 +3,9 @@ package omplaunch
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 )
 
 // `mise where` starts without either raw NATS seed the daemon holds.
@@ -22,7 +23,8 @@ func TestMiseWhereGetsNoNATSSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mise never ran: %v", err)
 	}
-	if strings.Contains(string(seen), "seed-value") || !strings.Contains(string(seen), "PATH=") {
-		t.Errorf("mise where's environment carries a NATS seed (or is not the daemon's):\n%s", seen)
+	vars := envlisting.Vars(string(seen))
+	if name, leaked := envlisting.HoldingValue(vars, "pane-seed-value", "daemon-seed-value"); leaked || vars["PATH"] == "" {
+		t.Errorf("mise where's environment carries a NATS seed in %s (or is not the daemon's):\n%s", name, seen)
 	}
 }

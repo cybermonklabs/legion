@@ -3,8 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 )
 
 // A key command, and the secrets command a provider key runs, start without either raw NATS seed
@@ -16,8 +17,9 @@ func TestTheDaemonsKeyCommandsGetNoNATSSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executePrivateKeyCommand: %v", err)
 	}
-	if strings.Contains(out, "seed-value") || !strings.Contains(out, "PATH=") {
-		t.Errorf("the key command's environment carries a NATS seed (or is not the daemon's):\n%s", out)
+	vars := envlisting.Vars(out)
+	if name, leaked := envlisting.HoldingValue(vars, "pane-seed-value", "daemon-seed-value"); leaked || vars["PATH"] == "" {
+		t.Errorf("the key command's environment carries a NATS seed in %s (or is not the daemon's):\n%s", name, out)
 	}
 
 	bin := t.TempDir()
@@ -29,7 +31,7 @@ func TestTheDaemonsKeyCommandsGetNoNATSSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSecretsGet: %v", err)
 	}
-	if strings.Contains(string(got), "seed-value") {
-		t.Errorf("the secrets command's environment carries a NATS seed:\n%s", got)
+	if name, leaked := envlisting.HoldingValue(envlisting.Vars(string(got)), "pane-seed-value", "daemon-seed-value"); leaked {
+		t.Errorf("the secrets command's environment carries a NATS seed in %s:\n%s", name, got)
 	}
 }

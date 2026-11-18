@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
@@ -616,13 +617,13 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	env, _ := os.ReadFile(seen)
-	// env prints one variable to a line, in the order of the command's environment, so a variable
-	// is looked for as a whole line: the daemon's own two can be its first line, with no newline
-	// before them.
-	lines := strings.Split(string(env), "\n")
-	if strings.Contains(string(env), "seed-value") || !slices.Contains(lines, "LEGION_GITHUB_OWNER=acme") ||
-		!slices.Contains(lines, "LEGION_GITHUB_READ_ONLY=") || strings.Contains(string(env), "inherited") {
-		t.Fatalf("the command's environment:\n%s", env)
+	// Each variable is read whole (envlisting): the daemon's own two can be the listing's first
+	// line, and a variable the test does not set, such as PWD, can contain any word.
+	vars := envlisting.Vars(string(env))
+	readOnly, readOnlySet := vars[TokenCommandReadOnly]
+	if name, leaked := envlisting.HoldingValue(vars, "seed-value", "inherited"); leaked || vars[TokenCommandOwner] != "acme" ||
+		!readOnlySet || readOnly != "" {
+		t.Fatalf("the command's environment (%s holds a value the daemon must not pass):\n%s", name, env)
 	}
 
 	slow := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "sleep 30"}}, Options{})
