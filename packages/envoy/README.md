@@ -70,16 +70,12 @@ The broker reads each typed secret’s value once for each new version or type, 
 
 - `internal/contracts/generated.go` — generated Go contract output from `packages/contracts/scripts/gen-go.ts`
 - `internal/config` — env parsing
-- `internal/verify` — GitHub / Slack signature verification
-- `cmd/listener` — per-machine listener service
-- `cmd/github` — GitHub webhook receiver
-- `cmd/slack` — Slack Events receiver
-- `docker/github.Dockerfile` — GitHub receiver image
-- `docker/slack.Dockerfile` — Slack receiver image
-- `docker/listener.Dockerfile` — listener image
+- `internal/webhook` — the GitHub, Slack and Ghost Wispr webhook handlers, and the `ENVOY_WEBHOOKS` read at start-up
+- `internal/verify` — GitHub, Slack and Ghost Wispr signature verification
+- `cmd/listener` — per-machine listener service, which serves the webhook routes
+- `docker/Dockerfile` — the one released image, holding the listener, Dispatch, the broker and `agent-secrets`
 - `deploy` — compose files and deploy scripts
 - `docs` — architecture, constraints, external repo touchpoints
-- `.envoy` — local execution notes and machine-readable work tracker
 
 ## Local end-to-end
 

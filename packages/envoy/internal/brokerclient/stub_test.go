@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // stubRequest is one trade as the stub broker received it.
@@ -77,8 +79,12 @@ func newStubBroker(t *testing.T, answer func(n int, form url.Values) (int, map[s
 	return broker
 }
 
-// URL is the broker's base URL, what a Config's BrokerURL takes.
+// URL is the broker's base URL as written, for the one test that redacts an error against it;
+// a test that configures a client passes Address instead, as Config.BrokerURL now takes.
 func (b *stubBroker) URL() string { return b.server.URL }
+
+// Address is the broker's base URL as a Config's BrokerURL takes it.
+func (b *stubBroker) Address() brokeraddr.Address { return brokeraddr.New(b.server.URL) }
 
 // Requests is every trade the stub has received, in order.
 func (b *stubBroker) Requests() []stubRequest {

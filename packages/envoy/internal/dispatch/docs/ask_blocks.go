@@ -46,7 +46,7 @@ type settlementReconciliation struct {
 	// document's ask (copiedAskSources), which it logs once it commits (logCopiedBlocks).
 	copied []copiedBlock
 	// indexedAskBlocks are the blocks this settlement indexed or found indexed, whose author the
-	// room forgets once it commits (consumeAskAuthors) and whose durable author its transaction
+	// room forgets as it commits (consumeAskAuthorsLocked) and whose durable author its transaction
 	// deletes (deleteSettledAskAuthors). A copy is neither: its author is kept for the ask it opens
 	// once its source is retracted. Nor is a new block a closed issue's settlement leaves with no
 	// row: its author is kept for the ask it opens once the issue reopens (reconcileAskBlocks).

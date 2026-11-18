@@ -3,14 +3,15 @@ package supervise
 // An update round is the daemon asking a claim's role to push its work and answer
 // ready_for_update before the process holding that claim is replaced. These tests pin what the
 // machine does with the round's events: a round that opens once, records its terms once and asks
-// nothing of the machine's own — the sweep publishes the ask to the role's Envoy topic and marks
-// it on the claim (PodUpdateAsked) — a suspended claim recorded in the round and not revived for
-// it, an answer that stands through every turn after it while the end of a turn answers nothing,
-// the next task held back from the moment the worker answers and confirmed by no turn after a
-// daemon restart, and the round's end — which releases that task, relaunches nothing,
-// retires an older daemon's ask nothing read, and tells the worker of a pod round nothing of the
-// daemon's own, since the pod that round was opened over is gone and the launch into its
-// replacement is what starts that worker. The round the answer names is here too: an answer for
+// nothing of the machine's own — the sweep enqueues the ask to the role's Envoy topic, and the
+// outbox marks it on the claim once it reached a session (PublishUpdateAsk) — a suspended claim
+// recorded in the round and not revived for it, an answer that stands through every turn after
+// it while the end of a turn answers nothing, the next task held back from the moment the worker
+// answers and confirmed by no turn after a daemon restart, and the round's end — which releases
+// that task, relaunches nothing, retires an older daemon's ask nothing read, and tells the worker
+// of a pod round nothing of the daemon's own, since the pod that round was opened over is gone
+// and the launch into its replacement is what starts that worker. The round the answer names is
+// here too: an answer for
 // the claim's own round counts, one for any other round is refused, and a round that replaces
 // another under a turn in flight — a late turn, a restart's turn, a turn the daemon sent nothing
 // for — switches all the same. The stale-plugin lane is here as well: a stale claim, the
@@ -27,6 +28,7 @@ package supervise
 // called directly.
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -74,12 +76,12 @@ func (h *harness) openUpdate(round, reasons string) {
 
 // leftAsk is the claim as this daemon restores it from an older daemon's record when that daemon
 // asked round with a task and sent it: a delivery under an id of the round's own (updateTaskID),
-// UpdateTaskedAt stamped as the sweep's mark stamps it (PodUpdateAsked), and the prompt on the
-// claim's connection, which is that daemon's send. This daemon queues no such task and sends
-// none (sendPending drops it). The deploy then replaces the daemon (restart), so the claim comes
-// back holding the ask pending and unconfirmed, with the question a restart arms for it
-// (askFirst): a turn that starts next is the turn the older daemon's prompt started. The claim
-// is in round already, ready or idle.
+// UpdateTaskedAt stamped as that daemon stamped it when it queued the task (markAsked), and the
+// prompt on the claim's connection, which is that daemon's send. This daemon queues no such task
+// and sends none (sendPending drops it). The deploy then replaces the daemon (restart), so the
+// claim comes back holding the ask pending and unconfirmed, with the question a restart arms for
+// it (askFirst): a turn that starts next is the turn the older daemon's prompt started. The
+// claim is in round already, ready or idle.
 func (h *harness) leftAsk(round string) Delivery {
 	h.t.Helper()
 	return h.olderDaemonsAsk(round, true)
@@ -103,9 +105,7 @@ func (h *harness) unsentAsk(round string) Delivery {
 // first.
 func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery)) Delivery {
 	h.t.Helper()
-	if asked, err := h.m.PodUpdateAsked(h.ctx, round); err != nil || !asked {
-		h.t.Fatalf("mark the older daemon's ask of %s = %t, %v; want it marked", round, asked, err)
-	}
+	h.markAsked(round)
 	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
 		QueuedAt: h.clock.Now()}
 	if sent {
@@ -202,7 +202,7 @@ func (h *harness) diesIntoPod(pod string) {
 // A round opened over a ready claim records itself — its id, its reasons and its own clock — and
 // persists, and the machine gives the worker nothing: no task is queued and no prompt is sent. The
 // round's ask is the sweep's, published to the role's Envoy topic once the claim records the
-// round, and the publish mark is unset until the sweep makes it (PodUpdateAsked).
+// round, and the publish mark is unset until that publish reached a session (PublishUpdateAsk).
 func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
@@ -304,63 +304,176 @@ func TestPodUpdateRecordsTheRoundOnASuspendedClaimAndRevivesNothing(t *testing.T
 	}
 }
 
-// The sweep's publish mark (PodUpdateAsked) is what makes one ask per claim per round. It stamps
-// the claim of the round it names once, at the sweep's clock, and durably; it refuses a round the
-// claim is not in and a round already marked, so a later tick asks nothing more; and a write the
-// store refuses takes the stamp back, so the next tick publishes again rather than lose the ask.
-func TestPodUpdateAskedMarksTheRoundsAskOnce(t *testing.T) {
-	t.Run("once, for the claim's own round", func(t *testing.T) {
+// askPublisher is the outbox's publish of one ask as PublishUpdateAsk calls it: it answers
+// delivered, or an error, and counts its calls.
+type askPublisher struct {
+	delivered bool
+	err       error
+	calls     int
+}
+
+func (p *askPublisher) publish(context.Context) (bool, error) {
+	p.calls++
+	return p.delivered, p.err
+}
+
+// markAsked is the outbox's ask of round reaching the claim's session, which marks the claim
+// asked (PublishUpdateAsk with a publish a session took).
+func (h *harness) markAsked(round string) {
+	h.t.Helper()
+	reached := &askPublisher{delivered: true}
+	if outcome, err := h.m.PublishUpdateAsk(h.ctx, round, reached.publish); err != nil || outcome != UpdateAskDelivered {
+		h.t.Fatalf("the ask of %s reaching the claim's session = %v, %v; want it delivered and marked", round, outcome, err)
+	}
+}
+
+// A claim is asked its round once an ask reached a session (dispatch://INFRA-4109 R4,
+// dispatch://INFRA-4131 R4), and the mark is written where the publish is (PublishUpdateAsk).
+// An ask that reached a session marks the claim at the clock, durably, and the next ask of the
+// round publishes nothing; an ask no session took marks nothing and the next ask publishes again;
+// a round the claim is not in is published nothing; a publish that fails marks nothing; and a
+// mark the store does not take stays in memory, owed, so the next ask writes it and publishes
+// nothing, and answers an error until the write lands.
+func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T) {
+	t.Run("a delivered ask marks the claim once, and a later ask of the round publishes nothing", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
 		h.reach(StateReady)
 		h.openUpdate(testRound, testReasons)
-
-		if asked, err := h.m.PodUpdateAsked(h.ctx, PodRound(testOtherPod)); err != nil || asked {
-			t.Fatalf("the mark of a round the claim is not in = %t, %v; want it refused", asked, err)
-		}
-		if c := h.claim(); c.UpdateTaskedAt != nil {
-			t.Fatalf("UpdateTaskedAt = %v after the refused mark, want nil", c.UpdateTaskedAt)
-		}
-
 		h.advance(time.Minute)
-		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
-			t.Fatalf("the mark of the claim's own round = %t, %v; want it made", asked, err)
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered {
+			t.Fatalf("the ask = %v, %v; want it delivered", outcome, err)
 		}
 		at := h.clock.Now()
 		if c := h.claim(); c.UpdateTaskedAt == nil || !c.UpdateTaskedAt.Equal(at) {
-			t.Fatalf("UpdateTaskedAt = %v, want the mark's clock at %v", c.UpdateTaskedAt, at)
+			t.Fatalf("UpdateTaskedAt = %v, want the delivery's clock at %v", c.UpdateTaskedAt, at)
 		}
 		if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil || !stored.UpdateTaskedAt.Equal(at) {
-			t.Fatalf("stored UpdateTaskedAt = %v, want the mark at %v: a restarted daemon reads it", stored.UpdateTaskedAt, at)
+			t.Fatalf("stored UpdateTaskedAt = %v, want the mark at %v: the sweep reads the claims the store holds", stored.UpdateTaskedAt, at)
 		}
 
 		h.advance(time.Minute)
-		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || asked {
-			t.Fatalf("a second mark of the round = %t, %v; want it refused", asked, err)
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
+			t.Fatalf("a second ask of the round = %v, %v; want it refused as already delivered", outcome, err)
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask was published %d times, want once", reached.calls)
 		}
 		if c := h.claim(); !c.UpdateTaskedAt.Equal(at) {
-			t.Errorf("UpdateTaskedAt = %v after the second mark, want the first mark's %v", c.UpdateTaskedAt, at)
+			t.Errorf("UpdateTaskedAt = %v after the second ask, want the first delivery's %v", c.UpdateTaskedAt, at)
 		}
 		h.wantPrompts(0)
 	})
 
-	t.Run("a write the store refuses takes the stamp back", func(t *testing.T) {
+	t.Run("an ask no session took marks nothing, and the next ask publishes again", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
 		h.reach(StateReady)
 		h.openUpdate(testRound, testReasons)
-
-		h.store.fail("PutClaim", errBoom)
-		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); !errors.Is(err, errBoom) || asked {
-			t.Fatalf("the mark over a failing write = %t, %v; want it refused with the store's error", asked, err)
+		unheld := &askPublisher{}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, unheld.publish); err != nil || outcome != UpdateAskUndelivered {
+			t.Fatalf("the ask no session took = %v, %v; want it undelivered", outcome, err)
 		}
-		h.store.fail("PutClaim", nil)
-		if c := h.claim(); c.UpdateTaskedAt != nil {
-			t.Fatalf("UpdateTaskedAt = %v after the failed write, want the stamp taken back", c.UpdateTaskedAt)
+		if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+			t.Fatalf("UpdateTaskedAt = %v, stored %v; want no mark: the ask reached nobody", c.UpdateTaskedAt, stored.UpdateTaskedAt)
 		}
+		h.markAsked(testRound)
+	})
 
-		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
-			t.Fatalf("the next tick's mark = %t, %v; want it made", asked, err)
+	t.Run("a round the claim is not in is published nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, PodRound(testOtherPod), reached.publish); err != nil || outcome != UpdateAskOutOfRound {
+			t.Fatalf("the ask of another round = %v, %v; want it refused as out of the claim's round", outcome, err)
+		}
+		if reached.calls != 0 || h.claim().UpdateTaskedAt != nil {
+			t.Fatalf("the ask of another round published %d times and marked %v, want neither", reached.calls, h.claim().UpdateTaskedAt)
 		}
 	})
+
+	t.Run("a publish that fails marks nothing and answers the publisher's error", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		failing := &askPublisher{err: errBoom}
+		if _, err := h.m.PublishUpdateAsk(h.ctx, testRound, failing.publish); !errors.Is(err, errBoom) {
+			t.Fatalf("the failed publish = %v, want the publisher's error", err)
+		}
+		if c := h.claim(); c.UpdateTaskedAt != nil {
+			t.Fatalf("UpdateTaskedAt = %v after a failed publish, want no mark", c.UpdateTaskedAt)
+		}
+	})
+
+	t.Run("a mark the store does not take is written by the next ask, which publishes nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		reached := &askPublisher{delivered: true}
+		h.store.fail("PutClaim", errBoom)
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); !errors.Is(err, errBoom) || outcome != UpdateAskDelivered {
+			t.Fatalf("the delivered ask over a failing write = %v, %v; want it delivered, with the store's error", outcome, err)
+		}
+		if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt == nil || stored.UpdateTaskedAt != nil {
+			t.Fatalf("UpdateTaskedAt = %v, stored %v; want the mark in memory and the write owed", c.UpdateTaskedAt, stored.UpdateTaskedAt)
+		}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err == nil || outcome != UpdateAskAlreadyDelivered {
+			t.Fatalf("the next ask while the write stays owed = %v, %v; want it refused as already delivered, with an error that keeps the row", outcome, err)
+		}
+
+		h.store.fail("PutClaim", nil)
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
+			t.Fatalf("the next ask once the store answers = %v, %v; want it refused as already delivered", outcome, err)
+		}
+		if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil {
+			t.Fatalf("stored UpdateTaskedAt = nil, want the owed mark written")
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask was published %d times, want once: the owed mark is no reason to publish again", reached.calls)
+		}
+	})
+}
+
+// The lock is taken without waiting: whatever holds it — a decision in flight, or a section that
+// is no decision, so that Deciding reads nothing — the ask answers ErrMachineBusy at once, having
+// published nothing and marked nothing, and the next ask once the lock is free is the first
+// publish. The outbox runs this on its role-message lane, one row at a time, and a lock taken with
+// waiting would hold that lane behind a relaunch for minutes (dispatch://INFRA-4109 R4).
+//
+// The negative control is a lock taken with waiting: the ask below does not return while the
+// test holds the lock.
+func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
+	h := updateHarness(t, PodUpdateContract)
+	h.reach(StateReady)
+	h.openUpdate(testRound, testReasons)
+	reached := &askPublisher{delivered: true}
+
+	h.m.mu.Lock()
+	if h.m.Deciding() != nil {
+		h.m.mu.Unlock()
+		t.Fatal("the machine decides something; want the lock held by no decision")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		h.m.mu.Unlock()
+		if !errors.Is(err, ErrMachineBusy) {
+			t.Fatalf("the ask over a held lock = %v, want ErrMachineBusy", err)
+		}
+	case <-time.After(10 * time.Second):
+		h.m.mu.Unlock()
+		<-done
+		t.Fatal("the ask over a held lock did not return: it waited for the lock")
+	}
+	if reached.calls != 0 || h.claim().UpdateTaskedAt != nil {
+		t.Fatalf("the ask over a held lock published %d times and marked %v, want neither", reached.calls, h.claim().UpdateTaskedAt)
+	}
+
+	h.markAsked(testRound)
 }
 
 // An ask an older daemon queued as a task for the round the claim is still in is dropped and
@@ -812,9 +925,7 @@ func TestPodUpdateAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t *testing.T) 
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
-	if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
-		t.Fatalf("mark the sweep's ask = %t, %v; want it marked", asked, err)
-	}
+	h.markAsked(testRound)
 	h.signalUpdate("c0ffee")
 	answered := h.claim().UpdateSignalledAt
 	if answered == nil {

@@ -112,7 +112,7 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 				return exchange.Answer.Status, exchange.Answer.Body
 			})
 			client, err := New(Config{
-				BrokerURL: broker.URL(),
+				BrokerURL: broker.Address(),
 				Key:       testKey(t),
 				Subject:   corpusSource(t, exchange.Subject),
 				Actor:     corpusActor(t, exchange.Actor),

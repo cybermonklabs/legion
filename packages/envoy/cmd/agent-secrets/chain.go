@@ -29,7 +29,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // errSourceAbsent is what a source of the chain answers, through sourceAbsent, when it has nothing
@@ -294,7 +293,7 @@ func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []broke
 		return identity, nil, err
 	}
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: brokerURLVar + " names no broker to read the exchange audience from"}}, nil
 	}
 	if err := requireTrustedBrokerURL(base); err != nil {
@@ -312,7 +311,7 @@ func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []broke
 	if settings.GoogleExchangeAudience == "" {
 		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: fmt.Sprintf(
 			"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published one, or one that accepts no machine identity)",
-			redact.URL(base))}}, nil
+			base)}}, nil
 	}
 	if err := checkGoogleAudience(base, settings.GoogleExchangeAudience); err != nil {
 		return nil, nil, err

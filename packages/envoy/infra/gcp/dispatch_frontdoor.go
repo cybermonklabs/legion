@@ -196,8 +196,14 @@ func dispatchCertPublishScript(p dispatchCertPaths, fqdn string) string {
 // dispatchCertFuncs defines the helpers both halves of cert-publish call: kube, which calls the API
 // server as the pod's ServiceAccount, each caller adding its own flags and redirects, and notafter,
 // which reads a certificate's notAfter for the Service's name alone (dispatchCertPublishBody says
-// why the name is read out of the certificate).
-const dispatchCertFuncs = `kube() { curl -sS -f --cacert "$tokens/ca.crt" -H "Authorization: Bearer $(cat "$tokens/token")" "$@"; }
+// why the name is read out of the certificate). kube reads its Authorization header from a here
+// document on descriptor 3, so the token is in no process's command line, which every process of
+// the pod can read, and standard input stays free for a caller's body (`--data-binary @-`).
+const dispatchCertFuncs = `kube() {
+  curl -sS -f --cacert "$tokens/ca.crt" -H @/dev/fd/3 "$@" 3<<EOF
+Authorization: Bearer $(cat "$tokens/token")
+EOF
+}
 # notafter prints a PEM certificate's notAfter as seconds since the epoch, and fails, printing
 # nothing, unless its subjectAltName names $fqdn exactly.
 notafter() {
@@ -290,7 +296,9 @@ publish() {
   if [ -n "$theirs" ] && [ "$mine" -le "$theirs" ]; then return 0; fi
   body=$(printf '{"data":{"tls.crt":"%s","tls.key":"%s","acme-account.key.pem":"%s"}}' \
     "$(base64 <"$crt" | tr -d '\n')" "$(base64 <"$key" | tr -d '\n')" "$(base64 <"$account" | tr -d '\n')")
-  if kube -X PATCH "$url" -H 'Content-Type: application/merge-patch+json' --data-binary "$body" >/dev/null; then
+  # The body holds the private keys, so it reaches curl on standard input from printf, a shell
+  # builtin, and is in no command line.
+  if printf '%s' "$body" | kube -X PATCH "$url" -H 'Content-Type: application/merge-patch+json' --data-binary @- >/dev/null; then
     echo "published a later certificate for $fqdn"
   else
     echo "publishing the certificate for $fqdn failed; retrying in 60s" >&2
@@ -673,12 +681,17 @@ func newDispatchFrontDoor(ctx *pulumi.Context, s dispatchSettings, service *tail
 		},
 	}
 	// The pod names the ConfigMap and the TLS Secret by their constant names, and the Deployment
-	// waits for both, so no pod waits on a missing volume and a ConfigMap the provider replaces
-	// changes nothing in the Deployment's inputs. It waits for the Tailscale Service because a
-	// node that advertises a Service before it exists is not approved when it appears
-	// (tailnetAdvertiseStuckSeconds), and for the Cloud SQL instance because an availability-type
-	// change updates that instance in place and restarts it: the name must come back only once
-	// the database it fronts is back.
+	// waits for both, so no pod waits on a missing volume. A serve config change updates the
+	// ConfigMap in place (the component's provider sets enableConfigMapMutable), which changes
+	// nothing in the Deployment's inputs, and no checksum annotation rolls the pods for it: the
+	// tailscale container mounts the ConfigMap as a directory, with no subPath, so the kubelet's
+	// update reaches the mounted serve.json, and containerboot watches the directory of
+	// TS_SERVE_CONFIG and applies the changed file live (cloudconfig.go, serveDir). A roll would
+	// add nothing but, at one replica, where Recreate stops the old pod first, a gap in the name.
+	// The Deployment waits for the Tailscale Service because a node that advertises a Service
+	// before it exists is not approved when it appears (tailnetAdvertiseStuckSeconds), and for the
+	// Cloud SQL instance because an availability-type change updates that instance in place and
+	// restarts it: the name must come back only once the database it fronts is back.
 	opts := []pulumi.ResourceOption{pulumi.DependsOn([]pulumi.Resource{serve, tlsSecret, service, instance})}
 	return pod, opts, nil
 }

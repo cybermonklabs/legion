@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  The rules file's validation refuses a host the airlock can never bind, naming the entry and
+  the host: a host written with a scheme, a path or a port, `*` without the `*.` the matcher
+  looks up, and an IPv4 address or a `*.` suffix whose last label is all digits. Such an entry
+  bound the secret nowhere, so the command kept its placeholder and no call of it was ever
+  swapped, and the file was called valid. An address entry did more harm: a TLS client sends no
+  server name (SNI) for an address, so the proxy decrypted each connection a command holding
+  that secret made to the address and refused every call on it with `sni mismatch`, where
+  without the entry the connection passes through untouched.
+
+  The broker reads its rules file at boot through the same validation, so a broker whose
+  deployed file holds such a host now refuses to start, where it started before. Before you
+  upgrade, run `envoy-broker airlock-check <the deployed file>` with this version, on the file
+  `BROKER_AIRLOCK_RULES_FILE` names: it exits non-zero naming the first entry and host this
+  version refuses. Correct or remove that host and run it again until it exits 0.
