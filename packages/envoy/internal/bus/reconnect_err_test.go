@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // reconnectErrClock is a clock a test moves itself, so a minute of the throttle's clock passes
@@ -43,7 +44,7 @@ func (c *reconnectErrClock) Advance(d time.Duration) {
 // every reconnect dial is refused rather than accepted and dropped.
 func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	unsetNkeyEnvironment(t)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	srv, _ := testnats.StartNkeyAuthorizedServer(t, public)
 	gate := testnats.StartGate(t, srv)
 	uri := gate.URL()

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The controller pod's drain (cleanExitedGeneration) ends what an exited generation left. A child

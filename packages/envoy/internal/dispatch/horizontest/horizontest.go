@@ -2,7 +2,7 @@
 // packages make it: internal/dispatch/api and internal/dispatch/routes, whose servers run in the
 // test's own process, and cmd/dispatch, whose server is a process the test starts. It is an
 // ordinary package rather than a _test.go file because Go cannot share test-only code across
-// packages (internal/logtest says the same).
+// packages (packages/envoy/logtest says the same).
 //
 // The event horizon's proof is instance-wide (internal/dispatch/events/horizon.go, "Costs"): any
 // transaction that holds a transaction id, in any database on the Postgres instance, holds the

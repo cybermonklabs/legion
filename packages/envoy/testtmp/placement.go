@@ -14,34 +14,26 @@ import (
 	"testing"
 )
 
-// exceptions are the paths under the module root this check leaves unread, with the reason each
-// places a temporary directory itself on purpose. The test logs every one it skips, so a run says
-// what it did not read and nothing is left out quietly.
-var exceptions = map[string]string{
-	"internal/testtmp": "this package, where both shapes belong: Dir reads os.TempDir and makes the directory " +
-		"itself, naming /tmp when it falls back, so that no other test has to",
-	"internal/shim/socketpath_test.go": "roleTempDir builds a deliberately long directory, as long as the TMPDIR a " +
-		"Legion role is told, so that its test proves a socket still binds where a role runs; a short one would take the proof away",
-}
-
-// Every test of this module that wants a temporary directory of its own takes it from this
-// package, so that one place measures a socket path against what Linux holds and one place knows
-// where to fall back to (docs/testing.md, "Unix sockets in Go tests"). The check reads the
-// module's test files and fails on the two shapes the copied helpers were written in: an
-// os.MkdirTemp whose first argument is a string literal naming a directory, which writes there
-// wherever the test runs and whatever TMPDIR says, and an os.TempDir, which reads TMPDIR without
-// measuring anything. os.MkdirTemp("", …) is not one of them: the empty first argument is the
-// placement this package asks for, and the once-per-binary directories a TestMain owns and the
-// fixtures rooted at t.TempDir() use it.
+// CheckPlacements fails t naming every place in the test files under root, a module's directory,
+// that puts a temporary directory somewhere of its own rather than taking it from Dir or Socket
+// (docs/testing.md, "Unix sockets in Go tests"). It reads the two shapes the copied helpers were
+// written in: an os.MkdirTemp whose first argument is a string literal naming a directory, which
+// writes there wherever the test runs and whatever TMPDIR says, and an os.TempDir, which reads
+// TMPDIR without measuring anything. os.MkdirTemp("", …) is not one of them: the empty first
+// argument is the placement this package asks for, and the once-per-binary directories a TestMain
+// owns and the fixtures rooted at t.TempDir() use it.
 //
-// It reads the source as the parser does rather than as text, so prose about either call — the
-// comment on internal/daemon/idle_rig_pod_test.go's privateDir spells os.TempDir() in English —
-// is not an offence.
+// It reads the source as the parser does rather than as text, so a comment that spells
+// os.TempDir() in English is prose rather than an offence.
 //
-// packages/envoy/internal/testtmp keeps the same test, with its own module's exceptions. Change
-// one and change the other.
-func TestNoTestFilePlacesATemporaryDirectoryOfItsOwn(t *testing.T) {
-	offences := placements(t, "../..")
+// exceptions are the paths under root, written from it, that it leaves unread, with the reason
+// each places a temporary directory itself on purpose. It logs every one it skips, so a run says
+// what it did not read and nothing is left out quietly. Each module's internal/textcheck calls it
+// with its own root and its own exceptions, so the text-check job, whose filter selects every
+// file each walk reads, runs both.
+func CheckPlacements(t testing.TB, root string, exceptions map[string]string) {
+	t.Helper()
+	offences := placements(t, root, exceptions)
 	if len(offences) == 0 {
 		return
 	}
@@ -52,10 +44,9 @@ func TestNoTestFilePlacesATemporaryDirectoryOfItsOwn(t *testing.T) {
 		len(offences), strings.Join(offences, "\n\t"), maxSocketPath, fallbackBase)
 }
 
-// placements names, as file:line and the call, every place in the module's test files that puts a
-// temporary directory somewhere of its own. Paths are written from the module root, where this
-// package's own directory is two levels up.
-func placements(t *testing.T, root string) []string {
+// placements names, as file:line and the call, every place in the test files under root that puts
+// a temporary directory somewhere of its own. Paths are written from root.
+func placements(t testing.TB, root string, exceptions map[string]string) []string {
 	t.Helper()
 	var offences []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -103,7 +94,7 @@ func placements(t *testing.T, root string) []string {
 //
 // One difference comes with the filter: a test file that does not parse fails this check only
 // when it mentions one of the two names. The Go build is what reads the rest.
-func placementsInFile(t *testing.T, path, relative string) []string {
+func placementsInFile(t testing.TB, path, relative string) []string {
 	t.Helper()
 	source, err := os.ReadFile(path)
 	if err != nil {

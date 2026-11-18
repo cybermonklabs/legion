@@ -1,16 +1,13 @@
 // Package testtmp is a temporary directory for a test that binds a unix socket under it, short
 // enough that the socket's path fits what Linux holds. It is an ordinary package rather than a
 // _test.go file because a command is package main and can import no other package's test helpers,
-// the reason packages/envoy/internal/cmdtest gives for itself; the tests of cmd/agent-secrets and
-// cmd/agent-secrets-helper bind sockets too.
+// the reason packages/envoy/internal/cmdtest gives for itself; the tests of cmd/agent-secrets,
+// cmd/agent-secrets-helper and the daemon's cmd/legion bind sockets too.
 //
-// The daemon module keeps the same file at packages/daemon/internal/testtmp/testtmp.go. The two
-// are copies, not one package imported twice, because Go's internal rule reads a path prefix:
-// nothing outside packages/envoy may import github.com/sjawhar/envoy/internal/..., and nothing
-// outside packages/daemon may import github.com/sjawhar/legion/daemon/internal/..., so neither
-// module can reach the other's copy. Change one and change the other, except the paragraph of
-// Dir's comment naming the sites that keep a directory of their own, which each module writes
-// for itself.
+// It is public, as testnatsimages is, so that packages/daemon, a module outside
+// github.com/sjawhar/envoy, takes its directories from this one package: Go's internal-package
+// rule keeps that module from importing an internal package of this one.
+// packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there.
 package testtmp
 
 import (
@@ -52,12 +49,19 @@ const fallbackBase = "/tmp"
 //     code that predicted its base instead returns a path that fails later at bind with
 //     `invalid argument`.
 //
-// One kind of site keeps a directory of its own on purpose and does not come here: the
-// once-per-binary directories a package's TestMain owns, the sign-in secret directory of
-// packages/envoy/internal/broker/config/config_test.go and the certificate directory of
-// packages/envoy/infra/seed/main_test.go. They bind no socket, so they need no byte budget, and
-// no *testing.T outlives them, so they keep os.MkdirTemp("", …) and a removal of their own. The
-// daemon copy of this file names that module's sites.
+// Two kinds of site keep a directory of their own on purpose and do not come here:
+//
+//   - packages/daemon/internal/shim/socketpath_test.go's roleTempDir, which builds a deliberately
+//     long directory, as long as the TMPDIR a Legion role is told, so that its test proves sockets
+//     still bind where a role runs. A short directory would take the proof away.
+//   - the once-per-binary directories a package's TestMain owns: in packages/envoy, the sign-in
+//     secret directory of internal/broker/config/config_test.go and the certificate directory of
+//     infra/seed/main_test.go; in packages/daemon, the build directories of
+//     internal/daemon/idle_rig_listener_test.go, internal/stream/integration_test.go and
+//     internal/runtime/tmux/tmux_real_test.go, the jj configuration directory of
+//     cmd/legion/main_test.go and the home of internal/workspace/workspace_test.go. They bind no
+//     socket, so they need no byte budget, and no *testing.T outlives them, so they keep
+//     os.MkdirTemp("", …) and a removal of their own.
 func Dir(t testing.TB, longest string) string {
 	t.Helper()
 	base := os.TempDir()

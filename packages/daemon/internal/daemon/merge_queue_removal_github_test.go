@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // dequeueAnswer is how GitHub answers the read of one pull request: open at its head, which is

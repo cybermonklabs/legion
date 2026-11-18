@@ -18,18 +18,18 @@ related_issues:
 - `slog.SetDefault` also points the `log` package's output at the new handler and clears its flags.
   Setting the previous slog default back undoes neither. After such a test, every `log.Print`
   writes into the test's finished buffer, not into stderr.
-- In `packages/envoy`, capture the default logger only through `internal/logtest`
+- In `packages/envoy`, capture the default logger only through `packages/envoy/logtest`
   (`SetDefault`, or `Swap` when the test restores early). It saves and restores slog's default,
-  `log.Writer()` and `log.Flags()`.
-- A module that cannot import that package restores the same three values itself, in the
-  test's cleanup.
+  `log.Writer()` and `log.Flags()`. The package is public, so `packages/daemon` can import it too.
+- A test that restores the defaults itself rather than through it restores the same three
+  values, in the test's cleanup.
 - After every forward merge, search main's new test files for a plain `slog.SetDefault(` and
   move each one onto the helper. A merge with no conflict still brings in new captures that
   restore only slog.
 
 ## Evidence
 
-- `packages/envoy/internal/logtest/logtest.go:18` (`SetDefault`) and `:25` (`Swap`).
+- `packages/envoy/logtest/logtest.go:29` (`SetDefault`) and `:36` (`Swap`).
 - The merge of main at fa7c2a72 brought four plain captures. These were `dashboard_test.go`,
   two in `routes/assets_test.go` and `docs/render_reuse_test.go`. The tester's red tests
   (1b7eace4) failed there with the log package writing to a slog handler with flags 0, not to

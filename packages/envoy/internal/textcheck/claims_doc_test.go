@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/doctext"
 )
 
 // The claim list under "The Dispatch identity the broker can issue" in docs/kubernetes.md is what
@@ -39,7 +41,9 @@ const (
 
 // The committed copy of the claim list is the guide's list, name for name and in its order. An
 // edit to either side alone fails here: a claim added to the guide and not to the copy would
-// otherwise never reach the exchange's own check, which reads the copy and not the guide.
+// otherwise never reach the exchange's own check, which reads the copy and not the guide. The
+// guide is read as its page shows it (doctext.VisibleMarkdown), so a list moved inside an HTML
+// comment is no list here either.
 func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 	doc, err := os.ReadFile(filepath.FromSlash(kubernetesGuide))
 	if err != nil {
@@ -47,7 +51,7 @@ func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 		// what this check exists to stop.
 		t.Fatalf("read docs/kubernetes.md: %v", err)
 	}
-	documented, err := claimListNames(string(doc))
+	documented, err := guideClaimList(string(doc))
 	if err != nil {
 		t.Fatalf("docs/kubernetes.md %v", err)
 	}
@@ -60,6 +64,62 @@ func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 			"guide answers for the code only while the two are equal; change them in one commit",
 			claimsExtract, strings.Join(extracted, ", "), strings.Join(documented, ", "))
 	}
+}
+
+// A claim list no reader can see is not the guide's list. The guide's own list, moved inside an
+// HTML comment, keeps every name in the file's bytes, and a check that read those bytes matched
+// the extract while the page showed no list at all: this case holds that the raw read still
+// matches, which is the fault, and that the read the check makes does not.
+func TestAClaimListInsideAnHTMLCommentIsNotTheGuidesList(t *testing.T) {
+	doc, err := os.ReadFile(filepath.FromSlash(kubernetesGuide))
+	if err != nil {
+		t.Fatalf("read docs/kubernetes.md: %v", err)
+	}
+	extracted := extractLines(t, claimsExtract)
+	hidden := commentOutClaimList(t, string(doc))
+	if raw, err := claimListNames(hidden); err != nil || !slices.Equal(raw, extracted) {
+		t.Fatalf("the guide with its claim list inside a comment, read raw, no longer matches the extract "+
+			"(%v, %v): this case no longer plants the fault it guards against", raw, err)
+	}
+	if seen, err := guideClaimList(hidden); err == nil && slices.Equal(seen, extracted) {
+		t.Fatalf("a claim list inside an HTML comment still reads as the guide's list: %v", seen)
+	}
+}
+
+// guideClaimList is the claim list of doc, the guide's text, read as its page shows it: the one
+// read both tests above make of the guide.
+func guideClaimList(doc string) ([]string, error) {
+	return claimListNames(doctext.VisibleMarkdown(doc))
+}
+
+// commentOutClaimList is doc with the claim list under claimsDocHeading wrapped in an HTML
+// comment, `<!--` on the line before its first bullet and `-->` on the line after its last.
+func commentOutClaimList(t *testing.T, doc string) string {
+	t.Helper()
+	lines := strings.Split(doc, "\n")
+	heading := slices.Index(lines, claimsDocHeading)
+	if heading < 0 {
+		t.Fatalf("docs/kubernetes.md has no line %q", claimsDocHeading)
+	}
+	first := -1
+	for i := heading + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "- ") {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		t.Fatalf("docs/kubernetes.md has no bullet under %q", claimsDocHeading)
+	}
+	end := first + 1
+	for end < len(lines) && (lines[end] == "" || strings.HasPrefix(lines[end], " ") || strings.HasPrefix(lines[end], "- ")) {
+		end++
+	}
+	for end > first+1 && lines[end-1] == "" {
+		end--
+	}
+	wrapped := slices.Concat(lines[:first], []string{"<!--"}, lines[first:end], []string{"-->"}, lines[end:])
+	return strings.Join(wrapped, "\n")
 }
 
 // extractLines are the content lines of a committed extract: every line that is neither blank nor

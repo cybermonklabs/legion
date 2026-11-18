@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // A recovery that is dialling when Drain stops the client neither installs the connection its dial

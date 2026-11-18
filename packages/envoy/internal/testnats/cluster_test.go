@@ -7,14 +7,15 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // StartClusterConfig gives every member the configuration it is passed: each admits a user its
 // authorization holds and refuses one it does not, and its no_auth_user lets the cluster start.
 func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
-	seed, public := User(t)
-	stranger, _ := User(t)
-	_, fallback := User(t)
+	seed, public := testnkeys.User(t)
+	stranger, _ := testnkeys.User(t)
+	_, fallback := testnkeys.User(t)
 	cluster := StartClusterConfig(t, 3, fmt.Sprintf("authorization {\n  users = [ {nkey: %q}, {nkey: %q} ]\n}\nno_auth_user: %q\n", public, fallback, fallback))
 	for i, uri := range cluster.URLs() {
 		conn, err := ConnectSeed(t, uri, seed)

@@ -546,7 +546,16 @@ RULES = {
         ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
         (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
-        (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:17 has packages/envoy/sourcecheck walk every .go file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/temp_dir_placement_test.go": reads(
+        (f"{DAEMON}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:22 has packages/envoy/testtmp's CheckPlacements walk every "
+                                   "test file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/envoy_helper_copies_test.go": reads(
+        (f"{DAEMON}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:83 reads every .go file under packages/daemon (../.., :68) "
+                              "but testdata's"),
+        (f"{ENVOY}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:69 reads the package clause and imports of every non-test .go file "
+                             "under packages/envoy (../../../envoy, :68) but testdata's, infra included, and every .go file of a helper "
+                             "package (a test helper, or a public package) whole")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
@@ -726,9 +735,9 @@ RULES = {
         (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:176,421,465"),
         (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4605")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
-        (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
-        (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:19"),
-        (f"{ENVOY}/AGENTS.md", "cmd/listener/grace_margin_doc_test.go:20")),
+        (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:20"),
+        (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:21"),
+        (f"{ENVOY}/AGENTS.md", "cmd/listener/grace_margin_doc_test.go:22")),
     f"{ENVOY}/cmd/listener/infra_stop_budget_test.go": reads(
         (f"{INFRA}/gcp/clusteredhub_listener.go", "cmd/listener/infra_stop_budget_test.go:18")),
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
@@ -781,7 +790,7 @@ RULES = {
     f"{ENVOY}/internal/dispatch/delivery/counts_in_documents_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/README.md",
          "internal/dispatch/delivery/counts_in_documents_test.go:22 docnumbers.Check under ../../../../.. "
-         "(internal/docnumbers/docnumbers.go:63 os.ReadFile): the intake hold's lease, renewal and retry "
+         "(internal/docnumbers/docnumbers.go:66 os.ReadFile): the intake hold's lease, renewal and retry "
          "it states must equal the constants that decide them")),
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
@@ -830,7 +839,7 @@ RULES = {
          "internal/dispatch/store/counts_in_documents_test.go reads it, for the lease pool's own "
          "count, which that document states in words"),
         (f"{ENVOY}/cmd/dispatch/README.md",
-         "internal/dispatch/store/counts_in_documents_test.go:127 docnumbers.Check and :175 os.ReadFile under "
+         "internal/dispatch/store/counts_in_documents_test.go:128 docnumbers.Check and :176 os.ReadFile under "
          "../../../../..: the pool table and connection sum it states must equal the same constants")),
     f"{ENVOY}/internal/dispatch/processes/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
@@ -861,18 +870,21 @@ RULES = {
                   "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:37,44 reads it under ../../../.."),
+        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:39,48,74 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
-         "internal/textcheck/claims_doc_test.go:71 reads the committed copy it holds the guide's list to (extractLines, called with it at :54)")),
+         "internal/textcheck/claims_doc_test.go:131 reads the committed copy it holds the guide's list to (extractLines, called with it at :58 and :78)")),
     f"{ENVOY}/internal/textcheck/environment_reads_test.go": [
         Read(path, "internal/textcheck/environment_reads_test.go:117 environmentReads walks it (:36), testdata and "
                    "node_modules passed over (:41-42), and :49 parses each .go file but the test files (:46)")
         for root in ("cmd/dispatch", "internal/dispatch")
         for path in files_but_tests(f"{ENVOY}/{root}", tree=True, skip=("testdata",))],
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
-        (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+        (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:17 has packages/envoy/sourcecheck walk every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/temp_dir_placement_test.go": reads(
+        (f"{ENVOY}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:18 has packages/envoy/testtmp's CheckPlacements walk every "
+                                  "test file under packages/envoy (../..), infra included")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
-        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
+        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:25 reads packages/envoy/loadtest/README.md under ../../../..")),
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
         run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go:404 buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],

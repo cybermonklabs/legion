@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testtmp"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeClaudeEnv makes the test binary a stand-in for `claude -p` in stream-json: it records every
@@ -1128,7 +1128,7 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 }
 
 // lockedBuffer is a log the bridge's goroutines write while a test reads it.
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 // inboxPathOf is the inbox Claude Code was told, as the fake recorded it.
 func inboxPathOf(t *testing.T, r *rig) string {

@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const (
@@ -770,7 +770,7 @@ func TestDispatchRequiresATailscaleProviderOnlyWithAFrontDoor(t *testing.T) {
 // (TestConstructRefusesASeedInAnAzureInput), and natsUrl once it resolves too
 // (TestDispatchRefusesABadNatsURLOnceItResolves).
 func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	lower := strings.ToLower(seed)
 	digest := "@sha256:" + strings.Repeat("0", 64)
 	for _, row := range []struct {
@@ -843,7 +843,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 // component under it, so a seed there is refused before anything registers, as NewNatsHub refuses
 // one in its own name.
 func TestDispatchRefusesASeedInTheComponentName(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct {
 		name     string
 		dispatch string
@@ -870,7 +870,7 @@ func TestDispatchRefusesASeedInTheComponentName(t *testing.T) {
 // no proxy whose refusal to map: the component refuses a local URL itself, before core's Env is
 // reached, and names natsUrl there too, since the pods would be dialling themselves.
 func TestDispatchRefusesABadNatsURLOnceItResolves(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	rows := []struct {
 		name, url, want string
 		// inCluster rows go through the component alone: gcp.DispatchListenerEnvError renders
@@ -914,7 +914,7 @@ func TestDispatchRefusesABadNatsURLOnceItResolves(t *testing.T) {
 // and before the instance is registered with its dependencies. The refusal names the input and
 // never echoes the value.
 func TestDispatchRefusesASeedInDatabaseWaitsFor(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	args := dispatchArgs()
 	args.DatabaseWaitsFor = pulumi.String(seed)
 

@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes is the case the broker's

@@ -1,7 +1,7 @@
 package storetest
 
 import (
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // LockedLog is a log sink that the goroutines of the code under test write while the test reads

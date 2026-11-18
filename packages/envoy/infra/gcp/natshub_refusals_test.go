@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/nats"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 func TestNatsHubRefusesAMissingProviderBeforeRegistering(t *testing.T) {
@@ -305,7 +305,7 @@ func TestNatsHubRefusesAMachineIdItsDurableCannotCarry(t *testing.T) {
 // hyphen hyphenate alike, and against the hub's own listener (machine example-hub). Without the
 // hub's listener the hostname is nobody's durable, so a user may hold it.
 func TestNatsHubRefusesMachineIdsWhoseDurablesCollide(t *testing.T) {
-	_, key := testnats.User(t)
+	_, key := testnkeys.User(t)
 	for _, row := range []struct {
 		name, input, want string
 		edit              func(*gcp.NatsHubArgs)
@@ -390,7 +390,7 @@ func TestNatsHubRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 // secret Input, is checked once it resolves
 // (TestConstructRefusesASeedAsTheTailnetAuthKey).
 func TestNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	inside := "example-" + seed
 	lower := strings.ToLower(seed)
 	digest := "@sha256:" + strings.Repeat("0", 64)
@@ -471,7 +471,7 @@ func TestNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 // The hub's own refusals of a user name it by its index alone, so a seed in the name never reaches
 // one: they come before core reads the names.
 func TestNatsHubPassesOnCoresSeedRefusalOfUsers(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	lower := strings.ToLower(seed)
 	for _, row := range []struct {
 		name string
@@ -526,7 +526,7 @@ func TestNatsHubPassesOnCoresSeedRefusalOfUsers(t *testing.T) {
 // known, as the firewall's and the template's inputs resolve: a seed in either fails the run
 // naming it, and no registration holds it.
 func TestNatsHubRefusesASeedInItsNetworkWhenItResolves(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct {
 		name, input string
 		edit        func(*gcp.NatsHubArgs)
@@ -566,7 +566,7 @@ func TestNatsHubRefusesASeedInItsNetworkWhenItResolves(t *testing.T) {
 // component under it, so a seed there is refused before anything registers, as host:Listener and
 // the AWS components refuse one in their own names.
 func TestNatsHubRefusesASeedInTheComponentName(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range []struct {
 		name string
 		hub  string

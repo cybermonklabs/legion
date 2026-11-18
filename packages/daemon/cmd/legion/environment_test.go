@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/envoy/fixtureenv"
 )
 
 // startupRestored are the variables TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet

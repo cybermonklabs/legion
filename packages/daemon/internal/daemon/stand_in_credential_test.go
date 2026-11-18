@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // fromTheDaemon reports whether r carries bearer, the credential the daemon under test presents to

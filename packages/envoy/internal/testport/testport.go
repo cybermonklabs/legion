@@ -3,9 +3,11 @@
 // of a server or listener it closed: a freed port is any process's to take, and on a machine that
 // runs other tests beside this one another process took it and answered HTTP (dispatch://INFRA-3904).
 //
-// The daemon module keeps the same file at packages/daemon/internal/testport/testport.go. The two
-// are copies, not one package imported twice, for the reason packages/envoy/internal/testtmp gives:
-// Go's internal rule keeps each module from importing the other's. Change one and change the other.
+// The daemon module has no copy of it. A daemon test that needs it moves it to a public package of
+// packages/envoy first, as testtmp and testwait were moved, rather than copying it: Go's internal
+// rule keeps the daemon from importing this package, and packages/daemon/internal/textcheck's
+// envoy_helper_copies_test.go fails a copy (docs/testing.md, "Test helpers the two Go modules
+// share").
 package testport
 
 import (

@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The live tests apply Pulumi YAML programs with the pulumi CLI against this machine's Docker. Each
@@ -261,7 +262,7 @@ func TestLiveAdoptionPreviewsClean(t *testing.T) {
 
 func TestLiveSeedReachesNATS(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	natsURL := testnats.StartNkeyAuthorized(t, public)
 	ports := []int{holdListenerPort(t), holdListenerPort(t)}
 	seeded, unseeded := containerName(t), containerName(t)

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeCgroup is a container's memory cgroup directory of either version, written in place as the

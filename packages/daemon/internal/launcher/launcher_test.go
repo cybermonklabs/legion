@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testtmp"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const launcherChildEnv = "LEGION_LAUNCHER_TEST_CHILD"
@@ -89,7 +89,7 @@ type roleConn struct {
 }
 
 // lockedBuffer is a bytes.Buffer the launcher and its children can write while a test reads it.
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 func newRig(t *testing.T) *rig {
 	t.Helper()

@@ -33,6 +33,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // liveServerArgs are the JetStream arguments the GCP hub runs nats-server with, without its
@@ -62,7 +63,7 @@ func liveServerEnvironment(key string) (string, bool) {
 // connection is closed when the test ends.
 func liveServerJetStream(t *testing.T, image string) (string, nats.JetStreamContext) {
 	t.Helper()
-	_, public := testnats.User(t)
+	_, public := testnkeys.User(t)
 	config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\nno_auth_user: %q\n", public, public)
 	_, uri := testnats.StartImageConfig(t, image, config, liveServerArgs, true)
 	conn := testnats.Connect(t, uri)

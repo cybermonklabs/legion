@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/fixtureenv"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
-	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 

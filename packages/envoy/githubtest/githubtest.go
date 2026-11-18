@@ -1,10 +1,15 @@
-// Package githubtest holds the fake GitHub server Envoy's tests share. A test that drives
-// code which reads GitHub stands one up: an httptest server answering the handful of paths that
-// code asks for, closed when the test ends. What every such fake does the same way — the server
-// itself, the record it keeps of each request, the bearer gate, the JSON content type and the
-// close — is Server's; what the test proves stays in the test's own handler: its switch, its
-// default arm, and the state it keeps and reads. Unexpected is the default arm of a fake for
+// Package githubtest holds the fake GitHub server Envoy's and the daemon's tests share. A test
+// that drives code which reads GitHub stands one up: an httptest server answering the handful of
+// paths that code asks for, closed when the test ends. What every such fake does the same way —
+// the server itself, the record it keeps of each request, the bearer gate, the JSON content type
+// and the close — is Server's; what the test proves stays in the test's own handler: its switch,
+// its default arm, and the state it keeps and reads. Unexpected is the default arm of a fake for
 // which any request it did not plan for is a failure.
+//
+// It is public, as testnatsimages is, so that packages/daemon, a module outside
+// github.com/sjawhar/envoy, builds its fakes on this one package: Go's internal-package rule keeps
+// that module from importing an internal package of this one.
+// packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there.
 package githubtest
 
 import (

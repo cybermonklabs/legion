@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 func TestReduceFilterSubjects(t *testing.T) {
@@ -1157,7 +1158,7 @@ func TestSessionConsumersStreamID(t *testing.T) {
 // listener refuses that registration 503 no_grant and writes nothing - no interest row, no
 // session entry - rather than making the client wait out that timeout first.
 func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	uri := testnats.StartNkeyGranted(t, public, "$JS.API.INFO", "$JS.API.STREAM.>", "$JS.API.CONSUMER.INFO.>", "_INBOX.>").URL
 	t.Setenv("NATS_NKEY_SEED", seed)
 	owner, err := ConnectOwningStream([]string{uri})

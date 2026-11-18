@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // stoppedNATS is a NATS server with JetStream that a test started and then stopped, and its URL:
@@ -272,8 +273,8 @@ func TestConfigurationErrorsStillFailTheConstructorInTheBackground(t *testing.T)
 // client's own report the process would sit refused with nothing in its log.
 func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	unsetNkeyEnvironment(t)
-	_, allowed := testnats.User(t)
-	refused, _ := testnats.User(t)
+	_, allowed := testnkeys.User(t)
+	refused, _ := testnkeys.User(t)
 	uri := testnats.StartNkeyAuthorized(t, allowed)
 	logs := captureBusLogs(t)
 	const refusal = "envoy nats authorization refused"

@@ -1,13 +1,15 @@
 // Package fixtureenv is what a test takes out of its own process's environment and what puts it
-// back: the module's one place for a helper that changes a variable the test process reads, so a
-// test that needs a variable gone leaves the process as it found it. It is an ordinary package
-// rather than a _test.go file because a command is package main and can import no other package's
-// test helpers, the reason packages/envoy/internal/cmdtest gives for itself.
+// back: the one place for a helper that changes a variable the test process reads, so a test that
+// needs a variable gone leaves the process as it found it. It is an ordinary package rather than a
+// _test.go file because a command is package main and can import no other package's test
+// helpers, the reason packages/envoy/internal/cmdtest gives for itself.
 //
-// The daemon module's package of the same name
-// (packages/daemon/internal/fixtureenv) holds Unset too, besides the guards that keep that
-// module's git and jj off a Legion pod's own workspace. The two are separate packages because
-// Go's internal rule reads a path prefix, so neither module can import the other's.
+// It is public, as testnatsimages is, so that packages/daemon, a module outside
+// github.com/sjawhar/envoy, unsets its variables through this one package: Go's internal-package
+// rule keeps that module from importing an internal package of this one.
+// packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there. The
+// daemon's own package of the same name (packages/daemon/internal/fixtureenv) holds the guards
+// that keep that module's git and jj off a Legion pod's own workspace, and nothing of this one.
 package fixtureenv
 
 import (

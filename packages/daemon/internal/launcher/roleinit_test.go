@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // The three re-entrant helpers this test runs as processes of its own: the stage, which builds a

@@ -18,8 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 

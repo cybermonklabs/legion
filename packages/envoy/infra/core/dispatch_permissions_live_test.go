@@ -25,6 +25,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -33,9 +34,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const (
@@ -199,9 +200,9 @@ type dispatchSeeds struct{ dispatch, client, session string }
 // seeds, the server and its client URL.
 func startDispatchServer(t *testing.T, image string, grant core.Permissions) (dispatchSeeds, natsServer, string) {
 	t.Helper()
-	dispatchSeed, dispatchKey := testnats.User(t)
-	clientSeed, clientKey := testnats.User(t)
-	sessionSeed, sessionKey := testnats.User(t)
+	dispatchSeed, dispatchKey := testnkeys.User(t)
+	clientSeed, clientKey := testnkeys.User(t)
+	sessionSeed, sessionKey := testnkeys.User(t)
 	client, session := testClientPermissions(), core.SessionPermissions()
 	config, err := core.Authorization{Users: []core.User{
 		{Name: dispatchMachineID, NKey: dispatchKey, Publish: &grant.Publish, Subscribe: &grant.Subscribe, HasSeed: true},

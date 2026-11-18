@@ -23,6 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -32,9 +35,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // kubernetesConfig is testConfig under runtime: kubernetes, its client a kubeconfig whose current
@@ -1099,7 +1099,7 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 }
 
 // lockedBuffer is a log a test reads while a goroutine writes it.
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 // A hello carrying an agent-secrets identity maps to the machine's StreamHello with it; a hello
 // with none maps to one with no identity.

@@ -17,8 +17,8 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // testTokensPerMinute is a quota far past anything one test's prompts cost, so every test but the

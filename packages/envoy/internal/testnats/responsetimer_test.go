@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // A server of this rig answers a request through each service export of its system account that a
@@ -19,7 +21,7 @@ import (
 func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 	const never = time.Duration(math.MaxInt64)
 	allow := []string{"$JS.API.>", "$SYS.REQ.USER.INFO", "$SYS.REQ.ACCOUNT.PING.*", "_INBOX.>"}
-	seed, public := User(t)
+	seed, public := testnkeys.User(t)
 	grant := StartNkeyGranted(t, public, allow...)
 	exports := []struct{ request, export string }{
 		{"$JS.API.INFO", "$JS.API.>"},

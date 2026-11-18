@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 const (
@@ -413,7 +413,7 @@ func (s *testSpecs) last(t *testing.T) Claim {
 
 // logBuffer is a log handler's destination that tests read from.
 type logBuffer struct {
-	testlog.Buffer
+	logtest.Buffer
 }
 
 // lines is every log line containing all of the fragments.

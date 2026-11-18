@@ -29,7 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testtmp"
 )
 
 // registerEnv names the helper socket a child of this test binary registers with as a session

@@ -18,8 +18,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/webhook"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 type slowBodyPublisher struct {

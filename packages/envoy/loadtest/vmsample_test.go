@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // vmTestTarget is the target of these tests: two containers on one VM, so its samples carry the

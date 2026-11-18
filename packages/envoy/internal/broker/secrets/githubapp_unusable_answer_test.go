@@ -23,7 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // tokenAnswerFault is how the answer to a token request breaks on its way back from GitHub. Each

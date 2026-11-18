@@ -5,9 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testnkeys"
 	"github.com/stretchr/testify/require"
-
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // The exported API takes a secret's name as given; only the command's flag rule checks --name. A
@@ -21,7 +20,7 @@ const seededNameRefusal = "the secret's name holds an nkey seed, which is never 
 // detector reads.
 func seededNames(t *testing.T, prefix string) (seed string, names map[string]string) {
 	t.Helper()
-	seed, _ = testnats.User(t)
+	seed, _ = testnkeys.User(t)
 	return seed, map[string]string{
 		"a seed as the secret's id":        prefix + seed,
 		"a lowercase seed":                 prefix + strings.ToLower(seed),
@@ -48,7 +47,7 @@ func TestGenerateRefusesASeedInTheNameBeforeTheVersion2Path(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			require.True(t, gcpSecretName.MatchString(secret), "the name has a GCP secret's form, so only the seed refuses it")
 			f := newFakeGCP(t)
-			earlier, _ := testnats.User(t)
+			earlier, _ := testnkeys.User(t)
 			f.earlyWriter = &gcpVersion{value: earlier, state: enabled}
 			s := gcpStoreOn(t, f)
 			announced := false
@@ -63,7 +62,7 @@ func TestGenerateRefusesASeedInTheNameBeforeTheVersion2Path(t *testing.T) {
 	}
 	t.Run("the fake's own name reaches the version-2 message", func(t *testing.T) {
 		f := newFakeGCP(t)
-		earlier, _ := testnats.User(t)
+		earlier, _ := testnkeys.User(t)
 		f.earlyWriter = &gcpVersion{value: earlier, state: enabled}
 		s := gcpStoreOn(t, f)
 		_, version, err := Generate(context.Background(), s, gcpSecret, func(string) error { return nil })
@@ -77,7 +76,7 @@ func TestGenerateRefusesASeedInTheNameBeforeTheVersion2Path(t *testing.T) {
 // begins with the name, is written.
 func TestCheckAndVerifyRefuseASeedInTheName(t *testing.T) {
 	seed, names := seededNames(t, "projects/example-project/secrets/")
-	_, publicKey := testnats.User(t)
+	_, publicKey := testnkeys.User(t)
 	for name, secret := range names {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeGCP(t)
@@ -132,7 +131,7 @@ func TestBothStoresRefuseASeedInTheName(t *testing.T) {
 				require.Empty(t, version)
 				_, err = Check(ctx, s, secret)
 				requireNoSeed(t, err, seed)
-				_, publicKey := testnats.User(t)
+				_, publicKey := testnkeys.User(t)
 				_, err = Verify(ctx, s, secret, publicKey)
 				requireNoSeed(t, err, seed)
 				require.Zero(t, requests(), "no request reaches the store")

@@ -26,15 +26,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testtmp"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeOMPEnv makes this test binary the fake OMP: the shim passes its own environment to the
@@ -168,7 +168,7 @@ func buildLegion(t *testing.T) string {
 
 // lockedBuffer collects one process's output or one listener's log while the test reads it.
 type lockedBuffer struct {
-	testlog.Buffer
+	logtest.Buffer
 }
 
 // lines is every complete line written so far.

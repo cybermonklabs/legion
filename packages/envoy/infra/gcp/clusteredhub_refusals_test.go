@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/nats"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // clusteredRefusal is one invalid input: edit makes it of clusteredArgs, and the resolver refuses
@@ -261,7 +261,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 // its value, before any other refusal of that input could quote it: the hub's own check runs first
 // over every plain string input it carries, and core refuses one in a user's name or nkey.
 func TestClusteredNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for _, row := range clusteredSeedRows() {
 		t.Run(row.name, func(t *testing.T) {
 			args := clusteredArgs()

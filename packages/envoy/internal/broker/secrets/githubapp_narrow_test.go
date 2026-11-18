@@ -13,9 +13,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/githubtest"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // tokenRequest is one POST .../access_tokens the stub GitHub received: the installation it named,

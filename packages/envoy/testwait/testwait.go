@@ -1,11 +1,16 @@
-// Package testwait holds the bounded wait the daemon's tests share. A test that drives real
-// processes, a real database or a real socket waits for something it cannot make happen on its
-// own — a delivery, the transaction that answers it — and the wait is bounded by the test
-// binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
-// is not a failure, and a condition that never holds still fails, naming what it waited for.
-// Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself.
+// Package testwait holds the bounded wait Envoy's and the daemon's tests share. A test that
+// drives real processes, a real database or a real socket waits for something it cannot make
+// happen on its own — a delivery, the transaction that answers it — and the wait is bounded by
+// the test binary's own deadline rather than a fixed span: on a loaded machine a step that is
+// merely slow is not a failure, and a condition that never holds still fails, naming what it
+// waited for. Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace
+// of its own; Holds answers rather than fails, for a caller whose failure text is its own; and
+// Bounded is the clamp alone, for a wait that holds the rest itself.
+//
+// It is public, as testnatsimages is, so that packages/daemon, a module outside
+// github.com/sjawhar/envoy, waits through this one package: Go's internal-package rule keeps that
+// module from importing an internal package of this one.
+// packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there.
 package testwait
 
 import (

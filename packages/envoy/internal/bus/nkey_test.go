@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/nats-io/nkeys"
+	"github.com/sjawhar/envoy/fixtureenv"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // seedFile writes contents to a 0600 file and returns its path.
@@ -67,7 +68,7 @@ func TestAClientWithNoSeedConnectsToAServerWithoutAuthorization(t *testing.T) {
 // the file or the variable, and every connection the client dials later to recover is that user's
 // too.
 func TestAClientWithItsSeedConnectsToAServerThatRequiresIt(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	uri := testnats.StartNkeyAuthorized(t, public)
 
 	t.Run("NATS_NKEY_SEED_FILE, which wins over NATS_NKEY_SEED", func(t *testing.T) {
@@ -102,7 +103,7 @@ func TestAClientWithItsSeedConnectsToAServerThatRequiresIt(t *testing.T) {
 // With no seed configured, the server that requires one refuses the client, and the error says so.
 func TestAClientWithNoSeedIsRefusedByAServerThatRequiresOne(t *testing.T) {
 	unsetNkeyEnvironment(t)
-	_, public := testnats.User(t)
+	_, public := testnkeys.User(t)
 	uri := testnats.StartNkeyAuthorized(t, public)
 	client, err := bus.Connect([]string{uri})
 	if err == nil {
@@ -132,7 +133,7 @@ func TestAnUnusableSeedIsAnErrorNamingItsVariable(t *testing.T) {
 		}
 		return seedFile(t, string(raw))
 	}()
-	userSeed, _ := testnats.User(t)
+	userSeed, _ := testnkeys.User(t)
 	for _, tc := range []struct {
 		name string
 		env  map[string]string
@@ -175,7 +176,7 @@ func TestAnUnusableSeedIsAnErrorNamingItsVariable(t *testing.T) {
 // shared server has users, so the test starts one of its own.
 func TestASeedAgainstAServerWithoutUsersIsRefused(t *testing.T) {
 	_, uri := testnats.Start(t)
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	unsetNkeyEnvironment(t)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.Connect([]string{uri})

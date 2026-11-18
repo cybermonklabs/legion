@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // appInstallationServer is Dispatch holding an App key, its GitHub answering the installation

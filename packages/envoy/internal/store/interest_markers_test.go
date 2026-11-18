@@ -14,8 +14,9 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // captureJSONLogs routes slog.Default() into a buffer for the test and decodes the records back, so
@@ -737,7 +738,7 @@ type grantedServer struct {
 // context) and seeds the interest bucket with markers behind live keys.
 func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	t.Helper()
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	quoted := make([]string, len(deny))
 	for i, subject := range deny {
 		quoted[i] = fmt.Sprintf("%q", subject)

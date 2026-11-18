@@ -21,9 +21,8 @@ import (
 	"github.com/aws/smithy-go/logging"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/nats-io/nkeys"
+	"github.com/sjawhar/envoy/testnkeys"
 	"github.com/stretchr/testify/require"
-
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 func publicKeyOfSeed(t *testing.T, seed string) string {
@@ -51,7 +50,7 @@ func TestAWSCheck(t *testing.T) {
 	zone := time.Local
 	time.Local = time.FixedZone("PDT", -7*60*60)
 	t.Cleanup(func() { time.Local = zone })
-	seedValue, _ := testnats.User(t)
+	seedValue, _ := testnkeys.User(t)
 	rows := []struct {
 		name  string
 		fake  func(*fakeAWS) *fakeAWS
@@ -166,7 +165,7 @@ func TestAWSStoreAnswersFromTheCallItMakes(t *testing.T) {
 	zone := time.Local
 	time.Local = time.UTC
 	t.Cleanup(func() { time.Local = zone })
-	seedValue, _ := testnats.User(t)
+	seedValue, _ := testnkeys.User(t)
 	ctx := context.Background()
 	describe := func(s Store) (any, error) { return s.Describe(ctx, awsSecret) }
 	versions := func(s Store) (any, error) { return s.Versions(ctx, awsSecret) }
@@ -305,8 +304,8 @@ func TestAWSAnErrorQuotingTheRequestNeverPrintsIt(t *testing.T) {
 }
 
 func TestAWSVerify(t *testing.T) {
-	seedValue, public := testnats.User(t)
-	_, another := testnats.User(t)
+	seedValue, public := testnkeys.User(t)
+	_, another := testnkeys.User(t)
 	t.Run("yes", func(t *testing.T) {
 		f := newFakeAWS(t).holding(seedValue)
 		serve(t, f)
@@ -355,7 +354,7 @@ func TestAWSExpectAccountRunsFirstAndAlone(t *testing.T) {
 		require.Equal(t, []string{"GetCallerIdentity", "DescribeSecret"}, f.recorded())
 	})
 	t.Run("another account", func(t *testing.T) {
-		_, public := testnats.User(t)
+		_, public := testnkeys.User(t)
 		for _, mode := range [][]string{{"check"}, {"generate"}, {"verify", "--public-key", public}} {
 			f := newFakeAWS(t)
 			f.account = "111111111111"
@@ -399,7 +398,7 @@ func TestAWSExpectAccountRunsFirstAndAlone(t *testing.T) {
 // the refusal names no class; an AWS answer, such as a profile's role refused for an expired
 // token, keeps its code.
 func TestAWSMissingCredentialsAreRefusedBeforeAnyCall(t *testing.T) {
-	_, public := testnats.User(t)
+	_, public := testnkeys.User(t)
 	for _, args := range [][]string{{"check"}, {"generate"}, {"verify", "--public-key", public}, {"check", "--expect-account", awsAccount}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			f := newFakeAWS(t)
@@ -441,7 +440,7 @@ func TestAWSMissingCredentialsAreRefusedBeforeAnyCall(t *testing.T) {
 // answers the secret's ARN: with --expect-account, a secret of another account is refused before
 // any other call, and a secret in another region than the client's always is.
 func TestAWSTheSecretItselfMustBeInTheExpectedAccountAndRegion(t *testing.T) {
-	seedValue, public := testnats.User(t)
+	seedValue, public := testnkeys.User(t)
 	const otherAccount = "111111111111"
 	accountMiss := "refused: describe-secret " + awsSecret + " answered a secret of account " + otherAccount +
 		", but --expect-account is " + awsAccount + ": the Secrets Manager endpoint answers for another account\n"
@@ -547,7 +546,7 @@ func TestAWSNoRegionIsRefusedBeforeAnyCall(t *testing.T) {
 // resolvers, are checked as well, so a seed the sources above would all miss, as one the SDK
 // assembled would be, is still refused. A clean configuration resolves AWS's own endpoints.
 func TestAWSResolvedConfigurationAndEndpointsHoldNoSeed(t *testing.T) {
-	seedValue, _ := testnats.User(t)
+	seedValue, _ := testnkeys.User(t)
 	ctx := context.Background()
 	withSeed := aws.String("https://example.invalid/" + seedValue)
 	require.Equal(t, "the resolved AWS configuration's AppID", configSeed(aws.Config{AppID: seedValue}))
@@ -630,7 +629,7 @@ func percentEncoded(text string) string {
 // clean value in place of the seed is not refused, and reaches the request unless the row says the
 // SDK stops before any request with a clean value too. --region is not given.
 func TestAWSASeedInTheAWSConfigurationIsRefusedBeforeAnyCall(t *testing.T) {
-	seedValue, _ := testnats.User(t)
+	seedValue, _ := testnkeys.User(t)
 	pemText := caBundle(t)
 	const notEchoed = ": an nkey seed, which is never AWS configuration (not echoed)"
 	profile := func(name, key string) string { return fmt.Sprintf("the shared config's profile %q: %s", name, key) }

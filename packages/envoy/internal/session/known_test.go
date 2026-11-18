@@ -18,7 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // openKnown opens the known-session store on the package's shared NATS server, with a clock the
@@ -199,7 +200,7 @@ func knownBucketGrant() []string {
 // none of the bucket's subjects, so the request is dropped as a denied JetStream request is in
 // production, and the attempt costs the whole wait rather than ending on a refusal.
 func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 	if err != nil {
@@ -297,7 +298,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 // (cmd/listener/main.go); nothing waits on the attempt that opens the bucket later, so the store
 // itself must not answer before its cache is filled.
 func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, knownBucketGrant()...)
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 	if err != nil {
@@ -475,7 +476,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 // the test's own.
 func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSessionsOption) (*KnownSessions, *nats.Conn, *testnats.NkeyGrant, func() string) {
 	t.Helper()
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, knownBucketGrant()...)
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 	if err != nil {
@@ -797,7 +798,7 @@ func TestAStopEndsTheStoresRetry(t *testing.T) {
 // whole repair.
 func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing.T) {
 	const openLine = "the known-session bucket is open"
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, knownBucketGrant()...)
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 	if err != nil {
@@ -920,7 +921,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 // watch ends because the grant carries the bucket but not the consumer a watch of it creates, so
 // the bucket opens and the create request of its watcher's consumer is dropped.
 func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
 	if err != nil {

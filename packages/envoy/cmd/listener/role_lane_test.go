@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The role lane's forwarder publishes each holder's forwards in the order the handler handed them
@@ -408,7 +409,7 @@ func TestRoleLaneForwardsOneRoleWithoutDelayingAnother(t *testing.T) {
 func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *testing.T) {
 	const messages = 20
 	machines := []string{"role-lane-grant-a", "role-lane-grant-b"}
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	allow := []string{"_INBOX.>", contracts.AgentTopicPrefix + ">"}
 	for _, machine := range machines {
 		allow = append(allow, contracts.RoleTopicPrefix+"> "+bus.ListenerQueue(machine))

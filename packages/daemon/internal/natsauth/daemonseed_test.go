@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // DaemonSeed reads the daemon's own seed by Seed's precedence under its own names: the configuration

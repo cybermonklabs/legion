@@ -22,6 +22,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -469,7 +470,7 @@ func TestTheMonitorURLAnswersVarz(t *testing.T) {
 // second grant the server refuses fails the test with the server's reason for that grant, which
 // comes back from that Grant's own reload.
 func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
-	_, public := User(t)
+	_, public := testnkeys.User(t)
 	grant := StartNkeyGranted(t, public, "first.>")
 	grant.Grant(t, "second.>")
 
@@ -490,7 +491,7 @@ func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
 // and the server goes on serving the configuration it had: its user is still admitted and a client
 // with no credential still refused.
 func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t *testing.T) {
-	seed, public := User(t)
+	seed, public := testnkeys.User(t)
 	server, uri := StartConfig(t, publishGrantConfig(public, []string{"first.>"}), []string{"-js"}, false)
 
 	err := server.Reload(t, publishGrantConfig(public, []string{"not..a.subject"}))
@@ -533,7 +534,7 @@ const (
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
 func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
-	seed, public := User(t)
+	seed, public := testnkeys.User(t)
 	grant := func(n int) string {
 		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
 	}
@@ -591,7 +592,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 // reloads: the hold waits for the server's answer to the relay's PING, which the server sends once
 // it has read everything before it, and not for a count of messages the server never reaches.
 func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
-	seed, public := User(t)
+	seed, public := testnkeys.User(t)
 	grant := func(subjects ...string) string { return publishGrantConfig(public, subjects) }
 	server, uri := StartConfig(t, grant("traced.>"), []string{"-js"}, false)
 	conn, err := ConnectSeed(t, uri, seed)
@@ -626,7 +627,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 // subscribe to a subject is refused it once the server restarts on one that does not, and has it
 // again once the server restarts on the first.
 func TestARestartServesItsNewConfiguration(t *testing.T) {
-	seed, public := User(t)
+	seed, public := testnkeys.User(t)
 	granted := SubscribeGrantConfig(public, "granted.>")
 	server, uri := StartConfig(t, granted, []string{"-js"}, false)
 	subscribe := func() error {
@@ -663,7 +664,7 @@ func TestARestartServesItsNewConfiguration(t *testing.T) {
 // command line does: -DV puts the protocol trace in its log, and without -js among them the server
 // has no JetStream, whatever a server started by another helper has.
 func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
-	seed, public := User(t)
+	seed, public := testnkeys.User(t)
 	config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 	server, uri := StartConfig(t, config, []string{"-DV"}, false)
 	conn, err := ConnectSeed(t, uri, seed)
@@ -761,7 +762,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 // credential: that server is up and has no no_auth_user, so waiting out the deadline would only
 // report the same refusal later.
 func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
-	_, public := User(t)
+	_, public := testnkeys.User(t)
 	uri := StartNkeyAuthorized(t, public)
 	wait := &fatalRecorder{TB: t}
 	done := make(chan struct{})

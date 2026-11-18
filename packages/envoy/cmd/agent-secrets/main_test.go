@@ -33,7 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testtmp"
 )
 
 // testEnrollmentID is the enrollment id these tests' key dir fixture "issues" (writes into the

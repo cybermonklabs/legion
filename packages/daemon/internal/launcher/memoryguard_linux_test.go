@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 

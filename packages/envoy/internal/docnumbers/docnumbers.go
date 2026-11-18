@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/doctext"
 )
 
 // Number is the one group every pattern gives: digits, or the count written as a word. The word
@@ -56,7 +58,8 @@ type Stated struct {
 }
 
 // Check reads each sentence under root and fails for every number that disagrees with its
-// constant, naming the file, what was read and what was wanted.
+// constant, naming the file, what was read and what was wanted. A document is read as its page
+// shows it (doctext.VisibleMarkdown), so a sentence inside an HTML comment states nothing.
 func Check(t *testing.T, root string, stated []Stated) {
 	t.Helper()
 	for _, want := range stated {
@@ -64,7 +67,7 @@ func Check(t *testing.T, root string, stated []Stated) {
 		if err != nil {
 			t.Fatalf("read %s: %v", want.File, err)
 		}
-		text := string(body)
+		text := doctext.VisibleMarkdown(string(body))
 		found := regexp.MustCompile(want.Pattern).FindAllStringSubmatchIndex(text, -1)
 		digits, word := strconv.Itoa(want.Number), asAWord(t, want.Number)
 		read := 0

@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 	"golang.org/x/sys/unix"
 )
 

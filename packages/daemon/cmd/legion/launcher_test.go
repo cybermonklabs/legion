@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // syncBuffer is a bytes.Buffer the launcher writes from its role goroutines while a test reads it.
-type syncBuffer = testlog.Buffer
+type syncBuffer = logtest.Buffer
 
 // An issue pod's one container runs `legion launcher --roles-dir <dir> --role <r>…`, the command
 // the daemon's pod builder renders: one connection per role, each with the token in that role's

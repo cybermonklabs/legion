@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // writeBoundProjectKey is the project every issue these benchmarks write to is opened in.

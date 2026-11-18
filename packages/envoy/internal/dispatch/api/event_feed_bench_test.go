@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // benchmarkFeedComment is the text every comment a feed benchmark seeds carries: a few hundred

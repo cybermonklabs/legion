@@ -19,6 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testtmp"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -26,9 +29,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The fake OMP child is this test binary, re-executed with fakeOMPEnv set: a Go program that
@@ -275,7 +275,7 @@ func (c *fakeClock) idle(t *testing.T) {
 // syncBuffer is the shim's log: what the pane shows. changed signals each write so tests wait on
 // a real event rather than polling the log on a wall clock.
 type syncBuffer struct {
-	testlog.Buffer
+	logtest.Buffer
 	changed chan struct{}
 }
 

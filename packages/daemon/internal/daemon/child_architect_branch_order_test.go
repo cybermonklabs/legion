@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // No role of an issue starts before its issue's branch exists (record's outboxInOrder holds a

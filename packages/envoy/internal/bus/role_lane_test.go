@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const roleLaneMachine = "example machine"
@@ -42,7 +43,7 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 
 // A user granted the shared role-lane queue group subscribes in it.
 func TestRoleLaneSubscribesInTheSharedQueueGroup(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+bus.RoleLaneQueue), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	received := make(chan string, 1)
@@ -64,7 +65,7 @@ func TestRoleLaneSubscribesInTheSharedQueueGroup(t *testing.T) {
 // is refused the shared group, and the lane subscribes in the machine's group instead and receives
 // role messages there.
 func TestRoleLaneFallsBackToTheMachinesQueueGroupWhenTheSharedOneIsRefused(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	machineQueue := bus.ListenerQueue(roleLaneMachine)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+machineQueue), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -85,7 +86,7 @@ func TestRoleLaneFallsBackToTheMachinesQueueGroupWhenTheSharedOneIsRefused(t *te
 
 // A user granted neither group gets an error, not a lane that delivers nothing.
 func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	if lane, _, err := bus.ConnectRoleLane([]string{uri}, roleLaneMachine, func(*natsgo.Msg) {}); err == nil {

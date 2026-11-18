@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // testClaim is the claim the default resolver hands out for testToken.

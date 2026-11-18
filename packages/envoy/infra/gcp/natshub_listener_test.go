@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/gcp"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The three values of a hub listener's broker check: the secrets broker, the audience of the
@@ -205,7 +205,7 @@ func TestNatsHubResolverRefusesInvalidListenerAndSessionUserInputs(t *testing.T)
 // holds, is refused naming the input by its path, never the value, as
 // TestNatsHubRefusesASeedInAnyPlainInput refuses one in the hub's other plain inputs.
 func TestNatsHubRefusesASeedInTheListenersInputs(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	lower := strings.ToLower(seed)
 	digest := "@sha256:" + strings.Repeat("0", 64)
 	requireSeedRefusals(t, seed, []seedRefusal{

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // The plugin's Construct copies a consumer's inputs into NatsHubArgs, and refuses a plain-typed
@@ -138,7 +138,7 @@ func TestConstructTakesAnUnknownAuthKeyAndNetworkUnderPreview(t *testing.T) {
 // is written with it and no registration carries it, plainly or as a secret. The key arrives as a
 // secret from another resource, as a consumer's does, and in each spelling the detector reads.
 func TestConstructRefusesASeedAsTheTailnetAuthKey(t *testing.T) {
-	seed, _ := testnats.User(t)
+	seed, _ := testnkeys.User(t)
 	for name, value := range map[string]string{
 		"a seed":                  seed,
 		"a lowercase seed":        strings.ToLower(seed),

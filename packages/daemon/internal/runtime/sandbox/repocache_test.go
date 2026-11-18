@@ -30,9 +30,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/sjawhar/envoy/logtest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -80,7 +80,7 @@ func cachePod(repo ghrepo.Repository, uid, ownerUID, image string, phase corev1.
 }
 
 // logBuffer is a log the runtime writes while a test reads it.
-type logBuffer = testlog.Buffer
+type logBuffer = logtest.Buffer
 
 // withLog has the runtime log at info and above to buffer.
 func withLog(buffer *logBuffer) rigOption {

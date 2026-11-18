@@ -17,8 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // laterEvent appends another human message on an issue routedEvent already seeded, so that an

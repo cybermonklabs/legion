@@ -8,6 +8,11 @@
 // share test-only code across packages (see internal/cputest's identical reasoning). The locked
 // buffer those handlers write into lives here too, because a test that swaps the default logger
 // needs a sink the code under test and the test itself may hold at the same time.
+//
+// It is public, as testnatsimages is, so that packages/daemon, a module outside
+// github.com/sjawhar/envoy, captures its logs through this one package: Go's internal-package
+// rule keeps that module from importing an internal package of this one.
+// packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there.
 package logtest
 
 import (

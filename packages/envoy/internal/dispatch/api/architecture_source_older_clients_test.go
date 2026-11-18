@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // The WARN lines the singular routes log, one per call, so an operator can find the callers that

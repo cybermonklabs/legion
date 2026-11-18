@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // TestGiveBackRevokesEveryTokenOfAReleasedValue: GiveBack is what the broker calls for a github-app

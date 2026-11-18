@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A late refusal is Oh My Pi refusing a prompt after it acknowledged it, or a refusal of an earlier

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // branchServer serves handler as the GitHub API and answers a client pointed at it.

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // stubCodegraph puts a fake `codegraph` executable first on PATH. Its `status --json` reports

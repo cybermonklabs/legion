@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // repositoryGitHub is GitHub's REST API answering GET /repos/acme/widgets with defaultBranch, or

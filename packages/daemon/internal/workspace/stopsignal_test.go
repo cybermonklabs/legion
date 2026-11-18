@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // commandLives keeps a test's command running until a signal ends it. A shell runs a trap when the

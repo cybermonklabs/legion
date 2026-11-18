@@ -18,11 +18,12 @@ import (
 	"testing"
 	"time"
 
+	envoyfixtureenv "github.com/sjawhar/envoy/fixtureenv" // the bare name is this module's fixtureenv
+	"github.com/sjawhar/envoy/testnkeys"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
@@ -1005,7 +1006,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			fixtureenv.Unset(t, "LEGION_GH_PATH")
+			envoyfixtureenv.Unset(t, "LEGION_GH_PATH")
 			t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
 		},
 			func(dir string) string {

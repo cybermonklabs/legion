@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/requests"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // lastRelease is the attributes of the last requests.ReleasedMessage record capture holds for

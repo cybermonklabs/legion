@@ -15,11 +15,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
-	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // imageOmp is an `omp` that passes the image's three probes as a working image's Oh My Pi does:

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/config"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 func writeConfigFile(t *testing.T, path, contents string) {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testwait"
 )
 
 // fakeConnStatus is reconnectWatchdog's test double for *nats.Conn: a test sets connected and err

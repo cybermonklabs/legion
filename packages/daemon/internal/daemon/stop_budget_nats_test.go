@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // sweepStall is a fake runtime whose periodic orphan sweep (grace orphanGrace) answers to no
@@ -62,7 +62,7 @@ const natsConnectionCloseBound = 5 * time.Second
 
 // natsConnectionClosePoll is how often the server is asked within that bound. Each question is an
 // HTTP request to the NATS monitoring endpoint, and a question that costs something must not be
-// asked a hundred times a second (internal/testwait, Holds); internal/testnats reads the same
+// asked a hundred times a second (packages/envoy/testwait, Holds); internal/testnats reads the same
 // endpoint at 50 ms (leakcheck.go, leakPoll).
 const natsConnectionClosePoll = 50 * time.Millisecond
 

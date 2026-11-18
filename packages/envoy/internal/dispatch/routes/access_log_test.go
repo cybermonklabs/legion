@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // logBuffer is a log sink the router's goroutines may write while the test reads it.

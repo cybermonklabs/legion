@@ -21,7 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/envoy/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 

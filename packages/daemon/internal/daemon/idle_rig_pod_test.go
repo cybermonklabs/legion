@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // idleRigPods runs the processes of every pod the rig's Kubernetes stand-in reports Ready: one

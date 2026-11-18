@@ -22,9 +22,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 const roleTopic = "notifications.role.reviewer"
@@ -34,7 +35,7 @@ const roleTopic = "notifications.role.reviewer"
 // user that tests subscribe through, as the listener's lanes would, and the server's grant.
 func grantedNATS(t *testing.T, allow ...string) (*bus.Client, *natsgo.Conn, *testnats.NkeyGrant) {
 	t.Helper()
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	grant := testnats.StartNkeyGranted(t, public, allow...)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.ConnectOwningStream([]string{grant.URL})

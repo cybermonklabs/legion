@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testtmp"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Every refusal the shipped command makes before it dials or spawns (worker-shim.ts:630-676,

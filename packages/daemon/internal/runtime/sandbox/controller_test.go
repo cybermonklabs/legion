@@ -19,12 +19,12 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/sjawhar/envoy/logtest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 var controllerToken = claim.ControllerToken(testProject)
@@ -682,7 +682,7 @@ func TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays(t *testing.T) {
 }
 
 // lockedLog is a log the runtime's goroutines write to while a test reads it.
-type lockedLog = testlog.Buffer
+type lockedLog = logtest.Buffer
 
 // setResourceVersion stamps the Sandbox name in the tracker with version, as a write to it would:
 // the fake tracker keeps whatever version an object carries.

@@ -14,7 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/infra/provider"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // schemaJSON serves the plugin in process and returns the schema it answers GetSchema with.
@@ -369,7 +369,7 @@ func TestConstructRefusesAFractionInEveryIntegerInput(t *testing.T) {
 			// The check's refusal quotes the component's name, so a name holding an nkey seed is
 			// left to the component, which refuses it first without quoting it.
 			t.Run(typ+"/"+input+"/a seed as the name", func(t *testing.T) {
-				seed, _ := testnats.User(t)
+				seed, _ := testnkeys.User(t)
 				m := &pulumitest.Mocks{}
 				_, err := pulumitest.Construct(t, m, typ, seed, map[string]pproperty.Value{input: pproperty.New(2.5)}, false, nil)
 				require.ErrorContains(t, err, "nkey seed")

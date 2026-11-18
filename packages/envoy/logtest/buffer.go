@@ -37,6 +37,13 @@ func (b *Buffer) Len() int {
 	return b.written.Len()
 }
 
+// Reset drops everything written so far, for a test that reads one phase of its subject at a time.
+func (b *Buffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.written.Reset()
+}
+
 // Lines is the logged lines that hold substring.
 func (b *Buffer) Lines(substring string) string {
 	var matched strings.Builder

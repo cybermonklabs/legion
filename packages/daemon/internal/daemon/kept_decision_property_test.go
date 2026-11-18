@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/logtest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -28,7 +29,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1045,7 +1045,7 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 // keptLog is the engine's log as the run reads it: the JSON lines slog writes, under a lock,
 // since a step that runs rows at once logs from several lanes.
 type keptLog struct {
-	testlog.Buffer
+	logtest.Buffer
 }
 
 // since is everything written to the log after mark, and mark is how much it holds now.

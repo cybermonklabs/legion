@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // A start whose lookup of a bucket the server refuses under the connection's grant ends at that
@@ -23,7 +24,7 @@ import (
 // drops none, so every send it counts reached the server and was refused there.
 func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	const bucket = "envoy_denied_lookup"
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	// Every subject a start of this bucket publishes to except its lookup's, so the refusal the
 	// row reads is the one of that subject and of nothing else.
 	grant := testnats.StartNkeyGranted(t, public,
@@ -68,7 +69,7 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	// one no other connection on this server earns a refusal of, since it names this bucket.
 	deleteSubject := "$JS.API.STREAM.DELETE.KV_" + bucket
 	lookup := "KV_" + bucket + " STREAM.INFO"
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	// Every subject a start of this bucket publishes to, so the only refusal the connection can
 	// record is the one the row plants.
 	grant := testnats.StartNkeyGranted(t, public, openSubject(bucket), createSubject(bucket),

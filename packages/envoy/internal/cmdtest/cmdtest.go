@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // Build builds the main package in the test's working directory, its own command's, into a binary

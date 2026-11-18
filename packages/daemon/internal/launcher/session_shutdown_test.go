@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const launcherTermDialerEnv = "LEGION_LAUNCHER_TEST_TERM_DIALER"

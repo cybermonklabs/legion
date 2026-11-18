@@ -1,0 +1,300 @@
+{
+  "read": "2026-11-18T15:07:49Z",
+  "how": "gh api markdown -f text=<doc> -f mode=gfm (POST /markdown), GitHub's renderer and sanitizer",
+  "rows": [
+    {
+      "name": "inline comment whose text ends in a dash",
+      "doc": "p <!-- zm01 ---> ze01\n",
+      "markers": ["zm01", "ze01"],
+      "html": "<p>p &lt;!-- zm01 ---&gt; ze01</p>"
+    },
+    {
+      "name": "the empty comment <!-->",
+      "doc": "p <!--> zs02 <!-- zh02 --> ze02\n",
+      "markers": ["zs02", "zh02", "ze02"],
+      "html": "<p>p  zs02  ze02</p>"
+    },
+    {
+      "name": "the empty comment <!--->",
+      "doc": "p <!---> zs03 <!-- zh03 --> ze03\n",
+      "markers": ["zs03", "zh03", "ze03"],
+      "html": "<p>p  zs03  ze03</p>"
+    },
+    {
+      "name": "the empty comment <!---->",
+      "doc": "p <!----> zs04\n",
+      "markers": ["zs04"],
+      "html": "<p>p  zs04</p>"
+    },
+    {
+      "name": "dashes inside a comment",
+      "doc": "p <!-- zh05 --- zi05 --> ze05\n",
+      "markers": ["zh05", "zi05", "ze05"],
+      "html": "<p>p  ze05</p>"
+    },
+    {
+      "name": "a comment spanning lines",
+      "doc": "p <!-- zh06\nzi06 --> ze06\n",
+      "markers": ["zh06", "zi06", "ze06"],
+      "html": "<p>p  ze06</p>"
+    },
+    {
+      "name": "a dash-ended comment whose scan runs on to a later end",
+      "doc": "p <!-- zm07 ---> zn07 --> ze07\n",
+      "markers": ["zm07", "zn07", "ze07"],
+      "html": "<p>p  zn07 --&gt; ze07</p>"
+    },
+    {
+      "name": "a dash-ended comment whose scan runs on across lines",
+      "doc": "p <!-- zm08\n---> zn08\n--> ze08\n",
+      "markers": ["zm08", "zn08", "ze08"],
+      "html": "<p>p  zn08\n--&gt; ze08</p>"
+    },
+    {
+      "name": "an open comment that a run-on dash-ended comment ends",
+      "doc": "<div><!--\n\nzh09 <!-- q ---> zs09 --> zt09\n\nzu09\n",
+      "markers": ["zh09", "zs09", "zt09", "zu09"],
+      "html": "<div> zs09 --&gt; zt09<p></p>\n<p>zu09</p></div>"
+    },
+    {
+      "name": "an open comment that a dash-ended comment with no end does not end",
+      "doc": "<div><!--\n\nzh10 <!-- q ---> zs10\n\nzt10\n",
+      "markers": ["zh10", "zs10", "zt10"],
+      "html": "<div></div>"
+    },
+    {
+      "name": "the dash-ended comment inline",
+      "doc": "p <!-- zm11 ---> ze11\n",
+      "markers": ["zm11", "ze11"],
+      "html": "<p>p &lt;!-- zm11 ---&gt; ze11</p>"
+    },
+    {
+      "name": "the same dash-ended comment as an HTML block",
+      "doc": "<!-- zm12 --->\n\nze12\n",
+      "markers": ["zm12", "ze12"],
+      "html": "\n<p>ze12</p>"
+    },
+    {
+      "name": "in a list item",
+      "doc": "- p <!-- zm13 ---> zn13 --> ze13\n- q <!-- zm14 ---> ze14\n",
+      "markers": ["zm13", "zn13", "ze13", "zm14", "ze14"],
+      "html": "<ul>\n<li>p  zn13 --&gt; ze13</li>\n<li>q &lt;!-- zm14 ---&gt; ze14</li>\n</ul>"
+    },
+    {
+      "name": "in a block quote",
+      "doc": "> p <!-- zm15 --->\n> zn15 --> ze15\n\n> q <!-- zm16 ---> ze16\n",
+      "markers": ["zm15", "zn15", "ze15", "zm16", "ze16"],
+      "html": "<blockquote>\n<p>p \nzn15 --&gt; ze15</p>\n</blockquote>\n<blockquote>\n<p>q &lt;!-- zm16 ---&gt; ze16</p>\n</blockquote>"
+    },
+    {
+      "name": "in a table cell",
+      "doc": "| a |\n| - |\n| <!-- zm17 ---> zn17 --> ze17 |\n| <!-- zm18 ---> ze18 |\n",
+      "markers": ["zm17", "zn17", "ze17", "zm18", "ze18"],
+      "html": "<markdown-accessiblity-table><table role=\"table\">\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td> zn17 --&gt; ze17</td>\n</tr>\n<tr>\n<td>&lt;!-- zm18 ---&gt; ze18</td>\n</tr>\n</tbody>\n</table></markdown-accessiblity-table>"
+    },
+    {
+      "name": "an end in the next table cell",
+      "doc": "| a | b |\n| - | - |\n| <!-- zm19 ---> | zn19 --> |\n",
+      "markers": ["zm19", "zn19"],
+      "html": "<markdown-accessiblity-table><table role=\"table\">\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>&lt;!-- zm19 ---&gt;</td>\n<td>zn19 --&gt;</td>\n</tr>\n</tbody>\n</table></markdown-accessiblity-table>"
+    },
+    {
+      "name": "in a heading",
+      "doc": "# h <!-- zm20 ---> zn20 --> ze20\n\n## k <!-- zm21 ---> ze21\n",
+      "markers": ["zm20", "zn20", "ze20", "zm21", "ze21"],
+      "html": "<h1>h  zn20 --&gt; ze20</h1>\n<h2>k &lt;!-- zm21 ---&gt; ze21</h2>"
+    },
+    {
+      "name": "an end inside a later code span",
+      "doc": "p <!-- zm22 ---> `x --> y` ze22\n",
+      "markers": ["zm22", "ze22"],
+      "html": "<p>p  `x --&gt; y` ze22</p>"
+    },
+    {
+      "name": "two dash-ended comments and no end",
+      "doc": "p <!-- zm23 ---> zn23 ---> ze23\n",
+      "markers": ["zm23", "zn23", "ze23"],
+      "html": "<p>p &lt;!-- zm23 ---&gt; zn23 ---&gt; ze23</p>"
+    },
+    {
+      "name": "CDATA after a comment that finds no end",
+      "doc": "p <!-- zm24 ---> <![CDATA[ zc24 ]]> ze24\n",
+      "markers": ["zm24", "zc24", "ze24"],
+      "html": "<p>p &lt;!-- zm24 ---&gt; &lt;![CDATA[ zc24 ]]&gt; ze24</p>"
+    },
+    {
+      "name": "a declaration after a comment that finds no end",
+      "doc": "p <!-- zm25 ---> <!X zd25> ze25\n",
+      "markers": ["zm25", "zd25", "ze25"],
+      "html": "<p>p &lt;!-- zm25 ---&gt; &lt;!X zd25&gt; ze25</p>"
+    },
+    {
+      "name": "CDATA after an opener with no end at all",
+      "doc": "p <!-- zm26 <![CDATA[ zc26 ]]> ze26\n",
+      "markers": ["zm26", "zc26", "ze26"],
+      "html": "<p>p &lt;!-- zm26 &lt;![CDATA[ zc26 ]]&gt; ze26</p>"
+    },
+    {
+      "name": "CDATA after an opener in a code span",
+      "doc": "p `<!--` <![CDATA[ zc27 ]]> ze27\n",
+      "markers": ["zc27", "ze27"],
+      "html": "<p>p <code class=\"notranslate\">&lt;!--</code>  ze27</p>"
+    },
+    {
+      "name": "CDATA after an escaped opener",
+      "doc": "p \\<!-- <![CDATA[ zc28 ]]> ze28\n",
+      "markers": ["zc28", "ze28"],
+      "html": "<p>p &lt;!--  ze28</p>"
+    },
+    {
+      "name": "CDATA in the next paragraph after a comment that finds no end",
+      "doc": "p <!-- zm29 ---> ze29\n\nq <![CDATA[ zc29 ]]> zf29\n",
+      "markers": ["zm29", "ze29", "zc29", "zf29"],
+      "html": "<p>p &lt;!-- zm29 ---&gt; ze29</p>\n<p>q  zf29</p>"
+    },
+    {
+      "name": "a <source> block that leaves a comment open",
+      "doc": "<source><!--\n\nzh30\n",
+      "markers": ["zh30"],
+      "html": "<source>"
+    },
+    {
+      "name": "a block tag and a tab",
+      "doc": "<div\t><!--\n\nzh31\n",
+      "markers": ["zh31"],
+      "html": "<div></div>"
+    },
+    {
+      "name": "a block tag and a form feed",
+      "doc": "<div\f><!--\n\nzh32\n",
+      "markers": ["zh32"],
+      "html": "<div></div>"
+    },
+    {
+      "name": "a block tag and a vertical tab",
+      "doc": "<source\u000b><!--\n\nzh33\n",
+      "markers": ["zh33"],
+      "html": ""
+    },
+    {
+      "name": "a block tag that interrupts a paragraph",
+      "doc": "para zp34\n<source><!--\n\nzh34\n",
+      "markers": ["zp34", "zh34"],
+      "html": "<p>para zp34</p>\n<source>"
+    },
+    {
+      "name": "a run of five dashes ends a comment",
+      "doc": "p <!-- zm35 -----> ze35\n",
+      "markers": ["zm35", "ze35"],
+      "html": "<p>p  ze35</p>"
+    },
+    {
+      "name": "a five-dash comment, then a CDATA section",
+      "doc": "p <!-- zm36 -----> zn36 <![CDATA[ zc36 ]]> ze36\n",
+      "markers": ["zm36", "zn36", "zc36", "ze36"],
+      "html": "<p>p  zn36  ze36</p>"
+    },
+    {
+      "name": "runs of six, seven and eight dashes",
+      "doc": "p <!-- zm37 ------> ze37\n\nq <!-- zm38 -------> ze38\n\nr <!-- zm39 --------> ze39\n",
+      "markers": ["zm37", "ze37", "zm38", "ze38", "zm39", "ze39"],
+      "html": "<p>p &lt;!-- zm37 ------&gt; ze37</p>\n<p>q &lt;!-- zm38 -------&gt; ze38</p>\n<p>r  ze39</p>"
+    },
+    {
+      "name": "an open comment that a five-dash comment ends",
+      "doc": "<div><!--\n\nzh40 <!-- q -----> zs40\n\nzt40\n",
+      "markers": ["zh40", "zs40", "zt40"],
+      "html": "<div> zs40<p></p>\n<p>zt40</p></div>"
+    },
+    {
+      "name": "a code span inside a run-on comment's raw HTML holds a comment",
+      "doc": "Run `make` <!-- fix: zm42 ---> then `<!-- footer: zm43 -->` is the footer zf42.\n",
+      "markers": ["zm42", "zm43", "zf42"],
+      "html": "<p>Run <code class=\"notranslate\">make</code>  then `` is the footer zf42.</p>"
+    },
+    {
+      "name": "an escape inside a run-on comment's raw HTML holds a comment",
+      "doc": "a <!-- note ---> b \\<!-- zm44 --> c zf44\n",
+      "markers": ["zm44", "zf44"],
+      "html": "<p>a  b \\ c zf44</p>"
+    },
+    {
+      "name": "the same code span after a comment that ends where goldmark's does",
+      "doc": "Run `make` <!-- fix: zm45 --> then `<!-- footer: zm46 -->` is the footer zf45.\n",
+      "markers": ["zm45", "zm46", "zf45"],
+      "html": "<p>Run <code class=\"notranslate\">make</code>  then <code class=\"notranslate\">&lt;!-- footer: zm46 --&gt;</code> is the footer zf45.</p>"
+    },
+    {
+      "name": "an opener at a line's end, which goldmark cuts at its !, then a CDATA section",
+      "doc": "p <!--\nzm50 <![CDATA[ zc50 ]]> ze50\n",
+      "markers": ["zm50", "zc50", "ze50"],
+      "html": "<p>p &lt;!--<br>\nzm50 &lt;![CDATA[ zc50 ]]&gt; ze50</p>"
+    },
+    {
+      "name": "an opener after a code span, which goldmark cuts at its < and at its !",
+      "doc": "`x`<!--\nzm52 <![CDATA[ zc52 ]]> ze52\n",
+      "markers": ["zm52", "zc52", "ze52"],
+      "html": "<p><code class=\"notranslate\">x</code>&lt;!--<br>\nzm52 &lt;![CDATA[ zc52 ]]&gt; ze52</p>"
+    },
+    {
+      "name": "an opener at a line's end inside emphasis",
+      "doc": "*p <!--\nzm53* <![CDATA[ zc53 ]]> ze53\n",
+      "markers": ["zm53", "zc53", "ze53"],
+      "html": "<p><em>p &lt;!--<br>\nzm53</em> &lt;![CDATA[ zc53 ]]&gt; ze53</p>"
+    },
+    {
+      "name": "an opener at a line's end, then a declaration",
+      "doc": "p <!--\nzm54 <!ZD zd54> ze54\n",
+      "markers": ["zm54", "zd54", "ze54"],
+      "html": "<p>p &lt;!--<br>\nzm54 &lt;!ZD zd54&gt; ze54</p>"
+    },
+    {
+      "name": "an opener at a line's end in a list item",
+      "doc": "- p <!--\n  zm55 <![CDATA[ zc55 ]]> ze55\n",
+      "markers": ["zm55", "zc55", "ze55"],
+      "html": "<ul>\n<li>p &lt;!--<br>\nzm55 &lt;![CDATA[ zc55 ]]&gt; ze55</li>\n</ul>"
+    },
+    {
+      "name": "an opener at a line's end in a block quote",
+      "doc": "> p <!--\n> zm56 <![CDATA[ zc56 ]]> ze56\n",
+      "markers": ["zm56", "zc56", "ze56"],
+      "html": "<blockquote>\n<p>p &lt;!--<br>\nzm56 &lt;![CDATA[ zc56 ]]&gt; ze56</p>\n</blockquote>"
+    },
+    {
+      "name": "an opener at a line's end inside link text",
+      "doc": "[p <!--\nzm58](u) <![CDATA[ zc58 ]]> ze58\n",
+      "markers": ["zm58", "zc58", "ze58"],
+      "html": "<p><a href=\"u\">p &lt;!--<br>\nzm58</a> &lt;![CDATA[ zc58 ]]&gt; ze58</p>"
+    },
+    {
+      "name": "an opener before a hard line break",
+      "doc": "p <!--  \nzm59 <![CDATA[ zc59 ]]> ze59\n",
+      "markers": ["zm59", "zc59", "ze59"],
+      "html": "<p>p &lt;!--<br>\nzm59 &lt;![CDATA[ zc59 ]]&gt; ze59</p>"
+    },
+    {
+      "name": "a block tag spelt with the long s, U+017F, for s",
+      "doc": "<ſection><!--\n\nzh60\n",
+      "markers": ["zh60"],
+      "html": "<p>&lt;ſection&gt;&lt;!--</p>\n<p>zh60</p>"
+    },
+    {
+      "name": "a block tag spelt with the Kelvin sign, U+212A, for k",
+      "doc": "<linK><!--\n\nzh61\n",
+      "markers": ["zh61"],
+      "html": "<p>&lt;linK&gt;&lt;!--</p>\n<p>zh61</p>"
+    },
+    {
+      "name": "a block tag in ASCII capitals still opens a block",
+      "doc": "<SECTION><!--\n\nzh62\n",
+      "markers": ["zh62"],
+      "html": "<section></section>"
+    },
+    {
+      "name": "a comment across a line break inside a run-on comment's raw HTML",
+      "doc": "p <!-- zm63 --->\n`<!-- zx63\nzy63 -->` zf63\n",
+      "markers": ["zm63", "zx63", "zy63", "zf63"],
+      "html": "<p>p \n`` zf63</p>"
+    }
+  ]
+}

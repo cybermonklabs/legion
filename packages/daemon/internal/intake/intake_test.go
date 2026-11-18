@@ -22,15 +22,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/logtest"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 type handlerFunc func(context.Context, pgx.Tx, Fact) (Result, error)
@@ -1657,7 +1657,7 @@ func migratedPool(t *testing.T) *pgxpool.Pool {
 	return testpg.ClonePool(t, "legion_intake_test")
 }
 
-type lockedBuffer = testlog.Buffer
+type lockedBuffer = logtest.Buffer
 
 // Facts apply one at a time: the handlers read and rewrite whole records (an issue, the admission
 // slots that span trees), so a second fact running beside the first would act on what the first is

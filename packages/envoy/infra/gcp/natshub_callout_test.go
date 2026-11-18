@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/nats"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 func calloutNatsHub() *gcp.NatsHubArgs {
@@ -176,7 +176,7 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	args.AuthCallout.XKey = otherXKey(t)
 	require.NotEqual(t, before, annotation(t, args), "another xkey rolls the pods")
 
-	_, added := testnats.User(t)
+	_, added := testnkeys.User(t)
 	args = calloutClusteredHub()
 	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
 	require.Equal(t, digest(calloutBlock(keyA, keyB, keyC, keyD, keyAuth, added, keySessions)+calloutPingLines), annotation(t, args),
@@ -213,7 +213,7 @@ func TestClusteredNatsHubPinsTheRoutesPingBesideACallout(t *testing.T) {
 func TestClusteredNatsHubHashesTheRenderedCalloutBlock(t *testing.T) {
 	withXKey := calloutClusteredHub()
 	withXKey.AuthCallout.XKey = otherXKey(t)
-	_, added := testnats.User(t)
+	_, added := testnkeys.User(t)
 	withUser := calloutClusteredHub()
 	withUser.Users = append(withUser.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
 	for name, args := range map[string]*gcp.ClusteredNatsHubArgs{

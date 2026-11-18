@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/testtmp"
+	"github.com/sjawhar/envoy/testwait"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -34,8 +36,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -1046,8 +1046,8 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
 // gives up, so a failure names what it waited for rather than arriving as the binary's panic. It
-// is the second testwait.Eventually leaves (internal/testwait), widened for the launchers' log
-// and the daemon's, which this rig prints on its way out.
+// is the second testwait.Eventually leaves (packages/envoy/testwait), widened for the launchers'
+// log and the daemon's, which this rig prints on its way out.
 const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
@@ -1097,11 +1097,11 @@ const idleRigPoll = idleRigTick
 // idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
 // pace, and fails naming what it waited for. The bound is within from now, or the test binary's
 // own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
-// makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
-// `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
-// wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it
-// at the span itself. idleRigEventually and idleRigUntil are this wait, each at the pace its
-// callers need.
+// makes (packages/envoy/testwait). A run whose remaining deadline is shorter than the span — a
+// package `-timeout` smaller than it, or a run far enough in that less than the span is left —
+// fails the wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`)
+// fails it at the span itself. idleRigEventually and idleRigUntil are this wait, each at the pace
+// its callers need.
 func idleRigWaiting(t *testing.T, within time.Duration, what string, pace time.Duration, condition func() bool) {
 	t.Helper()
 	testwait.WithinPolling(t, testwait.Bounded(t, within, idleRigDeadlineMargin), pace, what, condition)

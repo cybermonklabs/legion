@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // idleRigListener is the real Envoy listener of packages/envoy/cmd/listener, built once per test

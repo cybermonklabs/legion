@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testnkeys"
 )
 
 // A start that finds a bucket with fewer copies than ENVOY_NATS_REPLICAS raises it with an update
@@ -30,9 +31,9 @@ func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	require.Contains(t, grant.Publish.Allow, "$JS.API.STREAM.UPDATE.KV_"+bus.InterestBucket)
 	require.NotContains(t, withoutUpdate.Publish.Allow, "$JS.API.STREAM.UPDATE.KV_"+bus.InterestBucket)
 
-	listenerSeed, listenerKey := testnats.User(t)
-	refusedSeed, refusedKey := testnats.User(t)
-	_, adminKey := testnats.User(t)
+	listenerSeed, listenerKey := testnkeys.User(t)
+	refusedSeed, refusedKey := testnkeys.User(t)
+	_, adminKey := testnkeys.User(t)
 	everything := core.Rules{Allow: []string{">"}}
 	config, err := core.Authorization{Users: []core.User{
 		{Name: "example-listener", NKey: listenerKey, Publish: &grant.Publish, Subscribe: &grant.Subscribe, HasSeed: true},

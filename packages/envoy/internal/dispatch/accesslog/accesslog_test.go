@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // lockedBuffer is a log sink a handler's goroutines may write while the test reads it.
