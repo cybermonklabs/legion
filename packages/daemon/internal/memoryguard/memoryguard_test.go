@@ -3614,6 +3614,73 @@ func replayLatepool(t *testing.T, run latepoolRun) {
 	}
 }
 
+// The tester's run `4g-latepool-r5` at bd8bb44c under gVisor at 4 GiB (infra-3531-live-4g-latepool-r5.log
+// in dispatch://INFRA-3531/artifact/tester-evidence-bd8bb44c-2026-11-18-tar-gz), replayed with the
+// readings its trace recorded and their times. The probe's parent holds its 2.4 GB block from the
+// band's third reading on, and its three sleeping forks start before the band's seventh reading.
+// Its first kill, at the first reading at the mark, 93.96%, at or above the urgent share, ended the
+// parent by rule=largest with sizes=reread and new_read=0:0, while six growers that had each taken a
+// 64 MiB step lived: the reads at the mark reached no process new to the stay, and no held process
+// grew over the window there. The guard ended the six at the next reading, 110 ms later. One way to
+// that line, modelled here: a held process that grew between the band's last two readings is gone
+// by the reading at the mark (it exited, or its smaps no longer reads), so the reads at the mark
+// leave it out; no held process grows over the window any longer, yet the held growth keeps the
+// reading from searching for the processes started since, and the growers, started after the
+// band's last reading, are not read. R1 (spec version 39) ends, where none grew over the window,
+// the largest process new to this stay in the band that the guard reads within half an interval,
+// reading at least one: here a grower, found started since, and never the parent first.
+func TestMemoryGuardSearchesAtAnUrgentReadingAtTheMarkWhereTheHeldGrowthIsGoneOnTheReadAgain(t *testing.T) {
+	limit := uint64(podLimit)
+	at := func(hundredths uint64) uint64 { return limit / 10000 * hundredths >> 10 << 10 }
+	band := []replayReading{{7572, 0}, {7905, 101 * time.Millisecond}, {8373, 101 * time.Millisecond},
+		{8373, 101 * time.Millisecond}, {8373, 101 * time.Millisecond}, {8373, 101 * time.Millisecond},
+		{8416, 101 * time.Millisecond}, {8457, 102 * time.Millisecond}, {8457, 104 * time.Millisecond}}
+	pod := newFakePod(t)
+	pod.setLimit(strconv.FormatUint(limit, 10))
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock / 2}
+	pod.add(agent(limit/4), parent)
+	pod.setAnon(at(band[0].hundredths))
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	// A python3 child of the parent, started before the band's seventh reading, grows by 5 MiB
+	// between the band's last two readings and is gone by the reading at the mark.
+	brief := fakeProcess{pid: 750, ppid: 700, start: 5500, exe: "/usr/bin/python3.13", args: []string{"/usr/bin/python3", "-c", "brief"}, anon: mib}
+	for i, r := range band[1:] {
+		reading := i + 1
+		if reading >= 2 {
+			pod.resize(&parent, latepoolBlock)
+		}
+		if reading == 6 {
+			for j := range 3 {
+				pod.add(fakeProcess{pid: 701 + j, ppid: 700, start: uint64(5100 + 100*j), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+			}
+			pod.add(brief)
+		}
+		if reading == len(band)-1 {
+			pod.resize(&brief, 6*mib)
+		}
+		pod.setAnon(at(r.hundredths))
+		h.tickAfter(r.after - Defaults().Interval)
+	}
+	pod.remove(brief.pid)
+	growers := []int{800, 801, 802, 803, 804, 805}
+	for j, pid := range growers {
+		pod.add(fakeProcess{pid: pid, ppid: 700, start: uint64(6000 + j), exe: "/usr/bin/python3.13", args: growArgs, anon: (64 + 1 + uint64(j)) * mib})
+	}
+	pod.setAnon(at(9396))
+	h.tickAfter(104*time.Millisecond - Defaults().Interval)
+	got := endedChoices(h)
+	if len(got) == 0 || !slices.Contains(growers, got[0].pid) {
+		t.Fatalf("at the urgent reading at the mark the guard ended %+v first, want a grower; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+	}
+	for _, c := range got {
+		if !slices.Contains(growers, c.pid) {
+			t.Fatalf("at the urgent reading at the mark the guard ended %+v, which is no grower; the log:\n%s", c, strings.Join(h.log.all(), "\n"))
+		}
+	}
+}
+
 // After a kill, a dip below the mark that stays in the band ends the rise and not the stay, and
 // the order's third tier counts growth since the stay's first kill across it (INFRA-3531 R1 of
 // spec version 37). The tester's runs `8g-latepool-r2` and `8g-latepool-r3` (the latepool probe)
