@@ -240,6 +240,8 @@ export type {
   RecordResponse,
   ReferenceQuestion,
   ReferenceQuestions,
+  ReferenceTarget,
+  ReferenceTargets,
   ReplyBlockWithTrees,
   RepoProject,
   RequirementCoverage,

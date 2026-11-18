@@ -137,7 +137,7 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("warm the delivering listener's session cache: %v", err)
 	}
 	harness.sessions.StopWatch()
-	registrar, err := session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1))
+	registrar, err := session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registering listener's session registry: %v", err)
 	}

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -240,7 +241,9 @@ func (c *bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
 // realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
 // in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
-// neither skips, as the other gh-backed tests do.
+// neither skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is
+// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
+// the `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
 //
 // It also puts this test binary's own `legion gh` first on the test's PATH
 // (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
@@ -256,6 +259,9 @@ func realGHForCapture(t *testing.T) string {
 		found, err := exec.LookPath("gh")
 		if err != nil {
 			t.Skip("no real gh on this machine: the capture test drives one")
+		}
+		if err := daemon.RefuseScriptGH(found); err != nil {
+			t.Skip(err)
 		}
 		path = found
 	}
