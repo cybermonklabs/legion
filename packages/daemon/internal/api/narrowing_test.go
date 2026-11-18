@@ -419,8 +419,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 // applied to the body the bands start from, and the two bodies are marshalled and compared. A
 // band that changes no byte has taken no key, and the log must say nothing of it. Today the
 // bands of the body's own keys do change the bytes, because every state carries
-// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
-// `lowestPluginContract` for these claims and `settings.pod_update_grace_minutes`.
+// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held` and
+// `lowestPluginContract` for these claims.
 func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	const below = supervise.PodUpdateContract - 1
 	claims := podClaims(below)

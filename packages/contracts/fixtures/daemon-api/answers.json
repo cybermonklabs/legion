@@ -5,7 +5,22 @@
       "GET /legion/v1/state"
     ],
     "since": 46,
-    "noBody": false
+    "noBody": false,
+    "typedSettings": [
+      {
+        "key": "max_fix_attempts",
+        "since": 46,
+        "until": 58
+      },
+      {
+        "key": "worker_boot_timeout_seconds",
+        "since": 46
+      },
+      {
+        "key": "review_round_cap",
+        "since": 86
+      }
+    ]
   },
   {
     "id": "issue-record",

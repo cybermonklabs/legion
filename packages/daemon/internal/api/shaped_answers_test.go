@@ -269,26 +269,15 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
 }
 
-// A stand-in follows the pod's lowest contract where a band follows its highest: a key a
-// contract removed is written back because the pod's oldest process requires it, and a key a
-// contract added is left out only where no process of the pod reads it (contractsFor says why
-// the two halves differ). A pod recording 111 and 133 spans podUpdateGraceContract, which took
-// `pod_update_retask_hours` and `pod_update_notice_hours` out of the settings block and put
-// `pod_update_grace_minutes` in. The pod's 111 process requires the block its own contract
-// describes, so the pod is served the two old keys as the stand-ins 1 and 4
-// (withPodUpdateHours). Its 133 process reads the new key, so the pod is served that too, as the
-// source holds it: the band of podUpdateGraceContract (withoutPodUpdateGrace) follows the pod's
-// highest contract and does not reach it. A pod at 133 alone is served neither old key, so the
-// mixed pod's stand-ins are its older process's. What the 111 process requires of these two keys
-// is the record of its own contract, which carries both: no plugin code reads either
-// (version.go's 154), and the stand-ins keep the body served to such a process that record's
-// shape.
-//
-// It is a test of its own rather than a second pod of the {46, 73} case above. That pod's two
-// contracts are both below podUpdateGraceContract, so it holds these stand-ins to nothing, and
-// the stand-ins of fixAttemptsContract it does hold need a pod below 59, which a pod spanning 123
-// is not on either side.
-func TestAMixedPodIsServedTheLowestsPodUpdateStandInsAndTheHighestsGrace(t *testing.T) {
+// A caller at 111 reads the settings block as this daemon writes it, whether it states 111 in
+// the header or the claims of its pod record 111: `pod_update_grace_minutes` with the value this
+// daemon holds, and neither `pod_update_retask_hours` nor `pod_update_notice_hours`. main's #3982
+// took the two hour keys out of the block and put the grace key in, and merged when main declared
+// 111, so a daemon at 111 may send either block. No reader at any contract types any of the
+// three (answers.go's typedSettings), so no stand-in and no band is owed for them, and no record
+// holds them (contract_shapes_test.go's withoutUntypedSettings). The shape gate therefore does
+// not see these keys, and this case is what holds that they are served as written.
+func TestACallerAt111ReadsTheSettingsBlockThisDaemonWrites(t *testing.T) {
 	settingsOf := func(body []byte) map[string]json.RawMessage {
 		t.Helper()
 		var served struct {
@@ -299,35 +288,39 @@ func TestAMixedPodIsServedTheLowestsPodUpdateStandInsAndTheHighestsGrace(t *test
 		}
 		return served.Settings
 	}
-	logs := &bytes.Buffer{}
+	// quietTimeContract is 111, the contract main declared when #3982 merged.
+	const at = quietTimeContract
 	state := populatedState(t)
-	handler := shapedServer(t, state, mixedPodClaims(quietTimeContract, mergeWaitContract), logs, true)
-	whole := settingsOf(stateStating(t, handler, "192.0.2.1:41000", 0))
-	grace, carried := whole["pod_update_grace_minutes"]
+	written := settingsOf(stateStating(t, shapedServer(t, state, podClaims(DaemonAPIVersion), &bytes.Buffer{}, true), "192.0.2.1:41000", 0))
+	grace, carried := written["pod_update_grace_minutes"]
 	if !carried {
-		t.Fatalf("the settings this contract writes carry no pod_update_grace_minutes; this proves nothing: %v", whole)
+		t.Fatalf("the settings this contract writes carry no pod_update_grace_minutes; this proves nothing: %v", written)
 	}
-	alone := settingsOf(stateStating(t, shapedServer(t, state, podClaims(mergeWaitContract), logs, true), statePodAddr+":41000", 0))
-	for _, key := range []string{"pod_update_retask_hours", "pod_update_notice_hours"} {
-		if value, carried := alone[key]; carried {
-			t.Errorf("a pod at %d is served settings.%s %s, want none: its contract reads the block 123 writes", mergeWaitContract, key, value)
-		}
-	}
-
-	mixed := settingsOf(stateStating(t, handler, statePodAddr+":41000", 0))
-
-	for key, want := range map[string]string{"pod_update_retask_hours": "1", "pod_update_notice_hours": "4"} {
-		if got := string(mixed[key]); got != want {
-			t.Errorf("the {%d, %d} pod is served settings.%s %q, want the stand-in %s: a stand-in follows the pod's lowest contract, and its %d process requires the key",
-				quietTimeContract, mergeWaitContract, key, got, want, quietTimeContract)
-		}
-	}
-	if got, carried := mixed["pod_update_grace_minutes"]; !carried || string(got) != string(grace) {
-		t.Errorf("the {%d, %d} pod is served settings.pod_update_grace_minutes %s (carried %v), want %s: the band follows the pod's highest contract, and its %d process reads the key",
-			quietTimeContract, mergeWaitContract, got, carried, grace, mergeWaitContract)
-	}
-	if logs.Len() != 0 {
-		t.Errorf("the pods logged %s, want no line: every contract they record is one this daemon describes", logs)
+	for _, tc := range []struct {
+		name   string
+		remote string
+		claims []supervise.Claim
+		stated int
+	}{
+		{name: "a caller that states 111", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: at},
+		{name: "a pod whose claims record 111", remote: statePodAddr + ":41000", claims: podClaims(at)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &bytes.Buffer{}
+			served := settingsOf(stateStating(t, shapedServer(t, state, tc.claims, logs, true), tc.remote, tc.stated))
+			for _, key := range []string{"pod_update_retask_hours", "pod_update_notice_hours"} {
+				if value, carried := served[key]; carried {
+					t.Errorf("a caller at %d is served settings.%s %s, want none: this daemon writes no such key, and no reader types it", at, key, value)
+				}
+			}
+			if got, carried := served["pod_update_grace_minutes"]; !carried || string(got) != string(grace) {
+				t.Errorf("a caller at %d is served settings.pod_update_grace_minutes %s (carried %v), want %s, as this daemon writes it: no reader types the key, so no band takes it off",
+					at, got, carried, grace)
+			}
+			if logs.Len() != 0 {
+				t.Errorf("a caller at %d logged %s, want no line: %d is a contract this daemon describes", at, logs, at)
+			}
+		})
 	}
 }
 

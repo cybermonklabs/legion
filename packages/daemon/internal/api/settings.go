@@ -140,50 +140,22 @@ type Settings struct {
 	// and the stand-in is what it reads there. It is a flag of the block's own and the stand-in
 	// is a constant, as PullRequestView.fixAttemptsShown is.
 	maxFixAttemptsShown bool
-	// podUpdateHoursShown is set on the copy the state route serves a caller below the contract
-	// that took `pod_update_retask_hours` and `pod_update_notice_hours` out of this block (api's
-	// withPodUpdateHours, below shaping.go's podUpdateGraceContract). No plugin code from 46 to
-	// 111 reads either key, so the two stand-ins keep that contract's record fixed. A
-	// controller's model still sees them through the `legion` tool's `read_state` with
-	// `settings`, as the unconfigured defaults, which describe no behaviour of this daemon. They
-	// are constants, as the `max_fix_attempts` stand-in is.
-	podUpdateHoursShown bool
-	// podUpdateGraceHidden is set on the copy the state route serves a caller below the same
-	// contract (api's withoutPodUpdateGrace), so MarshalJSON leaves `pod_update_grace_minutes`
-	// off that one body rather than writing it, which the key being no `omitempty` field would
-	// otherwise do.
-	podUpdateGraceHidden bool
 }
 
-// MarshalJSON writes each stand-in on the one body that carries it and leaves the key off every
+// MarshalJSON writes the stand-in on the one body that carries it and leaves the key off every
 // other, as PullRequestView.MarshalJSON writes `fixAttempts`: the key is written by a pointer of
 // the outer value rather than by a field of the block, so no body this contract writes can carry
-// it. It leaves `pod_update_grace_minutes` off the one body whose reader knows no such key, as
-// CheckView.MarshalJSON leaves off `role`: that body is marshalled through a value whose own nil
-// `pod_update_grace_minutes` pointer, being `omitempty`, shadows the embedded field and so is
-// written by nothing.
+// it.
 func (s Settings) MarshalJSON() ([]byte, error) {
 	type wire Settings
-	type standIns struct {
+	type standIn struct {
 		wire
-		MaxFixAttempts       *int     `json:"max_fix_attempts,omitempty"`
-		PodUpdateRetaskHours *float64 `json:"pod_update_retask_hours,omitempty"`
-		PodUpdateNoticeHours *float64 `json:"pod_update_notice_hours,omitempty"`
+		MaxFixAttempts *int `json:"max_fix_attempts,omitempty"`
 	}
-	out := standIns{wire: wire(s)}
+	out := standIn{wire: wire(s)}
 	if s.maxFixAttemptsShown {
 		maxFixAttempts := maxFixAttemptsStandIn
 		out.MaxFixAttempts = &maxFixAttempts
-	}
-	if s.podUpdateHoursShown {
-		retask, notice := podUpdateRetaskHoursStandIn, podUpdateNoticeHoursStandIn
-		out.PodUpdateRetaskHours, out.PodUpdateNoticeHours = &retask, &notice
-	}
-	if s.podUpdateGraceHidden {
-		return json.Marshal(struct {
-			standIns
-			PodUpdateGraceMinutes *float64 `json:"pod_update_grace_minutes,omitempty"`
-		}{standIns: out})
 	}
 	return json.Marshal(out)
 }

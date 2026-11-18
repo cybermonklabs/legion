@@ -12,7 +12,9 @@ body: |-
   enumeration, each value with the contract it arrived at; `contract-shapes.json`, the key
   paths each answer carries at each supported contract and, for each of those enumerated fields,
   the values that contract admits; and `request-shapes.json`, the field paths of every request a
-  plugin sends, one record per route and contract from contract 154 on. A value refuses a reader
-  as a key does, so the daemon serves a value down to a caller whose contract does not admit it:
-  a caller below contract 68 reads an `awaiting_person` root's `waitingOn` without `answeredAt`
-  and `answeredBy` where a person declined to answer the wait.
+  plugin sends, one record per route and contract from contract 154 on. Under the state's
+  `settings`, the records hold only the keys a plugin's reader types, which `answers.json` names
+  on the state's row with the contracts that type each, so a new `legion.yaml` key is no contract
+  change. A value refuses a reader as a key does, so the daemon serves a value down to a caller
+  whose contract does not admit it: a caller below contract 68 reads an `awaiting_person` root's
+  `waitingOn` without `answeredAt` and `answeredBy` where a person declined to answer the wait.

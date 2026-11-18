@@ -45,14 +45,17 @@ import (
 // body carrying the third below 56 is red here. state_caller_test.go holds the dropping itself,
 // entry by entry.
 //
-// A key under a block the plugin parses loosely is recorded like any other, `settings.hooks.*`
-// and its three keys among them, and that is right: loose is not blind. A loose block passes a
-// key it does not know and still refuses a key it requires and does not find — the defect this
-// change cures included `settings.max_fix_attempts: Invalid input: expected number, received
-// undefined`, read under `settings` — so recording those paths is what catches the next removal
-// under such a block. It costs an author a declaration for a key added under one, and that is
-// the safe error of the two: a mark saying a subtree is loose goes stale the day a plugin
-// tightens it, and nothing here would notice.
+// A key under the settings block is recorded only where a plugin's reader types it (answers.go's
+// typedSettings): `settings` itself at every contract, and below it the top-level keys that
+// contract's `legionSettings` names, so `settings.max_fix_attempts` from 46 to 58,
+// `settings.worker_boot_timeout_seconds` from 46 up and `settings.review_round_cap` from 86 up,
+// and no path nested deeper at any contract. The block is a `z.looseObject` at every contract,
+// and loose is not blind: it passes a key it does not name and still refuses a key it names and
+// does not find — the defect this change cures included `settings.max_fix_attempts: Invalid
+// input: expected number, received undefined`, read under `settings` — so the typed keys are
+// recorded, and a removal of one is caught. A key the reader does not name is refused for
+// nothing, present or absent, so a record that held it would make every new legion.yaml key a
+// contract change, which the reader's own rule says it is not (withoutUntypedSettings).
 const contractShapesFixture = "contract-shapes.json"
 
 // keyPathRule is how a record names one key. The same rule stands in the fixture's entry in
@@ -236,8 +239,10 @@ runtime:
 // append each block of theirs to it (TestSettingsOfTheSandboxShowsEachMember), rather than
 // written into that file, where a block of its own would be a second `sandbox` key beside each
 // one those tests append. The third state body carries it (stateCarryingEveryDeclaredValue), so
-// the records describe the microvm block and its keys, which no body of the maximal file alone
-// carries. Names and hosts are placeholders.
+// the fixture bodies realise the microvm block and its keys, which no body of the maximal file
+// alone carries (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture). No record holds them:
+// no reader types a key of the block below its top level (withoutUntypedSettings). Names and
+// hosts are placeholders.
 const sandboxSettingsBlock = `    sandbox:
       canary_issues: [LEGION-208]
       microvm:
@@ -254,8 +259,9 @@ const sandboxSettingsBlock = `    sandbox:
 // value contract 68 added to `answeredBy` and the one this change's serving-down of a value is
 // for; a status write the daemon owes Dispatch; a repository cache whose health read failed;
 // and the settings of a tmux deployment (shapeSettingsFile). Every key of these is a key the
-// state route writes, so the records describe each of them and a serving-down that forgets one
-// is caught where a thinner sample would pass.
+// state route writes, so the records describe each of them, the settings keys no reader types
+// apart (withoutUntypedSettings), and a serving-down that forgets one is caught where a thinner
+// sample would pass.
 func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	t.Helper()
 	since := time.Date(2026, 9, 22, 7, 30, 0, 0, time.UTC)
@@ -923,8 +929,11 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 }
 
 // servedShapes is every answer at every contract of SupportedContracts, as caller reads it: the
-// key paths of the bodies it reads, and the values those bodies carry at each key path the
-// table declares enumerated (answers.go's EnumeratedFields).
+// key paths of the bodies it reads that a record can hold, and the values those bodies carry at
+// each key path the table declares enumerated (answers.go's EnumeratedFields). The key paths are
+// every path the bodies carry (carriedShapes) but the settings paths no reader at that contract
+// types (withoutUntypedSettings), so the comparison and the `-update` writer, which both read
+// this, hold and write the same set.
 //
 // The state and the record come from the routes that answer them: this package's own test server
 // answers both with no credential of any kind, so each body goes through the whole of
@@ -947,6 +956,15 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 // functions here, with the claims the route passes. The refusal has no route of its own at
 // all: a client parses it on every answer that is not a success.
 func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
+	t.Helper()
+	return withoutUntypedSettings(carriedShapes(t, caller), typedSettings)
+}
+
+// carriedShapes is servedShapes with every key path the bodies carry, the settings paths no
+// reader types among them: what the daemon writes, before the record's rule for the settings
+// block is applied (withoutUntypedSettings). TestTheGateCatchesAShapeChangeWithNoServingDown
+// reads it to apply that rule with a declaration of its own.
+func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	t.Helper()
 	fixtures := answerFixtures(t)
 	states := stateFixtures(t)
@@ -1004,6 +1022,38 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 		}
 	}
 	return served
+}
+
+// settingsKeyPathPrefix is what a key path under the state's settings block begins with.
+const settingsKeyPathPrefix = "settings."
+
+// withoutUntypedSettings is served with every key path under the state's `settings` taken off
+// that no reader at that contract types: a record holds `settings` itself and, below it, the
+// top-level keys typed declares at the record's own contract and nothing else, no path nested
+// below a key either (answers.go's typedSettings says why). typed is the declaration, which every
+// caller but a scratch change of TestTheGateCatchesAShapeChangeWithNoServingDown passes
+// answers.go's own.
+func withoutUntypedSettings(served map[shapeKey]answerShape, typed []TypedSetting) map[shapeKey]answerShape {
+	kept := make(map[shapeKey]answerShape, len(served))
+	for key, shape := range served {
+		if key.answer == AnswerState {
+			shape.paths = slices.DeleteFunc(slices.Clone(shape.paths), func(path string) bool {
+				setting, under := strings.CutPrefix(path, settingsKeyPathPrefix)
+				return under && (strings.Contains(setting, ".") || !settingsTyped(typed, key.contract, setting))
+			})
+		}
+		kept[key] = shape
+	}
+	return kept
+}
+
+// settingsTyped is whether typed declares key, a top-level key of the state's settings block,
+// typed by the reader at contract: from the row's Since to its Until, or to this daemon's own
+// contract where Until is 0.
+func settingsTyped(typed []TypedSetting, contract int, key string) bool {
+	return slices.ContainsFunc(typed, func(setting TypedSetting) bool {
+		return setting.Key == key && setting.Since <= contract && (setting.Until == 0 || contract <= setting.Until)
+	})
 }
 
 // stateHandlers is one server per state fixture, each serving that state and the claims given.
@@ -1428,6 +1478,54 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	}
 }
 
+// Every record of the state holds `settings` and, below it, exactly the top-level keys
+// answers.go's typedSettings types at that record's contract, each as `settings.<key>`, so the
+// declaration and the records agree in both directions. A typed key a record leaves out is a key
+// whose removal the reader at that contract refuses and the gate would not see, and any other
+// settings path is one no reader refuses the body for, which would make every new legion.yaml key
+// a contract change. The declaration's rows are held to the contracts this daemon describes, an
+// open end being written as no Until rather than as this daemon's own number, which moves.
+func TestEveryStateRecordHoldsTheSettingsKeysItsReaderTypesAndNoOther(t *testing.T) {
+	if *updateGolden {
+		t.Skip("the fixture is being rewritten; run the suite again without -update")
+	}
+	for _, setting := range typedSettings {
+		if setting.Since < ServingFloor || setting.Since > DaemonAPIVersion ||
+			(setting.Until != 0 && (setting.Until < setting.Since || setting.Until >= DaemonAPIVersion)) {
+			t.Errorf("answers.go's typedSettings types `%s` from %d to %d, outside the floor %d and this daemon's own contract %d, or with an end at or above %d that no Until writes",
+				setting.Key, setting.Since, setting.Until, ServingFloor, DaemonAPIVersion, DaemonAPIVersion)
+		}
+	}
+	records := loadContractShapes(t)
+	for _, contract := range SupportedContracts {
+		record, recorded := records[shapeKey{contract: contract, answer: AnswerState}]
+		if !recorded {
+			t.Errorf("contract %d: the state has no record in %s", contract, contractShapesFixture)
+			continue
+		}
+		want := []string{}
+		for _, setting := range typedSettings {
+			if settingsTyped(typedSettings, contract, setting.Key) {
+				want = append(want, settingsKeyPathPrefix+setting.Key)
+			}
+		}
+		slices.Sort(want)
+		held := []string{}
+		for _, path := range record.KeyPaths {
+			if strings.HasPrefix(path, settingsKeyPathPrefix) {
+				held = append(held, path)
+			}
+		}
+		if !slices.Equal(held, want) {
+			t.Errorf("contract %d: the state's record holds the settings paths %v, and answers.go's typedSettings types %v there: a record holds a settings key exactly where a reader at its contract types it",
+				contract, held, want)
+		}
+		if !slices.Contains(record.KeyPaths, "settings") {
+			t.Errorf("contract %d: the state's record holds no `settings`, which every state body this daemon writes carries", contract)
+		}
+	}
+}
+
 // Each enumerated field arrived with the earliest value its list declares, which is what
 // shaping.go's arrivalsOf reads the field's own arrival as, and this test reads it through that
 // same function. A value strip tells a value newer than its field from one that came with it by
@@ -1479,9 +1577,9 @@ func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
 	}
 }
 
-// What the gate catches, shown by five kinds of change a shape change would make, the last of
-// them made to two fields. Each is applied to a copy inside this case, so none of them edits a
-// file and none needs a commit.
+// What the gate catches, shown by six kinds of change a shape change would make, the fifth of
+// them made to two fields, and what it lets pass by design: a settings key no reader types. Each
+// is applied to a copy inside this case, so none of them edits a file and none needs a commit.
 func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -1490,19 +1588,29 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	if !written {
 		t.Fatal(bootstrapMessage())
 	}
-	served := servedShapes(t, callerKinds[0])
-	// Every scratch change below but the third, which rewrites a record by hand, is what the gate
-	// reads after an author ran `-update`, which rewrites this daemon's own contract's records and
-	// leaves every earlier one alone. So those four fail at every contract below this daemon's own
-	// and nowhere else, which is the whole point of the serving-down: the reader that is hurt is
-	// the older one. fields is the enumerated table `-update` would have read, which is
-	// answers.go's own for every change but the value one, whose author widened a field.
+	// carried is what the daemon writes, every settings path included; served is what a record
+	// can hold of it under answers.go's own declaration (withoutUntypedSettings). The two cases
+	// of the settings block apply the record's rule themselves, the second with a declaration of
+	// its own.
+	carried := carriedShapes(t, callerKinds[0])
+	served := withoutUntypedSettings(carried, typedSettings)
+	// Every scratch change below but the third, which rewrites a record by hand, and the two of
+	// the settings block, which read the records as they stand, is what the gate reads after an
+	// author ran `-update`, which rewrites this daemon's own contract's records and leaves every
+	// earlier one alone. So those four fail at every contract below this daemon's own and
+	// nowhere else, which is the whole point of the serving-down: the reader that is hurt is the
+	// older one. fields is the enumerated table `-update` would have read, which is answers.go's
+	// own for every change but the value one, whose author widened a field.
 	afterUpdate := func(changed map[shapeKey]answerShape, fields []EnumeratedField) map[shapeKey]contractShape {
 		records := map[shapeKey]contractShape{}
 		for _, record := range updatedRecords(onFile, shapeRecords(changed, fields)) {
 			records[shapeKey{contract: record.Contract, answer: record.Answer}] = record
 		}
 		return records
+	}
+	asOnFile := map[shapeKey]contractShape{}
+	for _, record := range onFile {
+		asOnFile[shapeKey{contract: record.Contract, answer: record.Answer}] = record
 	}
 
 	t.Run("a key the current contract serves is removed with no stand-in", func(t *testing.T) {
@@ -1617,6 +1725,45 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 					}
 				}
 			})
+		}
+	})
+
+	t.Run("a settings key a reader types is declared at this contract with no -update", func(t *testing.T) {
+		// The reader of this daemon's own contract begins typing a key the block already
+		// carries, and its author declares it in answers.go's typedSettings, from this contract
+		// on, and runs no `-update`. The record of this contract then lacks a key its reader
+		// refuses the body without, and the gate names it there and nowhere else: no reader
+		// below types the key, so no record below holds it. `-update` writes it into this
+		// contract's record, which is the whole of the remedy while the base does not carry this
+		// contract.
+		const typedKey = "admission_cap"
+		if settingsTyped(typedSettings, DaemonAPIVersion, typedKey) {
+			t.Fatalf("answers.go's typedSettings already types `%s`; declaring it proves nothing", typedKey)
+		}
+		declared := append(slices.Clone(typedSettings), TypedSetting{Key: typedKey, Since: DaemonAPIVersion})
+		changed := withoutUntypedSettings(carried, declared)
+		problems := allShapeProblems(asOnFile, changed)
+		wantProblemsNaming(t, problems, settingsKeyPathPrefix+typedKey, []int{DaemonAPIVersion}, 0)
+		if len(problems) != 1 {
+			t.Errorf("the gate reported %d problems for one typed key at this contract, want one:\n%s",
+				len(problems), strings.Join(problems, "\n"))
+		}
+		if after := allShapeProblems(afterUpdate(changed, EnumeratedFields), changed); len(after) != 0 {
+			t.Errorf("`-update` left %d problems, the first: %s", len(after), after[0])
+		}
+	})
+
+	t.Run("a settings key no reader types is added with no serving-down, and the gate stays quiet", func(t *testing.T) {
+		// A new legion.yaml key, at the top of the block and below a key of it, written at
+		// every contract with no band, no declaration and no `-update`: no reader refuses the
+		// body for it (answers.go's typedSettings), so the records hold neither path and the
+		// gate reports nothing.
+		changed := carried
+		for _, added := range []string{"settings.a_later_legion_yaml_key", "settings.runtime.kubernetes.a_later_block_key"} {
+			changed = withServedKey(t, changed, AnswerState, added)
+		}
+		if problems := allShapeProblems(asOnFile, withoutUntypedSettings(changed, typedSettings)); len(problems) != 0 {
+			t.Errorf("a settings key no reader types turned the gate red at %d problems, the first: %s", len(problems), problems[0])
 		}
 	})
 }
@@ -1766,9 +1913,10 @@ type answerField struct {
 // contract 54 took the daemon's reading of away. The loader accepts the key and reads nothing
 // from it, and SettingsOf writes `[]` for every project whatever the file holds
 // (settings.go's DeploySettings, api.ProjectSettings.Deploys), so no body the daemon can write
-// carries an entry and no fixture can realise one. The list itself is realised, and it is
-// recorded: a reader of the settings reads the key. The three go with the key, when the loader
-// stops accepting it.
+// carries an entry and no fixture can realise one. The list itself is realised. No record holds
+// it, as no record holds any settings path no reader types (withoutUntypedSettings), and the
+// census below reads the fixture bodies rather than the records, so the three stay entries here.
+// They go with the key, when the loader stops accepting it.
 var excludedDeclaredFields = map[answerField]string{
 	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "repo"}}:     deploysNeverFilled,
 	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "workflow"}}: deploysNeverFilled,
@@ -1782,7 +1930,10 @@ const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `se
 // taken from these bodies describes the whole of each answer rather than the part a thin sample
 // happened to carry. `issues.*.check.role` is the field this case exists for: contract 54 added
 // it, an issue carries a check only while its production check is open, and a sample with no
-// open check would record a state shape with no `role` in it at all.
+// open check would record a state shape with no `role` in it at all. It reads the fixture bodies
+// and not the records, so it asks the same of every field of the settings block, whose records
+// hold only the keys a reader types (withoutUntypedSettings): a key typed later is then one the
+// bodies already carry.
 //
 // A field is one json name of one Go type, so the two key paths of ClaimView.Capabilities —
 // `architect.capabilities` and `workers.*.claim.capabilities` — are one field, and the fixture
@@ -1791,11 +1942,9 @@ const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `se
 // the unexported flags the shaping sets are no json fields of any type and are walked by
 // nothing (walkDeclaredType names them). What they do to a body is held all the same, by the
 // records: the stand-ins PullRequestView.fixAttemptsShown and Settings.maxFixAttemptsShown put
-// `fixAttempts` and `max_fix_attempts` into the records below 59, Settings.podUpdateHoursShown
-// puts `pod_update_retask_hours` and `pod_update_notice_hours` into the records below 123 and
-// Settings.podUpdateGraceHidden takes `pod_update_grace_minutes` out of them,
-// CheckView.roleHidden takes `check.role` out of the records below 54, and PhaseView.passHidden
-// takes each worker's `pass` out of the records below 86.
+// `fixAttempts` and `max_fix_attempts` into the records below 59, CheckView.roleHidden takes
+// `check.role` out of the records below 54, and PhaseView.passHidden takes each worker's `pass`
+// out of the records below 86.
 func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 	fixtures := answerFixtures(t)
 	// paths is one key path of each field, for the message a gap reads as.

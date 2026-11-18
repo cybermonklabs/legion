@@ -497,12 +497,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
 		// phaseEntriesContract, heldContract, quietTimeContract, mergeWaitContract,
 		// assignmentsContract, entryTimesContract and shapedAnswersContract, the nine bands above
-		// it that these rows compare (the settings band at podUpdateGraceContract is
-		// servedShape's), so the issues it is served carry no answer, no entry number, no tree
-		// quiet time, no `mergeWait`, no assignments, no entry times and no architect-stalled
-		// arms, its claim views no leak
-		// check's cause and neither of the two keys contract 154 added, and its admission block
-		// no held list.
+		// it that these rows compare, so the issues it is served carry no answer, no entry
+		// number, no tree quiet time, no `mergeWait`, no assignments, no entry times and no
+		// architect-stalled arms, its claim views no leak check's cause and neither of the two
+		// keys contract 154 added, and its admission block no held list.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, contract: recordFieldsContract},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
 		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time,
@@ -804,27 +802,21 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 	return string(encoded)
 }
 
-// servedShape applies to want, a body decoded from the state this contract writes, the shapes
-// that are no strip of a key this contract writes, and the one band whose keys this contract
-// writes and an older caller is served without. A caller below checkRoleContract is served each
-// issue's check without `role` (api's withoutCheckRole); a caller below fixAttemptsContract is
-// served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of 3 in the settings
-// block (withFixAttempts, withMaxFixAttempts); a caller below podUpdateGraceContract is served the
-// settings block without `pod_update_grace_minutes` and with `pod_update_retask_hours` of 1 and
-// `pod_update_notice_hours` of 4 (withoutPodUpdateGrace, withPodUpdateHours); and a caller below
+// servedShape applies to want, a body decoded from the state this contract writes, what an older
+// caller is served that no column of the tables calling it names: the stand-ins of keys a
+// contract removed, and two bands of keys this contract writes. A caller below checkRoleContract
+// is served each issue's check without `role` (api's withoutCheckRole); a caller below
+// fixAttemptsContract is served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of
+// 3 in the settings block (withFixAttempts, withMaxFixAttempts); and a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
-// (withoutStateMachineFields). One contract decides the stand-ins, because the two sides of a
-// caller's shaping part only below ServingFloor, which is below fixAttemptsContract as every
-// number this is called with is.
+// (withoutStateMachineFields). Every other key of the settings block is served as this contract
+// writes it, since no reader types it (answers.go's typedSettings). One contract decides the
+// stand-ins, because the two sides of a caller's shaping part only below ServingFloor, which is
+// below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)
-	}
-	if contract < podUpdateGraceContract {
-		delete(settings, "pod_update_grace_minutes")
-		settings["pod_update_retask_hours"] = float64(1)
-		settings["pod_update_notice_hours"] = float64(4)
 	}
 	for _, issue := range want["issues"].(map[string]any) {
 		issue := issue.(map[string]any)

@@ -1000,9 +1000,10 @@ function once<T>(compute: () => T): () => T {
 // other does not. The two sides are joined by route and by nothing else: no mapping of schema
 // to row id is written here, so neither side can be taught to agree with the other.
 //
-// What the join does not reach. A row carries its id, its routes, its `since` and its `noBody`,
-// and no response schema, so the two sides meet on the route set alone. The census therefore
-// proves one route set per row, and not one response schema per row. A parse site that named
+// What the join does not reach. A row carries its id, its routes, its `since` and its `noBody`
+// (the state's row its typed settings keys too, which the settings census below reads), and no
+// response schema, so the two sides meet on the route set alone. The census therefore proves
+// one route set per row, and not one response schema per row. A parse site that named
 // another schema on the same routes leaves every key unchanged, and so do two schemas that
 // exchange their route sets, and the census stays green for both. Joining on the schema itself
 // needs a statement neither side holds: a mapping of row id to schema identifier written here
@@ -1183,11 +1184,28 @@ function answerKey(noBody: boolean, routes: readonly string[]): string {
   return `${noBody ? "no body" : "a body"} on ${named.length === 0 ? "no route" : named.join(", ")}`;
 }
 
-/** One row of `answers.json`. */
+/** One row of `answers.json`. `typedSettings` is on the state's row alone: every top-level key of
+ * `settings` a plugin's reader types, from the contract `since` to `until`, both included, or to
+ * the daemon's own contract where `until` is absent. */
 interface AnswerRow {
   readonly id: string;
   readonly routes: readonly string[];
   readonly noBody: boolean;
+  readonly typedSettings?: readonly {
+    readonly key: string;
+    readonly since: number;
+    readonly until?: number;
+  }[];
+}
+
+/** `answers.json`, the daemon's table of the answers a plugin parses. */
+function answerRows(): AnswerRow[] {
+  return JSON.parse(
+    readFileSync(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/answers.json"),
+      "utf8"
+    )
+  );
 }
 
 /** The client's own source, parsed once. The table census reads its parse sites, and the
@@ -1207,12 +1225,7 @@ test("every answer the client parses is a row of the daemon's table, and every r
   // A pass that read no call at all would leave every comparison below holding vacuously.
   expect(sites.length).toBeGreaterThan(0);
 
-  const rows: AnswerRow[] = JSON.parse(
-    readFileSync(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/answers.json"),
-      "utf8"
-    )
-  );
+  const rows = answerRows();
   const unmatched = new Map<string, AnswerRow[]>();
   for (const row of rows) {
     const key = answerKey(row.noBody, row.routes);
@@ -1239,6 +1252,34 @@ test("every answer the client parses is a row of the daemon's table, and every r
     }
   }
   expect(wrong).toEqual([]);
+});
+
+// The settings census: the keys the daemon's table declares a reader types at its own contract
+// are the keys `legionSettings` types. The daemon's records of the state hold a settings key path
+// exactly where its table types the key (`typedSettings` in `answers.json`, answers.go's
+// `typedSettings`), so a key this schema types with no row there is a key whose removal a reader
+// refuses and no record catches, and a row typing a key this schema does not name holds every
+// later legion.yaml change to a record no reader needs.
+test("the settings keys answers.json types at the daemon's own contract are the keys legionSettings types", () => {
+  const contract = daemonFixture("version.json").daemonApiVersion;
+  if (typeof contract !== "number") throw new Error("version.json declares no daemonApiVersion");
+  const declaring = answerRows().filter((row) => row.typedSettings !== undefined);
+  expect(declaring.map((row) => row.id)).toEqual(["state"]);
+  const declared = (declaring[0]?.typedSettings ?? [])
+    .filter((setting) => setting.since <= contract && (setting.until ?? contract) >= contract)
+    .map((setting) => setting.key)
+    .sort();
+
+  // The state schema's own `settings`, unwrapped as the read-set census walks a schema.
+  let settings: z.core.$ZodType = legionApi.LegionStateResponse.shape.settings;
+  if (settings instanceof z.ZodOptional) settings = settings.def.innerType;
+  if (!(settings instanceof z.ZodObject)) {
+    throw new Error("LegionStateResponse's settings is no object schema this census can read");
+  }
+  const typed = Object.keys(settings.def.shape).sort();
+  // A schema typing no key would leave the comparison below holding for an empty table.
+  expect(typed.length).toBeGreaterThan(0);
+  expect(declared).toEqual(typed);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

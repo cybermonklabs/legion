@@ -124,13 +124,26 @@ const schemas: Record<string, z.ZodType> = {
   // response schema. `routes` are the routes that answer it, empty for the refusal body, which
   // a client parses on every answer that is not a success. `since` is the contract the answer
   // arrived at, never below the serving floor. `noBody` says the answer carries no body at all,
-  // which reads differently from a body whose set of key paths is empty.
+  // which reads differently from a body whose set of key paths is empty. `typedSettings`, on the
+  // state's row alone, is every top-level key of `settings` a plugin's reader types, from the
+  // contract `since` to `until`, or to the daemon's own contract where `until` is absent: the
+  // records of `contract-shapes.json` hold those settings keys and no other settings path, so a
+  // new legion.yaml key is no contract change.
   "answers.json": z.array(
     z.strictObject({
       id: z.string().min(1),
       routes: z.array(z.string().min(1)),
       since: z.number().int().positive(),
       noBody: z.boolean(),
+      typedSettings: z
+        .array(
+          z.strictObject({
+            key: z.string().min(1),
+            since: z.number().int().positive(),
+            until: z.number().int().positive().optional(),
+          })
+        )
+        .optional(),
     })
   ),
   // Nor this one: the table of the fields a plugin parses with a strict enumeration
@@ -152,13 +165,14 @@ const schemas: Record<string, z.ZodType> = {
   // Nor this one: what the daemon serves every contract it supports
   // (`internal/api/contract_shapes_test.go`). One record per answer per contract, from the
   // contract the answer arrived at up to the daemon's own, holding the sorted key paths of the
-  // body a caller at that contract reads. A key path is one key of a body, written as the
-  // dotted path from the body's root, with a map's key and a list's index written as `*`, so
-  // `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds and
-  // whichever of them carries a pull request. `noBody` says the answer writes no body at all,
-  // which reads differently from a body whose set of key paths is empty: the four routes that
-  // answer 204 are `"noBody": true` with no path, and the empty object the eight fact routes
-  // answer is `"noBody": false` with no path.
+  // body a caller at that contract reads; under the state's `settings`, only the keys a reader
+  // at that contract types (`typedSettings` in `answers.json`). A key path is one key of a body,
+  // written as the dotted path from the body's root, with a map's key and a list's index written
+  // as `*`, so `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds
+  // and whichever of them carries a pull request. `noBody` says the answer writes no body at
+  // all, which reads differently from a body whose set of key paths is empty: the four routes
+  // that answer 204 are `"noBody": true` with no path, and the empty object the eight fact
+  // routes answer is `"noBody": false` with no path.
   //
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted

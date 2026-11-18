@@ -2192,28 +2192,24 @@ package api
 // stateNarrowings, and this contract is served above it: a caller below 146 is served every
 // issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,
 // the band of `entryTimesContract`).
-// Five settings keys are read loosely by every plugin and recorded at every contract, with no
-// band and no strip. That rests on one measurement, made the way the measurement of #3982's two
-// stand-in keys below was (`pod_update_retask_hours` and `pod_update_notice_hours`, read at the
-// commit of each of the 24 contracts from 46 to 111): `legionSettings` in
-// `packages/contracts/src/legion-api.ts` is a `z.looseObject` that types only top-level scalar
-// keys at every contract (`max_fix_attempts` and `worker_boot_timeout_seconds` to 58,
-// `worker_boot_timeout_seconds` alone from 59, and `review_round_cap` beside it from 86),
-// nothing types the parents of these keys under it (`projects`, `experiments`, `runtime`,
-// `kubernetes`, `agent_secrets`, `sandbox`, `microvm` and `metadata`), and no plugin source
-// names the keys (`experiments`, `memory_guard`, `roles` under `experiments`,
-// `exchange_audience`, and the sandbox's own `canary_issues`, `microvm`, `compute_class`,
-// `storage_class`, `workload_pool` and `identity_provider`; the `sandbox` a plugin names is a
-// claim locator's or a repository cache's, never a settings key), so no reader refuses them.
-// The two other members, the sandbox's `type` and the microvm block's `metadata`, were not
-// searched by name, since plugin sources use both words everywhere for other things: what
-// covers them is that nothing types their parents and no plugin code reads `settings.runtime`
-// (at 151's commit and at this change's merge with it, the plugin sources name it only in
-// prose, never in code). The five keys, each with the commits that measurement was made at, are
-// these. 141's
+// The records hold only the settings keys a supported reader types, and every other settings key
+// path is in no record at any contract, so a new legion.yaml key is no contract change, as the
+// reader's own rule in `packages/contracts/src/legion-api.ts` has it. The declaration is
+// answers.go's `typedSettings`, which `answers.json` writes on the state's row, and it rests on
+// one measurement: `legionSettings`, read at the first commit on main of each contract of
+// `SupportedContracts` (dispatch://INFRA-2694/artifact/settings-typed-by-contract-md), is a
+// `z.looseObject` that types top-level positive integers and nothing nested at every contract:
+// `max_fix_attempts` and `worker_boot_timeout_seconds` from 46 (7b4ffe3c) to 58,
+// `worker_boot_timeout_seconds` alone from 59 (7e7bcf21), and `review_round_cap` beside it from
+// 86 (a4c0ff99) to this contract. Outside the schema, plugin code reads the block only through
+// pi-legion's `read_state` with `settings`, which passes it through untyped. A loose object
+// passes a key it does not name and refuses the body only for a key it names and does not find,
+// so a record holds `settings` and, below it, exactly the keys its own contract's reader types,
+// and the gate catches the removal of one of them (the stand-in of `max_fix_attempts` below 59 is
+// what keeps it green there). The keys later contracts added under the block are typed by no
+// reader, so they are in no record and owe no band. Each was read at these commits: 141's
 // `settings.projects.<KEY>.experiments`, at the commit of each contract from 111 to 141: 123
-// (25f3e38a), 132 (8b0f29b9), 133 (2e546572) and 137 (7baa398b), so the measurement of 46 to
-// 111 holds to 137.
+// (25f3e38a), 132 (8b0f29b9), 133 (2e546572) and 137 (7baa398b).
 // `settings.runtime.kubernetes.memory_guard`, the one key 144 adds to the state, at 141's commit
 // (7ed02373) and 144's (adebbf6d); 144's records are 141's under its own number.
 // `settings.projects.<KEY>.experiments.<name>.roles`, which main's #4241 (4357585e) added with no
@@ -2233,24 +2229,14 @@ package api
 // main's #3982 replaced `settings.pod_update_retask_hours` and `settings.pod_update_notice_hours`
 // with `settings.pod_update_grace_minutes`. #3982 merged when main declared 111 and took no
 // contract number of its own, so a daemon at 111 may send either shape: legion-v20.14.0 is
-// #3982's merge commit (50bfbb0d) itself, declares 111 and sends `pod_update_grace_minutes`.
-// 123 is the first contract every daemon of which carries the change: a daemon at 123 sends
-// `pod_update_grace_minutes` and neither of the two old keys. A caller below 123 is served the
-// settings block
-// without `pod_update_grace_minutes` (`withoutPodUpdateGrace`, the band of
-// `podUpdateGraceContract`). It is served the two removed keys as stand-ins, with the defaults an
-// unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). A caller at 123 or above
-// is served the settings block that a daemon at 123 sent. The stand-ins describe
-// no behaviour of this daemon, whose update round asks no worker a second time and ends at its
-// bound, or earlier once every role has answered and no turn runs. They exist only to keep the
-// records of 46 to 111 fixed. No plugin code reads either key:
-// measured at the commit of each of the 24 contracts from 46 to 111, `legionSettings` is a loose
-// object, and no plugin source names either key. A controller's model does see them: the
-// `legion` tool's `read_state` with `settings` answers the whole settings block, and there the
-// two values read as the unconfigured defaults, which describe no behaviour of this daemon. This
-// is the other of the two reasons that allow a stand-in: `max_fix_attempts: 3` was allowed
-// because readers below 59 required the key, and these two are allowed because no plugin code
-// reads them.
+// #3982's merge commit (50bfbb0d) itself, declares 111 and sends `pod_update_grace_minutes`, and a
+// daemon at 123 sends the new key and neither of the two old ones. No reader at any contract
+// types any of the three (the measurement above), so no stand-in and no band is owed for them: a
+// caller at every contract is served the settings block as this daemon writes it, the new key in
+// it and neither old one, and no record holds any of the three
+// (`TestACallerAt111ReadsTheSettingsBlockThisDaemonWrites`). A controller's model, which reads
+// the block through `read_state` with `settings`, so sees the bound this daemon's update round
+// runs on rather than two hour keys that describe nothing it does.
 // Contract 123 is served down with no code of its own here. It changes no shape on either side
 // of the wire, and it refuses nothing a plugin below it sends that a daemon before 123 did not
 // refuse (measured: a tester or a reviewer below 123 that completes with no commit is answered
