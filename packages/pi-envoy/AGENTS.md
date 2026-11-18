@@ -1297,7 +1297,9 @@ last message (the last retraction the "no item" list), and a 503 appending the f
 a second 503 and a recovery to an empty window nothing and the next list after the last message,
 each request beginning with every message of the one before it; a failed read whose cached list
 keeps the list sent where it went; a restart (`--resume`) whose first request rebuilds the list
-at its old place with its bytes; a `/btw` side turn and the handoff
+at its old place with its bytes; an Envoy card whose `delivered:` line stays the same after a
+restart in which the resumed process writes the same card again before its first request (case
+(s), the one card case this file holds, for its harness); a `/btw` side turn and the handoff
 ending with their own prompts, with no list and no read; a remote compaction request ending at
 its cut, after a question and after a delivered message, and one that keeps no tail carrying no
 list (the stand-in model claims `supportsServerCompaction` and `bedrockMessagesApi`, which the
