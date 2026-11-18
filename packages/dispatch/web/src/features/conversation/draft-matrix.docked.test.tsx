@@ -1,5 +1,5 @@
 /**
- * The draft matrix, desktop docked composer row (INFRA-1503).
+ * The draft matrix, docked composer row (INFRA-1503).
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
  * composer's address"): the reader's own move with the composer's own control takes the draft
@@ -9,8 +9,8 @@
  * refused by Dispatch, or stopped by the reader - makes one move, and asserts where the text
  * ends.
  *
- * Host: the Conversation's docked composer above the phone layout, one box for the issue whose
- * reply a message's Reply moves (`ConversationTab`'s `beginReply`).
+ * Host: the Conversation's docked composer, one box for the issue whose reply a message's Reply
+ * moves, and above the phone layout a comment's Reply too (`ConversationTab`'s `beginReply`).
  *
  * A host move that takes the composer off the screen is checked on return alone, where the field
  * holds the draft with its refusal or stopped note; a host move that keeps the same composer on
@@ -38,9 +38,19 @@
  * the elsewhere row keeps it in the field with Send saying where it was written), so only the
  * typed draft needs the line.
  *
+ * On a phone a comment's Reply answers in the comment's full-screen thread, by the thread view's
+ * own composer (`usePhoneThread`), rather than moving this one, which changes what that move does
+ * here; it is a row of its own, checked on return for the draft on the issue with its note:
+ *
+ * | Phone move                              | typed | refused | stopped |
+ * | --------------------------------------- | ----- | ------- | ------- |
+ * | A comment's Reply, then Back (hidden)   | cell  | cell    | cell    |
+ *
+ * (hidden) marks a host move that keeps the composer mounted but out of sight.
+ *
  * The moves this host cannot make:
- * 1. Above the phone layout no thread view covers the docked composer, and on a phone Back only
- *    uncovers it, never moving its address.
+ * 1. Above the phone layout no thread view covers the docked composer; on a phone a comment's
+ *    Reply covers it with one, and Back uncovers it, the phone row.
  * 2. Elsewhere needs a held refusal; the typed version is the unmount row.
  * 3. The docked composer sits outside every thread card, so no Collapse thread moves it.
  * 4. The docked composer has no anchor, so it draws no Close (asserted absent below).
@@ -56,6 +66,18 @@
  *    out or failed (`loading`, `failed`), which unmounts the docked composer as leaving the issue
  *    does, and the composer drawn when they land again is the one the issue-left row draws on
  *    return.
+ *
+ * The forms the composer census found, where the layout draws, hides or moves this composer
+ * otherwise than the rows above, which the rows do not make:
+ * 8. On a phone a comment link opens the comment's thread view as it lands (`ConversationTab`'s
+ *    focus effect), which covers this composer as the phone row's Reply does, and a decision
+ *    landing on the comment closes the view as Back does (`phone.hide`). A message's Reply moves
+ *    this composer at every width, as the rows above do.
+ * 9. Widening the page past the phone layout closes the thread view as Back does, unless a send
+ *    from it is out, which keeps it open until Back (`usePhoneThread`'s `outlived`); this
+ *    composer stays mounted at the issue throughout. The Jump to latest pill, which waits under a
+ *    thread view for Back, and the read mark's ref on the newest card (`register`), which moves to
+ *    the view's copy of it, move no composer. The app shell's forms are the sign-in file's.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
@@ -65,9 +87,11 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import {
   alice,
   BODY,
+  commentA,
   HELD,
   type Held,
   keptLineNaming,
+  listTurn,
   movedNote,
   NOTHING_READ,
   newQueryClient,
@@ -80,6 +104,7 @@ import {
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { Actor, Message } from "../../api/types";
+import { stubMatchMedia } from "../margin/margin-fixture";
 import type { ReplyTarget } from "./composer-model";
 import type { SentRequest } from "./send-request";
 
@@ -138,15 +163,17 @@ interface Page {
 }
 
 /**
- * The Conversation of CORE-1 above the phone layout, over Message A and Message B. Every write
- * the page makes is refused, so a send pressed here comes back refused; `stopped`, when given,
- * is sent through the held-send store under the docked composer's name before the page is drawn
- * and stopped once late, as the reader's Stop trying does, so the composer mounts showing it.
+ * The Conversation of CORE-1 over Message A and Message B, above the phone layout or, with
+ * `phone`, on a phone, where Comment A is listed too. Every write the page makes is refused, so a
+ * send pressed here comes back refused; `stopped`, when given, is sent through the held-send store
+ * under the docked composer's name before the page is drawn and stopped once late, as the
+ * reader's Stop trying does, so the composer mounts showing it.
  */
-async function openDocked(stopped?: SentRequest): Promise<Page> {
+async function openDocked(stopped?: SentRequest, phone = false): Promise<Page> {
   const user = userEvent.setup();
   const queryClient = newQueryClient();
   const reads = stubLists({
+    comments: phone ? [commentA] : [],
     messages: [
       { message: messageA, replies: [] },
       { message: messageB, replies: [] },
@@ -159,6 +186,8 @@ async function openDocked(stopped?: SentRequest): Promise<Page> {
   }
   createComment.mockRejectedValue(REFUSAL);
   createMessage.mockRejectedValue(REFUSAL);
+  // Above the phone layout the page keeps the test DOM's own viewport, as it always has.
+  const restoreViewport = phone ? stubMatchMedia(true) : () => {};
   let unmount = () => {};
   const mount = () => {
     const view = render(tab(NOTHING_READ, true, queryClient));
@@ -172,6 +201,7 @@ async function openDocked(stopped?: SentRequest): Promise<Page> {
     mount,
     restore: () => {
       unmount();
+      restoreViewport();
       createComment.mockRestore();
       createMessage.mockRestore();
       reads.restore();
@@ -429,3 +459,47 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the composer draws n
     page.restore();
   }
 });
+
+// On a phone a comment's Reply answers in the comment's full-screen thread, by the thread view's
+// own composer (`usePhoneThread`'s `beginReply`), where above the phone layout it moves this
+// composer onto the comment. So on a phone it is a host's move that covers this composer, mounted
+// and hidden (`hidden={phoneThread !== undefined}`), and leaves its address alone: the Reply takes
+// none of the draft into the thread's composer, and Back shows the draft again on the issue with
+// its note and its Retry.
+for (const held of HELD) {
+  test(`${HOST} · phone · a comment's Reply, then Back · ${held}`, async () => {
+    const page = await openDocked(held === "stopped" ? sentRequest(BODY, null) : undefined, true);
+    try {
+      await holdAtIssue(page, held);
+      await page.user.click(within(listTurn(commentA.id)).getByRole("button", { name: "Reply" }));
+      const thread = await screen.findByRole("dialog", { name: "Thread" });
+      const away = {
+        docked: screen
+          .queryAllByRole("form", { name: "Comment composer" })
+          .filter((form) => !thread.contains(form)).length,
+        inThread: within(thread)
+          .queryAllByRole<HTMLTextAreaElement>("textbox")
+          .some((box) => box.value.includes(BODY)),
+      };
+      await page.user.click(within(thread).getByRole("button", { name: "Back" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Thread" })).toBe(null));
+      const back = {
+        answersComment: within(composer()).queryByText(/Comment A/) !== null,
+        note: note(),
+        retry: retryOffered(),
+        text: field().value,
+      };
+      expect({ away, back }).toEqual({
+        away: { docked: 0, inThread: false },
+        back: {
+          answersComment: false,
+          note: held === "typed" ? "none" : held,
+          retry: held !== "typed",
+          text: BODY,
+        },
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}

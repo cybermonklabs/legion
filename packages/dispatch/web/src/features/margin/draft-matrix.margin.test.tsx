@@ -50,6 +50,19 @@
  * and its note, and that text never fills a compose at another quote: the next compose on the
  * first document, at another selection, starts without it.
  *
+ * On a phone the margin is a panel over the document (`MarginSheet`'s compact sheet), which the
+ * reader opens and closes and the margin opens for each compose it shows, and a thread opens
+ * full-screen over it. The compose's moves there are rows of their own, each checked on return
+ * for the panel open on the compose, with its text and its note, and nothing opened by hand:
+ *
+ * | Phone move (the margin's compose)              | typed | refused | stopped |
+ * | ---------------------------------------------- | ----- | ------- | ------- |
+ * | Panel closed, document left, then back (off)   | cell  | cell    | cell    |
+ * | Compose on another document, then back (off)   | cell  | cell    | cell    |
+ * | A thread opened over it, then Back (hidden)    | cell  | cell    | cell    |
+ *
+ * (hidden) marks a host move that keeps the compose mounted but out of sight.
+ *
  * The moves this host cannot make:
  * 1. A thread's reply always answers its own thread's root, so no move of the host's changes its
  *    address, and it is never elsewhere.
@@ -59,13 +72,16 @@
  *    row's composer.
  *
  * The moves the composer census found that the rows above do not make:
- * 4. The Pinned tab, a phone margin thread, and the rail the margin collapses to hide the compose
- *    (`MarginComposerSlot`'s `hidden`, `MarginSheet`'s `covered`, `Margin`'s rail) and keep it
- *    mounted at its address, so nothing it holds moves.
- * 5. On a page with no margin above the phone layout `Margin` draws nothing, which unmounts the
- *    compose and every card as leaving the document does; the compose is the provider's
- *    (`MarginProvider`) and a reply's draft is held under its name, as the document-left and
- *    another-thread rows' returns show.
+ * 4. The Pinned tab, and above the compact layout the rail the margin collapses to, hide the
+ *    compose (`MarginComposerSlot`'s `hidden`, `MarginSheet`'s `covered`, `Margin`'s `railShown`,
+ *    which also opens the rail for each compose the margin shows) and keep it mounted at its
+ *    address, so nothing it holds moves; a phone thread hides it the same way, the third phone
+ *    row.
+ * 5. On a page with no margin above the compact layout `Margin` draws nothing, which unmounts the
+ *    compose and every card as leaving the document does; below it `Margin` stays drawn there with
+ *    no document, and so with no compose, which is the shown document's (`useMarginSheet`). The
+ *    compose is the provider's (`MarginProvider`) and a reply's draft is held under its name, as
+ *    the document-left rows' and the another-thread row's returns show.
  * 6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while
  *    the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and
  *    its editor as opening another thread does (the second row, and the edit file's margin card).
@@ -76,6 +92,27 @@
  * 8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in
  *    `ThreadCard`) is read when the card is drawn and again only when who is signed in changes
  *    (`useUserPreference`), so it never moves a reply that is on screen.
+ *
+ * The forms the composer census found, where the layout draws, hides or moves these composers
+ * otherwise than the rows above, which the rows do not make:
+ * 9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and
+ *    Escape, `toggleSheet`) and moves no address: closed, only the stylesheet hides what is in it
+ *    (`hidden xl:block`), so the compose and every card, reply and editor stay mounted under it,
+ *    and opening it shows them as they were. Closing it closes a phone thread as Back does
+ *    (`closeThread`), the first row. The margin opens it for each compose it shows
+ *    (`openCompactSheet`), which the first two phone rows assert.
+ * 10. On a phone a card's tap and a mark's click open the thread full-screen in place of opening
+ *    it in the list (`onToggleThread`, `selectMarginItem`), so the first row's Back is the way off
+ *    a thread there, and another thread is opened after it; a comment or ask link only selects
+ *    its card (`openPhoneThread` false), which moves no composer.
+ * 11. Where the margin sits moves no composer: the desktop column's width, class and resize
+ *    handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its
+ *    place at the foot of the screen and its backdrop (`MarginSheet`).
+ * 12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`,
+ *    `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel
+ *    (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside
+ *    it and the page still under it (`useDialog`). None moves an address or ends a mount. The
+ *    app shell's forms, above every host, are the sign-in file's.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
@@ -572,6 +609,103 @@ for (const held of HELD) {
         after: { compose: 0, refused: 0, stopped: 0 },
         asked: { prompt: true, text: BODY },
       });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+/** What a phone reader finds of the margin's compose: whether the review panel is open, and the
+ *  compose's words, text and note. On a phone the margin is a panel over the document
+ *  (`MarginSheet`'s compact sheet), and while it is closed the stylesheet hides what is in it.
+ *  That stylesheet is not loaded here, so a compose in a closed panel is still in the document,
+ *  and only the panel's being open puts the compose in front of the reader. Waits a second for
+ *  the panel the margin opens on arrival; none open reads as closed. */
+async function composeOnPhone(): Promise<{
+  note: Held | "none";
+  panel: string;
+  quote: string;
+  text: string;
+}> {
+  const panel = await screen
+    .findByRole("dialog", { name: "Review panel" }, { timeout: 1_000 })
+    .catch(() => null);
+  const field = screen.queryByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+  const form = field?.closest("form") ?? null;
+  return {
+    note: form === null ? "none" : noteIn(form),
+    panel: panel === null ? "closed, so the reader has to open it" : "open",
+    quote: form?.querySelector("blockquote")?.textContent ?? "",
+    text: field === null ? "(no compose)" : field.value,
+  };
+}
+
+/** The compose a phone row expects back: the panel open on it, at its own words, with the text
+ *  and the note it had. */
+const backOnPhone = (held: Held) => ({
+  ...expectedBack(held),
+  panel: "open",
+  quote: MARK_ANCHOR.quote,
+});
+
+// On a phone the review panel covers the document, so the reader closes it to follow a link to
+// another issue. Leaving the document is the host's move and carries nothing; coming back to it
+// shows its compose again (`revealCompose` in `useMarginSheet`), and on a phone that opens the
+// panel on the Comments tab (`openCompactSheet`): the reader finds the compose, its text and its
+// note without opening anything.
+for (const held of HELD) {
+  test(`${HOST} · phone · panel closed, document left, then back (the margin's compose) · ${held}`, async () => {
+    const page = await openMargin(true, stoppedCompose(held));
+    try {
+      await holdInCompose(page, held);
+      await page.user.click(screen.getByRole("button", { name: /^Close review panel/ }));
+      await page.user.click(screen.getByRole("button", { name: "Open second issue" }));
+      await waitFor(() => expect(screen.queryByTestId(`margin-comment-${threadA.id}`)).toBe(null));
+      await page.user.click(screen.getByRole("button", { name: "Back to the first issue" }));
+      await screen.findByTestId(`margin-comment-${threadA.id}`);
+      expect(await composeOnPhone()).toEqual(backOnPhone(held));
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// A compose opened on another document opens the panel for that document, so the panel the reader
+// comes back to is closed for this one until the margin shows the compose again. The first
+// document's compose stays open for it (`composeForMark` replaces only the compose on its own
+// document), and coming back opens the panel on it with its text and its note.
+for (const held of HELD) {
+  test(`${HOST} · phone · a compose opened on another document, then back (the margin's compose) · ${held}`, async () => {
+    const page = await openMargin(true, stoppedCompose(held), "route");
+    try {
+      await holdInCompose(page, held);
+      await page.user.click(screen.getByRole("button", { name: "Open second issue" }));
+      await waitFor(() => expect(screen.queryByTestId(`margin-comment-${threadA.id}`)).toBe(null));
+      await page.user.click(screen.getByRole("button", { name: "Compose on the second document" }));
+      await screen.findByText(SECOND_DOCUMENT_ANCHOR.quote);
+      await page.user.click(screen.getByRole("button", { name: "Back to the first issue" }));
+      await screen.findByTestId(`margin-comment-${threadA.id}`);
+      expect(await composeOnPhone()).toEqual(backOnPhone(held));
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// On a phone a thread opens full-screen over the panel and hides the compose under it, mounted
+// (`MarginSheet`'s `covered`). That is the host's move: the compose keeps its text and its note,
+// and the thread's Back shows it again in the panel.
+for (const held of HELD) {
+  test(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose) · ${held}`, async () => {
+    const page = await openMargin(true, stoppedCompose(held));
+    try {
+      await holdInCompose(page, held);
+      await openMarginThread(page.user, threadB.id);
+      const thread = await screen.findByRole("dialog", { name: "Thread" });
+      const away = screen.queryAllByRole("textbox", { name: "Comment" }).length;
+      await page.user.click(within(thread).getByRole("button", { name: "Back" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Thread" })).toBe(null));
+      expect({ away, back: await composeOnPhone() }).toEqual({ away: 0, back: backOnPhone(held) });
     } finally {
       page.restore();
     }

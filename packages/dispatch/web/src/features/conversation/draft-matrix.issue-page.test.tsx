@@ -53,6 +53,10 @@
  * 5. An address under `/issues/` that parses as no issue draws the not-found page in place of
  *    `IssueDetail` (`route === undefined`), so no composer is drawn there, and going there from
  *    an issue is leaving the issue, the issue-left row.
+ *
+ * The forms the composer census found: none in `IssuePage` or `IssueDetail`, which draw the page
+ * the same at every width. The layout's forms under them are `ConversationTab`'s, which the docked
+ * and phone thread files map, and the app shell's above them are the sign-in file's.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";

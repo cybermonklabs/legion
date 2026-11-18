@@ -36,8 +36,8 @@
  * box in its place.
  *
  * The moves this host cannot make:
- * 1. The box draws no Back of its own; the Inbox's phone Back closes the column, which unmounts
- *    the box as the move to another row does.
+ * 1. The box draws no Back of its own; Escape from the reading column takes focus back to its row
+ *    (`Inbox`'s `back`), and below the column's width there is no column to leave (11).
  * 2. The box always answers its thread's root message (`replyTo` names `thread.thread_id`'s
  *    message), so a newer message in the thread does not move it, and it is never elsewhere.
  * 3. The column draws no collapse of the thread; leaving it is the move to another row.
@@ -62,6 +62,17 @@
  *    (`root === undefined` draws none), so a read without the root leaves no message to answer,
  *    and a read that holds it again draws the box at the same thread, as the move to another row
  *    and back does.
+ *
+ * The forms the composer census found, where the layout draws, hides or moves this composer
+ * otherwise than the rows above, which the rows do not make:
+ * 11. Below the reading column's width, a phone's included, the Inbox draws no column: each thread
+ *    row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`),
+ *    so no move takes a box from one row to another there, and each box stays at its thread while
+ *    its row is listed. What ends a card's box is (9)'s: leaving the page, closing the drawer the
+ *    compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own
+ *    moves are the same `MessageThreadBody`'s as the rows above. The layout's other branches in
+ *    `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list
+ *    beside the column, and move no box; the app shell's forms are the sign-in file's.
  */
 import { expect, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";

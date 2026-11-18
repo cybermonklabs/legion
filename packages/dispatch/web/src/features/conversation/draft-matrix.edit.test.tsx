@@ -81,6 +81,26 @@
  * 4. Which end of a thread its replies are drawn from (`useThreadOrder`) is read when the card is
  *    drawn and again only when who is signed in changes, so it never moves an editor on screen.
  *
+ * The forms the composer census found, where the layout draws, hides or moves the editor
+ * otherwise than the rows above, which the rows do not make:
+ * 5. On a phone a comment's Expand thread and a margin card's tap open the thread full-screen in
+ *    place of opening it in the list (`CommentTurn`'s `isPhone`, `useMarginSheet`'s
+ *    `onToggleThread` and `selectMarginItem`); the editor there is the phone rows' above, and Back
+ *    is the way off. A comment link opens the Conversation's view as Expand thread does
+ *    (`ConversationTab`'s focus effect), a decision landing on the comment closes it as Back does
+ *    (`phone.hide`), and a comment's Reply on a phone answers in the view's own composer and
+ *    leaves the editor open in its card.
+ * 6. Each view's card is drawn only while its thread is open there (`phoneThread`, and
+ *    `MarginSheet`'s `sheet.thread` at a phone width) and keyed by its thread: widening the page
+ *    past the phone layout closes the Conversation's view as Back does unless a send from it is
+ *    out (`usePhoneThread`'s `outlived`), and takes the margin's off the page, either ending the
+ *    editor's mount as Back does; the editor drawn for its comment next is the one the phone rows'
+ *    return draws.
+ * 7. The margin's phone panel open or closed, its rail, where it sits, and the focus and
+ *    scrolling the layout decides move no editor (the margin file's reasons 9 to 12), and neither
+ *    does the read mark's ref on the Conversation's newest card (`register`). The app shell's
+ *    forms are the sign-in file's.
+ *
  * The hosts that cannot make the move: the docked composer, the phone thread composer, an Agents
  * row and an Inbox thread box are never given an `edit`, so they draw no editor to move.
  */

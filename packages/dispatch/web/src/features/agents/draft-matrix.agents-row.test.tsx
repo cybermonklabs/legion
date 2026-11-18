@@ -60,6 +60,13 @@
  * 7. The windowed list draws a group's heading for an item of kind `group` and a row for one of
  *    kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key
  *    of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.
+ *
+ * The forms the composer census found, where the layout draws, hides or moves this composer
+ * otherwise than the rows above, which the rows do not make:
+ * 8. The layout changes one thing in a row: from `md` its directory shows the path's last segment
+ *    and below it the whole path (`mdViewport`). The row, its details and its composer are drawn
+ *    the same at every width, so a phone makes the rows above as they are. The app shell's forms
+ *    are the sign-in file's.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";

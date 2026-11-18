@@ -24,6 +24,7 @@
  * | ----------------------------------------------- | ------ | ------- | ------- |
  * | Back, then back (phone thread view) (off)       | cell   | cell    | cell    |
  * | Reply on its comment, then back (off)           | cell   | cell    | cell    |
+ * | Reply on its comment, then back (phone) (off)   | cell   | cell    | cell    |
  * | Host moves it over a refusal (elsewhere)        | no (1) | no (1)  | no (1)  |
  * | Thread collapsed by the host, then opened (off) | cell   | cell    | cell    |
  * | Cancel reply                                    | cell   | cell    | cell    |
@@ -37,9 +38,10 @@
  * | The thread's replies ordered the other way      | no (7) | no (7)  | no (7)  |
  *
  * (off) marks a host move that takes the card's reply off the screen: Back hides the thread
- * view, Collapse thread unmounts the reply, and the comment's Reply hides it while the docked
- * composer answers the comment with a prefill of its own, not the card's draft. Every host move
- * of this row is one, so none needs a line while away.
+ * view, Collapse thread unmounts the reply, and the comment's Reply hides it while another
+ * composer answers the comment with a prefill of its own, not the card's draft: the docked
+ * composer above the phone layout, and on a phone the thread view's own (`usePhoneThread`). Every
+ * host move of this row is one, so none needs a line while away.
  *
  * The moves this host cannot make:
  * 1. The card's reply always answers its own thread's root on its own issue, so no move of the
@@ -62,6 +64,22 @@
  * 7. Which end of the thread the reply sits at (`composerFirst`, from `useThreadOrder`) is read
  *    when the card is drawn and again only when who is signed in changes (`useUserPreference`),
  *    so it never moves a reply that is on screen.
+ *
+ * The forms the composer census found, where the layout draws, hides or moves this composer
+ * otherwise than the rows above, which the rows do not make:
+ * 8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening
+ *    the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own
+ *    composer (`onReply`, and Reply's `!isPhone`), so the first row and the phone Reply row are the
+ *    phone's forms of the Collapse thread and Reply rows. A comment link opens the view as Expand
+ *    thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes
+ *    it as Back does (`phone.hide`).
+ * 9. The view's card is drawn only while a thread is open (`phoneThread`) and keyed by its thread
+ *    (`key={phoneThread.id}`): another thread is opened after Back, and widening the page past
+ *    the phone layout closes the view as Back does unless a send from it is out
+ *    (`usePhoneThread`'s `outlived`), the first row's move either way.
+ * 10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a
+ *    thread is open; it marks the issue read and moves no reply. The margin's thread reply is the
+ *    margin file's, and the app shell's forms are the sign-in file's.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -207,6 +225,33 @@ for (const held of HELD) {
       await page.user.click(within(docked).getByRole("button", { name: "Cancel reply" }));
       expect({ away, back: heldIn(turn()) }).toEqual({
         away: { cardReply: 0, dockedQuotes: true },
+        back: expectedBack(held),
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// On a phone the comment's Reply answers in the thread view's own composer (`usePhoneThread`'s
+// `beginReply`) rather than the docked one, and that composer hides the card's reply in the view
+// while it answers the thread (`hideReplyComposer`, from `phoneReplyTargetsThread`). That is the
+// host's move, as above the phone layout: the card's reply waits, mounted, for the thread
+// composer's Cancel reply, which brings it back with its note.
+for (const held of HELD) {
+  test(`${HOST} · phone · Reply on its comment, then back (phone thread view) · ${held}`, async () => {
+    const page = await openConversation(held === "stopped", true);
+    try {
+      const dialog = await holdInCard(page, held, true);
+      await page.user.click(within(dialog).getByRole("button", { name: "Reply" }));
+      // The move this row is about: the card's reply hidden, the thread composer answering.
+      const away = {
+        cardReply: within(dialog).queryAllByRole("textbox", { name: "Reply" }).length,
+        threadComposer: within(dialog).queryAllByRole("form", { name: "Comment composer" }).length,
+      };
+      await page.user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+      expect({ away, back: heldIn(dialog) }).toEqual({
+        away: { cardReply: 0, threadComposer: 1 },
         back: expectedBack(held),
       });
     } finally {

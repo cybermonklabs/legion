@@ -60,6 +60,18 @@
  *    out or failed (`loading`, `failed`), which unmounts the thread composer as leaving the issue
  *    does, and the composer drawn when they land again is the one the issue-left row draws on
  *    return.
+ *
+ * The forms the composer census found, where the layout draws, hides or moves this composer
+ * otherwise than the rows above, which the rows do not make:
+ * 8. A comment link opens the thread view as it lands (`ConversationTab`'s focus effect), as the
+ *    comment's Reply opens it here, and a decision landing on the comment closes the view as Back
+ *    does (`phone.hide`), the first row's move; the composer stays mounted while its reply is set
+ *    (`phone.replyTo`).
+ * 9. Widening the page past the phone layout closes the view as Back does, unless a send from it
+ *    is out, which keeps the view open at any width until Back (`usePhoneThread`'s `outlived`);
+ *    the composer stays mounted while its reply is set, whatever the width. The Jump to latest
+ *    pill and the read mark's ref on the newest card move no composer, and the app shell's forms
+ *    are the sign-in file's.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";

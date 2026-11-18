@@ -27,6 +27,15 @@
  * answered (`whoAmI.isPending`), before which no shell, and so no composer, is drawn; and signed
  * out (`signedOut`), whose page takes the shell and every composer away, which
  * `app-sign-out.test.tsx` holds to the same rule as (2).
+ *
+ * The forms the composer census found, where the layout draws the page otherwise, which the rows
+ * above do not make:
+ * 3. In `AppShell`, above every host, the layout draws the shell around the page: the compact
+ *    header with its Menu and the Inbox's Peek (whose drawer is the Inbox files' reason), the
+ *    navigation drawer and the focus it keeps (`useDialog`), the sidebar or its rail, the main
+ *    column's classes, and the keyboard fit of a page that fills the screen (`useKeyboardFit`).
+ *    Each draws or moves something beside the route element and the margin a host is in, never
+ *    them, so no composer moves, and the rows above make their moves at the test page's width.
  */
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
