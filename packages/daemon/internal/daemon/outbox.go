@@ -337,13 +337,15 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // nothing else would: the message is the daemon's only word on the issue for what it carries.
 // Each of those notice rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, intake.OnCommit), so the notice's lane is woken as the
-// finish commits and the notice is published without a sweep.
+// finish commits and the notice is published without a sweep. The finish's transaction settles as
+// a fact's does (settling), since a hand-over's fence it drops is an input of the end of a merge's
+// run.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
-	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settled := r.settling(ctx)
 	// follow is what the transaction does beside the finish, and told the line logged once it commits.
 	var follow func(pgx.Tx) error
 	var told func()
@@ -423,7 +425,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 				"step", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
 	}
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+	if err := settled(func(tx pgx.Tx) error {
 		if follow != nil {
 			if err := follow(tx); err != nil {
 				return err
@@ -433,7 +435,6 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
-	committed()
 	if told != nil {
 		told()
 	}
@@ -1328,6 +1329,7 @@ func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payl
 func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	var issue, root *record.Issue
 	var handover *record.Handover
+	var cancelled bool
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(ctx, tx, row.Issue)
@@ -1339,12 +1341,18 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 			return err
 		}
 		if handover.Cancelled {
-			return r.records.DeleteHandoverAt(ctx, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger)
+			cancelled = true
+			return nil
 		}
 		root, err = r.records.Issue(ctx, tx, handover.Tree)
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read hand-over of %s: %w", row.Issue, err)
+	}
+	if cancelled {
+		if err := r.dropHandover(ctx, row.Issue, payload); err != nil {
+			return false, fmt.Errorf("drop the cancelled hand-over of %s: %w", row.Issue, err)
+		}
 	}
 	if issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
 		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation) {
@@ -1355,13 +1363,42 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 	return false, nil
 }
 
-// dropHandover deletes the fence of a hand-over a person's move superseded, but only this row's
-// own: the tree and linger generation the row names. A newer linger's fence on the same child is
-// its own row's to settle.
+// dropHandover deletes the fence of a hand-over a person's move superseded, or one a re-admission
+// cancelled, but only this row's own: the tree and linger generation the row names. A newer
+// linger's fence on the same child is its own row's to settle. The fence is an input of the end of
+// a merge's run, so the delete settles as a fact does (settling).
 func (r *outbox) dropHandover(ctx context.Context, issue string, payload record.StatusWrite) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.DeleteHandoverAt(ctx, tx, issue, payload.HandOverTree, payload.HandOverLinger)
+	scoped, settled := r.settling(ctx)
+	return settled(func(tx pgx.Tx) error {
+		return r.records.DeleteHandoverAt(scoped, tx, issue, payload.HandOverTree, payload.HandOverLinger)
 	})
+}
+
+// settling is how a write of the outbox that changes an input of the end of a step's run — a
+// hand-over's fence — settles as a fact does: ctx carrying what the settle reads
+// (intake.OpenSettlers over the outbox's handlers) and the commit hooks its writes register, and
+// the runner of the write's one transaction, which takes the lock every fact applies under
+// (intake.SerializeFacts), runs write, settles the runs it ended before the commit (workflow's
+// settleRuns), and runs the commit hooks once the transaction commits. Every write in it takes the
+// ctx it answers, so the store notes the issues those writes touch.
+func (r *outbox) settling(ctx context.Context) (context.Context, func(write func(pgx.Tx) error) error) {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, r.handlers...)
+	return scoped, func(write func(pgx.Tx) error) error {
+		if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+			if err := intake.SerializeFacts(scoped, tx); err != nil {
+				return fmt.Errorf("serialize with every fact: %w", err)
+			}
+			if err := write(tx); err != nil {
+				return err
+			}
+			return settle(scoped, tx)
+		}); err != nil {
+			return err
+		}
+		committed()
+		return nil
+	}
 }
 
 // message posts a message row once: a retried row that finds its own marker on the issue posts

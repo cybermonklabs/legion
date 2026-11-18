@@ -146,6 +146,90 @@ func TestOnlyTheSettleWritesTheEndOfARun(t *testing.T) {
 	}
 }
 
+// The end rule (runOver, mergeCanLand) reads four inputs: the issue's record, its pull request, its
+// hand-over fence and a tree's linger close. A write of one of them that no settle reads leaves the
+// run it ends unended. So:
+//   - each store writer of the first three keeps the issue among those its transaction touched
+//     (noteIssueWrite), which the settle reads; the linger close is named to the fact itself
+//     (closeLinger), which refuses a ctx no fact opened (errOutsideFact);
+//   - each call of those writers is in a package whose writes run in a fact or the boot's
+//     reconcile, both of which settle (workflow, admit), or is listed here: the outbox's two drops
+//     of a fence, each in a transaction that settles as a fact does (its settling).
+//
+// A writer that stops noting the issue, or a call added anywhere else, fails by name.
+func TestEveryWriterOfTheEndRulesInputsIsSettled(t *testing.T) {
+	writers := map[string]bool{"PutIssue": true, "PutPullRequest": true, "PutHandover": true, "DeleteHandover": true, "DeleteHandoverAt": true}
+	noting := map[string]bool{}
+	calls := map[string]int{}
+	settles := map[string]bool{}
+	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		slashed := filepath.ToSlash(path)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				switch {
+				case strings.HasPrefix(slashed, "../record/") && writers[fn.Name.Name] && sel.Sel.Name == "noteIssueWrite":
+					noting[fn.Name.Name] = true
+				case writers[sel.Sel.Name] && !strings.HasPrefix(slashed, "../workflow/") && !strings.HasPrefix(slashed, "../admit/") &&
+					!strings.HasPrefix(slashed, "../record/"):
+					calls[fmt.Sprintf("%s:%s:%s", slashed, fn.Name.Name, sel.Sel.Name)]++
+				case sel.Sel.Name == "settling":
+					settles[fmt.Sprintf("%s:%s", slashed, fn.Name.Name)] = true
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read the daemon's code: %v", err)
+	}
+	for writer := range writers {
+		if !noting[writer] {
+			t.Errorf("record's %s writes an input of the end rule and notes no issue (noteIssueWrite): the settle would not read the run it ends", writer)
+		}
+	}
+	// The outbox's two drops of a fence, and the function that runs each in a settling
+	// transaction: handOverRule.refused's drop runs in finishRefused's.
+	want := map[string]string{
+		"../daemon/outbox.go:refused:DeleteHandoverAt":      "../daemon/outbox.go:finishRefused",
+		"../daemon/outbox.go:dropHandover:DeleteHandoverAt": "../daemon/outbox.go:dropHandover",
+	}
+	for site, n := range calls {
+		settled, listed := want[site]
+		if !listed || n != 1 {
+			t.Errorf("%s writes an input of the end rule %d times outside a fact: write it in a fact, or in a transaction that settles as one does, and list it here", site, n)
+			continue
+		}
+		if !settles[settled] {
+			t.Errorf("%s runs %s's write in no settling transaction", settled, site)
+		}
+	}
+	for site := range want {
+		if calls[site] != 1 {
+			t.Errorf("%s calls a writer of an input of the end rule %d times, want 1", site, calls[site])
+		}
+	}
+}
+
 // A hand-over fence an earlier linger of the tree left can stand beside a member whose merge waits
 // in the tree's linger now (record.Handover outlives its linger). It is that earlier linger's, so
 // it hands the member to no readmit: the unmerged close of the member's pull request after this
