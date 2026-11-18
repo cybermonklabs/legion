@@ -360,7 +360,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 	putRoleClaimsInParallel(t, rawRoles, others, holderOfOther)
 	t.Logf("seeded %d claims held by other sessions in %s", otherRoleClaims, time.Since(seeded).Round(time.Millisecond))
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry over the seeded role bucket: %v", err)
 	}

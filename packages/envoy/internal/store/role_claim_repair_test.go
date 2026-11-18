@@ -54,7 +54,7 @@ func newRepairRig(t *testing.T, seed func(roles natsgo.KeyValue)) *repairRig {
 		seed(roles)
 	}
 	rig := &repairRig{t: t, conn: conn, clock: &manualClock{at: repairBase}, waits: &kvwatchtest.Waits{}}
-	rig.reg, err = Open(conn, WithReplicas(1), WithClock(rig.clock.Now), WithRoleClaimWatch(kvwatch.WithAfterFunc(rig.waits.After)))
+	rig.reg, err = Open(t.Context(), conn, WithReplicas(1), WithClock(rig.clock.Now), WithRoleClaimWatch(kvwatch.WithAfterFunc(rig.waits.After)))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

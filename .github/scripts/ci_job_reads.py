@@ -3170,41 +3170,22 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :136"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :138"),
-        # Each COPY of a tree of packages/envoy below reads every file of it but its test files,
-        # which the root .dockerignore:24 (packages/envoy/**/*_test.go) leaves out of the context;
-        # listenfd, which the held-port image copies too, is the one tree read whole.
-        *[(path, "packages/envoy/docker/Dockerfile:102 COPY packages/envoy/cmd ./cmd, which :149-159 builds the four binaries from")
-          for path in files_but_tests(f"{ENVOY}/cmd", suffix="", tree=True)],
-        # agentloop: the model loop cmd/broker's judge compiles in, a package outside internal/,
-        # so the image build copies it beside cmd and internal (main's #2984). No go command of
-        # this gate reaches it, so rule 9 of check-ci-filters.sh reads the filter's pattern as
-        # dead without this row, while check-image-trigger-paths.sh refuses the filter without
-        # the pattern: the read is the image build's, and this is where the two checks meet.
-        *[(path, "packages/envoy/docker/Dockerfile:107 COPY packages/envoy/agentloop ./agentloop")
-          for path in files_but_tests(f"{ENVOY}/agentloop", suffix="", tree=True)],
-        *[(path, "packages/envoy/docker/Dockerfile:114 COPY packages/envoy/going ./going")
-          for path in files_but_tests(f"{ENVOY}/going", suffix="", tree=True)],
-        # listenfd's test files too: the held-port image's build copies the whole package
-        # (packages/envoy/infra/host/heldportwrapper/Dockerfile:29), its own Dockerfile.dockerignore
-        # standing in for the root one and keeping the package whole (`!packages/envoy/listenfd`).
-        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:110 COPY packages/envoy/listenfd ./listenfd, and "
-                                 "packages/envoy/infra/host/heldportwrapper/Dockerfile:29 COPY packages/envoy/listenfd "
-                                 "/src/packages/envoy/listenfd, test files and all"),
-        *[(path, "packages/envoy/docker/Dockerfile:117 COPY packages/envoy/migrationid ./migrationid")
-          for path in files_but_tests(f"{ENVOY}/migrationid", suffix="", tree=True)],
-        *[(path, "packages/envoy/docker/Dockerfile:119 COPY packages/envoy/roleholder ./roleholder")
-          for path in files_but_tests(f"{ENVOY}/roleholder", suffix="", tree=True)],
-        *[(path, "packages/envoy/docker/Dockerfile:125 COPY packages/envoy/brokeraddr ./brokeraddr")
-          for path in files_but_tests(f"{ENVOY}/brokeraddr", suffix="", tree=True)],
-        # The second image this job builds. Its context is that directory alone, test file and
-        # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
-        # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write
-        # the exclusion that leaves main_test.go out, no go command of this gate compiling it.
-        (f"{INFRA}/host/heldportwrapper/**", "packages/envoy/infra/host/heldportwrapper/Dockerfile:31 COPY "
-                                             "packages/envoy/infra/host/heldportwrapper ./host/heldportwrapper, "
-                                             "which :32 builds the held-port wrapper from"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :117"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :119"),
+        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106
+        # COPY packages/envoy ./), and the held-port image's build copies it whole with the
+        # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
+        # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
+        # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
+        # compiles that one), deploy and the changelog fragments, and infra for the first. No go
+        # command of this gate reaches most of those files, so rule 9 of check-ci-filters.sh reads
+        # the filter's module pattern as matching unread files without these rows, while
+        # check-image-trigger-paths.sh refuses the filter without it: the read is the image
+        # builds', and this is where the two checks meet.
+        *[(path, "packages/envoy/docker/Dockerfile:106 COPY packages/envoy ./, and "
+                 "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
+          for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
+          if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod")),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[

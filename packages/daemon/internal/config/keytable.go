@@ -187,7 +187,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "omp_invocation", Default: "`LEGION_OMP_PATH` in the daemon's environment, which names the `omp` binary directly", RequiredBy: "when runtime is tmux and `LEGION_OMP_PATH` is unset",
-			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
+			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`, which runs the tool's own `bin/omp` (`mise where <tool>`) with the pane's launcher directory put back first on `PATH`, ahead of any directory mise puts there; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OmpInvocation = v }),
 		},
 		{

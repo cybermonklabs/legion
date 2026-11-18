@@ -4310,8 +4310,7 @@ jobs:
               # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
               # install (every workspace manifest and the tarball packages/proof-editor/package.json
               # installs proof-sdk-upstream from) and the Bun pin that stage holds its own Bun to,
-              # the packages it builds the SPA and the Go binaries from, and the notices scripts.
-              - 'packages/envoy/docker/Dockerfile'
+              # the packages it builds the SPA from, and the notices scripts.
               - '.dockerignore'
               - '.bun-version'
               - 'package.json'
@@ -4332,41 +4331,21 @@ jobs:
               - 'scripts/third-party-notices.ts'
               - 'scripts/go-third-party-notices.sh'
               - 'scripts/assemble-third-party-notices.sh'
-              - 'packages/envoy/go.mod'
-              - 'packages/envoy/go.sum'
-              - 'packages/envoy/agentloop/**'
-              - 'packages/envoy/cmd/**'
-              - 'packages/envoy/going/**'
-              - 'packages/envoy/internal/**'
-              - 'packages/envoy/listenfd/**'
-              - 'packages/envoy/migrationid/**'
-              - 'packages/envoy/roleholder/**'
-              - 'packages/envoy/natsversion/**'
-              - 'packages/envoy/brokeraddr/**'
-              - 'packages/envoy/docker/rds-global-bundle.pem'
+              # The Envoy module, which the image's Go stage copies whole, and the envoy-infra
+              # module under it, which the held-port image's build copies whole with it
+              # (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and
+              # envoy-infra's host live tests and plugin build compile in packages/envoy/infra's own
+              # workspace. The two `!` patterns below leave out deploy and the changelog fragments,
+              # which neither .dockerignore lets in; the generated block leaves out the test files
+              # (internal/integration holds nothing else).
+              - 'packages/envoy/**'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
               - 'go.work.sum'
               - 'packages/daemon/go.mod'
               - 'packages/daemon/go.sum'
-              - 'packages/envoy/daemonpermissions/*'
-              # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
-              # workspace; the live tests compile internal/pulumitest, which holds the version
-              # they pin the docker provider at, under infra/internal. The plugin build's step is
-              # pinned whole in check-ci-filters.sh's table (an exact entry), so what it compiles
-              # is here, not the infra module.
-              - 'packages/envoy/infra/go.mod'
-              - 'packages/envoy/infra/go.sum'
-              - 'packages/envoy/infra/go.work'
-              - 'packages/envoy/infra/go.work.sum'
-              - 'packages/envoy/infra/aws/**'
-              - 'packages/envoy/infra/cmd/pulumi-resource-envoy-infra/*'
-              - 'packages/envoy/infra/core/**'
-              - 'packages/envoy/infra/gcp/**'
-              - 'packages/envoy/infra/host/**'
-              - 'packages/envoy/infra/internal/**'
-              - 'packages/envoy/infra/nats/*'
-              - 'packages/envoy/infra/provider/*'
+              - '!packages/envoy/deploy/**'
+              - '!packages/envoy/.changes/**'
               # The Pulumi CLI the live tests run, the docker provider plugin the step before them
               # downloads, and the image pull before the build and tests. Both of those installs
               # read their row of the tool manifest through the fetch helper.
@@ -4383,13 +4362,19 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
               - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
+              - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
+              - '!packages/envoy/infra/cmd/**/*_test.go'
               - '!packages/envoy/infra/core/**/*_test.go'
               - '!packages/envoy/infra/gcp/**/*_test.go'
+              - '!packages/envoy/infra/host/heldportwrapper/**/*_test.go'
               - '!packages/envoy/infra/internal/**/*_test.go'
               - '!packages/envoy/infra/provider/**/*_test.go'
+              - '!packages/envoy/infra/render/**/*_test.go'
+              - '!packages/envoy/infra/seed/**/*_test.go'
               - '!packages/envoy/internal/broker/**/*_test.go'
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
@@ -4432,9 +4417,12 @@ jobs:
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
+              - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/steprecord/**/*_test.go'
               # END generated
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
             # job (.github/workflows/worker-image.yaml, which the build reads too): the root

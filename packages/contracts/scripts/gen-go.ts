@@ -39,6 +39,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
+  REFERENCE_TARGETS_MAX,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
@@ -352,6 +353,11 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
