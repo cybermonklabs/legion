@@ -1792,13 +1792,19 @@ def race_impossible_tests(root) -> dict:
     return found
 
 
+# A package's -timeout in that step where it is not 10 minutes: the API's only test there is the
+# mention sender's claim model, which runs 2 min 30 s on two cores, so it gets twice that.
+RACE_IMPOSSIBLE_TIMEOUTS = {"internal/dispatch/api": "5m"}
+
+
 def race_impossible_script(packages) -> str:
     """envoy-go's plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run."""
+    sorted, in its -run, under its timeout (RACE_IMPOSSIBLE_TIMEOUTS, else 10 minutes)."""
     lines = []
     for under, names in packages.items():
-        lines.append(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
+        timeout = RACE_IMPOSSIBLE_TIMEOUTS.get(under, "10m")
+        lines.append(f"go test -count=1 -timeout {timeout} -run '^({'|'.join(sorted(names))})$' ./{under}")
     return "\n".join(lines)
 
 
