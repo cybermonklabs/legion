@@ -1624,11 +1624,22 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	switch {
-	case mergedAlready || row.To == phase.Accepting:
-		// Neither starts a phase worker: a merge GitHub has already made leaves the merger nothing
-		// to merge, and accepting's role is the tree's architect, which start skips. The step starts
-		// all the same, under the agent it names (startNamedStep): nobody for the merge, whose close
-		// ends it, and the tree's architect for accepting.
+	case mergedAlready:
+		// No merger starts: a merge GitHub has already made leaves it nothing to merge. The step
+		// starts all the same, under the agent it names (startNamedStep): nobody, and the merge's
+		// close ends it.
+		if step, ok := standingStep(issue); ok {
+			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
+				return err
+			}
+		}
+	case row.To == phase.Accepting:
+		// Accepting's role is the architect, so start starts no worker: it only starts a child's
+		// failed architect again (reviveArchitect), as every phase start of a child does. The step
+		// starts under the agent it names (startNamedStep): the architect that owns the issue now.
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+			return err
+		}
 		if step, ok := standingStep(issue); ok {
 			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
 				return err
