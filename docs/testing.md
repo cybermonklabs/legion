@@ -136,6 +136,32 @@ itself, whose tests import its sources by relative path.
   `scripts/e2e/lib/held-port.test.ts`), or, for a socket that is bound and never listens, which
   `/proc/net/tcp` does not list, by the descriptor that held it (`refused-port.test.ts`).
 
+- A unix socket a suite binds, or hands a program to bind (a tmux server's `-S` path, an inbox,
+  a server's own socket under a directory the suite names), goes in a directory made where its
+  path fits, never under a bare `tmpdir()`. A socket path holds 107 bytes on Linux and 103 on
+  macOS (see "Unix sockets in Go tests" below), and a long `TMPDIR` passes that: a dev box's on a
+  data disk, a Legion pod's, a macOS `/var/folders` one. Bun 1.4.4's own `node:net` binds and
+  dials a longer path on Linux (a 146-byte one, measured), and Node 22 cuts it short, but tmux
+  refuses it ("File name too long"), Go and Postgres refuse it too, and Claude Code's mod host
+  takes "near 100 B at most" (`packages/claude-envoy/hooks/mod-protocol.ts`). A suite's socket
+  stands in for one such a program serves or dials, so the rule holds for every socket. Take the
+  root from `socketRoot(what, refusal)` (`@legion/test-fixtures/socket-root`): it answers
+  `tmpdir()` when the suite's longest socket path fits under a directory made there, and `/tmp`
+  otherwise, which it says once on stderr; `refusal` measures that path, `mkdtemp`'s six random
+  characters included, and `socketPathRefusal(path)` is the refusal for a socket with no bound of
+  its own. A directory per
+  test is `temporaryDirectories(prefix, { root })`, which names it `<prefix>-XXXXXX`
+  (`scripts/e2e/lib/held-port.test.ts`, `packages/claude-envoy/tests/legion-inbox.test.ts`); a
+  directory a test removes itself is `mkdtemp(join(root, prefix))`
+  (`packages/claude-envoy/tests/session-title.test.ts`,
+  `packages/pi-envoy/extensions/tmux-place-omp.test.ts`). `temporaryDirectory` and
+  `temporaryTmpdir` take no `root`, so a socket never goes under them. claude-envoy's mod socket
+  has a smaller bound, 100 bytes (`MOD_SOCKET_PATH_MAX_BYTES`), so its suites take their base from
+  `modSocketScratch(prefix)` (`packages/claude-envoy/tests/mod-socket-scratch.ts`), which measures
+  it with the product's own `resolveModSocketPath`, and read the session's socket through
+  `sessionModSocket`, whose error carries the reason a session has none. Before you call such a
+  suite done, run it under a `TMPDIR` of about 100 bytes, as for Go below.
+
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
   `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
@@ -153,11 +179,10 @@ itself, whose tests import its sources by relative path.
   caller's own environment runs for its executable. On a dev box these are mise shims, and under a
   HOME of the suite's own a shim has no version ("bun is not a valid shim"), or runs another
   interpreter that stands behind it on PATH (`packages/claude-envoy/tests/open-asks-hook.test.ts`,
-  `packages/envoy-client/test/dispatch-stack.ts`, `scripts/e2e/lib/held-port.test.ts`). A module
-  that runs under Playwright's Node asks `bun` for its own `process.execPath` once
-  (`packages/dispatch/e2e/dispatch-cli.ts`). Where the suite starts a script that runs `bun` by
-  name itself, a shell script or a `bin/` launcher, the script's PATH has this Bun's own directory,
-  `dirname(process.execPath)`, first, so its `bun` is this one
+  `scripts/e2e/lib/held-port.test.ts`). A module that runs under Playwright's Node asks `bun` for
+  its own `process.execPath` once (`packages/dispatch/e2e/dispatch-cli.ts`). Where the suite starts
+  a script that runs `bun` by name itself, a shell script or a `bin/` launcher, the script's PATH has
+  this Bun's own directory, `dirname(process.execPath)`, first, so its `bun` is this one
   (`scripts/e2e/lib/app-logins.test.ts`, `scripts/e2e/lib/operator-dispatch.test.ts`, and the
   `bin/dispatch` row of `packages/claude-envoy/tests/dist-fresh.test.ts`).
 

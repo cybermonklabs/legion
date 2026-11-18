@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -57,6 +58,15 @@ const SESSION_NAME = "tmux-place-case";
 const WINDOW_NAME = "the-window";
 const WINDOW_INDEX = 4;
 const PANE_INDEX = 1;
+
+/** The case's tmux socket goes in a directory of its own, made under TMPDIR when its path fits there
+ *  and under /tmp otherwise, which says so (`socketRoot`): a long TMPDIR passes the 107 bytes a
+ *  socket path holds on Linux (`socketPathRefusal`), and tmux refuses it. mkdtemp adds six
+ *  characters. */
+const TMUX_PREFIX = "tmux-place-sock-";
+const tmuxParent = socketRoot("tmux-place-omp.test.ts's tmux server", (parent) =>
+  socketPathRefusal(path.join(parent, `${TMUX_PREFIX}XXXXXX`, "tmux.sock"))
+);
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -264,7 +274,9 @@ test.skipIf(skip)(
     const { root, home, workspace, sessions } = await ompRoot(binary, "tmux-place-omp-", cleanup);
     const { requests, base } = await standin(home, workspace);
 
-    const socket = path.join(root, "tmux.sock");
+    const socketDirectory = await mkdtemp(path.join(tmuxParent, TMUX_PREFIX));
+    cleanup.push(() => rm(socketDirectory, { recursive: true, force: true }));
+    const socket = path.join(socketDirectory, "tmux.sock");
     const environmentFile = path.join(root, "pane-environment");
     const log = path.join(root, "omp.log");
     const environment = paneEnvironment(home, tmux);
