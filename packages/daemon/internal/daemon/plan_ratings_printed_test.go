@@ -163,21 +163,33 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	}
 }
 
-// The printed read holds an issue whose run started before the release that writes each run's
-// plan (ratedWant.unplanned) to `plan none`, as the read by project holds it to no plan
-// (plansHold); the control is the same issue printed with the default plan, which must fail.
-func TestThePrintedReadHoldsAnUnplannedIssueToNoPlan(t *testing.T) {
+// The printed read holds each issue to its own plan: a planned issue to the default plan, and an
+// issue whose run started before the release that writes each run's plan (ratedWant.unplanned) to
+// `plan none`, as the read by project holds it to no plan (plansHold). Each is read against both
+// texts: the one naming its plan holds, and the other fails, naming the plan it wants. The issue's
+// one record ends before the issue closes, as a walk's records do.
+func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
 	var steps stepRecordsRead
-	if err := json.Unmarshal([]byte(`{"tasks":[{"task":"default","steps":[{"started_at":"2026-11-17T00:00:00Z","ended_at":"2026-11-17T00:01:00Z"}]}]}`), &steps); err != nil {
+	if err := json.Unmarshal([]byte(`{"tasks":[{"task":"default","steps":[{"started_at":"2026-11-16T23:58:00Z","ended_at":"2026-11-16T23:59:00Z"}]}]}`), &steps); err != nil {
 		t.Fatal(err)
 	}
-	want := []ratedWant{{walkIssue: walkIssue{key: "SR1-1"}, steps: steps, unplanned: true}}
-	printed := plansPrintedWith("none")
-	if _, err := plansPrintedHold("SR1", strings.Replace(printed, "plan "+defaultPlanPrinted(), "plan none", 1), want); err != nil {
-		t.Errorf("the unplanned issue printed with `plan none`: %v, want it held", err)
-	}
-	if _, err := plansPrintedHold("SR1", printed, want); err == nil || !strings.Contains(err.Error(), "want plan none") {
-		t.Errorf("control: the unplanned issue printed with the default plan = %v, want an error saying it wants plan none", err)
+	planned := plansPrintedWith("none")
+	unplanned := strings.Replace(planned, "plan "+defaultPlanPrinted(), "plan none", 1)
+	for _, tc := range []struct {
+		name              string
+		unplanned         bool
+		holds, fails, why string
+	}{
+		{name: "a planned issue", holds: planned, fails: unplanned, why: "want plan " + defaultPlanPrinted()},
+		{name: "an unplanned issue", unplanned: true, holds: unplanned, fails: planned, why: "want plan none"},
+	} {
+		want := []ratedWant{{walkIssue: walkIssue{key: "SR1-1"}, steps: steps, unplanned: tc.unplanned}}
+		if _, err := plansPrintedHold("SR1", tc.holds, want); err != nil {
+			t.Errorf("%s printed with its plan: %v, want it held", tc.name, err)
+		}
+		if _, err := plansPrintedHold("SR1", tc.fails, want); err == nil || !strings.Contains(err.Error(), tc.why) {
+			t.Errorf("control: %s printed with the other plan = %v, want an error saying %q", tc.name, err, tc.why)
+		}
 	}
 }
 
