@@ -359,7 +359,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ProvidersSecrets:        providersSecrets(cfg, lookup),
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
-		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
 		// The guard's settings reach an accepted launcher on the answer to its hello (sandbox
 		// Runtime.LauncherResolver), each pod kind's from its own block: an issue pod's launchers

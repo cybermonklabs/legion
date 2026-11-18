@@ -852,7 +852,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		claudeDir = claudeConfigDir(l.spec.Role)
 		files[claudeMCPFile] = l.claude.mcp
 	}
-	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, l.skillsInstall(r), r.setup,
+	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
@@ -866,8 +866,8 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 // bound a prompt still meets in a pod (runtime.PromptTooLarge, which supervise charges no launch
 // failure). prepare runs it on the start a pod built now would receive, before anything of the pod
 // is touched, and relaunch again on the start it sends, which carries what the launch learned from
-// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays,
-// enrollment and skills repository that pod was built with.
+// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays and
+// enrollment that pod was built with.
 func (l launch) checkStartFrame(command shimwire.LauncherStart) error {
 	frame, err := shimwire.FrameLen(command)
 	if err != nil {

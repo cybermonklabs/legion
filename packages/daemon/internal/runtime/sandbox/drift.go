@@ -76,13 +76,12 @@ const podShapeAnnotation = "legion.dev/pod-shape"
 // fleet would read as drifted at once — which TestPodShapeEncodesEqualConfigurationsIdentically
 // holds this to.
 type podShapeRecord struct {
-	Image            string                      `json:"image"`
-	Resources        corev1.ResourceRequirements `json:"resources"`
-	Volumes          []corev1.Volume             `json:"volumes,omitempty"`
-	Mounts           []corev1.VolumeMount        `json:"mounts,omitempty"`
-	Disk             string                      `json:"disk"`
-	SkillsRepository string                      `json:"skills_repository,omitempty"`
-	Sandbox          *sandboxShape               `json:"sandbox,omitempty"`
+	Image     string                      `json:"image"`
+	Resources corev1.ResourceRequirements `json:"resources"`
+	Volumes   []corev1.Volume             `json:"volumes,omitempty"`
+	Mounts    []corev1.VolumeMount        `json:"mounts,omitempty"`
+	Disk      string                      `json:"disk"`
+	Sandbox   *sandboxShape               `json:"sandbox,omitempty"`
 }
 
 // sandboxShape is the sandbox a microVM issue pod runs in, as its shape records it: the
@@ -110,22 +109,16 @@ type sandboxMetadataShape struct {
 
 // podShape is the configuration a pod of kind is built from now, as its template's annotation
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
-// operator's volumes and mounts, the size of the pod's disk, the kind's skills repository, and,
-// for a pod that runs in a microVM, where that microVM runs (microVM, launch.microVM; nil for a
-// gVisor pod, which records no sandbox). Skills are cloned once at pod start, so changing that
-// repository needs the same ordinary update round as changing a volume. An encoding failure is
-// unreachable — every field is an API object or a string — and is logged and recorded as no
-// shape, compared by image alone.
+// operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
+// microVM, where that microVM runs (microVM, launch.microVM; nil for a gVisor pod, which records
+// no sandbox). An encoding failure is unreachable — every field is an API object or a string — and
+// is logged and recorded as no shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,
 // r.podShapes): the pod template that records a shape and the sweep that compares one read that
 // string.
 func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
-	skills := ""
-	if repository := kind.skillsRepository(r); !repository.IsZero() {
-		skills = repository.String()
-	}
 	var where *sandboxShape
 	if microVM != nil {
 		where = &sandboxShape{RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
@@ -134,13 +127,12 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 		}
 	}
 	encoded, err := json.Marshal(podShapeRecord{
-		Image:            r.image,
-		Resources:        kind.resources(r),
-		Volumes:          r.pod.Volumes,
-		Mounts:           r.pod.VolumeMounts,
-		Disk:             r.volumeSize.String(),
-		SkillsRepository: skills,
-		Sandbox:          where,
+		Image:     r.image,
+		Resources: kind.resources(r),
+		Volumes:   r.pod.Volumes,
+		Mounts:    r.pod.VolumeMounts,
+		Disk:      r.volumeSize.String(),
+		Sandbox:   where,
 	})
 	if err != nil {
 		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
@@ -200,9 +192,9 @@ func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) pod
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
 // build a pod from otherwise now (want, podShape), one short phrase per key: `image`, `resources`,
-// `volumes`, `mounts`, `disk`, `skills_repository` or `sandbox`, with what the pod holds and would
-// be handed now. `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod, so
-// a pod whose issue moved from one sandbox to the other reads null on one side.
+// `volumes`, `mounts`, `disk` or `sandbox`, with what the pod holds and would be handed now.
+// `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod, so a pod whose
+// issue moved from one sandbox to the other reads null on one side.
 // Nil means nothing drifted.
 //
 // It reads the stored Sandbox's template, never the pod: GKE Autopilot rewrites a pod's
@@ -246,7 +238,6 @@ func podShapeDrift(s *sandbox, want string) []string {
 	named("resources", was.Resources, now.Resources)
 	named("volumes", was.Volumes, now.Volumes)
 	named("mounts", was.Mounts, now.Mounts)
-	named("skills_repository", was.SkillsRepository, now.SkillsRepository)
 	if !sameQuantity(was.Disk, now.Disk) {
 		drifted = append(drifted, "disk "+was.Disk+", now "+now.Disk)
 	}

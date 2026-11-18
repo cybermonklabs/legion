@@ -45,7 +45,7 @@ func counterValue(t *testing.T, met *metrics.Registry, name string) int64 {
 // stands long enough to be read as unresponsive.
 func reapingRegistry(t *testing.T, client *bus.Client, now *clock, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
-	r, err := OpenSessionRegistry(client.Conn, append([]SessionRegistryOption{
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{
 		WithSessionReplicas(1),
 		WithSessionTTL(time.Hour),
 		WithSessionClock(now.Now),
@@ -398,7 +398,7 @@ func TestAReapedSessionsStoredCountIsReachedPastMoreOldMessagesThanTheCap(t *tes
 func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 	client := setupNATS(t)
 	now := &clock{}
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, 90*time.Minute); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(t.Context(), client.Conn, js, bus.SessionBucket, 90*time.Minute); err != nil {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
 
@@ -429,13 +429,13 @@ func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 // listener's first pass onwards, and the age it reports is the age the bucket really carries.
 func TestOpeningWithAMaximumAgeWritesItOnTheBucket(t *testing.T) {
 	client := setupNATS(t)
-	first, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	first, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry at a minute: %v", err)
 	}
 	first.StopWatch()
 
-	raised, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionMaxAge(90*time.Minute))
+	raised, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionMaxAge(90*time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry with a maximum age: %v", err)
 	}
