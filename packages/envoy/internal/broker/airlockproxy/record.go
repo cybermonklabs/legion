@@ -29,8 +29,11 @@ const (
 	codeNotAProxyRequest = "NOT_A_PROXY_REQUEST"
 	// refuseCredential: no Proxy-Authorization, or one that is not Basic or not base64.
 	codeProxyCredential = "PROXY_CREDENTIAL_INVALID"
-	// serveConnect: a CONNECT authority that is no host and port.
+	// serveConnect: a CONNECT authority that is no host and port, or whose port names no number
+	// from 1 to 65535 (portNumber).
 	codeConnectTarget = "CONNECT_TARGET_INVALID"
+	// servePlain: an absolute URL whose port names no number from 1 to 65535 (portNumber).
+	codeProxyTarget = "PROXY_TARGET_INVALID"
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"

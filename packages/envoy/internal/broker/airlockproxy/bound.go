@@ -422,8 +422,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// upload - and no request is read on it again, so a watcher reads the grant for it every
 	// watch interval (watchCarried) and ends it once the grant stops carrying it. carried is
 	// the call's own context: the watcher cancels it with why, which ends the call at the
-	// service, and ServeHTTP's return cancels it too, which stops the watcher.
-	carried, cut := context.WithCancelCause(r.Context())
+	// service, and ServeHTTP's return cancels it too, which stops the watcher. It carries the
+	// grant this request read (withCaller), so a dial made for the call names the caller its
+	// call line names rather than the one the CONNECT read, which a moved grant no longer is.
+	carried, cut := context.WithCancelCause(withCaller(r.Context(), connection))
 	defer cut(nil)
 	// What ReverseProxy is handed: this request with the swap's headers and that context.
 	// ReverseProxy drops the hop-by-hop headers of what it is handed - the Connection header

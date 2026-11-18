@@ -21,7 +21,6 @@ package airlockproxy
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -217,9 +216,12 @@ type Server struct {
 	outer   *http.Server
 	inner   *http.Server
 	innerLn *chanListener
-	// upstream carries every request to a service. Its TLSClientConfig trusts the host's roots
-	// as any client does, or Options.UpstreamRoots when a caller named roots of its own.
+	// upstream carries every request to a bound host's service, and the Azure token exchange.
+	// Its TLSClientConfig trusts the host's roots as any client does, or Options.UpstreamRoots
+	// when a caller named roots of its own. forward carries every plain-HTTP request the proxy
+	// forwards, a socket of its own for each (New).
 	upstream *http.Transport
+	forward  *http.Transport
 	serveOne sync.Once
 
 	// conns is the CONNECT target and the grant of each decrypted connection, which
@@ -338,6 +340,15 @@ func New(o Options) *Server {
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
 	}
+	// The transport a plain-HTTP request is forwarded on: upstream's own, dialled by
+	// dialForwarded, which writes the line of each socket it opens, and keeping no connection
+	// for a later request. A kept connection would carry the next request to its host with no
+	// dial and so with no line, a request of another caller's among them; so each request opens
+	// a socket of its own, and its line names its own caller. Plain HTTP is rare beside the TLS a
+	// command speaks, and a socket per request is a small price for a line per request.
+	s.forward = s.upstream.Clone()
+	s.forward.DialContext = s.dialForwarded
+	s.forward.DisableKeepAlives = true
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
@@ -603,15 +614,26 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	}
 	// The authority, with its host ASCII lower-cased: it is the URL and the Host header of
 	// every request this connection carries, and the one string the entry's hosts and the
-	// request's own Host header are compared against.
+	// request's own Host header are compared against. The reason quotes it lowercased too, as
+	// every line names a host the command wrote: a command may write anything here, its own
+	// placeholder among it.
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, fold.ASCII(r.Host)+" is no host and port")
 		return
 	}
 	// An address literal written as every address check reads it (netaddr.Host): the bound-host
 	// check, the certificate and the dial below all read this one spelling of the host.
 	host = netaddr.Host(fold.ASCII(host))
+	// And the port as the number it names, in the one spelling of that number, before the check,
+	// the bound-host decision, the dial and the lines read it (portNumber). The refusal names no
+	// port: the text that is no port is the command's own, which may be anything at all.
+	connectPort, ok := portNumber(port)
+	if !ok {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusBadRequest, codeConnectTarget, "the CONNECT to "+host+" names no port from 1 to 65535")
+		return
+	}
+	port = strconv.FormatUint(uint64(connectPort), 10)
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -638,7 +660,6 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
-	connectPort := connectPortOf(port)
 	if len(s.candidates(grant, host, connectPort)) > 0 {
 		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
@@ -646,15 +667,19 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	s.connectTunnel(w, r, hijacker, target, host, addrs, port)
 }
 
-// connectPortOf is a CONNECT authority's port as a number, and 0 for a port that is no
-// number at all ("https") or does not fit in 16 bits. Only 443 is a bound host's port, so a
-// port this cannot read is a tunnel's.
-func connectPortOf(port string) uint16 {
+// portNumber is the port a caller wrote as the number it names, and false for text that names no
+// port: anything but decimal digits, 0, or a number past 16 bits. A command writes the port it
+// asks for, and the dialer reads more than one spelling of one port - leading zeros, a service
+// name such as "https", a sign - so a port the proxy did not read for itself could reach a bound
+// host's 443 as a tunnel, or be written on a line as text no query for its number finds. The
+// proxy reads it once, here, and writes it back as strconv.FormatUint spells the number before
+// anything checks it, dials it or logs it.
+func portNumber(port string) (uint16, bool) {
 	number, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return 0
+	if err != nil || number == 0 {
+		return 0, false
 	}
-	return uint16(number)
+	return uint16(number), true
 }
 
 // connectBound answers a CONNECT to a host one of the grant's names is bound to, on port 443:
@@ -712,16 +737,19 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 // command's own HTTP client reports, rather than a tunnel that opens and then dies. It dials
 // the addresses serveConnect checked, in order, and resolves nothing of its own.
 //
-// A tunnel that opened writes one line (logTunnel), and a dial that failed writes one
-// (logDialFailure): no request of a tunnel is read, so these are the whole of what the broker
-// knows about where a command went through it.
+// The socket that opened writes one line (logTunnel) as soon as it is open, and a dial that
+// failed writes one (logUnreachable): no request of a tunnel is read, so these are the whole of
+// what the broker knows about where a command went through it. The line comes before the hijack
+// and the 200, so a command that went away between its dial and its answer, whose tunnel never
+// carries a byte, still leaves the line of the socket the proxy opened for it.
 func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target, host string, addrs []netip.Addr, port string) {
 	upstream, dialed, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
 	if err != nil {
-		s.logDialFailure(r.Context(), host, port, addressList(addrs, port), dialUnreachable, err.Error())
+		s.logUnreachable(r.Context(), host, port, addrs, err)
 		fail(w, http.StatusBadGateway, codeUpstream, "dial "+target+": "+err.Error())
 		return
 	}
+	s.logTunnel(r.Context(), host, port, dialed)
 	client, err := hijack(hijacker)
 	if err != nil {
 		upstream.Close()
@@ -732,7 +760,6 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 		upstream.Close()
 		return
 	}
-	s.logTunnel(r.Context(), host, port, dialed)
 	// The idle limit on both sides, so that neither end of the tunnel outlives it. The
 	// command's side alone would not: once that side has half-closed, the copy below sits in
 	// a read of the upstream connection, which a service that answers nothing and closes
@@ -777,9 +804,34 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 }
 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
-// for http:// rather than https://.
+// for http:// rather than https://, or that sent an https URL to the proxy as it is rather than
+// as a CONNECT.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
 	host := netaddr.Host(fold.ASCII(r.URL.Hostname()))
+	// The port as the number it names (portNumber), and the scheme's own for a URL that names
+	// none, which is the port the transport dials for it.
+	port := r.URL.Port()
+	if port == "" {
+		port = "80"
+		if r.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	number, ok := portNumber(port)
+	if !ok {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusBadRequest, codeProxyTarget, "the request to "+host+" names no port from 1 to 65535")
+		return
+	}
+	port = strconv.FormatUint(uint64(number), 10)
+	// The authority the transport dials, in the one spelling every check and line here reads:
+	// the host lowercased and without a zone, and the port as its number. The transport dials
+	// the URL's own authority (dialForwarded), so a URL left as the command wrote it would be
+	// dialled, and written on its lines, as that text - its own case, a zone, the port's leading
+	// zeros - rather than as what was checked. It is set on a copy of the URL, since the request
+	// this handler was handed shares its URL with the one the server read.
+	forwarded := *r.URL
+	forwarded.Host = net.JoinHostPort(host, port)
+	r.URL = &forwarded
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
@@ -793,16 +845,17 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	}
 	// The name's addresses, checked before anything is forwarded so that the refusal is a 403
 	// of this proxy's rather than the transport's 502. The transport below checks and dials
-	// the name again (dialChecked), which is what makes the address it opens a socket to one
+	// the name again (dialForwarded), which is what makes the address it opens a socket to one
 	// it checked itself.
-	if _, err := s.checkedAddresses(r.Context(), host, cmp.Or(r.URL.Port(), "80")); err != nil {
+	if _, err := s.checkedAddresses(r.Context(), host, port); err != nil {
 		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
 	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
-	// exactly as the tunnel above carries what it cannot read.
+	// exactly as the tunnel above carries what it cannot read, on a socket of its own whose line
+	// is the tunnel's (Server.forward).
 	proxy := &httputil.ReverseProxy{
-		Transport:     s.upstream,
+		Transport:     s.forward,
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL

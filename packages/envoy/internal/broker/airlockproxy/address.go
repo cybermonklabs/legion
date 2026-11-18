@@ -67,12 +67,12 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 	addrs, err := s.resolve(ctx, host)
 	if err != nil {
 		refused := fmt.Errorf("cannot resolve %s: %w", host, err)
-		s.logDialFailure(ctx, host, port, "", dialUnresolved, refused.Error())
+		s.logDialFailure(ctx, host, port, "", 0, failedClass(ctx, dialUnresolved), refused.Error())
 		return nil, refused
 	}
 	if len(addrs) == 0 {
 		refused := fmt.Errorf("%s resolves to no address", host)
-		s.logDialFailure(ctx, host, port, "", dialUnresolved, refused.Error())
+		s.logDialFailure(ctx, host, port, "", 0, dialUnresolved, refused.Error())
 		return nil, refused
 	}
 	// Every answer as every check below reads it and as the dial opens it (netaddr.Canonical):
@@ -89,7 +89,7 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 	for _, addr := range addrs {
 		if rule := localRule(addr, s.clusterRanges); rule != "" {
 			refused := fmt.Errorf("%s resolves to %s, %s, which this proxy never dials", host, addr, rule)
-			s.logDialFailure(ctx, host, port, addr.String(), dialRefused, refused.Error())
+			s.logDialFailure(ctx, host, port, net.JoinHostPort(addr.String(), port), len(addrs), dialRefused, refused.Error())
 			return nil, refused
 		}
 	}
@@ -98,12 +98,31 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 
 // dialChecked is one dial of a host outside the broker, check and all: the addresses the name
 // has now, the refusal of the whole name when any of them is one this proxy never dials, and a
-// dial of those addresses. It is the DialContext of the transport every bound host's request and
-// every plain-HTTP request goes out on, where a refusal and a failed dial are one answer to the
-// caller. The two paths that must refuse a request before they take a command's connection over
-// - a CONNECT and a plain-HTTP request - read checkedAddresses themselves, so that their refusal
-// is a 403 rather than a 502, and hand what it answered to dialAddrs.
+// dial of those addresses. It is the DialContext of the transport every bound host's request goes
+// out on, where a refusal and a failed dial are one answer to the caller; a plain-HTTP request
+// goes out on a transport of its own, whose dial is dialForwarded. The two paths that must refuse
+// a request before they take a command's connection over - a CONNECT and a plain-HTTP request -
+// read checkedAddresses themselves, so that their refusal is a 403 rather than a 502, and a
+// CONNECT hands what it answered to dialAddrs.
 func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Conn, error) {
+	return s.dialName(ctx, network, addr, false)
+}
+
+// dialForwarded is dialChecked for the transport a plain-HTTP request is forwarded on, and the
+// one line each socket it opens writes, a tunnel's (logTunnel): the proxy decides nothing of a
+// plain-HTTP request and puts nothing into it, as it decides nothing of a tunnel, so the line
+// is the whole of what the broker records about where the request went. That transport keeps no
+// idle connection (Server.forward), so each request opens a socket of its own and writes its
+// own line, and no socket opened for one caller carries another's request.
+func (s *Server) dialForwarded(ctx context.Context, network, addr string) (net.Conn, error) {
+	return s.dialName(ctx, network, addr, true)
+}
+
+// dialName is the dial behind dialChecked and dialForwarded: addr split into the host and port a
+// transport asks for, checked (checkedAddresses) and dialled (dialAddrs), with the line of a dial
+// that failed, and a tunnel's line for a socket it opened when tunnel is set. A bound host's
+// socket writes no line of its own: each request on it writes its call line.
+func (s *Server) dialName(ctx context.Context, network, addr string, tunnel bool) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -112,10 +131,13 @@ func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, err
 	}
-	conn, _, err := s.dialAddrs(ctx, network, addrs, port)
+	conn, dialed, err := s.dialAddrs(ctx, network, addrs, port)
 	if err != nil {
-		s.logDialFailure(ctx, host, port, addressList(addrs, port), dialUnreachable, err.Error())
+		s.logUnreachable(ctx, host, port, addrs, err)
 		return nil, err
+	}
+	if tunnel {
+		s.logTunnel(ctx, host, port, dialed)
 	}
 	return conn, nil
 }
@@ -143,51 +165,87 @@ func (s *Server) dialAddrs(ctx context.Context, network string, addrs []netip.Ad
 	return nil, "", errors.Join(errs...)
 }
 
-// addressList is every address a dial tried, as one field of its line: one address for almost
-// every name, and all of them for a name whose addresses were tried in turn.
+// addressList is the addresses a dial tried, as one field of its line: as many whole addresses,
+// in the order they were dialled, as fit in the bytes answer.ClipFields keeps of a field. A cut
+// through an address would leave half of it, which can read as another address, so the list
+// stops at the last address that fits whole; a name has that many addresses only when its owner
+// gave it them, and the line's resolved field says how many were dialled in all.
 func addressList(addrs []netip.Addr, port string) string {
-	dialed := make([]string, 0, len(addrs))
+	var list strings.Builder
 	for _, addr := range addrs {
-		dialed = append(dialed, net.JoinHostPort(addr.String(), port))
+		dialed := net.JoinHostPort(addr.String(), port)
+		if list.Len() > 0 {
+			dialed = " " + dialed
+		}
+		if list.Len()+len(dialed) > answer.FieldBytes {
+			break
+		}
+		list.WriteString(dialed)
 	}
-	return strings.Join(dialed, " ")
+	return list.String()
 }
 
-// tunnelMessage is the message of the one line each tunnel the proxy opens logs, and
-// dialFailedMessage of the one line each dial it does not make logs. A tunnel is the one thing
-// this port carries that it never reads: no request of it is decided, so no call line is written
-// for it, and without these two lines nothing in the broker's log says a session reached an
-// address at all.
+// logUnreachable writes the line of a dial no address of which answered: every address the name
+// had was dialled in turn (dialAddrs), and err is what each dial answered.
+func (s *Server) logUnreachable(ctx context.Context, host, port string, addrs []netip.Addr, err error) {
+	s.logDialFailure(ctx, host, port, addressList(addrs, port), len(addrs), failedClass(ctx, dialUnreachable), err.Error())
+}
+
+// failedClass is the class of a lookup or a dial that failed: dialCancelled when the request it
+// was made for had already ended - its command closed its connection, which ends the request's
+// context, and the lookup or dial was given up for it - and class otherwise. A dial a transport
+// makes runs under a context its request's end does not cancel, so only a CONNECT's dial and the
+// check of a CONNECT or a plain-HTTP request can be given up this way.
+func failedClass(ctx context.Context, class string) string {
+	if ctx.Err() != nil {
+		return dialCancelled
+	}
+	return class
+}
+
+// tunnelMessage is the message of the one line each socket the proxy opens for a tunnel or for a
+// forwarded plain-HTTP request logs, and dialFailedMessage of the one line each dial it does not
+// make logs. Those are the things this port carries without reading them: no request of a tunnel
+// is decided, nor is a plain-HTTP request, so no call line is written for either, and without
+// these two lines nothing in the broker's log says a session reached an address at all.
 const (
 	tunnelMessage     = "airlock proxy: a tunnel"
 	dialFailedMessage = "airlock proxy: a dial that did not happen"
 )
 
 // The classes dialFailedMessage's line names, which is what an operator reads a refusal of the
-// broker's own rules apart from a service that was down by.
+// broker's own rules apart from a service that was down, and both apart from a command that went
+// away, by.
 const (
 	// dialRefused: an address this proxy never dials (localRule), so nothing was dialled.
 	dialRefused = "refused"
-	// dialUnresolved: a host that resolves to no address at all, so there was nothing to dial.
+	// dialUnresolved: a host the resolver answered no address for, or an error, so there was
+	// nothing to dial.
 	dialUnresolved = "unresolved"
 	// dialUnreachable: every address of the host was dialled and none answered.
 	dialUnreachable = "unreachable"
+	// dialCancelled: the request the lookup or the dial was made for ended first - the command
+	// closed its connection - so it was given up, and its error says nothing about the service
+	// or the resolver (failedClass).
+	dialCancelled = "cancelled"
 )
 
 // callerKey is the context key the grant a request was proved for travels under, for the two
-// lines below: the dials this file makes run under the request's own context, and a bound host's
-// run under it two layers down, inside the transport. A request on a decrypted connection
-// carries its connection's grant instead (connKey), which serveBound reads for its own line.
+// lines below: the dials this file makes run under the request's own context, and a transport's
+// dial runs under it too, inside the transport. serveProxy puts the grant there for a CONNECT and
+// a plain-HTTP request, and serveBound puts there the grant each request on a decrypted
+// connection read for itself, so a dial made for that request names the caller its call line
+// names, even after the grant has moved since the CONNECT.
 type callerKey struct{}
 
-// withCaller is serveProxy's one hand-over of the grant to the dials below it.
+// withCaller is the hand-over of a request's grant to the dials below it.
 func withCaller(ctx context.Context, grant requests.AirlockConnection) context.Context {
 	return context.WithValue(ctx, callerKey{}, grant)
 }
 
-// callerOfContext is the grant a dial is made for: the one serveProxy put there for a CONNECT
-// and a plain-HTTP request, else the one the decrypted connection a bound host's request arrived
-// on was opened with, and the zero grant for a dial made before either was known.
+// callerOfContext is the grant a dial is made for: the one withCaller put there, else the one the
+// decrypted connection a request arrived on was opened with (connKey), and the zero grant for a
+// dial made before either was known.
 func callerOfContext(ctx context.Context) requests.AirlockConnection {
 	if grant, ok := ctx.Value(callerKey{}).(requests.AirlockConnection); ok {
 		return grant
@@ -199,11 +257,14 @@ func callerOfContext(ctx context.Context) requests.AirlockConnection {
 }
 
 // dialFields is who a dial was made for and what it was for: the grant, its enrollment, and the
-// session and runtime behind it, then the host and port the caller asked for and the
-// address this process asked the kernel for. Never a placeholder and never a value, as the call
-// line (callFields): what a command sent is its headers and its body, and no field here is read
-// from either. The host is the caller's, so every field passes answer.ClipFields as a call
-// line's do, and the line stays one Cloud Logging entry whatever the caller asked for.
+// session and runtime behind it, then the host and port the caller asked for and the address
+// this process asked the kernel for. No field is read from a request's headers or its body,
+// which is where a command puts a placeholder and where the swap puts a value. The host and the
+// port are the command's own text, though: the host is written lowercased, with no zone, and the
+// port as the number it names (portNumber), so a host the command made of its placeholder stands
+// here only lowercased, and the address is the resolver's answer with that port. Every field
+// passes answer.ClipFields, as a call line's do, so the line stays one Cloud Logging entry
+// whatever the caller asked for.
 func dialFields(grant requests.AirlockConnection, host, port, address string) []any {
 	return []any{
 		"enrollment", grant.EnrollmentID,
@@ -217,18 +278,23 @@ func dialFields(grant requests.AirlockConnection, host, port, address string) []
 	}
 }
 
-// logTunnel writes the one line a tunnel the proxy opened logs. It is written once the tunnel is
-// open, so a line means bytes could cross, and nothing of what crosses is read or written down.
+// logTunnel writes the one line a socket the proxy opened for a tunnel or a forwarded plain-HTTP
+// request logs. It is written as soon as the socket is open, before the command is answered, so
+// a socket whose command went away before its answer reached it is on the log too; nothing of
+// what crosses the socket is read or written down.
 func (s *Server) logTunnel(ctx context.Context, host, port, address string) {
 	s.log.Info(tunnelMessage, answer.ClipFields(dialFields(callerOfContext(ctx), host, port, address))...)
 }
 
-// logDialFailure writes the one line a dial that did not happen logs: the same fields, the class
-// of the failure, and the broker's own words for it. It is at WARNING, as a refusal is: a dial
-// the rules refused and a service that could not be reached are each a call that did not happen,
-// and an operator reading the log is reading for exactly those.
-func (s *Server) logDialFailure(ctx context.Context, host, port, address, failure, reason string) {
-	fields := append(dialFields(callerOfContext(ctx), host, port, address), "failure", failure, "reason", reason)
+// logDialFailure writes the one line a dial that did not happen logs: the same fields, how many
+// addresses the host resolved to, the class of the failure, and the broker's own words for it.
+// The address is the one refused for a refusal, none for a host that resolved to nothing, and the
+// ones dialled for a dial no address answered (addressList). It is at WARNING, as a refusal is: a
+// dial the rules refused and a service that could not be reached are each a call that did not
+// happen, and an operator reading the log is reading for exactly those.
+func (s *Server) logDialFailure(ctx context.Context, host, port, address string, resolved int, failure, reason string) {
+	fields := append(dialFields(callerOfContext(ctx), host, port, address),
+		"resolved", resolved, "failure", failure, "reason", reason)
 	s.log.Warn(dialFailedMessage, answer.ClipFields(fields)...)
 }
 

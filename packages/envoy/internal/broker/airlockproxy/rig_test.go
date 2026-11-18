@@ -355,15 +355,18 @@ func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }
 // way.
 func (c *logCapture) cuts() []logLine { return c.lines(cutMessage) }
 
-// tunnels is every line one tunnel the proxy opened logged, and dialFailures every line one dial
-// it could not make logged, read the same way.
+// tunnels is every line one socket the proxy opened for a tunnel or a forwarded plain-HTTP
+// request logged, and dialFailures every line one dial it could not make logged, read the same
+// way.
 func (c *logCapture) tunnels() []logLine { return c.lines(tunnelMessage) }
 
 func (c *logCapture) dialFailures() []logLine { return c.lines(dialFailedMessage) }
 
 // tunnelsAtLeast and dialFailuresAtLeast are those lines once there are n of them, as
-// callsAtLeast is for a call's: the proxy writes a tunnel's line once both ends are joined, and a
-// row whose CONNECT has answered can be a few instructions ahead of that write.
+// callsAtLeast is for a call's. The proxy writes either line before the command is answered, so
+// a row that has its answer could read them at once; a row whose command went away has no answer
+// to read, and a row that drives several requests reads all their lines at the end, so these
+// wait.
 func (c *logCapture) tunnelsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
 	return c.linesAtLeast(t, tunnelMessage, n)
@@ -447,6 +450,13 @@ type rig struct {
 	// where a dial went.
 	dialedMu sync.Mutex
 	dialed   []string
+	// holdResolve and holdDial, where a row sets one, run at the start of each lookup and each
+	// dial with its own context: how a row holds a lookup or a dial until the command behind it
+	// has gone. A lookup a hold ended fails with its context's error, and a dial is made under
+	// the context holdDial answers, so a row has it fail as a dial its command abandoned does or
+	// open as one that won that race does.
+	holdResolve func(ctx context.Context)
+	holdDial    func(ctx context.Context) context.Context
 
 	service *airlocktest.Service
 
@@ -563,6 +573,9 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	r.dialedMu.Lock()
 	r.dialed = append(r.dialed, addr)
 	r.dialedMu.Unlock()
+	if r.holdDial != nil {
+		ctx = r.holdDial(ctx)
+	}
 	to, ok := r.dialTo[addr]
 	if !ok {
 		to, ok = r.dialTo[r.nameOf(addr)]
@@ -602,7 +615,13 @@ func (r *rig) dialedAddresses() []string {
 // resolve is Server.resolve: an address literal is itself, a name a row queued answers for has
 // them one per call, a name the row named has the addresses it was given, and any other name
 // resolves to nothing.
-func (r *rig) resolve(_ context.Context, host string) ([]netip.Addr, error) {
+func (r *rig) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	if r.holdResolve != nil {
+		r.holdResolve(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{addr.Unmap()}, nil
 	}
@@ -737,19 +756,29 @@ func (r *rig) connectRaw(target string, headers ...string) (*http.Response, net.
 // its own bytes can send it. Each header must end in CRLF.
 func (r *rig) plainRaw(authority, path string, headers ...string) (*http.Response, string) {
 	r.t.Helper()
+	return r.requestRaw(http.MethodGet, "http://"+authority+path, authority, headers...)
+}
+
+// requestRaw writes one request of the row's own bytes on a connection of its own - its method,
+// its request target and a Host header that need not agree with it, as no HTTP client writes
+// them but any command that writes its own bytes can - and answers what came back with its body
+// read. A row sends a CONNECT through it only when the CONNECT is refused, since the body of a
+// tunnel that opened never ends. Each header must end in CRLF.
+func (r *rig) requestRaw(method, target, host string, headers ...string) (*http.Response, string) {
+	r.t.Helper()
 	conn, err := net.Dial("tcp", r.addr)
 	if err != nil {
 		r.t.Fatalf("dial the proxy: %v", err)
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(20 * time.Second))
-	request := "GET http://" + authority + path + " HTTP/1.1\r\nHost: " + authority + "\r\n" + strings.Join(headers, "") + "Connection: close\r\n\r\n"
+	request := method + " " + target + " HTTP/1.1\r\nHost: " + host + "\r\n" + strings.Join(headers, "") + "Connection: close\r\n\r\n"
 	if _, err := conn.Write([]byte(request)); err != nil {
-		r.t.Fatalf("write the GET: %v", err)
+		r.t.Fatalf("write the %s: %v", method, err)
 	}
-	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: method})
 	if err != nil {
-		r.t.Fatalf("read the answer to GET http://%s%s: %v", authority, path, err)
+		r.t.Fatalf("read the answer to %s %s: %v", method, target, err)
 	}
 	return answer, bodyOf(r.t, answer)
 }
