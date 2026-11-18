@@ -28,7 +28,7 @@ type pendingEvent struct {
 	// due is whether the event may be sent now: it was never tried, or its back-off has passed.
 	// An event that is not due is read only as a blocker of its owner's later events
 	// (planChains): it is never sent, and the record writes nothing for it but what it owes now
-	// (owed_keys, owedAgain).
+	// and the owner's last_seq it read (owed_keys, owed_seq, owedAgain).
 	due bool
 	// nextAttempt is when an event that is not due falls due, on the database's clock.
 	nextAttempt  *time.Time
@@ -47,6 +47,9 @@ type pendingEvent struct {
 	// owes (events.owed_seq, recordBatch), so a copy of a mention reads whether a write came after
 	// that record (model.MentionCopyHolderSQL).
 	ownerSeq int
+	// unread is a row that did not scan (readRows): nothing of it beyond its id is known, its
+	// ownerSeq among it, so the record writes nothing of what it owes (outcome.owed nil).
+	unread bool
 	// failure is why the row cannot be published as it was read - it did not scan, or its actor or
 	// payload JSON did not decode - and failureLog is the predicate it reports under. Such an
 	// event has no destinations: it is backed off, and holds back no other event.
@@ -215,7 +218,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			// off like any other event that cannot be published.
 			item.failure = fmt.Errorf("read event: %w", err)
 			item.failureLog = "dispatch outbox: read event"
-			item.due = true
+			item.due, item.unread = true, true
 			pending = append(pending, item)
 			stopped = true
 			continue

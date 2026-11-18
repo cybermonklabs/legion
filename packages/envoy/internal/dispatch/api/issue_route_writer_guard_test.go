@@ -83,12 +83,14 @@ func routeScanSkipped(path string, entry fs.DirEntry) bool {
 
 // TestOnlyTheIssuePatchWritesTheRoute enforces what the order of a mention's copy behind an
 // earlier event of its issue rests on when the issue's route moves: every write of an issue's
-// route appends an event of that issue in its transaction. That event is unpublished, and owes
-// its topic family, until the outbox publishes it, so it holds every copy of a later comment; and
-// the batch that publishes it records again what the earlier events owe, the new route among it
-// (owedAgain in internal/dispatch/outbox). A route written with no event leaves an earlier event's
-// record naming the old route's session, and a later comment's copy for the new one passes it
-// (TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent's control row).
+// route appends an event of that issue in its transaction. Appending it moves the issue's last_seq
+// past the owed_seq of every earlier record, so each earlier unpublished event holds every copy of
+// a later comment until a batch that read the move records it again, the new route among what it
+// owes (owedAgain in internal/dispatch/outbox) - whatever record publishes the move's own event,
+// one made after its process lost the publisher hold or one of the previous release among them.
+// A route written with no event moves no last_seq, so an earlier event's record recorded after
+// the comment keeps naming the old route's session, and a later comment's copy for the new one
+// passes it (TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent's control row).
 //
 // The PATCH of an issue is that one writer (issue_patch.go): it builds its update from set("route",
 // ...) and appends issue.updated in the same transaction. The guard holds it to being the only

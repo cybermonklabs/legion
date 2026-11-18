@@ -237,7 +237,20 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 		mu.Lock()
 		servingAtStart = append(servingAtStart, serving)
 		mu.Unlock()
-		time.AfterFunc(delay, f)
+		// The timer runs once no goroutine serves any lane, so the next park's start reads the
+		// serve loop's own order and not how fast a goroutine left a lane it no longer serves.
+		go func() {
+			for {
+				sender.mu.Lock()
+				idle := sender.serving == 0
+				sender.mu.Unlock()
+				if idle {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			time.AfterFunc(delay, f)
+		}()
 	}
 	sender.mu.Unlock()
 	t.Cleanup(func() {

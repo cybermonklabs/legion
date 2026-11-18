@@ -77,6 +77,7 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 		holds bool
 	}{
 		{name: "never recorded (null)", state: `owed_keys = null`, holds: true},
+		{name: "never recorded (null) beside an owed_seq as of the owner's last event", state: `owed_keys = null, ` + current, holds: true},
 		{name: "control: recorded owing nothing", state: `owed_keys = '{}', ` + current},
 		{name: "control: recorded owing another session's subject alone", state: `owed_keys = array['notifications.agent.s2'], ` + current},
 		{name: "recorded owing nothing before the owner's last event", state: `owed_keys = '{}', owed_seq = (select last_seq - 1 from issues where key = 'T-1')`, holds: true},
@@ -113,6 +114,48 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 	// Control: the rule reads earlier events only - the comment holds no copy of the event before it.
 	if by, err := copyHolder(ctx, deps, earlier.ID, s1, "s1"); err != nil || by != nil {
 		t.Fatalf("a copy of the earlier event itself waits behind %+v (%v), want nothing: no event of T-1 comes before it", by, err)
+	}
+}
+
+// A pending subscription command (api/subscribers.go) moves its owner's last_seq, but no batch
+// reads it and it makes no session a destination, so it leaves an earlier event's record current:
+// s1's copy waits behind nothing for it. The control is the same event appended not pending, a
+// write the record did not see, which holds the copy behind the earlier event.
+func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pending bool
+		holds   bool
+	}{
+		{name: "a pending subscription command", pending: true},
+		{name: "control: the same event, not pending", holds: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			earlier, comment, _ := earlierEventAndComment(t, database, broker)
+			if _, err := database.Pool.Exec(ctx, `
+				update events set owed_keys = '{}', owed_seq = (select last_seq from issues where key = 'T-1') where id = $1
+			`, earlier.ID); err != nil {
+				t.Fatalf("record the earlier event as of the comment: %v", err)
+			}
+			payload := map[string]any{"session_id": "s9", "topics": []string{"notifications.dispatch.issue.T-1.>"}}
+			if tc.pending {
+				payload["pending"] = true
+			}
+			appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "subscription.removed", Actor: model.Actor{Kind: "session", ID: "s9"}, Payload: payload,
+			})
+			by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, contracts.LegacyAgentSubject("s1"), "s1")
+			if err != nil {
+				t.Fatalf("read the rule: %v", err)
+			}
+			t.Logf("%s: s1's copy waits behind %s", tc.name, describeHolder(by))
+			if (by != nil) != tc.holds || (by != nil && by.EventID != earlier.ID) {
+				t.Fatalf("%s: s1's copy waits behind %s, want holding %v (event %d)", tc.name, describeHolder(by), tc.holds, earlier.ID)
+			}
+		})
 	}
 }
 

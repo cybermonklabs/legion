@@ -2613,10 +2613,14 @@ const (
 // issue's route, its claim, an ask's follower - appends an event of that owner in the same
 // transaction, and an event write takes the owner's row before it draws its seq, so the owner's
 // events commit in seq order and such a write always moves last_seq past every record made
-// before it. A record older than the owner's last event therefore holds the copy until a batch
+// before it. A record older than the owner's newest event therefore holds the copy until a batch
 // that read that event writes it again, whatever that write was and whether its own event is
 // published yet: the comment's own event moves last_seq too, so a copy waits for a record made
-// after its comment of each earlier event still unpublished. The record that writes owed_keys
+// after its comment of each earlier event still unpublished. The newest event is read as the
+// owner's newest that is no pending subscription command (api/subscribers.go): such a command
+// moves last_seq too, but makes no session a destination and no batch reads it, so counting it
+// would hold a copy until the earlier event's own back-off ended
+// (TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent). The record that writes owed_keys
 // writes owed_seq beside it, under the same hold; a record that writes neither - one made after
 // its process lost the publisher hold, or one of the release before this one - leaves both as
 // they were, and the copy waits on them.
@@ -2634,7 +2638,7 @@ const (
 // (deliverResolvedCommentMention in internal/dispatch/api) and the outbox's fallback pass
 // (decideFallbackCopy). The read walks the partial index events_outbox_owner, whose predicate the
 // query's own clauses spell, so it reads the owner's unpublished events and no other, and the
-// owner's last_seq by its row's primary key. The exhaustive model of this order
+// owner's newest seq backwards over its unique (owner, seq) index. The exhaustive model of this order
 // (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds this rule, and
 // TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows. It is a constant so that a guard
 // reading a statement's SQL can read it (the keyed-write guard of internal/dispatch/api).
@@ -2642,9 +2646,12 @@ const MentionCopyHolderSQL = `select k.id, k.publish_error
 		from events c
 		cross join lateral (
 			select coalesce(
-				(select last_seq from issues where key = c.issue_key),
-				(select last_seq from artifacts where id = c.artifact_id),
-				(select last_seq from projects where key = c.project_key)
+				(select n.seq from events n where n.issue_key = c.issue_key
+				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1),
+				(select n.seq from events n where n.artifact_id = c.artifact_id
+				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1),
+				(select n.seq from events n where n.project_key = c.project_key
+				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1)
 			) as last_seq
 		) o
 		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)

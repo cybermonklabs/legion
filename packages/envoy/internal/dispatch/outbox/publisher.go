@@ -338,7 +338,9 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
-			event.outcome.owed, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), event.ownerSeq
+			if !event.unread {
+				event.outcome.owed, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), event.ownerSeq
+			}
 			outcomes = append(outcomes, event.outcome)
 			switch event.outcome.state {
 			case published:
@@ -550,9 +552,11 @@ const (
 	released outcomeState = "released"
 	// owedAgain: the event was not due, and the batch read its destinations only to hold its
 	// owner's later events back (planChains); the record writes what it owes now (owed_keys) and
-	// nothing else, so a destination it gained since its last record - a route that moved, a
-	// follower added - holds a mention's copy from the next batch of its owner on, as it holds the
-	// owner's later events.
+	// the owner's last_seq the batch read (owed_seq), and nothing of its schedule or its attempts.
+	// A write since its last record - a route that moved, a follower added - already holds a
+	// mention's copy, by moving the owner's last_seq past that record's owed_seq
+	// (model.MentionCopyHolderSQL); this record ends that hold, naming the destination the event
+	// gained, which then holds the copy as it holds the owner's later events.
 	owedAgain outcomeState = "owed_again"
 )
 

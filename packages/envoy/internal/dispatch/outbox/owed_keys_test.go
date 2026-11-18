@@ -144,6 +144,11 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 			Mentions: []model.Mention{{Target: "session:" + next, Delivery: "steer"}},
 		}},
 	})
+	// The outbox's own order: a scan while the earlier event is not due keys its route on next now,
+	// so the comment's own forward to next waits behind it. The same scan records the earlier event
+	// again (owedAgain) as of the comment, so the rule below reads its role route, not a record
+	// older than the comment (owed_seq behind T-1's last_seq), which would hold every session's copy.
+	holding(t, rig.deps()).scan(ctx, unfenced{})
 	forNext, err := copyHolder(ctx, rig.deps(), comment.ID, contracts.LegacyAgentSubject(next), next)
 	if err != nil {
 		t.Fatalf("read the rule for %s: %v", next, err)
@@ -156,10 +161,6 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 	if forOther != nil {
 		t.Fatalf("control: the copy for ses_other, which holds no role, waits behind %s, want nothing", describeHolder(forOther))
 	}
-
-	// The outbox's own order: a scan while the earlier event is not due keys its route on next now,
-	// so the comment's own forward to next waits behind it.
-	holding(t, rig.deps()).scan(ctx, unfenced{})
 	time.Sleep(time.Second)
 	if got := recv.received(); len(got) != 0 {
 		t.Fatalf("control: %s took %d copies while the earlier event was not due, want none", next, len(got))
