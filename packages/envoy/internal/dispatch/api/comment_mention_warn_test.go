@@ -450,8 +450,9 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.unpark(item.lane())
 			joined := false
 			// Each park's timer is fired once the wait is past the threshold; the run ends when the
-			// sender holds no send.
-			for deadline := time.After(5 * time.Second); ; {
+			// sender holds no send. The deadline is five seconds of room beside the 1.2 s the head's
+			// wait behind event 42 sleeps.
+			for deadline := time.After(6200 * time.Millisecond); ; {
 				sender.mu.Lock()
 				done := len(sender.held) == 0
 				sender.mu.Unlock()
