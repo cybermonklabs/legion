@@ -22,12 +22,14 @@ const storedMessageAPI = "$JS.API.STREAM.MSG.GET." + Stream
 const storedMessageWait = 10 * time.Second
 
 // StoredMessage is one message the notification stream holds: its stream sequence, the concrete
-// subject it was published on, when the stream stored it, and its body.
+// subject it was published on, when the stream stored it, its body, and the Nats-Msg-Id it was
+// published under (empty for one published under none).
 type StoredMessage struct {
 	Sequence uint64
 	Subject  string
 	Time     time.Time
 	Data     []byte
+	MsgID    string
 }
 
 // NextStoredMessage reads the first message the notification stream holds at or after sequence seq
@@ -236,6 +238,7 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 		Message *struct {
 			Subject  string    `json:"subject"`
 			Sequence uint64    `json:"seq"`
+			Header   []byte    `json:"hdrs"`
 			Data     []byte    `json:"data"`
 			Time     time.Time `json:"time"`
 		} `json:"message"`
@@ -250,12 +253,21 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 	if response.Message == nil {
 		return StoredMessage{}, fmt.Errorf("bus: the stored-message answer from %s holds no message", Stream)
 	}
-	return StoredMessage{
+	stored := StoredMessage{
 		Sequence: response.Message.Sequence,
 		Subject:  response.Message.Subject,
 		Time:     response.Message.Time,
 		Data:     response.Message.Data,
-	}, nil
+	}
+	// A header that does not decode leaves the message id empty, as a message published under
+	// none has it: the id names what a copy was taken from (cmd/listener's takeover copy), and
+	// no reader decides more than that by it.
+	if len(response.Message.Header) > 0 {
+		if header, err := nats.DecodeHeadersMsg(response.Message.Header); err == nil {
+			stored.MsgID = header.Get(nats.MsgIdHdr)
+		}
+	}
+	return stored, nil
 }
 
 // requestConfirmed sends data to subject as a request and returns its one reply. The publish is

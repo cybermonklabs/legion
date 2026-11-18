@@ -2342,7 +2342,20 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				Soft:              body.Soft,
 				IfClaimRevision:   ifClaimRevision,
 				Supersedable:      supersedable,
+				// Before each try of the write, the takeover record of the holder that try read
+				// when it is another session (takeoverBeforeTry), so a claim that lands always
+				// has its record and the previous holder's unread role messages are copied for
+				// the role's next holder.
+				BeforeTry: takeoverBeforeTry(*d.delivery, body.SessionID, body.Role),
 			})
+			if errors.Is(err, store.ErrRoleClaimContended) {
+				// Every try of an outright claim met a write of the record between its read and
+				// its write until the request's budget ran out: nothing was written, and the
+				// client claims again.
+				w.Header().Set("Retry-After", "1")
+				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
 			var stale *store.ErrRoleClaimRevisionMismatch
 			mismatch := errors.As(err, &stale)
 			if mismatch && attempt == 0 && body.Soft && body.IfClaimRevision == nil {
@@ -2392,7 +2405,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
-			go runKeptRoleDrain(*d.delivery, body.Role)
+			go runTakenRoleDrain(*d.delivery, body.Role)
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}

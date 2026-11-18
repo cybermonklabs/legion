@@ -182,6 +182,15 @@ func Valid(role string) bool {
 	return pattern.MatchString(role)
 }
 
+// ForwardFenceAge is how old the resolution that chose a role message's holder may be when the
+// message's forward to that holder starts: a forward from the listener's role lane, its publish
+// route or Dispatch's outbox whose resolution is this old or older resolves the holder again
+// first. It is the listener's keep window (one hour, cmd/listener roleKeepWindow) less one
+// interval of its kept lane's sweep (five minutes, roleWakeInterval): a takeover's copy of the
+// previous holder's role messages reads them for as long as its record lives, and a forward
+// fenced so is stored inside the hour the copy reads from the takeover on.
+const ForwardFenceAge = 55 * time.Minute
+
 // ResolveHolder resolves role's holder within ctx. It reads the role's claim record from claims
 // (Unclaimed when there is none), then that holder's session record through sessions, and judges
 // the record by the state it puts its session in (SessionLookup.EntryState): Live when it reads

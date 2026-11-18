@@ -412,6 +412,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	// reads the same stamp this send's own 202 names.
 	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
+	resolvedAt := d.delivery.now()
 	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
 	cancelFirst()
 	if err != nil {
@@ -432,7 +433,10 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
 	for pass := 0; ; pass++ {
-		if pass > 0 || !sessionIsLive(first.HolderState) {
+		// A forward whose resolution is roles.ForwardFenceAge old or older when it starts
+		// resolves the holder again first, as the role lane's does (roleForwarder.publish).
+		if pass > 0 || !sessionIsLive(first.HolderState) || d.delivery.now().Sub(resolvedAt) >= roles.ForwardFenceAge {
+			resolvedAt = d.delivery.now()
 			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.

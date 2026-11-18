@@ -561,6 +561,13 @@ func (e *ErrRoleClaimRevisionMismatch) Error() string {
 	return fmt.Sprintf("role %s's claim is at revision %d, not the %d this claim required", e.Role, e.Actual, e.Expected)
 }
 
+// ErrRoleClaimContended is an outright claim (no IfClaimRevision, not soft) whose every try of its
+// write met a conflict until its context ended: each try read the claim record and wrote with the
+// revision it read, and each time another write of the record had landed between the two. Nothing
+// was written, and the role stands as the record that is there says. The claim route answers it
+// 503 with Retry-After: 1, and its client claims again.
+var ErrRoleClaimContended = errors.New("the role's claim record changed under every try of this claim's write")
+
 // RoleClaimRequest is one claim of a role, as SetRoleWithPrevious takes it: who is claiming,
 // under which process, what it is claiming, and the preconditions it is claiming under. The
 // fields are named because a claim states five strings in a row - the session, the machine, the
@@ -595,6 +602,15 @@ type RoleClaimRequest struct {
 	// Supersedable lists the holders a soft claim may take the role from, which the caller has
 	// established may lose it. A soft claim that finds any other holder is refused.
 	Supersedable []string
+	// BeforeTry, when it is not nil, runs before each try of the claim's write, with the claim
+	// record that try read and will write over, once the claim has been decided and before
+	// anything of the try is written: a soft claim and a claim with IfClaimRevision make one
+	// try, an outright claim one per read until a write lands (SetRoleWithPrevious). An error it
+	// returns ends the claim with nothing written, the claimant's interest topic rolled back as a
+	// claim that did not land rolls it back, and is returned as it is. The listener's claim
+	// route publishes the takeover record of the holder that read names here, so a claim that
+	// lands always has its record first.
+	BeforeTry func(ctx context.Context, read RoleClaim) error
 }
 
 // SetRole makes sessionID the holder of role. A hard claim (soft=false) is
@@ -656,14 +672,18 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // how a holder takes back a role it gave up without waiting out the role claim reaper.
 //
 // Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
-// own context. A call ctx abandoned may still land after this answer. A hard claim that names no
-// IfClaimRevision is last-claim-wins, so its write names no revision: it lands whatever the bucket
-// holds, and two honest concurrent claimants both land, the later write holding the role. A soft
-// claim's create or update is conditional on the revision its claim was read at, so it lands only
-// if no other claim did since; the loser of that race is answered *ErrRoleHeld for the holder it
-// then reads, never a storage failure. A claim that names an IfClaimRevision is conditional too,
-// hard or soft, since that revision is the precondition described below. Either way the claim that
-// lands makes req.SessionID the holder it asked to be; the interest write is UpsertWithin's.
+// own context. A call ctx abandoned may still land after this answer. Every claim writes with the
+// revision of the record it read (a create where it read none), so the record it writes over is
+// the one it read. A hard claim that names no IfClaimRevision has no refusal: on a conflict it
+// reads the record again and writes again, until ctx ends, and the last write still wins, so two
+// honest concurrent claimants both land, the later write holding the role; one that meets a
+// conflict at every try until ctx ends writes nothing and is ErrRoleClaimContended. A soft
+// claim's write is one try, so it lands only if no other claim did since; the loser of that race
+// is answered *ErrRoleHeld for the holder it then reads, never a storage failure. A claim that
+// names an IfClaimRevision is one try too, hard or soft, since that revision is the precondition
+// described below. Either way the claim that lands makes req.SessionID the holder it asked to be;
+// the interest write is UpsertWithin's. req.BeforeTry runs before each try, on the record that
+// try read.
 //
 // The claim alone says who holds the role (RolesHeldBy, and role delivery), so the two cleanups
 // that follow are best-effort tidying of interest topics, within ctx like the rest: the rollback of
@@ -712,54 +732,83 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		return Interest{}, err
 	}
 
-	now := r.now().UnixMilli()
-	claim := RoleClaim{
-		HolderSessionID:   req.SessionID,
-		ClaimedAt:         now,
-		PreviousSessionID: "",
-		ClientInstanceID:  req.ClientInstanceID,
-		RenewedAt:         now,
-	}
-	if req.Soft {
-		claim.PreviousSessionID = req.PreviousSessionID
-	}
-	data, err := json.Marshal(claim)
-	if err != nil {
-		return Interest{}, err
-	}
-	epoch := r.roleViewEpoch()
 	roles := r.roles()
-	// A hard claim that names no precondition writes unconditionally. The conditional write this
-	// once made refused the loser of two honest concurrent claims with JetStream's wrong last
-	// sequence (error 10071, which nats.go answers as an *nats.APIError matching
-	// nats.ErrKeyExists), which storeAnswered counts as the store's own answer, so POST
-	// /v1/roles/set wrote it as a 500 - an answer that route's contract does not have, since a hard
-	// claim has no refusal at all. A bounded retry over a freshly read revision would only narrow
-	// the window: one conditional write lands per revision, so N claimants of one role need N
-	// rounds and the unluckiest loses N-1 of them, which no constant bound covers. Writing the
-	// claim the way its contract reads - the last write wins - removes the race instead of
-	// shrinking it, and leaves the holder one of the claimants either way.
-	//
-	// A soft claim keeps the conditional write, because its refusal is the point: it read a holder
-	// it was allowed to take the role from, and a claim that landed since must not be taken
-	// silently. A claim carrying IfClaimRevision keeps it for the same reason, hard or soft: the
-	// revision it requires is weighed a second time by the write itself, so a claim that landed
-	// between this call's read and its write refuses this one rather than being overwritten by it.
-	// Both losers are answered below.
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) {
-		switch {
-		case !req.Soft && req.IfClaimRevision == nil:
-			return roles.Put(req.Role, data)
-		case oldClaim.Revision == 0:
-			return roles.Create(req.Role, data)
-		default:
-			return roles.Update(req.Role, data, oldClaim.Revision)
+	var (
+		revision uint64
+		epoch    uint64
+	)
+	for {
+		// The try's hook runs on the record this try read, before anything of the try is
+		// written: the listener publishes the takeover record of the holder it names there, so
+		// every claim that lands has its record first (RoleClaimRequest.BeforeTry).
+		if req.BeforeTry != nil {
+			if hookErr := req.BeforeTry(ctx, oldClaim); hookErr != nil {
+				r.rollBackClaimTopic(ctx, req, roleTopic)
+				return Interest{}, hookErr
+			}
 		}
-	})
-	if !answered {
-		err = fmt.Errorf("write role %s's claim: %w", req.Role, err)
-	}
-	if err != nil {
+		now := r.now().UnixMilli()
+		claim := RoleClaim{
+			HolderSessionID:   req.SessionID,
+			ClaimedAt:         now,
+			PreviousSessionID: "",
+			ClientInstanceID:  req.ClientInstanceID,
+			RenewedAt:         now,
+		}
+		if req.Soft {
+			claim.PreviousSessionID = req.PreviousSessionID
+		}
+		data, err := json.Marshal(claim)
+		if err != nil {
+			return Interest{}, err
+		}
+		epoch = r.roleViewEpoch()
+		// Every claim writes with the revision of the record it read: a create where it read
+		// none, an update of that revision where it read one. So the record a claim writes over
+		// is the record it read, and the holder it read - the one whose takeover record BeforeTry
+		// published - is the holder it really replaced.
+		//
+		// A soft claim and a claim carrying IfClaimRevision make one try, because their refusal is
+		// the point: a soft claim read a holder it was allowed to take the role from, and a claim
+		// with a revision of its own required that very record, so a claim that landed since must
+		// not be taken silently. Their losers are answered below.
+		//
+		// An outright claim has no refusal at all, so a conflict - another claim landed, or a
+		// renewal or a release wrote the record, between this try's read and its write - is read
+		// again and written again, each try with its own BeforeTry, until ctx ends, and the last
+		// write still wins. One conditional write lands per revision, so N claimants of one role
+		// take N rounds, each a read and a write of a few milliseconds, well inside the claim
+		// route's budget. A claim that meets a conflict at every try until ctx ends writes
+		// nothing and is ErrRoleClaimContended, which its client meets as a 503 to retry.
+		var answered bool
+		revision, answered, err = bus.Bounded(ctx, func() (uint64, error) {
+			if oldClaim.Revision == 0 {
+				return roles.Create(req.Role, data)
+			}
+			return roles.Update(req.Role, data, oldClaim.Revision)
+		})
+		if !answered {
+			err = fmt.Errorf("write role %s's claim: %w", req.Role, err)
+		}
+		if err == nil {
+			break
+		}
+		if answered && !req.Soft && req.IfClaimRevision == nil && errors.Is(err, nats.ErrKeyExists) {
+			if ctx.Err() != nil {
+				r.rollBackClaimTopic(ctx, req, roleTopic)
+				return Interest{}, fmt.Errorf("%w: role %s: %w", ErrRoleClaimContended, req.Role, err)
+			}
+			next, readErr := r.RoleClaim(ctx, req.Role)
+			if readErr == nil {
+				oldClaim = next
+				continue
+			}
+			if ctx.Err() != nil {
+				r.rollBackClaimTopic(ctx, req, roleTopic)
+				return Interest{}, fmt.Errorf("%w: role %s: %w", ErrRoleClaimContended, req.Role, err)
+			}
+			err = errors.Join(err, readErr)
+		}
 		current, holderErr := r.RoleClaim(ctx, req.Role)
 		holder := current.HolderSessionID
 		// A conditional claim that lost the write's own compare-and-swap (nats.ErrKeyExists)
@@ -767,8 +816,8 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// the precondition failing a moment later, not a storage failure, and the caller is
 		// told exactly that rather than reading an unexplained failure or another session's
 		// name. A winner naming the claimant itself is no exception here, where it is one for
-		// an unconditional claim just below: the revision the caller sequenced its decision on
-		// is gone either way, and the claim that stands is not the one it made.
+		// a write whose answer did not come just below: the revision the caller sequenced its
+		// decision on is gone either way, and the claim that stands is not the one it made.
 		//
 		// The claim that stands is this claimant's own concurrent success only where it names
 		// the claimant's session and the very process the claimant stated
@@ -816,8 +865,8 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		}
 		return Interest{}, err
 	}
+	oldSessionID = oldClaim.HolderSessionID
 	r.setOwnRoleHolder(req.Role, req.SessionID, revision, epoch)
-
 	if oldSessionID != "" && oldSessionID != req.SessionID {
 		err := r.removeInterestTopics(ctx, oldSessionID, []string{roleTopic})
 		switch {
@@ -847,6 +896,31 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		}
 	}
 	return item, nil
+}
+
+// claimCleanupWindow bounds the rollback of a claim that wrote nothing (rollBackClaimTopic), which
+// runs whether or not the claim's own context has ended.
+const claimCleanupWindow = time.Second
+
+// rollBackClaimTopic takes the role's lane topic back off the claimant's interest record, for a
+// claim that wrote nothing because its BeforeTry refused a try or every try met a conflict until
+// its context ended: unless the claim record that stands names the claimant's session, whose
+// record then keeps the topic of the role it holds, as SetRoleWithPrevious's own rollback rule
+// reads. It runs under claimCleanupWindow of its own, since a claim whose context ended still owes
+// it, and a rollback that fails is logged at WARN and changes nothing the claim answers: a topic
+// it leaves gives nobody the role.
+func (r *Registry) rollBackClaimTopic(ctx context.Context, req RoleClaimRequest, roleTopic string) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimCleanupWindow)
+	defer cancel()
+	if current, err := r.RoleClaim(cleanup, req.Role); err == nil && current.HolderSessionID == req.SessionID {
+		return
+	}
+	if err := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); err != nil {
+		r.logger().Warn("registry role claim that wrote nothing left its claimant's role topic",
+			slog.String("role", req.Role),
+			slog.String("session_id", req.SessionID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.Bounded). The

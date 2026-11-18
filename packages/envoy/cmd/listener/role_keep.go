@@ -1213,7 +1213,16 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("read role %s's kept lane after %d: %w", role, kept, err)
 		}
-		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, seen)
+		// A copy a takeover took from a previous holder's own subject (keepTakenRoleFrame) is a
+		// message that holder did not read, so no record of what a holder already took passes it
+		// over: the role's next holder may be that very session, which the role lane's record
+		// says took the message when its forward was stored, and not when it was read.
+		frame, fromFrame := keptFrameSequence(stored.MsgID)
+		copySeen := seen
+		if fromFrame {
+			copySeen = func(string, string) bool { return false }
+		}
+		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, copySeen)
 		switch judged.step {
 		case keptCopyWait:
 			result.end, result.waiting = roleKeepCopyWaits, stored.Sequence
@@ -1260,8 +1269,14 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		cfg.attemptCache.Record(item.DedupeKey, holder)
 		// The forward is named as the lane's own forward of this message to this holder is
 		// (roleForward.msgID), so the stream keeps one copy of it for this holder however many
-		// walks forward it.
-		forwarded := cfg.forwardAndWait(subject, forward, handed.msgID(subject), roleForwardTimeout)
+		// walks forward it; a copy a takeover took from a frame is named with that frame's
+		// sequence too, so a holder the frame was forwarded to before, which takes the role back,
+		// is handed the copy rather than having the stream drop it as that earlier forward.
+		msgID := handed.msgID(subject)
+		if fromFrame {
+			msgID += keptFrameMark + frame
+		}
+		forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next
