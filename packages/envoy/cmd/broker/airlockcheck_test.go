@@ -160,13 +160,21 @@ type ruleHostRow struct {
 // (TestMainRefusesAnAirlockRulesFileItCannotServe) alike. A row names the form to write where the
 // host has one, and no form otherwise.
 var ruleHostRows = func() []ruleHostRow {
-	ip := func(canonical string) []string {
-		want := []string{"is an IP address", "no TLS server name", "sni mismatch", "carries no secret there", "name the service by its host name"}
+	// An IP address is refused in every spelling, each with what it would do served: the
+	// canonical spelling and upper-case IPv6 bind and are decrypted, a trailing dot makes a name
+	// the resolver refuses, and every other spelling binds nothing and is tunnelled unread. Where
+	// the file writes the address another way than netaddr.Canonical's, the refusal names that
+	// form.
+	ip := func(does []string, canonical string) []string {
+		want := append([]string{"is an IP address", "carries no secret there", "name the service by its host name"}, does...)
 		if canonical != "" {
 			want = append(want, canonical+" in its canonical form")
 		}
 		return want
 	}
+	decrypted := []string{"no TLS server name", "proxy decrypts a CONNECT to it", "sni mismatch"}
+	tunnelled := []string{"no CONNECT's host", "binds nothing", "tunnelled unread"}
+	dotted := []string{"trailing dot", "the resolver refuses", "refused before anything is bound"}
 	formed := func(why, form string) []string { return []string{why, "write it as " + form} }
 	noForm := func(why ...string) []string {
 		return append(why, "write a host name of lower-case letters, digits and hyphens")
@@ -175,25 +183,23 @@ var ruleHostRows = func() []ruleHostRow {
 	longLabel := strings.Repeat("a", 64) + ".example"
 	longName := strings.Repeat(strings.Repeat("b", 63)+".", 4) + "example"
 	return []ruleHostRow{
-		// An IP address, in any spelling: no client sends a TLS server name for one. Where the
-		// file writes it in a form other than netaddr.Canonical's, the refusal names that form.
-		{"a canonical IPv4 address", "93.184.216.34", ip(""), "216.34"},
-		{"a canonical IPv6 address", "2001:db8:7::1", ip(""), "7::1"},
-		{"a canonical IPv6 address with an embedded IPv4 part", "2001:db8::5db8:d822", ip(""), "5db8"},
-		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", ip("2001:db8:7::1"), "7:0::1"},
-		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", ip("2001:db8:7::1"), "0db8"},
-		{"an IPv6 address in upper case", "2001:DB8:8::1", ip("2001:db8:8::1"), "DB8"},
-		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", ip("93.184.216.34"), "::ffff:"},
-		{"an IPv6 address written with an IPv4 part", "2001:db8::93.184.216.34", ip("2001:db8::5db8:d822"), "::93.184"},
-		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 "x`, ip("2001:db8:7::1"), "eth0"},
-		{"an IPv6 address in brackets", "[2001:db8:7::1]", ip("2001:db8:7::1"), "[2001"},
-		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 "x]`, ip("2001:db8:7::1"), "eth0"},
-		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:93.184.216.34]", ip("93.184.216.34"), "::ffff:"},
-		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", ip("2001:db8:7::1"), "[2001"},
-		{"an IPv4 address with a trailing dot", "93.184.216.34.", ip("93.184.216.34"), "216.34."},
-		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", ip("2001:db8:7::1"), "::1."},
-		{"an IPv4 address with a port", "93.184.216.34:443", ip("93.184.216.34"), ":443"},
-		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", ip("2001:db8:7::1"), "]:443"},
+		{"a canonical IPv4 address", "93.184.216.34", ip(decrypted, ""), "216.34"},
+		{"a canonical IPv6 address", "2001:db8:7::1", ip(decrypted, ""), "7::1"},
+		{"a canonical IPv6 address with an embedded IPv4 part", "2001:db8::5db8:d822", ip(decrypted, ""), "5db8"},
+		{"an IPv6 address in upper case", "2001:DB8:8::1", ip(decrypted, "2001:db8:8::1"), "DB8"},
+		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", ip(tunnelled, "2001:db8:7::1"), "7:0::1"},
+		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", ip(tunnelled, "2001:db8:7::1"), "0db8"},
+		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", ip(tunnelled, "93.184.216.34"), "::ffff:"},
+		{"an IPv6 address written with an IPv4 part", "2001:db8::93.184.216.34", ip(tunnelled, "2001:db8::5db8:d822"), "::93.184"},
+		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 "x`, ip(tunnelled, "2001:db8:7::1"), "eth0"},
+		{"an IPv6 address in brackets", "[2001:db8:7::1]", ip(tunnelled, "2001:db8:7::1"), "[2001"},
+		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 "x]`, ip(tunnelled, "2001:db8:7::1"), "eth0"},
+		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:93.184.216.34]", ip(tunnelled, "93.184.216.34"), "::ffff:"},
+		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", ip(tunnelled, "2001:db8:7::1"), "[2001"},
+		{"an IPv4 address with a trailing dot", "93.184.216.34.", ip(dotted, "93.184.216.34"), "216.34."},
+		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", ip(dotted, "2001:db8:7::1"), "::1."},
+		{"an IPv4 address with a port", "93.184.216.34:443", ip(tunnelled, "93.184.216.34"), ":443"},
+		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", ip(tunnelled, "2001:db8:7::1"), "]:443"},
 		// A host name written another way than the grammar's: the refusal names the grammar's
 		// spelling of the same host.
 		{"a host name in mixed case", "API.GitHub.com", formed("is not in lower case", "api.github.com"), "GitHub"},
@@ -236,8 +242,8 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a label over 63 characters", longLabel, noForm("label longer than 63 characters", "binds nothing"), strings.Repeat("a", 64)},
 		{"a name over 253 characters", longName, noForm("longer than 253 characters", "binds nothing"), strings.Repeat("b", 63)},
 		{"a name of 254 characters", longestRuleHost + "c", noForm("longer than 253 characters", "binds nothing"), strings.Repeat("c", 63)},
-		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "carries no secret there"), "api github"},
-		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "carries no secret there"), "github.com."},
+		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "api github"},
+		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "no host name either", "binds nothing"), "github.com."},
 		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", numbered), "093.184"},
 		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", numbered), "184.54818"},
 		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", numbered), "1572395042"},

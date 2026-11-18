@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1116,6 +1117,16 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), []string{c.absent})
 		})
 	}
+	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in
+	// upper case is refused naming its lower case, and a host made of a placeholder is written
+	// masked, as one JSON line of the broker's shape. A broker whose main does not set its logging
+	// up writes the refusal as text, with the placeholder in it.
+	t.Run("a host made of a placeholder in upper case, which the broker's log masks", func(t *testing.T) {
+		placeholder := strings.ToUpper(requests.PlaceholderPrefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
+		path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE"))
+		refused(t, path, []string{`"severity":"ERROR"`, `"message":"broker: fatal"`, "write it as [placeholder].example"},
+			[]string{placeholder, strings.ToLower(placeholder)})
+	})
 }
 
 // TestMainStartsWithAnAirlockRulesFile: a file the airlock parses and validates is no obstacle to

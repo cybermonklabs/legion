@@ -14,12 +14,15 @@ package airlockproxy
 import (
 	"bufio"
 	"context"
+	"encoding"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
@@ -34,6 +37,26 @@ var placeholderPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(requests.P
 
 const placeholderMark = "[placeholder]"
 
+// peerQuoted is a run of text a library quotes with %q: a double quotation mark, any characters
+// but a quotation mark or a backslash, or a backslash and the character after it, and a closing
+// quotation mark. net/http, net/textproto and httputil quote with %q every run of bytes they repeat
+// from a peer - an answer's bytes on an idle connection, a header or trailer line they could not
+// read, a status line, an ALPN list - and a bound service is sent the real value the swap put in,
+// so it can send it back. The placeholder mask cannot see a real value, so a line a library writes
+// (standardLog, slogWriter, badGateway's error) has each such run written as peerBytesShown, and
+// keeps only its own words and what kind of thing went wrong.
+var peerQuoted = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+const peerBytesShown = `"[service bytes not shown]"`
+
+// hidePeerBytes is text with each run a library quoted (peerQuoted) written as peerBytesShown.
+func hidePeerBytes(text string) string {
+	if !strings.Contains(text, `"`) {
+		return text
+	}
+	return peerQuoted.ReplaceAllLiteralString(text, peerBytesShown)
+}
+
 // maskedHandler is the handler every line of this package is written through (New), and every
 // line of the broker's process too (SetDefaultLog). Much of
 // what a line names is the command's own text - the method, the path, the host and port it asked
@@ -41,18 +64,22 @@ const placeholderMark = "[placeholder]"
 // the host of a CONNECT whose authority is its Host header - and a command can write its own
 // placeholder into any of it. A cut to 256 bytes keeps a line small and lowercasing a host keeps
 // it one spelling; neither keeps a placeholder out. So every text of every line - the message,
-// each string, each error's text and each value written as text - has each placeholder written
-// whole, in any case, replaced by placeholderMark before the line reaches the handler it was
-// given. The 32 characters after the prefix written without it are no text this can tell from
-// any other, and stay as they came. A line that holds no placeholder is handed on as it is.
+// each string, each error's text and each value in each form a handler may write it (anyForms) -
+// has each placeholder written whole, in any case, replaced by placeholderMark before the line
+// reaches the handler it was given. The 32 characters after the prefix written without it are no
+// text this can tell from any other, and stay as they came, as does a []byte inside a struct, a
+// map or a slice, which the JSON handler writes in base64. A line that holds no placeholder is
+// handed on as it is.
 type maskedHandler struct{ slog.Handler }
 
 // SetDefaultLog makes handler, behind the placeholder mask (maskedHandler), the process's default
-// logger, and points the log package at it through standardLog. cmd/broker calls it first, so
-// every line of the process passes the mask: the airlock's own lines pass it twice, which
-// changes nothing, and a line a library writes with the log package - net/http's transport
-// writes one quoting what a service sent on an idle connection, and has no ErrorLog to route it
-// elsewhere - passes it too, which nothing else would make it.
+// logger, and points the log package at it through standardLog. cmd/broker calls it first
+// (setUpLogging), so every line the broker writes through slog or the log package passes the
+// mask: the airlock's own lines pass it twice, which changes nothing, and a line a library writes
+// with the log package - net/http's transport writes one quoting what a service sent on an idle
+// connection, and has no ErrorLog to route it elsewhere - passes it too, which nothing else would
+// make it. A line written to stderr some other way - the runtime's report of a fatal error or a
+// panic no handler recovered, or a library's own logger on os.Stderr - does not.
 func SetDefaultLog(handler slog.Handler) {
 	logger := slog.New(maskedHandler{handler})
 	slog.SetDefault(logger)
@@ -61,14 +88,16 @@ func SetDefaultLog(handler slog.Handler) {
 }
 
 // standardLog is the log package's output once SetDefaultLog has run: one line at INFO for each
-// write, as slog.SetDefault's own writer makes one, whose message is the write's first line cut
-// to answer.FieldBytes (answer.Clip), since a library's first line can quote what a client or a
-// service sent, and whose stack is every line after it, whole: a recovered panic's stack, which a
-// server with no ErrorLog of its own writes here and which the cut would take the frames off.
+// write, as slog.SetDefault's own writer makes one. Every write is a library's text, so each run
+// of a peer's bytes it quotes is written as peerBytesShown (hidePeerBytes). The line's message is
+// the write's first line cut to answer.FieldBytes (answer.Clip), since a library's first line can
+// repeat what a client or a service sent, and its stack is every line after it, whole: a
+// recovered panic's stack, which a server with no ErrorLog of its own writes here and which the
+// cut would take the frames off.
 type standardLog struct{ log *slog.Logger }
 
 func (w standardLog) Write(p []byte) (int, error) {
-	first, rest, _ := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
+	first, rest, _ := strings.Cut(hidePeerBytes(strings.TrimSuffix(string(p), "\n")), "\n")
 	if rest == "" {
 		w.log.Info(answer.Clip(first))
 	} else {
@@ -113,9 +142,11 @@ func (h maskedHandler) WithGroup(name string) slog.Handler {
 }
 
 // maskAttr is a, written as its text with each placeholder replaced (maskedHandler), and nil for
-// an attribute whose text holds none. The text is a string's, an error's, each attribute's of a
-// group, and any other value's as fmt writes it. A number, a time and a duration are no text a
-// caller wrote and are never read.
+// an attribute whose text holds none. The text is a string's, each attribute's of a group, and
+// for a value of kind any each form a handler may write it in (anyForms): an attribute one of
+// whose forms holds a placeholder is written as its first form, masked, so the form that is
+// written holds none. A number, a time and a duration are no text a caller wrote and are never
+// read.
 func maskAttr(a slog.Attr) *slog.Attr {
 	value := a.Value.Resolve()
 	var text string
@@ -123,11 +154,11 @@ func maskAttr(a slog.Attr) *slog.Attr {
 	case slog.KindString:
 		text = value.String()
 	case slog.KindAny:
-		if err, ok := value.Any().(error); ok {
-			text = err.Error()
-		} else {
-			text = fmt.Sprint(value.Any())
+		forms := anyForms(value.Any())
+		if !slices.ContainsFunc(forms, placeholderPattern.MatchString) {
+			return nil
 		}
+		text = forms[0]
 	case slog.KindGroup:
 		group := value.Group()
 		var masked []slog.Attr
@@ -152,6 +183,37 @@ func maskAttr(a slog.Attr) *slog.Attr {
 	}
 	replaced := slog.String(a.Key, placeholderPattern.ReplaceAllString(text, placeholderMark))
 	return &replaced
+}
+
+// anyForms is each text a handler may write a value of kind any as, and the first is the one
+// maskAttr writes it as, masked. An error that does not marshal itself is written as its text by
+// every handler. Any other value is written as its JSON by the JSON handler, which follows a
+// pointer and calls a MarshalJSON method, where fmt prints a pointer's address and calls a String
+// method instead, so the two can hold different text, and as fmt writes it, or its MarshalText,
+// by the text handler; a []byte is its bytes as text, which the text handler writes and the JSON
+// handler writes in base64.
+func anyForms(v any) []string {
+	err, isError := v.(error)
+	if _, marshals := v.(json.Marshaler); isError && !marshals {
+		return []string{err.Error()}
+	}
+	var forms []string
+	if b, ok := v.([]byte); ok {
+		forms = append(forms, string(b))
+	}
+	if encoded, err := json.Marshal(v); err == nil {
+		forms = append(forms, string(encoded))
+	}
+	if isError {
+		forms = append(forms, err.Error())
+	}
+	forms = append(forms, fmt.Sprint(v))
+	if marshaler, ok := v.(encoding.TextMarshaler); ok {
+		if text, err := marshaler.MarshalText(); err == nil {
+			forms = append(forms, string(text))
+		}
+	}
+	return forms
 }
 
 // The codes the proxy port's own answers name: the refusal line and the count read them, one for

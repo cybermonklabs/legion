@@ -846,9 +846,14 @@ depends on the spelling, and in every case the refusal keeps the file to the one
 
 - An upper-case name binds, because the proxy compares hosts without regard to case, so the file
   would hold a second spelling of one host.
-- An IP address, in any spelling, and a name with a trailing dot are decrypted, and every request
-  on them is refused `sni mismatch`, because a client sends no TLS server name (SNI) for an
-  address and drops the dot from the one it sends for a name: the entry would carry nothing.
+- An IP address in its canonical form, or an IPv6 address in upper case, and a name with a
+  trailing dot are decrypted, and every request on them is refused `sni mismatch`, because a
+  client sends no TLS server name (SNI) for an address and drops the dot from the one it sends
+  for a name: the entry would carry nothing. An address in any other spelling — with a port, in
+  brackets, with a zone, IPv4-mapped or not canonical — binds nothing, because the proxy reads the
+  address a `CONNECT` names in its canonical form, so a `CONNECT` to it is tunnelled unread; and
+  an address with a trailing dot is a name of numbers alone, which the resolver refuses, so a
+  `CONNECT` to it is refused before anything is bound.
 - A name with an underscore, a `--` label other than an internationalized one, or an `xn--` label
   the IDNA lookup profile refuses binds when DNS answers for it, but it is outside the LDH grammar
   public host names are written in.

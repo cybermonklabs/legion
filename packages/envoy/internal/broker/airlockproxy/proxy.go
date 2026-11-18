@@ -900,12 +900,15 @@ const upstreamMessage = "airlock proxy: upstream"
 
 // badGateway answers a service that could not be reached or did not answer: a failure, which it
 // logs and counts, and no refusal. The error is the transport's own and carries no header of the
-// request, so nothing of the grant is in it. The path, and on a plain request the host, are the
-// caller's, and the error may quote the host, so the line passes answer.ClipFields as a call's
-// line does, and stays one Cloud Logging entry whatever the caller sent.
+// request, so nothing of the grant is in it, but it can quote what the service sent - a status
+// line it could not read, which a bound service may write with the real value the swap sent it -
+// so each run of the service's bytes it quotes with %q is written as peerBytesShown
+// (hidePeerBytes). The path, and on a plain request the host, are the caller's, and the error may
+// quote the host, so the line passes answer.ClipFields as a call's line does, and stays one Cloud
+// Logging entry whatever the caller sent.
 func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", err})...)
+		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", hidePeerBytes(err.Error())})...)
 		fail(w, http.StatusBadGateway, codeUpstream, host+": "+err.Error())
 	}
 }
@@ -955,11 +958,14 @@ const netHTTPMessage = "airlock proxy: net/http"
 // tabs and newlines, which the JSON handler writes in one or two bytes each - and net/http bounds
 // it at 64 KiB, so it writes at most 128 KiB, and the line stays one Cloud Logging entry whatever
 // the client sent. No handler of the airlock panics with a value that holds a newline: a panic
-// value that did, and quoted the client, would put that text in this field uncut.
+// value that did, and quoted the client, would put that text in this field uncut. Every run of a
+// peer's bytes net/http and httputil quote with %q - a client's ALPN list, a trailer line a
+// service sent - is written as peerBytesShown first (hidePeerBytes), since a bound service is
+// sent the real value the swap put in and the placeholder mask cannot see it.
 type slogWriter struct{ log *slog.Logger }
 
 func (w slogWriter) Write(p []byte) (int, error) {
-	text, stack, stacked := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
+	text, stack, stacked := strings.Cut(hidePeerBytes(strings.TrimSuffix(string(p), "\n")), "\n")
 	fields := answer.ClipFields([]any{"error", text})
 	if stacked {
 		fields = append(fields, "stack", stack)

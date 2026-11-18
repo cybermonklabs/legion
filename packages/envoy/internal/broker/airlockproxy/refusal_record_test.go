@@ -740,7 +740,9 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				return response
 			}},
 		{name: "Go's HTTP server's error: a TLS handshake on a bound connection whose ClientHello offers no protocol the proxy speaks", message: netHTTPMessage, field: "error",
-			heldBy: func() string { return handshakeError }, status: http.StatusOK,
+			// The error quotes each protocol the client offered, which the line writes as
+			// peerBytesShown (hidePeerBytes), one for each: still past the cut.
+			heldBy: func() string { return hidePeerBytes(handshakeError) }, status: http.StatusOK,
 			send: func(t *testing.T, r *rig) *http.Response {
 				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
 				// net/http names the client by the address its CONNECT came from, this end of the

@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
@@ -65,7 +64,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/fold"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -127,15 +125,8 @@ const oauthSecretTimeout = 10 * time.Second
 const clientCheckInterval = time.Hour
 
 func main() {
-	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
-	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
-	// first thing main does, so a subcommand that opens the store logs the same shape, and the
-	// log package writes no line of another. It is written through the airlock's placeholder mask
-	// (airlockproxy.SetDefaultLog), so a line any package or library writes - net/http's
-	// transport logs what a service sent on an idle connection with log.Printf, which no ErrorLog
-	// reaches - holds no placeholder as it was minted, and a line the log package is written has
-	// its first line cut as a call line's fields are.
-	airlockproxy.SetDefaultLog(logging.NewCloudHandler(os.Stderr))
+	// The broker's logging (setUpLogging): every line of slog and the log package, masked.
+	setUpLogging(os.Stderr)
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a
@@ -865,7 +856,7 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	var awsCfg aws.Config
 	var err error
 	if cfg.DatabaseIAM || awsAlso {
-		if awsCfg, err = awsconfig.LoadDefaultConfig(ctx); err != nil {
+		if awsCfg, err = loadAWSConfig(ctx); err != nil {
 			return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
 		}
 	}
@@ -1031,11 +1022,13 @@ func validateRulesFile(rules airlock.Rules) error {
 // client sends a name without a trailing dot in its TLS server name, an internationalized name as
 // its punycode, and no server name at all for an address. A host in another spelling is refused
 // as no host in that one spelling, and what it would do served differs by kind: one in upper case
-// binds by the fold, so the file would hold two spellings of one host; one with a trailing dot,
-// or an address, is decrypted and every request on it refused ("sni mismatch"), so the entry
-// would carry nothing; one with an underscore, a reserved "--" label or a Fake A-label binds when
-// DNS answers for it, but is outside the LDH grammar public names are written in; and the rest -
-// white space, a port, brackets, an empty or overlong label - is no name a client sends at all.
+// binds by the fold, so the file would hold two spellings of one host; a name with a trailing
+// dot, and an address in its canonical form, are decrypted and every request on them refused
+// ("sni mismatch"), so the entry would carry nothing, while an address in any other spelling
+// binds nothing and a CONNECT to it is tunnelled unread; one with an underscore, a reserved "--"
+// label or a Fake A-label binds when DNS answers for it, but is outside the LDH grammar public
+// names are written in; and the rest - white space, a port, brackets, an empty or overlong label
+// - is no name a client sends at all.
 //
 // The form named is the host in the grammar's spelling, and only when it is that same host
 // written another way: in upper or mixed case (fold.ASCII), with a trailing dot, or as a Unicode
@@ -1080,6 +1073,9 @@ func ruleHostGrammar(h string) string {
 	case strings.HasSuffix(h, "."):
 		// Before the length: a 253-character name with a trailing dot is a name DNS carries,
 		// written with the dot no client sends, and the dot is what is wrong with it.
+		if ruleHostGrammar(strings.TrimSuffix(h, ".")) != "" {
+			return "ends in a dot, and without it is no host name either, so no request is bound to it and the host binds nothing"
+		}
 		return "ends in a dot, which a client drops from the TLS server name it sends, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there"
 	case len(h) > maxHostName:
 		return "is longer than 253 characters, the longest name DNS carries, so the host binds nothing"
@@ -1183,17 +1179,31 @@ func ipLiteral(h string) (netip.Addr, bool) {
 	return addr, err == nil
 }
 
-// ipHostRefusal is the refusal of a host that is an IP address, in any spelling: a client sends no
-// TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses
-// every request it carries, and the entry carries no secret there. It names the address in
+// ipHostRefusal is the refusal of a host that is an IP address, in any spelling, with what that
+// spelling would do served. The proxy reads the address a CONNECT names in netaddr.Canonical's
+// form (netaddr.Host) and airlock.HostBound folds ASCII case, so the canonical spelling, and an
+// IPv6 address in upper case, bind: a client sends no TLS server name for an address, so the
+// proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries. With a
+// trailing dot it is a name of numbers alone, which the resolver refuses, so a CONNECT to it is
+// refused before anything is bound. Any other spelling - a port, brackets, a zone, an IPv4-mapped
+// or not-canonical IPv6 address - is no CONNECT's host, so it binds nothing and a CONNECT to the
+// address is tunnelled unread. Either way the entry carries no secret. It names the address in
 // netaddr.Canonical's form when h writes it another way, which holds no zone, so it repeats
 // nothing of h.
 func ipHostRefusal(h string, addr netip.Addr) string {
-	const why = "a client sends no TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there; name the service by its host name"
-	if canonical := netaddr.Canonical(addr).String(); canonical != h {
-		return "is an IP address, " + canonical + " in its canonical form, and " + why
+	const rename = "; name the service by its host name"
+	canonical := netaddr.Canonical(addr).String()
+	written := "is an IP address, and "
+	if canonical != h {
+		written = "is an IP address, " + canonical + " in its canonical form, and "
 	}
-	return "is an IP address, and " + why
+	switch {
+	case fold.ASCII(h) == canonical:
+		return written + "a client sends no TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there" + rename
+	case strings.HasSuffix(strings.TrimSuffix(h, "]"), "."):
+		return written + "with a trailing dot it is a name of numbers alone, which the resolver refuses, so a CONNECT to it is refused before anything is bound: the entry carries no secret there" + rename
+	}
+	return written + "this spelling is no CONNECT's host, since the proxy reads the address a CONNECT names in its canonical form, so it binds nothing and a CONNECT to the address is tunnelled unread: the entry carries no secret there" + rename
 }
 
 // canonicalHostForm is the spelling of h ruleHostGrammar reads, when h is that host written
