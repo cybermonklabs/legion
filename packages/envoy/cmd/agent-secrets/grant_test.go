@@ -173,7 +173,7 @@ func launcherProofHelper(t *testing.T, answer helper.Response) (string, <-chan h
 // operator's own shell beside it takes the operator route, as it did before, and leaves the key
 // dir as it found it: moving that session into the machine cache is the use chain's work.
 func TestGrantRevokeOutsideASessionBesideAnOldMachineSession(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newGrantBroker(t, false)
 	r := grantRig(t, binary, broker)
 	sock, _ := launcherProofHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
@@ -207,7 +207,7 @@ func TestGrantRevokeOutsideASessionBesideAnOldMachineSession(t *testing.T) {
 // still enrolling the key dir, and a setting it cannot read is a usage error, exit 2, with the
 // line `revoke` prints for it.
 func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 
 	t.Run("a setting it cannot read", func(t *testing.T) {
 		broker := newGrantBroker(t, false)
@@ -279,7 +279,7 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 // a fall-through would reach the stand-in, which fails the test on any request after its
 // NOT_YOURS, and would ask the helper for a launcher proof.
 func TestGrantRevokeTriesNoOtherRouteAfterNotYours(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newGrantBroker(t, true)
 	r := grantRig(t, binary, broker)
 	sock, ops := launcherProofHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})

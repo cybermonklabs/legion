@@ -172,7 +172,8 @@ var brokerModules = []string{
 
 // TestTheAgentSecretsBinaryLinksItsListedModules builds agent-secrets in this directory
 // for each GOOS the release builds it for, as the release builds it, and holds the modules the
-// binary links to agentSecretsModules.
+// binary links to agentSecretsModules. Each is a build of its own: CGO_ENABLED=0 and the GOOS are
+// an environment the shared build (agentSecretsBuild) is not made in.
 func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
@@ -184,7 +185,8 @@ func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
 
 // TestTheAgentSecretsBinaryBuildsWithoutThePrompt builds agent-secrets for targets the release does
 // not ship and the README says build without the value prompt, a value piped in standing for it:
-// Windows, FreeBSD, and a 32-bit Linux architecture.
+// Windows, FreeBSD, and a 32-bit Linux architecture. Each target is a build of its own, as in
+// TestTheAgentSecretsBinaryLinksItsListedModules.
 func TestTheAgentSecretsBinaryBuildsWithoutThePrompt(t *testing.T) {
 	for _, target := range []struct{ goos, goarch string }{{"windows", "amd64"}, {"freebsd", "amd64"}, {"linux", "386"}} {
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {

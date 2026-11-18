@@ -41,10 +41,18 @@ import (
 // self round-trips whatever id was on disk rather than a hardcoded one.
 const testEnrollmentID = "enr-fake-1"
 
-// buildAgentSecrets compiles this package's binary into the test's temporary directory.
+// agentSecretsBuild is this package's binary, built once for the whole run of its tests
+// (cmdtest.Shared): every test that runs the command runs that one build, and TestMain removes it
+// once the tests end.
+var agentSecretsBuild = cmdtest.Shared{Command: cmdtest.Command{Name: "agent-secrets"}}
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m, &agentSecretsBuild)) }
+
+// buildAgentSecrets returns the path of this package's binary, the one build its tests share
+// (agentSecretsBuild).
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
-	return cmdtest.Build(t, "agent-secrets")
+	return agentSecretsBuild.Build(t)
 }
 
 // shortTempDir is a directory of the test's own, removed when the test ends, with room under it

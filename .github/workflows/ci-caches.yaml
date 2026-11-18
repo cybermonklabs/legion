@@ -233,25 +233,44 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
+      # The key's last part, -v2, is the revision of what the build step below makes. The lookup
+      # finds a key a fill saved before and builds nothing, so a change to that step takes a new
+      # revision, here, in the save and in every restore of the family (ci-job-envoy-go.yaml, and
+      # dispatch-browser.yaml's binaries, multiprocess and visual jobs). v2 added the six builds
+      # of cmd/agent-secrets' tests.
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-v2
           lookup-only: true
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
       # package's test binary and `-o /dev/null` writes none of them, so every object the restored
       # build cache holds is made and no test runs: envoy-go's tests want the job's Postgres
-      # service and container images, which a cache fill has no reason to start.
+      # service and container images, which a cache fill has no reason to start. Then the six
+      # builds cmd/agent-secrets' tests make for other targets, each in the environment its test
+      # gives it: the linux and darwin builds of TestTheAgentSecretsBinaryLinksItsListedModules
+      # (on the runner's GOARCH), the three targets of
+      # TestTheAgentSecretsBinaryBuildsWithoutThePrompt, and the broker of
+      # TestTheBrokerBinaryLinksItsListedModules. No test binary holds their objects: after this
+      # step's two `go test -c` commands alone, into an empty cache on a host whose default is cgo
+      # on, the six compiled 2,793 packages between them, from 117 for the broker to 619 for
+      # windows/amd64 (main f3dc51da8b, dispatch://INFRA-4305).
       - name: Build the test binary of every package of the envoy module
         if: steps.go-envoy-test.outputs.cache-hit != 'true'
         run: |
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -tags natslive ./internal/testnats/
+          CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./cmd/agent-secrets
+          CGO_ENABLED=0 GOOS=darwin go build -o /dev/null ./cmd/agent-secrets
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/agent-secrets
+          CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -o /dev/null ./cmd/agent-secrets
+          CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -o /dev/null ./cmd/agent-secrets
+          CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./cmd/broker
         working-directory: packages/envoy
 
       - if: steps.go-envoy-test.outputs.cache-hit != 'true'
@@ -260,7 +279,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-v2
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-checks runs it. The action sets

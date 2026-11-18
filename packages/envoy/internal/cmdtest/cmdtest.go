@@ -4,6 +4,7 @@
 package cmdtest
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -34,10 +35,10 @@ func BuildStamped(t testing.TB, name, commit string) string {
 	return BuildCommand(t, Command{Name: name, Flags: []string{"-ldflags", "-X main.buildCommit=" + commit}})
 }
 
-// Command is a binary to build: Name is what the binary is called under the test's own
-// directory, Dir the directory go build runs in (the test's own when empty), Target what it
-// builds ("." when empty), Flags the flags before the target, and Env the whole environment of
-// the go command (the process's when nil).
+// Command is a binary to build: Name is what the binary is called in the directory it is built
+// into (the test's own, or a Shared build's), Dir the directory go build runs in (the test's own
+// when empty), Target what it builds ("." when empty), Flags the flags before the target, and Env
+// the whole environment of the go command (the process's when nil).
 type Command struct {
 	Name   string
 	Dir    string
@@ -95,6 +96,16 @@ func BuildCommand(t testing.TB, c Command) string {
 func runBuild(t testing.TB, c Command, overlay string) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), c.Name)
+	if err := goBuild(c, overlay, binary); err != nil {
+		t.Error(err)
+		return ""
+	}
+	return binary
+}
+
+// goBuild runs go build of c into binary, passing overlay to -overlay when it is set. Its error
+// names the command and holds go build's output.
+func goBuild(c Command, overlay, binary string) error {
 	args := []string{"build", "-o", binary}
 	if overlay != "" {
 		args = append(args, "-overlay", overlay)
@@ -108,10 +119,78 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = c.Dir, c.Env
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("build %s: %v\n%s", c.Name, err, out)
-		return ""
+		return fmt.Errorf("build %s: %v\n%s", c.Name, err, out)
 	}
-	return binary
+	return nil
+}
+
+// Shared is one build of Command for the whole run of a test binary: every test that asks for it
+// is handed the same binary, where BuildCommand gives each test a build of its own. go build
+// relinks the whole binary into each -o path it is given, so a package whose tests each ran its
+// command built that command once per test: 100 builds of agent-secrets in one run of its
+// package, 247.5 s of a 605.2 s run on a loaded machine (INFRA-4305). The first test that asks
+// builds it into a directory of its own under TMPDIR, so a run that asks for no build, such as a
+// subprocess helper's run of the test binary, makes nothing; Main removes the directory once the
+// tests end. A build with flags, a target or an environment of its own stays BuildCommand's.
+type Shared struct {
+	Command Command
+	// main is set by Main, which removes the build once the tests end.
+	main bool
+	once sync.Once
+	// dir is the directory the build was written into, path the binary in it, and err the failed
+	// build's error with go build's output.
+	dir  string
+	path string
+	err  error
+}
+
+// Main runs the package's tests, then removes each of builds that a test made, and returns the
+// exit code. A package whose tests take a Shared build hands it to Main from its TestMain:
+// os.Exit(cmdtest.Main(m, &build)).
+func Main(m *testing.M, builds ...*Shared) int {
+	for _, build := range builds {
+		build.main = true
+	}
+	code := m.Run()
+	for _, build := range builds {
+		if build.dir == "" {
+			continue
+		}
+		if err := os.RemoveAll(build.dir); err != nil {
+			fmt.Fprintf(os.Stderr, "remove the shared build of %s, %s: %v\n", build.Command.Name, build.dir, err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
+	return code
+}
+
+// Build returns the path of the shared binary, building it on the run's first call, with
+// ENVOY_TEST_GO_OVERLAY as BuildCommand passes it. A build that failed fails every test that
+// asks for it, with go build's output. A Shared no TestMain handed to Main fails the test, since
+// nothing would remove its build.
+func (s *Shared) Build(t testing.TB) string {
+	t.Helper()
+	if !s.main {
+		t.Fatalf("cmdtest: hand the shared build of %s to cmdtest.Main from the package's TestMain, which removes it once the tests end", s.Command.Name)
+	}
+	s.once.Do(func() { s.dir, s.path, s.err = buildShared(s.Command) })
+	if s.err != nil {
+		t.Fatal(s.err)
+	}
+	return s.path
+}
+
+// buildShared builds c into a directory it makes under TMPDIR. It returns the directory even
+// when the build fails, so Main removes it.
+func buildShared(c Command) (dir, binary string, err error) {
+	dir, err = os.MkdirTemp("", c.Name+"-shared-")
+	if err != nil {
+		return "", "", fmt.Errorf("build %s: make its directory: %w", c.Name, err)
+	}
+	binary = filepath.Join(dir, c.Name)
+	return dir, binary, goBuild(c, os.Getenv("ENVOY_TEST_GO_OVERLAY"), binary)
 }
 
 // Process is a binary a test started, with its combined output.

@@ -38,7 +38,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // chainValue is the value chainBroker releases for TEST_KEY. The use command's child prints its
@@ -287,12 +286,6 @@ func closedAddress(t *testing.T) string {
 	return addr
 }
 
-// chainBinary builds agent-secrets.
-func chainBinary(t *testing.T) string {
-	t.Helper()
-	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets"})
-}
-
 // writeProjectedToken writes a projected service-account token minted for aud at path.
 func writeProjectedToken(t *testing.T, path string, aud ...string) {
 	t.Helper()
@@ -467,7 +460,7 @@ func machineExchanges(broker *chainBroker) []url.Values {
 // ~/.config/agent-secrets/config and trades the machine's own identity there. A variable that is
 // set wins over the file.
 func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	fromFile := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, nil)
 	r.withMetadata()
@@ -504,7 +497,7 @@ func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 // and reaches the machine, which trades its own identity, registers one enrollment and keeps it in
 // the machine cache. Each backend's row reads the injection line its own store names.
 func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	for _, store := range []string{"aws", "gcp"} {
 		t.Run(store, func(t *testing.T) {
 			broker := newChainBroker(t, storeSettings(store, "agent-secrets-vm"))
@@ -532,7 +525,7 @@ func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 // audience accepts no machine identity, so the machine source is skipped with that reason and the
 // metadata server is never asked.
 func TestAnOlderBrokerWithoutExchangeAudiencesSkipsTheMachineSource(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newChainBroker(t, storeSettings("gcp", ""))
 	r := newChainRig(t, binary, broker)
 	metadata := r.withMetadata()
@@ -570,7 +563,7 @@ func (r *chainRig) writeConfigFile(settings map[string]string) {
 // not tried: a broker that names no exchange audience, which detection would skip, still sees the
 // forced identity's trade. A machine session already in the cache signs before either.
 func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	for _, row := range []string{"the environment", "the config file"} {
 		t.Run(row, func(t *testing.T) {
 			broker := newChainBroker(t, storeSettings("gcp", ""))
@@ -615,7 +608,7 @@ func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 // the config file, is a usage error naming the values agent-secrets takes, and nothing is asked of
 // the broker or the metadata server.
 func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	for _, row := range []string{"the environment", "the config file"} {
 		t.Run(row, func(t *testing.T) {
 			broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -646,7 +639,7 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
 func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
 	r.withMetadata()
@@ -683,7 +676,7 @@ func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
 // machine cache, so the key directory is a launcher's alone again, and signs with it; a cache that
 // already holds a session keeps its own and the key directory's is removed.
 func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	t.Run("an empty cache", func(t *testing.T) {
 		broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 		r := newChainRig(t, binary, broker)
@@ -751,7 +744,7 @@ func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 // no-source refusal. Each backend's rows that run the command read the injection line its own
 // store names.
 func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	// stoppedHelper is the check of a row whose helper is expected and not running: the command
 	// stops naming the helper's socket, and nothing asks the metadata server or the exchange.
 	stoppedHelper := func(t *testing.T, r *chainRig, broker *chainBroker, metadata *metadataServer, code int, stdout, stderr string) {
@@ -977,7 +970,7 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 // machine reads is kept beside its session, and a later read naming another is refused before any
 // token is minted for it, naming both audiences and the file that keeps the first.
 func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
 	metadata := r.withMetadata()
@@ -1009,7 +1002,7 @@ func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 // call that met the refusal is signed again by the new key, its request object included, which the
 // broker holds to the enrollment's own key.
 func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
 	r.withMetadata()
@@ -1048,7 +1041,7 @@ func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
 // at once register one session between them, and every one signs with it: the cache's key.pem is
 // always the key its enrollment was registered for.
 func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	// Each settings read waits, so every process has found the cache empty before the first
 	// registration ends: with nothing between them, each would register a session of its own.
@@ -1155,7 +1148,7 @@ func pemThumbprint(t *testing.T, data []byte) string {
 // whenever the helper answered and is not that source; with none it prints nothing on stdout and
 // the chain's refusal on stderr.
 func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
-	binary := chainBinary(t)
+	binary := buildAgentSecrets(t)
 	rows := []struct {
 		name  string
 		setup func(t *testing.T, r *chainRig) string // the stdout the row wants
