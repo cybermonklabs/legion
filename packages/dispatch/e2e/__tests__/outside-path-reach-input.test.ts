@@ -267,13 +267,14 @@ describe.concurrent("outside-path-reach.sh", () => {
 
   // A read that stops before the end of the list, here by a TMOUT=1 the device's shell makes
   // readonly (through BASH_ENV, which bash reads at its start), so the script cannot unset it.
+  // The list's first line comes at once and the pipe then stays open with nothing more until the
+  // script exits, so the read can end only at its timeout, however late this host runs the script.
   // bash 5 says so with read's status 142; bash 3.2 gives 1 and keeps nothing it read, as at the
   // end of an empty list. Either way the run refuses before it goes on the network.
   row(withoutTools)(
     "refuses a target list whose read stopped before the end of the list",
     async () => {
       const origin = fakeDispatch();
-      const holding = holdingTarget();
       const major = Number(
         Bun.spawnSync([bash, "-c", `printf %s "\${BASH_VERSINFO[0]}"`]).stdout.toString()
       );
@@ -284,10 +285,7 @@ describe.concurrent("outside-path-reach.sh", () => {
             OUTSIDE_PATH_TARGETS: "/dev/stdin",
             BASH_ENV: written("readonly TMOUT=1\n"),
           },
-          {
-            stdin: `closed 127.0.0.1 ${await closedPort()}\n`,
-            stdinLater: `hub 127.0.0.1 ${holding.port}\n`,
-          }
+          { stdin: `closed 127.0.0.1 ${await closedPort()}\n`, stdinHeld: true }
         );
         expect(verdict(run)).toBe(
           major >= 4
@@ -299,7 +297,6 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(origin.seen).toEqual([]);
       } finally {
         origin.stop(true);
-        holding.stop(true);
       }
     }
   );

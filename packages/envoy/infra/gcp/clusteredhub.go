@@ -213,6 +213,11 @@ type ClusteredHubListenerArgs struct {
 	// Any further address a client dials the listener by, beyond <serviceName>.<tailnetDnsName>,
 	// which it always serves.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// The limit on the messages each agent session sends through the listener: how many a minute,
+	// from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there is no
+	// limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 	// The listener container's size, a Kubernetes quantity each, set as both its request and its
 	// limit: 500m and 1Gi by default.
 	Cpu    *string `pulumi:"cpu,optional"`
@@ -661,7 +666,9 @@ func checkNamespaces(input string, namespaces []string) error {
 // entry's pods alone to and where each host forwards the Tailscale Service's port 9020; it
 // reaches NATS through the hub's client Service. It answers on the Service's tailnet name and on
 // every further address allowedHosts names; the operator's entries are checked as their own
-// list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote.
+// list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote. Its
+// sender limit is core's rule (core.CheckSenderLimit), naming
+// tailnet.listener.senderMessagesPerMinute or tailnet.listener.senderMessageBurst.
 func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) (*clusteredHubTailnet, *listenerUser, error) {
 	t := args.Tailnet
 	if t == nil {
@@ -732,6 +739,10 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	if err := core.CheckAllowedHosts("tailnet.listener.allowedHosts", l.AllowedHosts); err != nil {
 		return nil, nil, err
 	}
+	rate, burst, err := core.CheckSenderLimit("tailnet.listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
+	if err != nil {
+		return nil, nil, err
+	}
 	listener := clusteredHubListener{
 		image:          l.Image,
 		machineID:      machineID,
@@ -740,7 +751,6 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	}
 	// The listener is the only container of its own pod, so its size is that pod's whole request,
 	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
-	var err error
 	if listener.cpu, listener.memory, err = autopilotPodSize(autopilotPod{
 		name:     "the listener pod",
 		cpuInput: "tailnet.listener.cpu", memoryInput: "tailnet.listener.memory",
@@ -755,12 +765,14 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	// cluster Service, which a NetworkPolicy admits their pods alone to, and no longer over a
 	// loopback they share with it.
 	env, err := core.ListenerConfig{
-		MachineID:      machineID,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		AllowedHosts:   append([]string{host}, l.AllowedHosts...),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
+		MachineID:               machineID,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "0.0.0.0",
+		AllowedHosts:            append([]string{host}, l.AllowedHosts...),
+		NATSReplicas:            s.natsReplicas,
+		StreamMaxBytes:          s.streamMaxBytes,
+		SenderMessagesPerMinute: rate,
+		SenderMessageBurst:      burst,
 	}.Env([]string{s.serviceURL})
 	if err != nil {
 		return nil, nil, err

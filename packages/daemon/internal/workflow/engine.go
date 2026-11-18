@@ -449,7 +449,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 
 // releaseHeldRoot takes a todo written on a held root whose tree does not linger: the one status
 // a person's move in the Dispatch dashboard, the controller's set_status and an operator's
-// `legion status` all reach the record as (R7). The hold is cleared, the issue returns to the
+// `legion issue status` all reach the record as (R7). The hold is cleared, the issue returns to the
 // phase the hold came from and that phase's role is started with its task, which is the effect
 // of the architect's retry_or_escalate with retry. Nothing else moves: no new generation, no
 // reset of the rounds, no new pod, and no change of place in the admission line.

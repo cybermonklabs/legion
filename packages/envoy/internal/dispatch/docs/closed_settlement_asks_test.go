@@ -275,9 +275,10 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 	// and the first refuses a document any room of this service holds (ErrDocumentLive), so no room
 	// at all may hold it here, not only alice's. The settlement her keystroke armed runs on the
 	// closed issue as on an open one, and its warm-up can load the document into a room of its own
-	// once hers has closed, which would stay resident until it idles out (roomIdleTimeout). So the
-	// test waits for that settlement to end, as nothing here arms another, and evicts the room it
-	// may have left (Evict closes nothing where no room is).
+	// once hers has closed, which would stay resident until it idles out (roomIdleTimeout), unless
+	// her departure ran that settlement and her socket's end retired the room (retireSettlementRoom).
+	// So the test waits for that settlement to end, as nothing here arms another, and evicts the
+	// room it may have left (Evict closes nothing where no room is).
 	f.waitForNoSettlement(t)
 	if err := f.service.Evict(ctx, f.artifactID); err != nil {
 		t.Fatalf("evict a room the settlement of alice's keystroke may have loaded: %v", err)

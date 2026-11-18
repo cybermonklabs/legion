@@ -532,7 +532,7 @@ controller on an earlier plugin release never runs against this daemon: contract
 subscription, `legion controller start` refuses to launch an Oh My Pi whose plugin speaks another
 contract, and the daemon refuses its registration with 409. A later
 `legion controller start` mints a new capability, so the earlier session's grants stop working.
-The CLI's `legion status <issue> <status>` is the operator's alone: it takes
+The CLI's `legion issue status <issue> <status>` is the operator's alone: it takes
 `--operator-token-file`, which buys a controller grant over the operator's bearer and, like
 `legion claims`, is refused when its group or others can read it; the controller session writes a
 status only through its tool's `set_status`.
@@ -773,9 +773,15 @@ its hour has ended. A listener of an earlier release names no `kept_until` and a
 key as the first copy for 72 hours, so such an answer clears the key, and the next attempt mints
 a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
 architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
-a kept answer reports that no owner was told. A kept notice that no session takes in its hour
-comes back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy
-drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
+a kept answer reports that no owner was told. The listener answers a session past its send
+limit with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the
+stall watch waits that long and sends its notice again under the same key, at most 3 times, so
+the notice is sent at most 4 times. It sends again in the background, so no wait holds a step of
+the ladder, and a resend that is answered and not kept records the owner as told. The phase
+reminder's notice needs no such resend: a refused publish leaves it unreported, and the next
+reminder publishes it again. A kept notice that no session takes in its hour comes back to this
+worker's session as a dead letter, an Envoy card that names it, unless Envoy drops it more than
+an hour late. A reminder is dropped when the daemon's record says this role no
 longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
 bounded at 5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled
 worker must still be nudged). A worker the daemon relaunched into an open phase is reminded from a

@@ -281,8 +281,8 @@ architect may have written it from issue text an outside party chose.
 Four moves release a held root, at three prices. The tree's architect's own `retry_or_escalate`
 with `retry` costs nothing. A `todo` on the root costs nothing either, and it is your own lever:
 your `set_status` to `todo`, a person's move in the Dispatch dashboard and an operator's
-`legion status` all reach the daemon as the same status, and each returns the issue to the phase
-its hold came from and starts that phase's role with its task. Two cases end elsewhere: a held
+`legion issue status` all reach the daemon as the same status, and each returns the issue to the
+phase its hold came from and starts that phase's role with its task. Two cases end elsewhere: a held
 phase whose pull request head is red goes on to `implementing`, and a held review whose round is
 already decided goes on to the phase that decision names. Either way the daemon writes the
 Dispatch status of the phase the issue ends in. Nothing else moves: the generation, the review

@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -57,7 +58,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 			"the broker AGENT_SECRETS_URL names (vault)", "vault"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			src := brokerSource(row.base).withSettings(row.settings)
+			src := brokerSource(brokeraddr.New(row.base)).withSettings(row.settings)
 			if got := src.String(); got != row.source {
 				t.Fatalf("source %q, want %q", got, row.source)
 			}
@@ -76,7 +77,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 // what tells this CLI's answer from another secrets CLI's for the same name; the secret forms say
 // which broker by host in place of a store rather than guessing one.
 func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
-	src := brokerSource("https://secrets.internal.example")
+	src := brokerSource(brokeraddr.New("https://secrets.internal.example"))
 	if got := src.String(); got != "the broker AGENT_SECRETS_URL names" {
 		t.Fatalf("source = %q, want the broker AGENT_SECRETS_URL names alone", got)
 	}
@@ -85,7 +86,7 @@ func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
 	}
 	// A value that is no plain http(s) URL is not printed: the allow-list proves nothing about
 	// what it holds.
-	if got := brokerSource("not a url").brokerAt(); !strings.Contains(got, redact.NotPrinted) || strings.Contains(got, "not a url") {
+	if got := brokerSource(brokeraddr.New("not a url")).brokerAt(); !strings.Contains(got, redact.NotPrinted) || strings.Contains(got, "not a url") {
 		t.Fatalf("broker = %q, want %q", got, redact.NotPrinted)
 	}
 }
@@ -310,29 +311,61 @@ func TestAPeerThatBrokeTheExchangeIsNamed(t *testing.T) {
 	}
 }
 
-// TestARedirectsTargetIsNotPrinted: a clean broker URL that redirects (a proxy's sign-in, say)
-// to a URL with a query, to another path, or through a malformed Location, and then fails,
-// prints the failure's class alone: net/http's error names the redirect's target.
+// TestARedirectsTargetIsNotPrinted: a broker URL that answers a redirect (a proxy's sign-in,
+// say) to a URL with a query, to another path, or through a malformed Location. Every call this
+// command makes carries a Proof header of this session's own, so the client refuses the
+// redirect (redirects.Refused): the target is sent nothing at all, and no part of it is
+// printed, whichever of the two ways the refusal reads.
+//
+// A Location net/url parses is handed back as the 3xx answer it is, which the command reads as
+// the non-2xx it is and prints as HTTP 302. A Location it cannot parse never reaches that
+// point - net/http reads the header before it asks CheckRedirect - so the call fails as a
+// request, and its class alone prints.
 func TestARedirectsTargetIsNotPrinted(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
-	for _, row := range []struct{ location, class string }{
-		{"http://127.0.0.1:1/signin?state=qtok77SECRET", "connection refused"},
-		{"/magic/AbCtok9f3SECRET", "the request failed"},
-		{"http://127.0.0.1:1/signin%zz?state=qtok77SECRET", "the request failed"},
+	var targetCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetCalls.Add(1)
+	}))
+	defer target.Close()
+	// Each row's wants are what that refusal reads as. The 3xx the client hands back is a
+	// non-2xx of the broker's own, so the line ends with the source sentence, which names the
+	// variable and never its value; the Location net/url cannot parse fails as a request, and
+	// that line carries the redacted base.
+	for _, row := range []struct {
+		location string
+		wants    []string
+		// namesBase is whether the line carries the redacted base, which the request
+		// failure does and the handed-back 3xx does not: that one ends with the source
+		// sentence, which names the variable and never its value.
+		namesBase bool
+	}{
+		{target.URL + "/signin?state=qtok77SECRET", []string{"HTTP " + strconv.Itoa(http.StatusFound), "asked the broker " + brokerURLVar + " names"}, false},
+		{"/magic/AbCtok9f3SECRET", []string{"HTTP " + strconv.Itoa(http.StatusFound), "asked the broker " + brokerURLVar + " names"}, false},
+		{target.URL + "/signin%zz?state=qtok77SECRET", []string{"the request failed"}, true},
 	} {
 		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header()["Location"] = []string{row.location}
-			w.WriteHeader(http.StatusFound)
+			// http.Redirect's own body, which names the target in an anchor: a 3xx answer
+			// carries one for a GET, and it must reach no output of this command either.
+			http.Redirect(w, r, row.location, http.StatusFound)
 		}))
 		_, stderr, _ := runAgentSecrets(t, binary, redirector.URL, keyDir, nil, "self")
 		redirector.Close()
 		if strings.Contains(stderr, "qtok77SECRET") || strings.Contains(stderr, "AbCtok9f3SECRET") || strings.Contains(stderr, "/signin") || strings.Contains(stderr, "/magic") {
 			t.Errorf("Location %q: stderr %q names the redirect's target", row.location, stderr)
 		}
-		if want := "(AGENT_SECRETS_URL names " + redirector.URL + "): " + row.class; !strings.Contains(stderr, want) {
-			t.Errorf("Location %q: stderr %q, want it to name %q", row.location, stderr, want)
+		for _, want := range row.wants {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("Location %q: stderr %q, want it to name %q", row.location, stderr, want)
+			}
 		}
+		if want := "(" + brokerURLVar + " names " + redirector.URL + ")"; row.namesBase && !strings.Contains(stderr, want) {
+			t.Errorf("Location %q: stderr %q, want it to name the base as %q", row.location, stderr, want)
+		}
+	}
+	if got := targetCalls.Load(); got != 0 {
+		t.Errorf("the redirect's target received %d requests, want none", got)
 	}
 }
 
@@ -529,7 +562,7 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 	counters.hideSettings()
 	keyDir := newKeyDir(t)
 
-	host := brokerSource(broker.URL).String()
+	host := brokerSource(brokeraddr.New(broker.URL)).String()
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "self")
 	if exit != 0 || !strings.Contains(stdout, "source: "+host+"\n") {
 		t.Fatalf("self against a broker with no settings route: exit %d, stdout %q, stderr %q; want a source line naming %s alone", exit, stdout, stderr, host)
@@ -572,7 +605,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 			if exit == 0 || strings.Contains(stdout, "the-child-ran") {
 				t.Fatalf("exit = %d, stdout %q; want a refusal and no command run", exit, stdout)
 			}
-			for _, want := range []string{row.what, brokerHost(row.base), brokerURLVar, row.base, "/v1/"} {
+			for _, want := range []string{row.what, brokerHost(brokeraddr.New(row.base)), brokerURLVar, row.base, "/v1/"} {
 				if !strings.Contains(stderr, want) {
 					t.Fatalf("stderr = %q; want it to name %q", stderr, want)
 				}
@@ -616,7 +649,7 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 		{"an error none of these covers", errors.New("something unforeseen"), "the request to the broker at secrets.internal.example failed", "answered"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			err := unreachable(base, http.MethodGet, base+"/v1/enrollments/self", &url.Error{Op: "Get", URL: base, Err: row.err})
+			err := unreachable(brokeraddr.New(base), http.MethodGet, base+"/v1/enrollments/self", &url.Error{Op: "Get", URL: base, Err: row.err})
 			var unreached *unreachableError
 			if !errors.As(err, &unreached) {
 				t.Fatalf("unreachable(%v) = %v, want an unreachableError", row.err, err)

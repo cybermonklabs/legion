@@ -177,7 +177,7 @@ resumes.
 
 A status written by an agent session on a running issue is set back by the daemon, and the
 architect is told who wrote it; only a person's move in the dashboard, the controller's
-`set_status`, or an operator's `legion status`, takes a running tree out. A move of your own
+`set_status`, or an operator's `legion issue status`, takes a running tree out. A move of your own
 between the workflow's own statuses — `in_progress`, `testing`, `needs_review`, `retro`, and
 `todo` on a root (on a child, `todo` reruns it) — on a running issue does not stay either: the
 daemon's status repair writes back the status of the phase the issue stands in, at each boot and
