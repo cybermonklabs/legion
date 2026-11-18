@@ -114,6 +114,34 @@ for (const [decided, word] of [
   });
 }
 
+// INFRA-3921: a login whose deadline passed before anybody decided it reads as expired - with no
+// decision before the broker's sweep ends it, and with its expired event as the decision after -
+// and the broker refuses every decision of it either way. So the page offers neither Approve nor
+// Deny, nor says what approving would do, and says in one line that it expired undecided.
+for (const [when, decided] of [
+  ["before the sweep", null],
+  ["after the sweep", { at: "2026-09-27T01:00:00Z", credential_id: null, event: "expired" }],
+] as const) {
+  test(`a looked-up login that expired before anyone decided it offers no decision (${when})`, async () => {
+    const lookup = spyOn(api, "lookupMachineCredential").mockResolvedValue({
+      ...machineRecord(decided === null ? null : { ...decided }),
+      state: "expired",
+    });
+    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+    try {
+      await lookUp();
+      expect(screen.getByText("This login expired before anyone decided it.")).toBeDefined();
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Deny" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Approving lets/)).not.toBeInTheDocument();
+    } finally {
+      cleanup();
+      lookup.mockRestore();
+      getMachineLogins.mockRestore();
+    }
+  });
+}
+
 // A service's login (the Legion daemon's) an older broker opened and a person approved starts
 // worker pods as the service, so a lookup of it never says the machine acts as the person who
 // approved it.

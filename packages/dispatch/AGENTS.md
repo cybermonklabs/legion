@@ -1179,6 +1179,16 @@ the one reading of that list - `listed` (empty under `null`), `loading` or `fail
 the section, the Inbox's empty state, its `Blocked on you` banner and both Inbox counts (the
 sidebar's and the compact header's)
 all read it, so a request one of them counts is one the section lists.
+A row whose `state` is `expired` - its deadline passed before anybody decided it, so the broker
+refuses every decision of it - is listed after the pending rows, as the broker orders them, and
+renders through `ExpiredRowLines`: the same summary, an "Expired" pill, a line "Its deadline
+passed" with a `Timestamp` of `expires_at`, a Dismiss button, and no link to the broker's page or
+to `/credentials/machine`. Dismiss posts `POST /api/v1/credential-requests/{id}/dismiss` through
+`useKeyedWrite` (`inline`, a label naming the row), shows a refused dismissal's broker message
+under the row, and reads the list again after either answer. A row with no `state`, from a broker
+older than the states, is pending. `pending.ts`'s `awaitsDecision` is the one rule that tells the
+two apart: an expired row waits on nobody, so no `Needs you` count holds it and it does not keep
+the Inbox from saying "Nothing needs you" (dispatch://INFRA-3921).
 
 `MachineLoginPage.tsx` (`/credentials/machine`) is the one page Dispatch renders a credential
 record on. `app.tsx` routes `/credentials/*` to the Inbox, and React Router ranks that static
@@ -1192,7 +1202,9 @@ requested/expiry timestamps; policy version; approver, the broker's `anyone`, wh
 secret's request and a service's machine login name, reading "Anyone signed in to Dispatch"; then
 the agent's reason) above
 `CredentialDecisionButtons.tsx` (the Approve/Deny pair, shown while the looked-up login carries no
-decision; a service's login gets Deny alone, since no person approves one any more).
+decision and the broker reads it as `pending`; a service's login gets Deny alone, since no person
+approves one any more). A login the broker reads as `expired`, before its sweep and after, shows
+the line "This login expired before anyone decided it." in their place.
 That lookup selects machine logins alone, and the broker leaves such a record's enrollment and both
 of its session ids empty, so the facts carry no enrollment, no worker slot and no session line; the
 session lines are the Inbox row's own. A record waiting on
@@ -1218,9 +1230,10 @@ service's login; otherwise its approver) with `403 NOT_APPROVER`, surfaced verba
 request's decision never reaches that rule through Dispatch: the broker answers
 `403 DECIDE_ON_BROKER_PAGE` to every caller on either decide route, which is why the Inbox row
 links the broker's page and Dispatch renders no Approve or Deny for a secret request at all.
-A login looked up already decided (`approved`, `denied`, `expired`, `cancelled`, `revoked`)
-renders that recorded decision and no buttons, as one decided here does; every broker error
-surfaces verbatim through `ApiError`'s message, never reworded.
+A login looked up already decided (`approved`, `denied`, `cancelled`, `revoked`) renders that
+recorded decision and no buttons, as one decided here does, and one the broker reads as `expired`
+renders the expired line above whether or not the sweep recorded its `expired` event; every
+broker error surfaces verbatim through `ApiError`'s message, never reworded.
 
 `RevocableList.tsx` is the revocable table both lists below render through: each section hands it
 its query (narrowed to the rows with `select`), its columns, its revoke call, an optional

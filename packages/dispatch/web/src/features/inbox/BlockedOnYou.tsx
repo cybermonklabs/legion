@@ -13,7 +13,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { useCredentialRequests } from "../credentials/pending";
+import { awaitsDecision, useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";
@@ -50,7 +50,9 @@ export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefin
 
 /** Everything that waits for the viewer themselves - every ask `waitingOnYou` keeps, and every
  *  pending credential request they may decide, as its approver or as anyone signed in -
- *  counted, with when the oldest of them began waiting (undefined when nothing does). The
+ *  counted, with when the oldest of them began waiting (undefined when nothing does). An expired
+ *  credential request is listed until somebody dismisses it, but nobody can decide it any more,
+ *  so it waits on nobody and is neither counted nor the oldest (`awaitsDecision`). The
  *  badges and the banner read this one rule, so every count of work waiting on the reader means
  *  the same thing whatever the list on screen is filtered to, and another kind of waiting item
  *  is added here once. An ask is counted only once the login resolves - a number taken over the
@@ -72,7 +74,7 @@ function needsYou(
 ): { count: number; oldest: string | undefined } {
   const since = [
     ...waitingOnYou(asks, viewer).map((ask) => ask.created_at),
-    ...credentialRequests.map((request) => request.requested_at),
+    ...credentialRequests.filter(awaitsDecision).map((request) => request.requested_at),
   ];
   const oldest = since
     .filter(isTimestamp)

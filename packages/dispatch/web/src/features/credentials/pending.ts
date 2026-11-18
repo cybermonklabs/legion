@@ -57,6 +57,15 @@ export interface CredentialRequests {
   status: "failed" | "listed" | "loading";
 }
 
+/** Whether `row` still waits on somebody's decision: a pending row, which a broker older than the
+ *  expired rows sends with no `state` at all. An expired row - its deadline passed before anybody
+ *  decided it, so every decision of it is refused - stays listed until somebody dismisses it, but
+ *  nothing waits on the viewer there: no `Needs you` count holds it, and it does not keep the
+ *  Inbox from saying that nothing needs them. */
+export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolean {
+  return row.state !== "expired";
+}
+
 /** The one reading of the credential-request list. The section that lists the requests, the
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
  *  request another does not show. */
