@@ -75,12 +75,15 @@ jobs:
       # 44143226907's for 44 minutes, until the job's budget cancelled it, and run
       # 44125069013's for 25 minutes. Each attempt carries 2 minutes, the 96 s plus 15 per cent
       # rounded up to the next whole minute (dispatch-browser.yaml's rule). The second attempt
-      # runs only when the first did not end in success, into the same workspace, which
-      # actions/checkout cleans and fetches again, and a second failure fails the job there.
-      # A step cut at its budget can leave its git running: the runner signals the action's own
-      # process, not the git processes it started (actions/runner, ProcessInvoker.cs). So the
-      # step between the two attempts ends every git process on the runner first. A hosted
-      # runner runs one job, so every such process is the first attempt's.
+      # runs only when the first did not end in success, and a second failure fails the job
+      # there. A step cut at its budget can leave its git running: the runner signals the
+      # action's own process, not the git processes it started (actions/runner,
+      # ProcessInvoker.cs). A git killed while it wrote refs or config can also leave a lock
+      # (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout does not delete
+      # before it reuses a directory: it deletes index.lock and shallow.lock alone
+      # (src/git-directory-helper.ts). So the step between the two attempts ends every git
+      # process on the runner, which runs this one job, and then empties the workspace, and the
+      # second attempt is a fresh clone.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
@@ -88,13 +91,16 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: End the git processes a first attempt cut at its budget leaves running
+      - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
         run: |
+          pgrep -a git || true
           pkill -KILL -x git || true
           pkill -KILL -f git-remote-http || true
           while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+          pgrep -a git || echo "no git process is left"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -292,13 +298,16 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: End the git processes a first attempt cut at its budget leaves running
+      - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
         run: |
+          pgrep -a git || true
           pkill -KILL -x git || true
           pkill -KILL -f git-remote-http || true
           while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+          pgrep -a git || echo "no git process is left"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
