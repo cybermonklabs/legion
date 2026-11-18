@@ -298,8 +298,6 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 			socket.close(gws.CloseServiceRestart, "")
 			return
 		case <-ctx.Done():
-			// The credential's own life ending is a rotation, which the page answers by reopening at
-			// once with a fresh one; any other end is its caller no longer resolving.
 			if errors.Is(context.Cause(ctx), errCredentialExpired) {
 				socket.close(contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
 			} else {

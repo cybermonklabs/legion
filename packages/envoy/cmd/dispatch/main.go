@@ -1309,8 +1309,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		// Dispatch asks nobody to sign in, refuses every cookie an earlier sign-in minted (requestIdentityFor), and serves
 		// its agent-token API alone.
 	case mode == "iap":
-		// checkSignInSettings has required DISPATCH_SIGNIN_DOMAIN, whose people the assertion's
-		// hd admits, and refused every other sign-in setting.
 		if iapAudience == "" {
 			return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE required: DISPATCH_IDENTITY=iap admits a request only on an assertion Identity-Aware Proxy signed for that audience, /projects/<project number>/global/backendServices/<backend service id> behind a load balancer")
 		}
@@ -1329,8 +1327,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	default:
 		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
 	}
-	// An audience another identity would ignore is refused rather than left unread: an operator
-	// who set it expects IAP's assertions to decide who signs in.
 	if iapAudience != "" && boot.IAPAudience == "" {
 		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
 	}

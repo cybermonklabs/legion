@@ -65,20 +65,19 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		return "", fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
 	case errors.As(err, &expired):
-		if _, refused := i.Rule.Person(expired.Claims); refused != nil {
-			slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(expired.Claims), "reason", refused)...)
-			return "", ErrNoIdentity
-		}
-		slog.Debug("dispatch: IAP assertion expired", "error", err)
-		return "", ErrCredentialExpired
+		claims = expired.Claims
 	case err != nil:
 		slog.Warn("dispatch: IAP assertion refused", "reason", oidc.Reason(err))
 		return "", ErrNoIdentity
 	}
-	email, err := i.Rule.Person(claims)
-	if err != nil {
-		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", err)...)
+	email, refused := i.Rule.Person(claims)
+	if refused != nil {
+		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", refused)...)
 		return "", ErrNoIdentity
+	}
+	if expired != nil {
+		slog.Debug("dispatch: IAP assertion expired", "error", err)
+		return "", ErrCredentialExpired
 	}
 	if err := i.People.Record(r.Context(), email); err != nil {
 		return "", err
