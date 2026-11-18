@@ -3385,9 +3385,6 @@ export default function envoyExtension(pi: PiApi): void {
         "warning"
       );
     };
-    // Whether this is the heartbeat armed first in this process, which the rig's seam stops
-    // (`HEARTBEAT_STOP_AFTER_MS`); a heartbeat the watchdog arms afterwards runs free.
-    const firstHeartbeat = heartbeatArmings === 0;
     const armedAt = Date.now();
     heartbeatArmings += 1;
     // The host's interval hands back no handle to clear (`SessionContext.setInterval`), so a
@@ -3403,16 +3400,6 @@ export default function envoyExtension(pi: PiApi): void {
     const tick = (cause: "interval" | "retry" | "watchdog"): void => {
       if (generation !== heartbeatArmings) return;
       const fromRetry = cause === "retry";
-      // The end this process's own watchdog exists for, as the rig drives it: this timer stops
-      // firing, and nothing of the tick below runs again (`../src/registration-watchdog`).
-      if (
-        firstHeartbeat &&
-        cause === "interval" &&
-        HEARTBEAT_STOP_AFTER_MS > 0 &&
-        Date.now() - armedAt >= HEARTBEAT_STOP_AFTER_MS
-      ) {
-        return;
-      }
       // A tick that registers nothing because the session is shutting down or has no id yet
       // still says the host's timer fired.
       if (cause === "interval") heartbeatTickedAt = Date.now();
@@ -3518,7 +3505,18 @@ export default function envoyExtension(pi: PiApi): void {
       }, delayMs);
       return delayMs;
     };
-    context.setInterval(() => tick("interval"), requireEnvoy().settings.heartbeatMs);
+    // The rig's seam for the end this process's own watchdog exists for
+    // (`HEARTBEAT_STOP_AFTER_MS`): the heartbeat armed first in this process stops firing that long
+    // after it was armed, and nothing of its tick runs again (`../src/registration-watchdog`); a
+    // heartbeat the watchdog arms afterwards runs free. It is chosen here, once, so the interval
+    // production arms runs the tick and nothing else.
+    const onInterval =
+      generation === 1 && HEARTBEAT_STOP_AFTER_MS > 0
+        ? () => {
+            if (Date.now() - armedAt < HEARTBEAT_STOP_AFTER_MS) tick("interval");
+          }
+        : () => tick("interval");
+    context.setInterval(onInterval, requireEnvoy().settings.heartbeatMs);
     heartbeatRegistered = true;
     // What the watchdog runs when it finds this heartbeat stopped: a heartbeat armed again, and
     // a tick of it at once, which registers. The tick's cause says it was the watchdog's, so its
