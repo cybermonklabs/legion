@@ -228,7 +228,7 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 		want  bool
 	}{{ghReadCalls(), true}, {ghGuardedCalls, false}, {ghGuardedLeafSpellings, false}, {guardedAPI, false}} {
 		for _, argv := range calls.argvs {
-			target, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories)
+			target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories)
 			if err != nil {
 				t.Errorf("ghTargetOf(%q) = %v", argv, err)
 				continue
@@ -314,7 +314,7 @@ func TestGhReadLeafCallsCoverEveryReadLeaf(t *testing.T) {
 		if _, listed := ghReadLeaves[leaf]; !listed {
 			t.Errorf("ghReadLeafCalls holds %q, which ghReadLeaves does not list", leaf)
 		}
-		if target, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || target.command != leaf {
+		if target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || target.command != leaf {
 			t.Errorf("ghTargetOf(%q) = %+v, %v; want the leaf %q", argv, target, err, leaf)
 		}
 		families[strings.Fields(leaf)[0]] = true
@@ -502,7 +502,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 			if want := "gh " + strings.Join(args, " ") + "\n" + ghRigReadEnv + "stdin " + strings.TrimSuffix(stdin, "\n") + "\n"; got.gh != want {
 				t.Errorf("gh recorded %q, want %q", got.gh, want)
 			}
-			target, err := ghTargetOf(args, nil, savedGhHelp, noGitRepository, ownersOwnDirectories)
+			target, err := ghTargetOfKept(t, args, nil, savedGhHelp, noGitRepository, ownersOwnDirectories)
 			if err != nil {
 				t.Fatalf("ghTargetOf(%q) = %v", args, err)
 			}
@@ -530,7 +530,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 		{"api", "-H", "Authorization: token " + ghFakeToken, "repos/acme/widgets/pulls"},
 	} {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
-			if target, err := ghTargetOf(args, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || !target.writesNothing {
+			if target, err := ghTargetOfKept(t, args, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err != nil || !target.writesNothing {
 				t.Fatalf("ghTargetOf(%q) = %+v, %v; want a call that writes nothing", args, target, err)
 			}
 			got := run(t, ghCheckAt(t, ghCheckRefusesACredential), "", args...)

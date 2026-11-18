@@ -184,15 +184,25 @@ type vmSampler struct {
 	ssh      []string
 	interval time.Duration
 	// silence is how long a stream may print nothing before it is taken for dead: the run's is
-	// vmSampleSilence, and a test shortens it rather than waiting half a minute.
+	// vmSampleSilence.
 	silence time.Duration
-	now     func() time.Time
-	lg      *log.Logger
+	// afterSilence arms a stream's silence timer, and nil is time.AfterFunc. A real timer starts
+	// with the ssh, so a test that must see a reading before the silence arms one it fires itself:
+	// a loaded machine can start the ssh later than any short silence.
+	afterSilence func(time.Duration, func()) vmIdleTimer
+	now          func() time.Time
+	lg           *log.Logger
 
 	mu      sync.Mutex
 	out     io.Writer
 	written int
 	failed  int
+}
+
+// vmIdleTimer is a stream's silence timer: a *time.Timer in a run.
+type vmIdleTimer interface {
+	Reset(time.Duration) bool
+	Stop() bool
 }
 
 // write appends one sample as a cgroup.jsonl line; a line that cannot be written is logged, not
@@ -359,7 +369,11 @@ func (s *vmSampler) stream(ctx context.Context, t *vmTarget) error {
 	// A VM whose script is wedged prints nothing and its ssh never ends, so the stream is killed
 	// once it has been silent for vmSampleSilence and started again, as any dead one is.
 	var silent atomic.Bool
-	idle := time.AfterFunc(s.silence, func() {
+	arm := s.afterSilence
+	if arm == nil {
+		arm = func(d time.Duration, f func()) vmIdleTimer { return time.AfterFunc(d, f) }
+	}
+	idle := arm(s.silence, func() {
 		silent.Store(true)
 		_ = cmd.Process.Kill()
 	})
@@ -413,7 +427,17 @@ func (s *vmSampler) run(ctx context.Context, targets []*vmTarget) {
 	wg.Wait()
 }
 
+// runVMSample is the vm-sample command: it samples until SIGINT or SIGTERM, or -until.
 func runVMSample(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return sampleVMs(ctx, args)
+}
+
+// sampleVMs is vm-sample under ctx: it samples until ctx ends or -until passes. A test ends it
+// by ending ctx once the file holds the readings it waits for, not after a span that a loaded
+// machine can use up before the first reading.
+func sampleVMs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("vm-sample", flag.ExitOnError)
 	out := fs.String("out", "", "the cgroup.jsonl to append every sample to (required)")
 	var targets vmTargets
@@ -448,8 +472,6 @@ func runVMSample(args []string) error {
 		return err
 	}
 	defer f.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if *until > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, *until)

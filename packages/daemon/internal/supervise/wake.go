@@ -76,14 +76,15 @@ const (
 // (judge, probe), the compaction refused for it (compactStart), the held suspension it ends
 // (wakeNow), the lifecycle recheck and the turn take-back its run makes (runWake), the parked
 // launch an operator's own delivery runs at once (runParkedLaunchNow), the second relaunch a
-// stale registration does not raise over it (staleRegistration) and the launch in flight the
-// operator API reports of a claim (api's relaunchWaits). Most of them reach it through
+// stale registration does not raise over it (staleRegistration), the launch in flight the
+// operator API reports of a claim (api's relaunchWaits) and the launch a delivery of the daemon's
+// outbox waits for (internal/daemon's wakeForDelivery). Most of them reach it through
 // launchWaits, which is this question asked of the wake a machine holds. A lane added later
 // decides every one of them by answering this, in one place, rather than by being added to a
 // list of kinds in each.
 //
-// It is exported for that last reader, which is in internal/api; nothing outside this package
-// writes a kind.
+// It is exported for those last two readers, which are in internal/api and internal/daemon;
+// nothing outside this package writes a kind.
 func StartsProcess(kind WakeKind) bool {
 	return kind == WakeLaunch || kind == WakePluginRefresh
 }
@@ -387,7 +388,7 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
-		return m.endHeld(ctx, true)
+		return m.endHeld(ctx, true, stopOwed)
 	}
 	if pause, holds := m.pauseHolds(); holds {
 		return m.pauseGate(ctx, waiting, pause)

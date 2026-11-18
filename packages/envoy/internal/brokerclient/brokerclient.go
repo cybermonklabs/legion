@@ -31,13 +31,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const (
@@ -111,22 +114,34 @@ func newRefusedError(status int, code, description string) *RefusedError {
 	}
 }
 
-func (e *RefusedError) Error() string {
-	if e.Description == "" {
-		return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s", e.Status, e.Code)
+func (e *RefusedError) Error() string { return e.PrintableText() }
+
+// PrintableText is this refusal's sentence, built from fixed words and the answered OAuth error's
+// own status, code and description alone, which is what lets internal/redact print it beside a
+// clean broker URL as it prints that answer (redact.Printable). The code and description go in
+// as the broker wrote them, so where they hold a control character redact prints the answer's
+// own quoted text instead. A caller's words around this error still print nothing there.
+func (e *RefusedError) PrintableText() string {
+	status := 0
+	if e.answer.Response != nil {
+		status = e.answer.Response.StatusCode
 	}
-	return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s: %s", e.Status, e.Code, e.Description)
+	if e.answer.ErrorDescription == "" {
+		return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s", status, e.answer.ErrorCode)
+	}
+	return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s: %s", status, e.answer.ErrorCode, e.answer.ErrorDescription)
 }
 
 // Unwrap is this refusal as the answered OAuth token-endpoint error it is, which is how every
 // caller of this package reads it. A broker failure is printed through internal/redact, whose
 // allow-list prints an error's own text only where it can prove that text carries nothing of
 // the URL the deployment configured, and an answered HTTP refusal is one of the kinds it
-// passes. Without this a refusal read as an unplaceable failure and printed as "the request
-// failed", losing the broker's reason — that the request names no session, that no entry lists
-// this account — which is the only part a person can act on; beside a broker URL that carries
-// a credential, whose text redact prints no part of, the status on this answer is what names
-// the refusal rather than that same "the request failed".
+// passes, with this refusal's sentence over it (PrintableText). Without this a refusal read as
+// an unplaceable failure and printed as "the request failed", losing the broker's reason — that
+// the request names no session, that no entry lists this account — which is the only part a
+// person can act on; beside a broker URL that carries a credential, whose text redact prints no
+// part of, the status on this answer is what names the refusal rather than that same "the
+// request failed".
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
@@ -169,8 +184,9 @@ func (e *RefusedError) PodSessionUnregistered() bool {
 type Config struct {
 	// BrokerURL is the broker's base URL, with or without the slashes it ends in: New drops
 	// every one of them (WithoutTrailingSlashes), and an address that is nothing but slashes
-	// counts as no broker URL at all.
-	BrokerURL string
+	// counts as no broker URL at all. It is a brokeraddr.Address so that no log line or error of
+	// this client can print the credential such an address may carry.
+	BrokerURL brokeraddr.Address
 	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
 	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
 	// made at start.
@@ -217,7 +233,7 @@ type Config struct {
 
 // Client trades Config's identity for the broker's access tokens and keeps one live.
 type Client struct {
-	brokerURL string
+	brokerURL brokeraddr.Address
 	key       *ecdsa.PrivateKey
 	subject   Source
 	actor     Source
@@ -252,9 +268,9 @@ func WithoutTrailingSlashes(raw string) string { return strings.TrimRight(raw, "
 // New is the client Config describes. It refuses a configuration that could never trade — no
 // broker, no key, no identity — rather than failing at the first call.
 func New(cfg Config) (*Client, error) {
-	brokerURL := WithoutTrailingSlashes(strings.TrimSpace(cfg.BrokerURL))
+	brokerURL := brokeraddr.New(WithoutTrailingSlashes(strings.TrimSpace(cfg.BrokerURL.Raw())))
 	switch {
-	case brokerURL == "":
+	case brokerURL.Empty():
 		return nil, errors.New("brokerclient: no broker URL")
 	case cfg.Key == nil:
 		return nil, errors.New("brokerclient: no DPoP key: a trade is judged on a proof of the caller's own key")
@@ -511,57 +527,84 @@ type tokenAnswer struct {
 // post sends one trade and reads the answer. A refusal the broker answered with an OAuth error
 // is a RefusedError; everything else — a broker that did not answer, a 5xx, an answer that is
 // not this grant's — is an error a renewal may ask about again.
+//
+// The endpoint is built from the address's Raw, since the request must reach the broker as
+// configured; every error names it as shown, brokeraddr's Call of it, and wraps a failure of the
+// request itself through the address's Error, so no error of a trade carries a user name,
+// password, query or fragment the configured address holds.
 func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
 	defer cancel()
-	endpoint := c.brokerURL + TokenPath
+	endpoint := c.brokerURL.Raw() + TokenPath
+	shown := c.brokerURL.Call(endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, c.brokerURL.Error(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	base := c.http.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	proofed := &http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout}
+	// The form carries the subject token, and the actor token on a person's trade, so a
+	// redirect is refused (redirects.Refused): a broker answering 3xx, or anyone answering for
+	// it, gets the 3xx back as the non-2xx it is, and its Location is sent nothing.
+	proofed := redirects.Refused(&http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout})
 	resp, err := proofed.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), endpoint, err)
+		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("read the broker's answer from %s: %w", endpoint, err)
+		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
 	}
 	var answer tokenAnswer
 	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
-		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %w", endpoint, err)
+		// The decoder's error quotes the value it could not read, which is the answer's own
+		// text, so it prints as the address lets that text print (brokeraddr.Address.Words).
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
 	}
 	if resp.StatusCode/100 != 2 {
+		// The broker's own words are its answer's text, and a caller prints what it is
+		// handed: `legion controller start` with %w, `agent-secrets self` on stderr, and
+		// this client's own log. So they are redacted here, where the configured address
+		// is known, rather than at each of those. On a clean address the redactor prints
+		// the refusal's sentence - RefusedError is a redact.Printable over an answered
+		// OAuth error with a code and no error_uri - or, where the broker's words hold a
+		// control character, that answer's own quoted text; on one that is not clean it
+		// prints the status alone, since a broker, or anyone answering for it, can repeat
+		// the credential the address carries in the words it answers with; any other
+		// answer prints its words as the address lets them (brokeraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription)
+			return nil, c.brokerURL.Error(newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
-		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", endpoint, resp.StatusCode, answer.Error)
+		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
-	return c.read(endpoint, answer)
+	return c.read(shown, answer)
 }
 
 // read is the answer as a Token, refusing one that is not this grant's: no access token, a token
 // type that is not DPoP, no expiry, or a refresh token — the exchange issues none, and a client
-// that kept one would hold a credential this contract says is never minted.
-func (c *Client) read(endpoint string, answer tokenAnswer) (*Token, error) {
+// that kept one would hold a credential this contract says is never minted. shown is the token
+// endpoint as a message may print it (brokeraddr.Address.Call), never the endpoint as built.
+//
+// The three values these messages quote are the broker's own answer, so they print as the
+// address lets them (brokeraddr.Address.Words): beside an address that is not clean, whoever
+// answers for the broker could put the credential the address carries in them.
+func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
+	quoted := func(value string) string { return c.brokerURL.Words(strconv.Quote(value)) }
 	switch {
 	case answer.AccessToken == "":
-		return nil, fmt.Errorf("the broker at %s answered no access token", endpoint)
+		return nil, fmt.Errorf("the broker at %s answered no access token", shown)
 	case !strings.EqualFold(answer.TokenType, "DPoP"):
-		return nil, fmt.Errorf("the broker at %s answered token_type %q, and this grant mints DPoP-bound tokens alone", endpoint, answer.TokenType)
+		return nil, fmt.Errorf("the broker at %s answered token_type %s, and this grant mints DPoP-bound tokens alone", shown, quoted(answer.TokenType))
 	case answer.RefreshToken != "":
-		return nil, fmt.Errorf("the broker at %s answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead", endpoint)
+		return nil, fmt.Errorf("the broker at %s answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead", shown)
 	}
 	seconds, err := answer.ExpiresIn.Int64()
 	if err != nil || seconds <= 0 {
-		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%q)", endpoint, answer.ExpiresIn.String())
+		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, quoted(answer.ExpiresIn.String()))
 	}
 	token := &Token{
 		AccessToken:  answer.AccessToken,
@@ -572,7 +615,7 @@ func (c *Client) read(endpoint string, answer tokenAnswer) (*Token, error) {
 	if answer.CredentialExpiresAt != "" {
 		expires, err := time.Parse(time.RFC3339, answer.CredentialExpiresAt)
 		if err != nil {
-			return nil, fmt.Errorf("the broker at %s answered a %s that is no RFC 3339 time (%q)", endpoint, oauthwire.ExtraCredentialExpiresAt, answer.CredentialExpiresAt)
+			return nil, fmt.Errorf("the broker at %s answered a %s that is no RFC 3339 time (%s)", shown, oauthwire.ExtraCredentialExpiresAt, quoted(answer.CredentialExpiresAt))
 		}
 		token.CredentialExpiresAt = expires.UTC()
 	}

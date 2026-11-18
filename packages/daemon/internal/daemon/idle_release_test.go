@@ -540,7 +540,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	logs := &testlog.Buffer{}
 	rig.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 
-	woken, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
+	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	if err != nil || !woken {
 		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
 	}
@@ -564,7 +564,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	// And a wake that meets the open resume of a role whose process is running resumes nothing:
 	// that pod is back, which is what the refusal means when the claim is no longer released.
 	before := len(rig.rt.CallsOf("Resume"))
-	woken, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0)
+	woken, _, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0)
 	if err != nil || woken {
 		t.Fatalf("the wake of a running claim = %t, %v; want it to wake nothing", woken, err)
 	}

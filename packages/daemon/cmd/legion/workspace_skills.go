@@ -13,8 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workspaceSkillsUsage = "legion workspace-init skills --repo <owner>/<repo> --dir <dir>"
-
 // workspaceSkills clones the deployment's skills marketplace (`runtime.kubernetes.skills_repository`)
 // into the pod's skills volume and writes the three records beside it: the commit, the marketplace
 // catalog's name and the plugins it names (workspace.CloneSkills). It is an issue pod's third init

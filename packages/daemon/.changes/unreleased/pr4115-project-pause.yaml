@@ -12,7 +12,7 @@ body: |-
   pause holds across a restart. `legion state` and the state route show the pause and the last
   pause, and the daemon logs each pause, stop, resume and released row. A daemon under
   `runtime: tmux`, with `idle_minutes: 0` or with `worker_wakes_per_minute: 0` refuses a pause with
-  `PAUSE_UNAVAILABLE`, and `legion start --check-config` prints `pause unavailable: <setting>`.
+  `PAUSE_UNAVAILABLE`, and `legion config check` prints `pause unavailable: <setting>`.
   While paused, the operations that would start a turn of another session answer `PROJECT_PAUSED`.
   A claim of another project's issue, which `legion claims spawn` makes under the daemon's own
   project, is paused like any other claim. The architect-stalled wake and the stalled-tree notice

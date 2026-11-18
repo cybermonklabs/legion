@@ -8,21 +8,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 )
 
-// projectCommands is the operator's hand on the daemon's project as a whole, one subcommand per
-// operator project route (internal/api/pause.go) and the one list `legion project --help` names.
-// pause stops every role of the project but the controller and holds every launch, task and
-// admission until resume lets the held work out through the wake pacing
-// (dispatch://INFRA-3759); the daemon acts on its own project, so neither names one.
-var projectCommands = map[string]command{
-	"pause":  runProjectPause,
-	"resume": runProjectResume,
+// newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
+// operator project route (internal/api/pause.go). pause stops every role of the project but the
+// controller and holds every launch, task and admission until resume lets the held work out
+// through the wake pacing (dispatch://INFRA-3759); the daemon acts on its own project, so neither
+// names one.
+func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
+	return group(&cobra.Command{Use: "project", Short: "pause the daemon's project, holding every role's work but the controller's, or resume it"},
+		projectCommand("pause", "pause the project: stop every role but the controller and hold their work", projectPause, stdout, stderr),
+		projectCommand("resume", "end the project's pause and let the held work out through the wake pacing", projectResume, stdout, stderr),
+	)
 }
 
-func runProject(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "project", projectCommands, args, stdout, stderr)
+// projectCommand is `legion project <sub>`: declare gives it the flags of its own beside the ones
+// every project command takes (newProjectCall), and answers its body.
+func projectCommand(sub, short string, declare func(c *projectCall) action, stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: sub, Short: short, Args: noArguments}
+	cmd.RunE = runs(declare(newProjectCall(cmd, stdout, stderr)))
+	return cmd
 }
 
 // projectRoute is the root of the daemon's operator project routes.
@@ -35,9 +43,10 @@ type projectCall struct {
 	asJSON *bool
 }
 
-// newProjectCall is one `legion project` subcommand's flags: the operator's three and --json.
-func newProjectCall(sub, usage string, stdout, stderr io.Writer) *projectCall {
-	c := newOperatorCall("project "+sub, usage, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
+// newProjectCall gives cmd, one `legion project` subcommand, its flags: the operator's three and
+// --json.
+func newProjectCall(cmd *cobra.Command, stdout, stderr io.Writer) *projectCall {
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
 	return &projectCall{operatorCall: c, asJSON: c.flags.Bool("json", false, "print the daemon's answer as it served it")}
 }
 
@@ -54,29 +63,31 @@ func (c *projectCall) send(ctx context.Context, path string, body any, print fun
 	return c.operatorCall.send(ctx, op, http.MethodPost, projectRoute+path, body, print)
 }
 
-// runProjectPause is `legion project pause --reason <text>`: the daemon stops every role of its
+// projectPause is `legion project pause --reason <text>`: the daemon stops every role of its
 // project but the controller and holds their work, records the operator as who paused and why,
 // and tells the controller. The daemon refuses a second pause, naming the one that stands, and a
-// configuration that cannot hold a pause, naming the setting (`legion start --check-config` names
-// it too).
-func runProjectPause(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newProjectCall("pause", "usage: legion project pause --reason <text> [flags]", stdout, stderr)
+// configuration that cannot hold a pause, naming the setting (`legion config check` names it
+// too).
+func projectPause(c *projectCall) action {
 	reason := c.flags.String("reason", "", "why the project is paused: the pause records it and the controller is told it (required)")
-	if code, ok := c.parse(args, "operator-token-file", "reason"); !ok {
-		return code
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("operator-token-file", "reason"); !ok {
+			return code
+		}
+		return c.send(ctx, "/pause", api.OperatorPauseRequest{Reason: *reason}, printPauseAnswer)
 	}
-	return c.send(ctx, "/pause", api.OperatorPauseRequest{Reason: *reason}, printPauseAnswer)
 }
 
-// runProjectResume is `legion project resume`: the daemon ends its project's pause, whoever made
-// it, records the operator as who ended it, tells the controller, and lets the held work out
-// through the wake pacing.
-func runProjectResume(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newProjectCall("resume", "usage: legion project resume [flags]", stdout, stderr)
-	if code, ok := c.parse(args, "operator-token-file"); !ok {
-		return code
+// projectResume is `legion project resume`: the daemon ends its project's pause, whoever made it,
+// records the operator as who ended it, tells the controller, and lets the held work out through
+// the wake pacing.
+func projectResume(c *projectCall) action {
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("operator-token-file"); !ok {
+			return code
+		}
+		return c.send(ctx, "/resume", nil, printResumeAnswer)
 	}
-	return c.send(ctx, "/resume", nil, printResumeAnswer)
 }
 
 // printPauseAnswer is the pause the daemon began, as one line.

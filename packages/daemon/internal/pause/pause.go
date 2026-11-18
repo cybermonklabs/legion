@@ -69,7 +69,7 @@ const (
 // wake path and the release's backstop, which run only under runtime: kubernetes with
 // idle_minutes above 0, and the resume lets the held work out through the wake pacing, which
 // worker_wakes_per_minute: 0 turns off (dispatch://INFRA-3759/artifact/decisions-md). `legion
-// start --check-config` names the same setting (decision 21).
+// config check` names the same setting (decision 21).
 func Unavailable(cfg config.Config) (Setting, bool) {
 	switch {
 	case cfg.Runtime.Kubernetes == nil:

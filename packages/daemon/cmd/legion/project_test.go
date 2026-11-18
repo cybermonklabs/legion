@@ -150,8 +150,8 @@ func stateLines(out, prefix string) []string {
 // --reason <text>` and `legion project resume` pause and resume the project with the operator's
 // token and record the operator; `legion state` prints one line with the pause's since, by, reason
 // and the roles it waits on while the project is paused, and one line with the last pause and who
-// ended it while it runs; and `legion start --check-config` names each setting under which a
-// daemon cannot hold a pause.
+// ended it while it runs; and `legion config check` names each setting under which a daemon cannot
+// hold a pause.
 func TestPauseCommands(t *testing.T) {
 	t.Run("pause, state, resume, state", func(t *testing.T) {
 		d := newPauseCommandDaemon(t)
@@ -245,9 +245,9 @@ func TestPauseCommands(t *testing.T) {
 		}
 	})
 
-	// `legion start --check-config` names the gap under each setting that turns the pause off, and
-	// says nothing of the pause for a file that can hold one; the exit stays 0 either way.
-	t.Run("check-config names the setting that turns the pause off", func(t *testing.T) {
+	// `legion config check` names the gap under each setting that turns the pause off, and says
+	// nothing of the pause for a file that can hold one; the exit stays 0 either way.
+	t.Run("config check names the setting that turns the pause off", func(t *testing.T) {
 		legionState(t)
 		tmux, _ := workflowConfig(t, 13370, "")
 		for _, tc := range []struct {
@@ -261,9 +261,9 @@ func TestPauseCommands(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				var out, errb bytes.Buffer
-				code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", tc.config}, &out, &errb)
+				code := run(context.Background(), []string{"legion", "config", "check", "--config", tc.config}, &out, &errb)
 				if code != 0 || errb.Len() != 0 {
-					t.Fatalf("legion start --check-config = %d, stderr %q; want 0", code, errb.String())
+					t.Fatalf("legion config check = %d, stderr %q; want 0", code, errb.String())
 				}
 				if named := strings.Count(out.String(), "pause unavailable: "); tc.want == "" && named != 0 {
 					t.Fatalf("stdout %q names a pause gap for a file that can hold a pause", out.String())

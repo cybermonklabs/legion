@@ -234,9 +234,8 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 	}
 }
 
-// Each operation the usage line names answers --help, exit 0, with its own usage, as the docs
-// site's CLI generator reads every subcommand a usage line names (docs/site/generators/legion-cli.sh),
-// and reads no request.
+// Each operation the usage line names answers --help, exit 0, with its own usage, and reads no
+// request: git-credential reads its own arguments (passThrough), so a help request is its own.
 func TestGitCredentialOperationsAnswerHelp(t *testing.T) {
 	for _, op := range []string{"get", "store", "erase"} {
 		code, stdout, stderr := runGitCredentialHere(t, "protocol=https\nhost=github.com\n\n", op, "--help")
