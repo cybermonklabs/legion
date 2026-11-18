@@ -54,6 +54,9 @@ type fakeGitHub struct {
 	// more requests to one path so, and no others.
 	limitEverything bool
 	limitOnce       map[string]int
+	// failOnce answers that many more requests to one path with GitHub's 502, which is no rate
+	// limit and no answer about anything: GitHub's own trouble (failNext).
+	failOnce map[string]int
 	// stalls is how long one path's answer is held back before it is given, which is how a test
 	// makes GitHub slower than the pass's own bound (stall).
 	stalls map[string]time.Duration
@@ -119,6 +122,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		suites:        map[string][]object{},
 		etags:         map[string]string{},
 		limitOnce:     map[string]int{},
+		failOnce:      map[string]int{},
 		stalls:        map[string]time.Duration{},
 		statuses:      map[string]int{},
 		refusedChecks: map[string]struct{}{},
@@ -199,8 +203,8 @@ func commitKey(r *http.Request) string {
 	return r.PathValue("owner") + "/" + r.PathValue("repo") + "@" + r.PathValue("sha")
 }
 
-// serve records one request, answers it as a rate limit or with its path's status when a test
-// asked for that, and otherwise hands it to the routes above.
+// serve records one request, answers it as a rate limit, as GitHub's own failure, or with its
+// path's status when a test asked for that, and otherwise hands it to the routes above.
 func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, fakeRequest{
@@ -212,6 +216,11 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	if left := f.limitOnce[r.URL.Path]; left > 0 {
 		f.limitOnce[r.URL.Path] = left - 1
 		limited = true
+	}
+	failed := false
+	if left := f.failOnce[r.URL.Path]; left > 0 {
+		f.failOnce[r.URL.Path] = left - 1
+		failed = true
 	}
 	stall := f.stalls[r.URL.Path]
 	status := f.statuses[r.URL.Path]
@@ -233,6 +242,10 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10))
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		return
+	}
+	if failed {
+		http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 		return
 	}
 	if status != 0 {
@@ -360,6 +373,13 @@ func (f *fakeGitHub) rateLimitNext(path string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.limitOnce[path]++
+}
+
+// failNext answers the next request to path with GitHub's 502 Bad Gateway, and no other request.
+func (f *fakeGitHub) failNext(path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failOnce[path]++
 }
 
 // stall holds back every answer to path by wait, as GitHub answering a poller slowly does. A

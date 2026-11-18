@@ -410,7 +410,7 @@ Each item below names a task and where its code is, then notes on it.
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
   one pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
-  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.mapped`), so no pass asks GitHub about a name it cannot read;
+  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.covered`), so no pass asks GitHub about a name it cannot read;
   an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
   The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
@@ -2717,11 +2717,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `issue.claimed` and `issue.released` carry `IssueClaimEventPayload {key, status, repo, resolved_repo, claim, previous_claim?, reason}` (`repo` and `resolved_repo` as on every issue event);
   the outbox publishes both to the previous claimant's own `notifications.agent.<session_id>` topic (`publishPreviousClaimant`), whatever the issue's route and regardless of `notify`, so a session learns it no longer holds the work.
 
-- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), which must be a mapping of its project;
-  the composite foreign key `issues_repo_mapped_to_project` to `repo_projects (repo, project)` makes that a database invariant.
+- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), any repository at all — one its project maps, one another project maps, one no project maps.
+  Migration `20261112004945` dropped the composite foreign key `issues_repo_mapped_to_project` that held it to a mapping of its project, and the unique constraint on `repo_projects (repo, project)` that backed only that key, because a project works wherever its issues say (INFRA-2543).
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` take it (`api/issue_repo.go`:
   absent leaves it, `null` clears it, a string is canonicalised as a mapping's path is;
-  not `owner/name` is `400 INVALID_ISSUE`, not mapped `400 REPO_NOT_MAPPED`, checked under a key-share lock on the mapping row so the mapping cannot move or go before the write commits;
+  not `owner/name` is `400 INVALID_ISSUE`;
   a closed issue refuses it, `409 ISSUE_CLOSED`).
   Every issue read and every issue event carries `repo` and `resolved_repo`, resolved on read by `refs.IssueRepoTerms`, the server's one repository-resolution rule (`internal/dispatch/refs/issues.go`, spliced by `api`'s issue reads with `refs.IssueRepoJoin` and `refs.IssueRepoColumns`):
   one walk climbs the parent chains of every issue the read answers for at once — its `subjects` term, which is a listing's page, a listing's whole match or the one issue a read names — and each issue takes the nearest issue on its chain (itself first) whose own `repo` is set, else its project's default mapping (`repo_projects.is_default`, at most one per project by the partial unique index `repo_projects_default_per_project`, read for every project of the read in one join), else null.
@@ -2741,7 +2741,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The API repairs an acyclic one: `PATCH` an ancestor that still reads (its `GET` answers 200) with `{"parent": null}`.
   The `PATCH` reads the issue it changes first (`issue_patch.go`), so a parent loop none of whose members reads, which only direct SQL can write, needs a database repair (`update issues set parent_key = null` on one member).
   A mapping's `PUT` takes `default` and moves the project's default in one transaction;
-  a mapping that issues name is neither deleted nor moved to another project (`409 REPO_PROJECT_IN_USE`, counted under the mapping's row lock);
+  a mapping that issues name as their repository is deleted and moved like any other, since an issue's own repository needs no mapping;
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
   Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
   an advisory lock on the repository, the event owners of every project it touches, then the row.
@@ -3585,8 +3585,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A current unit sends no title or summary text, because the stream keeps an envelope for its whole retention window and no deletion on the unit can recall it, so a reader fetches the current text through those links.
   A `summary_ready` payload also copies `status`, `summary_preset`, `summary_model`, `timestamp`, `version` and `payload_type`, and an older unit's `title` and `summary` (capped, with `body_truncated` when cut) still pass when present.
 
-- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is optional for trusted Ghost Wispr deployments;
-  when unset, skip signature verification explicitly rather than half-verifying missing headers.
+- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is required when `ENVOY_WEBHOOKS` names `ghostwispr`, as the GitHub and Slack secrets are for theirs:
+  an empty or blank value refuses the listener's start with an error naming the variable (`LoadWebhookConfig`, `internal/webhook/config.go`).
+  The handler checks the signature of every event, and `verify.GhostWispr` answers false for an empty secret, so a handler built with an empty secret publishes nothing and answers 401 to each request that reaches the check.
+
+- Every signature check in `internal/verify` (`Github`, `Slack`, `GhostWispr`) answers false when its secret is empty, the signature made with the empty key included.
+  The listener's start-up already refuses an enabled webhook whose secret is empty; the check's own refusal covers a handler that something else builds, such as a test.
 
 - GitHub mention routing is additive: matching comments publish to both `.comment` and `.mention` topics.
 

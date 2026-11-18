@@ -146,16 +146,17 @@ func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
 	}
 }
 
-// Only a mapped repository is read, and a repository two rows name -- the name it had and the
-// name it has -- is read once, because GitHub answers both rows with one id.
-func TestAPassReadsEachMappedRepositoryOnce(t *testing.T) {
+// A repository neither a mapping nor an issue names is not read, and a repository two rows name
+// -- the name it had and the name it has -- is read once, because GitHub answers both rows with
+// one id.
+func TestAPassReadsEachCoveredRepositoryOnce(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.mapRepository("acme/widgets-old")
 	h.listHead()
 	// Both rows resolve to the one repository GitHub holds, under the name it has now.
 	h.github.setRepository("acme/widgets-old", gitHubRepository, repositoryID)
-	// A repository of the same App that no row maps.
+	// A repository of the same App that no mapping and no issue names.
 	h.github.setRepository("acme/unmapped", "Acme/Unmapped", 777)
 	h.github.setPullRequests("Acme/Unmapped", fakePull{number: 3, sha: headSHA})
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -166,7 +167,7 @@ func TestAPassReadsEachMappedRepositoryOnce(t *testing.T) {
 
 	for _, request := range h.github.received() {
 		if strings.Contains(strings.ToLower(request.url), "unmapped") {
-			t.Fatalf("the pass read a repository no row maps: %s %s", request.method, request.url)
+			t.Fatalf("the pass read a repository no mapping and no issue names: %s %s", request.method, request.url)
 		}
 	}
 	if asked := h.queriesFor(gitHubRepository); asked != 1 {
@@ -803,6 +804,29 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 			h.mapRepository(rowRepository)
 		},
 		causeHas: []string{"not installed", rowRepository},
+	}, {
+		name: "a mapped repository the App is not installed on, on a pass that holds GitHub's earlier answer",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			// A pass before the one measured asks GitHub and holds its answer, so the measured pass
+			// asks GitHub nothing about the repository and must still note the fault it stands for.
+			measured := h.reconciler.GitHubReads
+			h.reconciler.GitHubReads = nil
+			h.pass()
+			h.reconciler.GitHubReads = measured
+		},
+		causeHas: []string{"not installed", rowRepository},
+	}, {
+		name: "a repository only an issue names that the App is not installed on",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.issueInRepository(uninstalledRow)
+			h.listHead()
+			h.github.setCheckRuns(gitHubRepository, headSHA,
+				checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+			)
+		},
+		succeeded: true,
 	}, {
 		name: "a repository whose identity GitHub answers 404",
 		arrange: func(h *harness) {

@@ -371,7 +371,7 @@ the same App every 5 minutes, so a GitHub failure of those reads shows there wit
 An attempt is one pass of a loop, on the server that holds the loop's lease. It is recorded when
 the pass ends, in place of the attempt before it. A pass records nothing when it sent GitHub
 nothing and met no failure: for example, the sweep before NATS connects, a CI reconcile with no
-mapped repository, an architecture import with no enabled source, or a delivery reconcile with no
+repository to read, an architecture import with no enabled source, or a delivery reconcile with no
 delivery settings and no pull request to read again. A pass that the server's shutdown cut short
 records nothing either. The same reads made by a route or a command record nothing.
 
@@ -388,11 +388,12 @@ The second kind is a part of its read that a loop gives up:
 
 - The webhook redelivery sweep: the list of the App webhook's deliveries fails, GitHub refuses a
   redelivery request, or a rate limit stops the sweep.
-- The CI reconcile: a mapped repository it cannot read (it gets no token for it, GitHub does not
-  answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot be
-  listed), a pull request head it cannot read (an answer too large included), or a rate limit
-  that ends the pass, also one already in force when the pass starts. A read that the pass's own
-  time limit cut short is not one of these.
+- The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
+  not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
+  be listed), a repository a project maps that the App is not installed on, a pull request head it
+  cannot read (an answer too large included), or a rate limit that ends the pass, also one already
+  in force when the pass starts. A read that the pass's own time limit cut short is not one of
+  these.
 - The architecture import: the sync of a source fails at a step that reads GitHub, which is its
   installation token, its branch head, its directory listing or its files. That includes the App
   not installed on the source's repository, a missing Contents permission, and a branch that
@@ -416,6 +417,8 @@ These answers are not failures. The loop takes each one as data and goes on, so 
   longer installed on (the delivery reconcile marks it as one it cannot fetch);
 - a pull request head that GitHub no longer has, or of a repository the App cannot read (the
   reconcile marks it as read);
+- a repository that only an issue names, which the App is not installed on (the CI reconcile
+  passes over it);
 - a `304 Not Modified`;
 - a page that the delivery reconcile asks for again after a 502, a 504 or a timeout, and then
   reads;
