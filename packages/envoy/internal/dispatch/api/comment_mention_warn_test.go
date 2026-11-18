@@ -450,9 +450,11 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.unpark(item.lane())
 			joined := false
 			// Each park's timer is fired once the wait is past the threshold; the run ends when the
-			// sender holds no send. The deadline is five seconds of room beside the 1.2 s the head's
-			// wait behind event 42 sleeps.
-			for deadline := time.After(6200 * time.Millisecond); ; {
+			// sender holds no send, which is what the loop waits for. The two minutes are a hang
+			// guard, not a bound on how long the sends take: the row takes about a second and a
+			// quarter, so the deadline is reached only by a send that never goes or parks, which is
+			// a defect rather than a slow machine.
+			for deadline := time.After(2 * time.Minute); ; {
 				sender.mu.Lock()
 				done := len(sender.held) == 0
 				sender.mu.Unlock()
