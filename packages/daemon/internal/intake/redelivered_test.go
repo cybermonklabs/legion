@@ -93,6 +93,17 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	natsURL := js.Conn().ConnectedUrl()
 
 	listener := startListener(t, binaries.listener, natsURL)
+	// The listener answers /healthz healthy before it publishes its first listener_ready report on
+	// notifications.legion.wake: Envoy's cmd/listener stores what /healthz reads, then starts the
+	// reports in a goroutine of their own. The daemon's wake durable, which OpenConsumers creates at
+	// the next message, applies a report stored after it, and processed_events then holds a fact
+	// from source envoy beside the GitHub delivery. So the consumers open only once the listener has
+	// logged the report published, which it does after the stream acknowledged it, so no retry of it
+	// follows. The listener's next report comes five minutes later (cmd/listener/wake.go,
+	// listenerReadyInterval).
+	testwait.Eventually(t, "the listener to publish its first listener_ready report", func() bool {
+		return strings.Contains(listener.line(t, "legion wake report published"), `"kind":"listener_ready"`)
+	})
 
 	logs := &warnings{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
