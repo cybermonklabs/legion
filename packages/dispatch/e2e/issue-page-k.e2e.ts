@@ -1080,6 +1080,7 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const addresses = new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b`, "u");
+    const specSlug = await primarySlug(seeded.key);
     for (const size of [DESKTOP, PHONE_K]) {
       const where = `Plan at ${size.width} px`;
       await page.setViewportSize(size);
@@ -1125,7 +1126,7 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
         planBody(page).locator('[data-node-row][data-node-type="plan_task"]'),
         `the steps on ${where} do not draw a row for each task of the plan`
       ).toHaveCount(seeded.planTasks.length);
-      expectRowLayouts(await rowLayouts(page), where, false, size.width);
+      expectRowLayouts(await rowLayouts(page, specSlug), where, false, size.width);
       expectRowGroups(await rowGroups(page), where, size.width, addresses);
       if (size === DESKTOP) await expectChartAfterAFailedRead(page, seeded);
     }
