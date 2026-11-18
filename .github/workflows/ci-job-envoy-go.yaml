@@ -35,15 +35,16 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's four 10-minute runs, which is 41; after that step's measured
-    # 3 minutes the unit step's own 20 is 24; after the unit step, which runs strictly fewer
+    # plain race-impossible step's three 10-minute runs, which is 31; after that step's 5 minutes
+    # (its measured 2 before the API's claim model joined it, the model's 2 min 10 s, and the API's
+    # test build) the unit step's own 20 is 26; after the unit step, which runs strictly fewer
     # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 43 (two packages, which go test starts at once
+    # exceed that, the store-form count's own 5 is 46 (two packages, which go test starts at once
     # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
-    # database skip count's own timeout-minutes of 25 is 64
+    # database skip count's own timeout-minutes of 25 is 66
     # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
     # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10
-    # and the bus matrix's own 5 are 60, and the integration step's 5 is less.
+    # and the bus matrix's own 5 are 62, and the integration step's 5 makes 67.
     timeout-minutes: 70
     services:
       postgres:
@@ -126,7 +127,8 @@ jobs:
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
       # either and missing here fails the ci-filters job naming this step. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s, so 10 minutes each is ample.
+      # 127 s; and on a dev box at GOMAXPROCS=2, the claim model's four periods 1 min 59 s for the
+      # sender as built and 11 s for its blind control. So 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
