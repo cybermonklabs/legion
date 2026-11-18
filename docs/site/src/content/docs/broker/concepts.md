@@ -837,17 +837,14 @@ path prefixes it may travel on
 the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
-A host written as an IP address is written in its canonical form, with no brackets, zone, port
-or trailing dot: `2001:db8:7::1` and not `2001:db8:7:0::1` or `[2001:db8:7::1]`, `93.184.216.34`
-and not `::ffff:93.184.216.34`, `93.184.216.34.` or `093.184.216.34`, because the proxy compares a
-request's address in that form. A host name is written without a trailing dot too
+A host is a host name, never an IP address: a TLS client sends no server name for an address, so
+the proxy refuses every request to an address in its canonical form `sni mismatch`, and it
+compares no other spelling of one at all (`2001:db8:7:0::1`, `[2001:db8:7::1]`,
+`::ffff:192.0.2.10`, `192.0.2.10.`). A host name is written without a trailing dot too
 (`api.github.com`, not `api.github.com.`), because a client writes it that way. The broker
-refuses to start with a file that writes an address any other way, that writes a name with a
-trailing dot, that gives any host a port, that has an empty host, or whose host ends in a number
-that is no such address, and `airlock-check` refuses that file too. Even written that way, an
-IP-address host carries no value for a client that sends no SNI for an address, which is every
-standard client: the proxy decrypts the request and then refuses it `sni mismatch`. The refusal
-at start still matters, because the proxy tunnels a CONNECT to a host in any other form unread.
+refuses to start with a file that gives a host as an address in any spelling, that writes a
+name with a trailing dot, that gives any host a port, that has an empty host, or whose host ends
+in a number, and `airlock-check` refuses that file too.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate

@@ -1072,33 +1072,38 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL-API-KEY", "hosts": ["api.deel.com"]}]}`),
 			want: []string{"secrets[0]", "DEEL-API-KEY", "not an agent secret name", "holds nothing back"},
 		},
-		// The proxy compares a request's address in netaddr.Host's form, so a host written in
-		// another form binds nothing: the entry would read as covering an address whose
-		// CONNECT the proxy tunnels unread. The refusal names the form to write and repeats
-		// only that parsed address, never the host as written.
+		// An IP address binds no secret in any spelling: in its canonical form a client sends
+		// no TLS server name for it, so every request is refused "sni mismatch", and the proxy
+		// compares no other form. Each is refused with that one reason, which repeats nothing
+		// of the host as written.
+		"an IPv4 address": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "192.0.2.10"]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "binds no secret in any spelling", "sni mismatch", "host name"},
+			absent: []string{"192.0.2.10"},
+		},
 		"an IPv6 address not written in its canonical form": {
 			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "2001:db8:7:0::1"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 2001:db8:7::1"},
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "binds no secret in any spelling", "host name"},
 			absent: []string{"2001:db8:7:0::1"},
 		},
 		"an IPv4-mapped IPv6 address": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["::ffff:93.184.216.34"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["::ffff:192.0.2.10"]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "binds no secret in any spelling", "host name"},
 			absent: []string{"::ffff:"},
 		},
 		// A CONNECT's host reaches the proxy without its brackets (net.SplitHostPort), so a
 		// host written in brackets matches no request either.
 		"an IPv6 address in brackets": {
 			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "[2001:db8:7::1]"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 2001:db8:7::1"},
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "binds no secret in any spelling", "host name"},
 			absent: []string{"[2001"},
 		},
 		// A client writes an address with no dot after it, so a host written with one matches
 		// no request.
 		"an IPv4 address with a trailing dot": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "93.184.216.34."]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
-			absent: []string{"216.34."},
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "192.0.2.10."]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "binds no secret in any spelling", "host name"},
+			absent: []string{"2.10."},
 		},
 		// netip reads no IPv4 address with a leading zero, and clients read one as different
 		// addresses, so the refusal names no form.
@@ -1170,9 +1175,9 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 }
 
 // TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the host rows above:
-// hosts written in the form the proxy compares — an IPv6 address, an IPv4 address, a name and a
-// wildcard — and an IPv6 address and a name in upper or mixed case, which fold.ASCII alone changes
-// and airlock.HostBound folds, are no obstacle to the boot, and the broker goes on to serve.
+// host names written in the form the proxy compares — a name and a wildcard — and a name in upper
+// or mixed case, which fold.ASCII alone changes and airlock.HostBound folds, are no obstacle to
+// the boot, and the broker goes on to serve. No address is among them: an address binds no secret.
 func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
@@ -1184,7 +1189,7 @@ func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
 		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
-			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "API.Deel.com", "*.deel.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}
+			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "API.Deel.com", "*.deel.com", "s3.us-east-1.amazonaws.com"]}
 		]}`),
 	)})
 	requireHealthy(t, broker.Addr)
