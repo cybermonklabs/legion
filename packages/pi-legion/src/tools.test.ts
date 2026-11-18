@@ -244,13 +244,18 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
   "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
   "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
-  "empty. The daemon refuses it, stopping nothing, for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
-  "between states (CLAIM_UNSETTLED), for the project's controller, which the daemon relaunches itself " +
-  "(CLAIM_IS_CONTROLLER), and for a claim whose worker stream showed a step in the last 20 minutes, which is in " +
+  "empty. The daemon refuses it, stopping nothing, for a grant that is not the controller's (CONTROLLER_REQUIRED), " +
+  "for a token it holds no claim under (NO_CLAIM), for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
+  "between states (CLAIM_UNSETTLED), for the project's controller, which only the daemon relaunches, and only " +
+  "where it runs the controller itself (controller: daemon in legion.yaml) (CLAIM_IS_CONTROLLER), and for a " +
+  "claim whose worker stream showed a step in the last 20 minutes, which is in " +
   "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
   "wait, or whose last activity report since its launch is missing or shows a background job or a " +
   "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
-  "it through. The refusals coded LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
+  "it through. While the daemon is stopping it answers 503 with no code and stops nothing: relaunch again once " +
+  "it is back. RELAUNCH_FAILED says the relaunch failed or the daemon could not record it, and the claim may " +
+  "already be stopped: read it in read_state before you relaunch it again. The refusals coded " +
+  "LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
   "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +
   "(the old process outlived its stop), POD_UNREACHABLE (every claim of a pod of two or more claims is " +
   "unreachable) and RELAUNCHED_RECENTLY (the claim was relaunched in the last 6 hours) are cases for a person: " +

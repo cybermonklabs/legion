@@ -22,9 +22,11 @@
  * are 137 s at the 99th percentile and 1,148 s at most. A shorter trigger would restart heartbeats
  * that are only slow.
  *
- * Its retries back off to at most a minute, so a session whose host timers are gone for good
- * still registers every minute rather than once, and no session asks the listener faster than
- * that. A tick of the heartbeat it restarted ends the retries: the session's own cadence is back.
+ * Its retries back off to at most a minute, so no session asks the listener faster than that. A
+ * registration the listener accepts rests it until that registration is a window old, so a session
+ * whose host timers are gone for good still registers, about every 5 minutes, at the edge of
+ * Envoy's live window, rather than once. A tick of the heartbeat it restarted ends the retries: the
+ * session's own cadence is back.
  */
 
 /** How long a session may run with no accepted registration and no heartbeat tick before its

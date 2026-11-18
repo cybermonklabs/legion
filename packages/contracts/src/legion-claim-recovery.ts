@@ -107,18 +107,23 @@ export const LegionCompactResponse = z.object({
  * claim's process again on the session the claim recorded, as it does after a death, and
  * charges it nothing; the resumed session reads what its cut turn did.
  *
- * The daemon refuses with nothing stopped a claim it can reach (`CLAIM_REACHABLE`), one between
- * states (`CLAIM_UNSETTLED`), the project's own controller, which the daemon relaunches itself
- * (`CLAIM_IS_CONTROLLER`), one whose worker stream showed a step in the last 20 minutes, which
- * is in a turn whose session sent an activity report in that turn in the last 20 minutes, whose
- * open call is not a `wait`, or whose last activity report since its launch is missing or shows
- * background work (`RELAUNCH_GUARD`), one it relaunched in the last 6 hours
- * (`RELAUNCHED_RECENTLY`), one whose pod holds two or more claims none of which is reachable
- * (`POD_UNREACHABLE`), one whose launcher is not connected (`LAUNCHER_NOT_CONNECTED`), and one
- * whose launch would replace the pod and end every other role in it (`RELAUNCH_REPLACES_POD`);
- * it refuses with nothing more done a claim whose process outlived its stop
- * (`PROCESS_OUTLIVED_STOP`). Every refusal but the first three and the guard's is a case for a
- * person. A token that names no claim the daemon holds is `NO_CLAIM`. */
+ * The daemon refuses with nothing stopped a grant that is not the controller's
+ * (`CONTROLLER_REQUIRED`, 403), a token that names no claim it holds (`NO_CLAIM`, 404), a claim it
+ * can reach (`CLAIM_REACHABLE`), one between states (`CLAIM_UNSETTLED`), the project's own
+ * controller, which only the daemon relaunches, and only where it runs the controller itself
+ * (`controller: daemon` in `legion.yaml`) (`CLAIM_IS_CONTROLLER`), one whose worker stream showed
+ * a step in the last 20 minutes, which is in a turn whose session sent an activity report in that
+ * turn in the last 20 minutes, whose open call is not a `wait`, or whose last activity report
+ * since its launch is missing or shows background work (`RELAUNCH_GUARD`), one it relaunched in
+ * the last 6 hours (`RELAUNCHED_RECENTLY`), one whose pod holds two or more claims none of which
+ * is reachable (`POD_UNREACHABLE`), one whose launcher is not connected
+ * (`LAUNCHER_NOT_CONNECTED`), and one whose launch would replace the pod and end every other role
+ * in it (`RELAUNCH_REPLACES_POD`); and every relaunch while the daemon is stopping, with a 503 that
+ * carries no code. It refuses with nothing more done a claim whose process outlived its stop
+ * (`PROCESS_OUTLIVED_STOP`). `RELAUNCH_FAILED` (500) is a relaunch that failed, or whose record
+ * the daemon could not write, and the claim may already be stopped. `RELAUNCHED_RECENTLY`,
+ * `POD_UNREACHABLE`, `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD` and `PROCESS_OUTLIVED_STOP`
+ * are cases for a person. */
 export const LegionRelaunchRequest = z.strictObject({
   grantId: nonEmptyString,
   claim: nonEmptyString,
