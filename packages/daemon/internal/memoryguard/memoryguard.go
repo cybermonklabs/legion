@@ -385,17 +385,26 @@ const (
 	stopped
 )
 
-// afterKill is the kill a waiting guard watches: the process held, whose exit ends the wait, the
-// same process by its pid and start time (killed), which the guard never ends again while it has
-// not exited (leaveOut), the reading at the kill, which the reading must fall below (fell), and
-// when the wait passes at the latest.
+// afterKill is the kills a waiting guard watches, all sent at one reading: each process killed
+// (kills), whose exits end the wait, and which the guard never ends again while it has not exited
+// (leaveOut); the reading at the kills, which the reading must fall below (fell); and when the wait
+// passes at the latest. exited is whether every one of them has exited. Its kills keep their
+// storage from one kill to the next (endWait).
 type afterKill struct {
-	handle   Handle
-	killed   procKey
+	kills    []killedProc
 	reading  uint64
 	deadline time.Time
 	exited   bool
 	fallen   bool
+}
+
+// killedProc is one process a waiting guard killed: the process held, by its pidfd, whose answer
+// to Exited is of that process alone, the same process by its pid and start time (key), and
+// whether it has exited.
+type killedProc struct {
+	handle Handle
+	key    procKey
+	exited bool
 }
 
 // The three numbers of the order of ends (rank, INFRA-3531 R1 of spec version 22). An armed guard
@@ -936,7 +945,7 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 // endHeld ends the first of the held processes, the ones the assessment at the reading before,
 // in the band, found the guard may end, at the reading taken at now, the first at or above the
 // mark, and answers whether it sent the kill. It scans no process table and reads no descriptor
-// before the kill (sendKill). The order is the order of ends (rank) at now, by each process's
+// before the kill (signalKill). The order is the order of ends (rank) at now, by each process's
 // growth over its held reads (orderHeld). Where one of them has grown, it decides on the held
 // reads alone and reads no smaps before the kill, and the held processes keep the identities the
 // band read: growth puts the first first there, and the fork discount orders only processes of
@@ -1007,6 +1016,14 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 // band held never gives a rise up. The kill's line says which sizes it was chosen by: the held
 // reads alone (sizesBand), with smaps it read again (sizesReread), or with processes it found
 // started since (sizesSearch).
+//
+// Where the reading is at or above the urgent share it ends every held process that grew over the
+// window, not only the first (endAt, INFRA-3531 R1 of spec version 39), and so it reads the band's
+// growers and the held processes new to the stay with memory of their own again within the half
+// interval (rereadHeld) also where one of them grew by the held reads: a grower whose step came
+// between the band's last reading and this one shows it only in a read at the mark, and each keeps
+// the larger of its growth by the held reads and by its read at the mark. The reads again do not
+// stop at the first grower they find; they stop once the half interval has passed.
 func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	floor := share(limit, s.FloorPercent)
 	grew, heldBytes := g.orderHeld(now)
@@ -1021,9 +1038,9 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	// now among them; the found ones are discounted by the table that placed them, each as it is
 	// read, and one decision reads a parent's whole arguments once (argsCache).
 	var cache argsCache
-	if !grew {
+	if !grew || reading >= urgentShare(limit, s.ActPercent) {
 		half, whole := now.Add(s.Interval/2), now.Add(s.Interval)
-		grewSince := g.rereadHeld(now, half, &cache)
+		grewSince := g.rereadHeld(now, half, &cache) || grew
 		g.discountForks(g.held, g.heldTable, &cache)
 		read := g.heldNewRead(now)
 		if !grewSince {
@@ -1051,7 +1068,7 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	}
 	g.sinceStayKill(now, g.held, g.heldTable)
 	rank(g.held)
-	return g.sendKill(now, s, reading, limit, g.held[0], sizes, readField)
+	return g.endAt(now, s, reading, limit, g.held, sizes, readField)
 }
 
 // newRead is what the reads at the mark have read of the processes new to the stay that the guard
@@ -1212,7 +1229,7 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 //
 // It lists the processes once, and takes the band's table as it is: a listed pid that table holds
 // is that process, and it reads nothing of it. A pid that another process took within one interval
-// is improbable, and sendKill reads its target's start time before the kill, so a reused pid is
+// is improbable, and signalKill reads its target's start time before the kill, so a reused pid is
 // never signalled: decide then assesses the reading. Every other listed pid is a process started
 // since, whose stat, exe, ns/pid and arguments it reads as a scan does (readProcess), the highest
 // pid first, the order gVisor and Linux allocate pids in, so the newest first; a pid space that has
@@ -1377,13 +1394,15 @@ func placeStarted(t *Table, started map[int]*Process) []*Process {
 // read after the processes started since (readHeldNew). It reads them to deadline by the guard's
 // clock, which it reads between two smaps reads and at no other time: it reads the first however
 // much of the budget the reading at the mark itself took, and once deadline has passed it stops
-// after the read in hand. Those it has not read keep their held sizes and no growth, so the
-// decision is made on what it read; a held process new to the stay that it has not reached is not
-// among the new ones the order takes, unless the guard reads it yet (readHeldNew, settleNew). At
-// 9d6d24df, `4g-latepool-lmnt5` sent its first kill 100.68 ms after the reading at the mark, past
-// one interval: its six growers had one band read each, and the guard read all six growing
-// processes' smaps again before the kill under the pod's CPU throttle. endHeld gives it half the
-// interval.
+// after the read in hand. Those it has not read keep their held sizes and their growth by the held
+// reads, none below the urgent share, where endHeld reads again only where no held read grew; at a
+// reading at or above it one it reads keeps the larger of that growth and its growth at the mark
+// (INFRA-3531 R1 of spec version 39). So the decision is made on what it read; a held process new
+// to the stay that it has not reached is not among the new ones the order takes, unless the guard
+// reads it yet (readHeldNew, settleNew). At 9d6d24df, `4g-latepool-lmnt5` sent its first kill
+// 100.68 ms after the reading at the mark, past one interval: its six growers had one band read
+// each, and the guard read all six growing processes' smaps again before the kill under the pod's
+// CPU throttle. endHeld gives it half the interval.
 func (g *Guard) rereadHeld(now, deadline time.Time, cache *argsCache) (grew bool) {
 	defer g.releaseSmaps()
 	slices.SortFunc(g.held, func(x, y candidate) int {
@@ -1404,7 +1423,13 @@ func (g *Guard) rereadHeld(now, deadline time.Time, cache *argsCache) (grew bool
 					continue
 				}
 				c.size = size + c.descriptorBytes
-				grew = g.keepSize(now, &c) || grew
+				// Where a held read showed growth (orderHeld), at a reading at or above the urgent
+				// share, the read at the mark keeps it: the window at the mark can hold no earlier
+				// read of a process the band read last more than growthWindow before.
+				held := c.growth
+				g.keepSize(now, &c)
+				c.growth = max(c.growth, held)
+				grew = grew || c.growth > 0
 			}
 		}
 		kept = append(kept, c)
@@ -1487,33 +1512,46 @@ func (g *Guard) rereadOrder(c candidate) (tier int, growth uint64) {
 	return notReread, 0
 }
 
-// watch decides on a reading at or above the mark while the guard waits after a kill, by the rule
-// of INFRA-3531 R1 of spec version 25. It reads the sizes of what it may end at each reading, so
-// that their order and their growth since the kill (grownSinceKill) are known whenever it decides.
-// While the killed process has not exited it is left out of what the guard may end, of their sum
-// against the floor and of the growth since the kill (leaveOut): the guard has ended it, and never
-// ends or reports it again. While the killed process has not exited and the wait has not passed,
-// it ends nothing, because the reading can fall below the mark as the rest of the process's memory
-// goes. Once the process has exited or the wait has passed, it ends the next in the order (act),
-// at once, where the reading has fallen, since the kill freed something and the pod is still at
-// the mark, and where it has not fallen but a process it may end has grown since the kill and
-// those processes hold at least the floor between them, since a kill that frees less than one
-// interval's rise leaves the pod rising toward the kernel's kill point. Where neither holds it ends
-// nothing and decides again at the next reading, until the wait has passed; then it gives the rise
-// up with reason not fallen, whichever of the two failed, since the kill's freeing nothing is why
-// it stops. So a rise that is a protected process's own, which no kill lowers and in which nothing
+// watch decides on a reading at or above the mark while the guard waits after the kills of a
+// reading, by the rule of INFRA-3531 R1 of spec version 25: one kill, or, at a reading at or above
+// the urgent share, the kills of every process that grew over the window (endAt, spec version 39).
+// It reads the sizes of what it may end at each reading, so that their order and their growth
+// since the kill (grownSinceKill) are known whenever it decides. While a killed process has not
+// exited it is left out of what the guard may end, of their sum against the floor and of the
+// growth since the kill (leaveOut): the guard has ended it, and never ends or reports it again.
+// While a killed process has not exited and the wait has not passed, it ends nothing, because the
+// reading can fall below the mark as the rest of the process's memory goes. Once every killed
+// process has exited or the wait has passed, it ends the next in the order (act), at once, where
+// the reading has fallen, since the kills freed something and the pod is still at the mark, and
+// where it has not fallen but a process it may end has grown since the kill and those processes
+// hold at least the floor between them, since a kill that frees less than one interval's rise
+// leaves the pod rising toward the kernel's kill point. Where neither holds it ends nothing and
+// decides again at the next reading, until the wait has passed; then it gives the rise up with
+// reason not fallen, whichever of the two failed, since the kill's freeing nothing is why it
+// stops. So a rise that is a protected process's own, which no kill lowers and in which nothing
 // the guard may end grows, costs at most one kill.
 func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	w := &g.wait
-	w.exited = w.exited || w.handle.Exited()
+	if !w.exited {
+		// Each handle is asked before the scan, so a process that exits after the scan read it
+		// is still left out of this reading's decision.
+		w.exited = true
+		for i := range w.kills {
+			k := &w.kills[i]
+			k.exited = k.exited || k.handle.Exited()
+			w.exited = w.exited && k.exited
+		}
+	}
 	w.fallen = w.fallen || fell(w.reading, reading, mark)
 	passed := !now.Before(w.deadline)
 	a, ok := g.assessAt(now)
 	if !ok {
 		return
 	}
-	if !w.exited {
-		a.leaveOut(w.killed)
+	for _, k := range w.kills {
+		if !k.exited {
+			a.leaveOut(k.key)
+		}
 	}
 	// At every reading of the wait, so that a process first read after a kill has its first read
 	// kept. It answers whether one grew since the previous kill, the go-on, and sets each one's
@@ -1541,6 +1579,16 @@ func bandStart(limit uint64, act int) uint64 {
 		return 0
 	}
 	return mark - band
+}
+
+// urgentShare is the reading at and above which a kill ends every process the guard may end that
+// grew over the window, and not only the first in the order (endAt, INFRA-3531 R1 of spec version
+// 39): the mark at act percent of limit plus half the distance from the mark to limit, 92.5% of
+// limit at the default act share of 85. It derives from the act share, so it has no setting of its
+// own.
+func urgentShare(limit uint64, act int) uint64 {
+	mark := share(limit, act)
+	return mark + (limit-mark)/2
 }
 
 // assessAt is an assessment of the processes at the reading taken at now (assess), with the
@@ -1580,72 +1628,110 @@ func fell(atKill, reading, mark uint64) bool { return reading < atKill || readin
 // was not an armed guard's in the band), the held first has exited or its pid names another process
 // (its start time changed), or the held sizes, or the sizes read again, are under the floor or name
 // no process. It decides every kill after a kill of the rise too (watch), on each reading's own
-// sizes (sizesReading). The kill, and what keeps it from a process that ended or whose pid another
-// process took, is sendKill's.
+// sizes (sizesReading). The kills, one or, at a reading at or above the urgent share, every
+// process that grew over the window, are endAt's.
 func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessment) {
 	if len(a.endable) == 0 || a.endableBytes < share(limit, s.FloorPercent) {
 		g.stopRise(now, reasonNothingToEnd, reading, limit, a)
 		return
 	}
-	if g.sendKill(now, s, reading, limit, a.endable[0], sizesReading, "") {
+	if g.endAt(now, s, reading, limit, a.endable, sizesReading, "") {
 		g.keepKillSizes(now, a.endable, nil)
 	}
 }
 
-// sendKill sends SIGKILL to target through a pidfd, logs the kill's ended line and reports it, with
-// target's size as the guard read it and reading, the reading taken at now that the kill is sent
-// at, the rule that put target first (candidate.rule), sizes, where the sizes it was chosen by came
-// from, and newRead, what the reads at the mark read of the processes new to the stay for a kill
-// they decided (newRead.field), "" for any other, and starts the wait after it; it answers whether
-// it sent the kill. Before the kill it reads nothing of the pod but target's stat, for its start
-// time. A process that ended (exited, whether its parent has reaped it yet or not), or whose pid
-// another process took, since it was read is not killed and not reported, and the guard decides
-// again: at this reading where the band's held reads named it (endHeld), and otherwise at the next
-// reading, whose scan leaves out a zombie. One that exits in the instant between the handle's
-// Exited and its Kill is still reported, since no read can close that window. A process the kill
-// fails on for any other reason is logged once and counted unread from then on (noteKillFailure),
-// so the next decision ends the next in the order.
-func (g *Guard) sendKill(now time.Time, s Settings, reading, limit uint64, target candidate, sizes, newRead string) bool {
+// endAt ends cs[0], the first of cs, the processes the guard may end at the reading taken at now
+// in its order of ends (rank), and, where the reading is at or above the urgent share
+// (urgentShare), each other of cs that grew over the window, so every process that grew over it
+// ends at that reading, each with its own ended line and its own report: near the limit one kill a
+// reading cannot absorb a burst of several growers (INFRA-3531 R1 of spec version 39). This issue's
+// tester measured, at 8023d298, a reading 148 ms late on a 1.5-CPU pod let six growers' first 64
+// MiB steps land before the first reading at the mark, which read 93.88% of the limit, and one kill
+// a reading then left the pod 2.8 MiB from the kill point (`4g-t4latepool-r2`). rank puts the
+// processes that grew over the window first, so those are a run of cs from its first; where none
+// grew, endAt ends one process. The first keeps the rule that put it first (candidate.rule), and
+// each other the urgent rule (ruleUrgent); each carries sizes and newRead, the same decision's.
+// The floor was read on cs as a whole, once, by the caller. Each kill is signalKill's, and one that
+// it does not send, of a process that ended or whose pid another process took, is left out: where
+// the first is not sent endAt sends none and answers false, so the caller decides again. Once the
+// first is sent, the wait after the kills starts (watch): it lasts while one of them has not
+// exited, and no longer than the wait setting.
+func (g *Guard) endAt(now time.Time, s Settings, reading, limit uint64, cs []candidate, sizes, newRead string) bool {
+	h := g.signalKill(cs[0])
+	if h == nil {
+		return false
+	}
+	at := g.clock.Now()
+	counter := g.readCounter(at)
+	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
+	g.reportKill(cs[0], cs[0].rule(), sizes, newRead, reading, counter, limit, shmem, at)
+	g.phase = waiting
+	g.wait.kills = append(g.wait.kills[:0], killedProc{handle: h, key: procKey{pid: cs[0].PID, start: cs[0].StartTime}})
+	g.wait.reading, g.wait.deadline, g.wait.exited, g.wait.fallen = reading, now.Add(s.Wait), false, false
+	if reading < urgentShare(limit, s.ActPercent) {
+		return true
+	}
+	for i := 1; i < len(cs) && cs[i].growth > 0; i++ {
+		if h := g.signalKill(cs[i]); h != nil {
+			g.reportKill(cs[i], ruleUrgent, sizes, newRead, reading, counter, limit, shmem, g.clock.Now())
+			g.wait.kills = append(g.wait.kills, killedProc{handle: h, key: procKey{pid: cs[i].PID, start: cs[i].StartTime}})
+		}
+	}
+	return true
+}
+
+// signalKill sends SIGKILL to target through a pidfd and answers the pidfd, nil where it sent no
+// kill. Before the kill it reads nothing of the pod but target's stat, for its start time. A
+// process that ended (exited, whether its parent has reaped it yet or not), or whose pid another
+// process took, since it was read is not killed and not reported, and the guard decides again: at
+// this reading where the band's held reads named it (endHeld), and otherwise at the next reading,
+// whose scan leaves out a zombie. One that exits in the instant between the handle's Exited and its
+// Kill is still killed and reported, since no read can close that window. A process the kill fails
+// on for any other reason is logged once and counted unread from then on (noteKillFailure), so the
+// next decision ends the next in the order.
+func (g *Guard) signalKill(target candidate) Handle {
 	h, err := g.signal.Open(target.PID)
 	if err != nil {
 		g.killFailed(target.Process, err)
-		return false
+		return nil
 	}
 	if start, err := readStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
 		_ = h.Close()
-		return false
+		return nil
 	}
 	// An exited process its parent has not reaped yet keeps its pid and its start time, so the
 	// check above passes it, and the kill of it answers no error. The handle is asked because it
 	// holds the very process the kill goes to, so its answer is of that process and of no other.
 	if h.Exited() {
 		_ = h.Close()
-		return false
+		return nil
 	}
 	if err := h.Kill(); err != nil {
 		_ = h.Close()
 		g.killFailed(target.Process, err)
-		return false
+		return nil
 	}
-	at := g.clock.Now()
-	counter := g.readCounter(at)
-	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
+	return h
+}
+
+// reportKill logs the ended line of target, killed at at, and reports it, with target's size as
+// the guard read it and reading, the reading taken at the kill, rule, the rule that ended it,
+// sizes, where the sizes it was chosen by came from, and newRead, what the reads at the mark read
+// of the processes new to the stay for a kill they decided (newRead.field), "" for any other; and
+// counter and shmem, read once for the kills of a reading.
+func (g *Guard) reportKill(target candidate, rule, sizes, newRead string, reading, counter, limit, shmem uint64, at time.Time) {
 	g.writeKill(Kill{
 		LauncherMemoryKill: shimwire.LauncherMemoryKill{
 			PID: target.PID, Executable: processName(target.Process), SizeBytes: target.size,
 			ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at, Cause: shimwire.MemoryKillCauseGuard,
 		},
-		Role: target.role, Rule: target.rule(), Sizes: sizes, LessParent: target.lessParent, NewRead: newRead,
+		Role: target.role, Rule: rule, Sizes: sizes, LessParent: target.lessParent, NewRead: newRead,
 	}, shmem)
-	g.phase = waiting
-	killed := procKey{pid: target.PID, start: target.StartTime}
-	g.wait = afterKill{handle: h, killed: killed, reading: reading, deadline: now.Add(s.Wait)}
-	return true
 }
 
 // killFailed acts on a kill that failed: a system with no way to hold or signal a process turns
-// the guard off, a process that has ended (ESRCH) leaves the guard to decide again (sendKill), and
-// any other failure is noted against the process (noteKillFailure).
+// the guard off, a process that has ended (ESRCH) leaves the guard to decide again (signalKill),
+// and any other failure is noted against the process (noteKillFailure).
 func (g *Guard) killFailed(p *Process, err error) {
 	switch {
 	case errors.Is(err, errors.ErrUnsupported):
@@ -1822,27 +1908,28 @@ func (c *candidate) rule() string {
 }
 
 // assessment is one scan as the guard acts on it: the processes it may end, in the order it ends
-// them (rank), and their sizes' sum. leftOut is the pid of the process leaveOut took out of them,
-// 0 for none, and leftOutBytes its size.
+// them (rank), and their sizes' sum. leftOut is the pids of the processes leaveOut took out of
+// them, and leftOutBytes their sizes' sum.
 type assessment struct {
 	table        *Table
 	endable      []candidate
 	endableBytes uint64
-	leftOut      int
+	leftOut      []int
 	leftOutBytes uint64
 }
 
-// leaveOut takes the process key out of a, the process the guard has killed and which has not
+// leaveOut takes the process key out of a, a process the guard has killed and which has not
 // exited: out of the processes it may end, the order of the rest unchanged, so that the next it
 // ends is another; and out of their sum, so that the floor counts only what it may still end. A
 // process the guard has killed is so never killed or reported twice while it lingers. It is kept
-// as leftOut for the stopped line alone (stopRise).
+// in leftOut for the stopped line alone (stopRise).
 func (a *assessment) leaveOut(key procKey) {
 	for i, c := range a.endable {
 		if c.PID == key.pid && c.StartTime == key.start {
 			a.endableBytes -= c.size
 			a.endable = slices.Delete(a.endable, i, i+1)
-			a.leftOut, a.leftOutBytes = c.PID, c.size
+			a.leftOut = append(a.leftOut, c.PID)
+			a.leftOutBytes += c.size
 			return
 		}
 	}
@@ -2298,12 +2385,12 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 		return
 	}
 	var protected, unread uint64
-	counted := make(map[int]bool, len(a.endable)+1)
+	counted := make(map[int]bool, len(a.endable)+len(a.leftOut))
 	for _, c := range a.endable {
 		counted[c.PID] = true
 	}
-	if a.leftOut != 0 {
-		counted[a.leftOut] = true
+	for _, pid := range a.leftOut {
+		counted[pid] = true
 	}
 	for pid := range a.table.byPID {
 		if _, isUnread := a.table.unread[pid]; counted[pid] || isUnread {
@@ -2339,14 +2426,17 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 	g.stoppedAt, g.stoppedLeftOut = now, 0
 }
 
-// endWait lets go of the process a waiting guard holds, and of the sizes as of its kill (atKill):
-// the wait ends at the next kill of the rise, which keeps its own, and when the rise ends.
+// endWait lets go of the processes a waiting guard holds, and of the sizes as of their kill
+// (atKill): the wait ends at the next kill of the rise, which keeps its own, and when the rise
+// ends. The kills keep their storage for the next.
 func (g *Guard) endWait() {
 	if g.phase != waiting {
 		return
 	}
-	_ = g.wait.handle.Close()
-	g.wait = afterKill{}
+	for _, k := range g.wait.kills {
+		_ = k.handle.Close()
+	}
+	g.wait = afterKill{kills: g.wait.kills[:0]}
 	clear(g.atKill)
 	g.phase = armed
 }

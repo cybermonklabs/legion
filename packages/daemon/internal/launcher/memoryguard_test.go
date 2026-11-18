@@ -2191,16 +2191,21 @@ var (
 // mark it ends the largest grower, found by the search, new to the stay, its line taking nothing
 // off. It ends a grower at each reading, where one grew over the window, as new to the stay, or by
 // its growth since the stay's first kill, at a reading with no grower's step inside the window;
-// the parent and its forks show no growth. With the six growers ended, at the readings left, which
-// fall, it ends the largest: the probe's parent, at its whole 2.4 GB, its own program not its
-// parent's, the shell's; then, no read parent discounting the forks any longer, the newest fork at
-// its whole size. Neither the parent nor a fork ends while a grower lives. The reading at the mark
-// reads again the executable and arguments of a held process whose smaps it reads where the band
-// read it running its parent's program, so in djcvt and rjm8m the grower it reads ranks by its
-// whole size; a grower the band read before its exec that the mark did not read again has its
-// first read after the kill as its size as of the kill, so in rjm8m the guard goes on while the
-// growers grow and after a fall ends one by its growth since the first kill. Each first kill's line
-// says what the reads at the mark read of the processes new to the stay (new_read).
+// the parent and its forks show no growth. At a reading at or above the urgent share, 92.5% of the
+// limit, it ends every grower that grew over the window, the first by its tier and each other by
+// the urgent rule (INFRA-3531 R1 of spec version 39). With the six growers ended, at the readings
+// left, which fall, it ends the largest: the probe's parent, at its whole 2.4 GB, its own program
+// not its parent's, the shell's; then, no read parent discounting the forks any longer, the forks,
+// the newest first, each at its whole size. Neither the parent nor a fork ends while a grower
+// lives. The reading at the mark reads again the executable and arguments of a held process whose
+// smaps it reads where the band read it running its parent's program, so in djcvt and rjm8m the
+// grower it reads ranks by its whole size; a grower the band read before its exec that the mark did
+// not read again has its first read after the kill as its size as of the kill, so in rjm8m the
+// guard goes on while the growers grow and after a fall ends one by its growth since the first
+// kill. In `4g-t4latepool-r2` (8023d298) the band's last reading read the six growers at about
+// 1.5 MiB each, as djcvt's before their exec, and a reading 148 ms late let each one's first 64 MiB
+// step land before the first reading at the mark, 93.88%: the guard ends all six there. Each first
+// kill's line says what the reads at the mark read of the processes new to the stay (new_read).
 func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
 	const parent = 1700
 	for _, run := range []guardLatepoolRun{
@@ -2221,8 +2226,8 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			newRead: "9:9",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "new", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
-				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
-				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
 			},
 		},
 		{
@@ -2241,8 +2246,8 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			newRead: "9:9",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
-				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
-				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
 			},
 		},
 		{
@@ -2261,8 +2266,8 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			newRead: "1:1",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
-				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
-				{parent, "largest", "reading", 0},
+				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
 			},
 		},
 		{
@@ -2280,8 +2285,8 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			newRead: "6:6",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
-				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew-since-kill", "reading", 0},
-				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
 			},
 		},
 		{
@@ -2342,8 +2347,8 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			newRead: "1:1",
 			want: []guardEnded{
 				{1715, "new", "reread", 0}, {1714, "grew-since-kill", "reading", 0}, {1713, "grew", "reading", 0},
-				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
-				{parent, "largest", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
 			},
 		},
 		{
@@ -2368,9 +2373,34 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			grown:   []uint64{4, 70, 70, 134, 134, 198, 198},
 			newRead: "1:1",
 			want: []guardEnded{
-				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
-				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
-				{parent, "largest", "reading", 0},
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "urgent", "reading", 0},
+				{1712, "urgent", "reading", 0}, {1711, "urgent", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			// t4latepool-r2's band reads the growers once, at its last reading, 142 ms after the
+			// one before; the reading at the mark comes 148 ms after it, past the growers' first
+			// step.
+			name: "six growers' first steps in one late gap and the first reading at the mark at 93.88% (4g-t4latepool-r2)",
+			band: []guardReplayReading{{7887, 0}, {8174, 102 * time.Millisecond}, {8368, 111 * time.Millisecond},
+				{8368, 103 * time.Millisecond}, {8368, 103 * time.Millisecond}, {8368, 101 * time.Millisecond},
+				{8408, 135 * time.Millisecond}, {8408, 102 * time.Millisecond}, {8408, 102 * time.Millisecond},
+				{8408, 101 * time.Millisecond}, {8408, 103 * time.Millisecond}, {8408, 101 * time.Millisecond},
+				{8408, 102 * time.Millisecond}, {8408, 101 * time.Millisecond}, {8408, 103 * time.Millisecond},
+				{8408, 101 * time.Millisecond}, {8408, 102 * time.Millisecond}, {8408, 101 * time.Millisecond},
+				{8408, 103 * time.Millisecond}, {8408, 101 * time.Millisecond}, {8408, 102 * time.Millisecond},
+				{8408, 102 * time.Millisecond}, {8408, 101 * time.Millisecond}, {8408, 101 * time.Millisecond},
+				{8408, 102 * time.Millisecond}, {8408, 102 * time.Millisecond}, {8429, 142 * time.Millisecond}},
+			forksAt: 7,
+			mark:    guardReplayReading{9388, 148 * time.Millisecond},
+			preExec: 3 * guardMiB / 2,
+			grown:   []uint64{64},
+			newRead: "6:6",
+			atMark:  6,
+			want: []guardEnded{
+				{1715, "grew", "reread", 0}, {1714, "urgent", "reread", 0}, {1713, "urgent", "reread", 0},
+				{1712, "urgent", "reread", 0}, {1711, "urgent", "reread", 0}, {1710, "urgent", "reread", 0},
 			},
 		},
 	} {
@@ -2405,8 +2435,11 @@ type guardLatepoolRun struct {
 	// grown is each grower's size, less its 1 MiB offset and any block, in MiB, at the reading at
 	// the mark and at each reading after it.
 	grown []uint64
-	// newRead is the first kill's new_read, and lastNewRead, where set, the last kill's.
+	// newRead is the first kill's new_read, and lastNewRead, where set, the last kill's; atMark is
+	// how many kills the reading at the mark sends, one where it is 0: at or above the urgent share,
+	// every process that grew over the window (INFRA-3531 R1 of spec version 39).
 	newRead, lastNewRead string
+	atMark               int
 	want                 []guardEnded
 }
 
@@ -2499,11 +2532,14 @@ func replayGuardLatepool(t *testing.T, run guardLatepoolRun) {
 	stall.Store(int64(run.stall))
 	rig.tickAfter(run.mark.after - interval)
 	stall.Store(0)
-	if got, want := guardEndedLines(log), run.want[:1]; !slices.Equal(got, want) {
-		t.Fatalf("at the first reading at the mark the guard ended %+v, want a grower %+v; its log:\n%s", got, want, rig.log())
+	if got, want := guardEndedLines(log), run.want[:max(run.atMark, 1)]; !slices.Equal(got, want) {
+		t.Fatalf("at the first reading at the mark the guard ended %+v, want %+v; its log:\n%s", got, want, rig.log())
 	}
-	if got := guardNewRead(log, 1715); got != run.newRead {
-		t.Fatalf("the first kill's line says new_read=%s, want %s", got, run.newRead)
+	// The kills of the reading at the mark are one decision's, and each line carries its new_read.
+	for _, e := range run.want[:max(run.atMark, 1)] {
+		if got := guardNewRead(log, e.pid); got != run.newRead {
+			t.Fatalf("the line of pid %d, killed at the reading at the mark, says new_read=%s, want %s", e.pid, got, run.newRead)
+		}
 	}
 	for i, r := range run.after {
 		grow(i + 1)

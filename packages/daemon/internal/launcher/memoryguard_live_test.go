@@ -411,12 +411,14 @@ print("probe: done", flush=True)
 // lived through the guard's end of the last of them, also where the guard ended the probe's parent
 // first (awaitGrowers); the pod lived to the verdict line and the shim and the agent live; the
 // guard's first kill came within two intervals of its first reading at or above the mark
-// (markToKill); the guard went on as R1 says (judgeTrace): for each kill whose process had exited
-// before a later reading of the guard's at or above the mark and controllerLiveGrowerStep or more
-// above the reading at that kill, while a grower lived, the guard's next kill acted on the first
-// such reading; and each kill that followed a kill of the same rise (no reading of the guard's
-// below the mark between them), at a reading controllerLiveGrowerStep or more above that kill's
-// while a grower lived, ended a grower. What the first kill of a run ended fails no run, latepool's
+// (markToKill); the guard went on as R1 says (judgeTrace): for the kills of each reading, one, or
+// at a reading at or above the urgent share every process the guard may end that grew over its
+// window (R1 of spec version 39), whose processes had all exited before a later reading of the
+// guard's at or above the mark and controllerLiveGrowerStep or more above the reading at those
+// kills, while a grower lived, the guard's next kill acted on the first such reading; and the first
+// kill of each reading that followed a kill of the same rise (no reading of the guard's below the
+// mark between them), at a reading controllerLiveGrowerStep or more above that kill's while a
+// grower lived, ended a grower. What the first kill of a run ended fails no run, latepool's
 // included: c-gvisor-real counts across a wave the latepool runs at 4 GiB whose first kill ended a
 // grower within one interval (6 of 7), and asks the rule of each other's, so each traced scenario
 // prints its first kill, whether it came within one interval, what it ended and the rule and the
@@ -431,9 +433,9 @@ print("probe: done", flush=True)
 // stays in the band does not end (R1 of spec version 37), then by size, and a stay's first kill has
 // no kill before it, so where no grower grew over the window and none is new, the largest goes
 // first. Each prints every kill by what the probe says the process is and, beside the verdict, the
-// kills by kind, with each that ended no grower while a grower lived marked first-of-rise or
-// after-a-kill (`live: kinds …`, printKinds), the first kill (`live: first kill …`) and the run's
-// highest readings (`live: highest …`, printHighest).
+// kills by kind, with each that ended no grower while a grower lived marked first-of-rise,
+// after-a-kill or same-reading (`live: kinds …`, printKinds), the first kill (`live: first kill
+// …`) and the run's highest readings (`live: highest …`, printHighest).
 //
 // `band` is a python3 that allocates until the pod's AnonPages is 5% of the limit below the mark,
 // in the middle of the band where the guard reads the sizes of what it may end at each reading,
@@ -1070,7 +1072,7 @@ func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
 		}
 	}
 	longest, _, measured := controllerLiveLongestExit(t.kills)
-	return fmt.Sprintf("the guard ended %d processes of %s, %d of its %d growers, %s, and every grower and the probe exited; its first kill pid=%d, the probe's %s, at a reading of %d (%.2f%% of the limit) came %s after its first reading at or above the mark; %d times a killed process had exited and a later reading at or above the mark rose %d MiB or more above the reading at its kill while a grower lived, and each time the guard's next kill acted on the first such reading; each kill after a kill of the same rise at a reading %d MiB or more above that kill's, while a grower lived, ended a grower; the longest of %d measured times from a kill to its process's exit was %s, against the wait of %s; and the shim pid=%d and the agent pid=%d live",
+	return fmt.Sprintf("the guard ended %d processes of %s, %d of its %d growers, %s, and every grower and the probe exited; its first kill pid=%d, the probe's %s, at a reading of %d (%.2f%% of the limit) came %s after its first reading at or above the mark; %d times every process the guard killed at a reading had exited and a later reading at or above the mark rose %d MiB or more above that reading while a grower lived, and each time the guard's next kill acted on the first such reading; the first kill of each reading after a kill of the same rise at a reading %d MiB or more above that kill's, while a grower lived, ended a grower; the longest of %d measured times from a kill to its process's exit was %s, against the wait of %s; and the shim pid=%d and the agent pid=%d live",
 		len(t.kills), r.scenario, ended, growers, kinds, first.PID, controllerLiveName(names, first.PID), first.ReadingBytes, controllerLivePercent(first.ReadingBytes, first.LimitBytes),
 		took, wentOn, controllerLiveGrowerStep>>20, controllerLiveGrowerStep>>20, measured, longest, r.settings.Wait, r.shim, r.agent), ""
 }
@@ -1389,14 +1391,15 @@ func controllerLiveTraced(scenario string) bool {
 // readings: one `live: trace reading …` line for each of the guard's readings at or above the
 // band's start, with its time since the first of them and its share of the limit; one `live: trace
 // kill …` for each kill, with its time, the pid, what the probe says the process is, its size, the
-// reading it acted on, and whether it was the first kill of its rise or followed a kill of it
-// (`rise=first-of-rise` or `rise=after-a-kill`, controllerLiveRise); and one `live: trace exit
-// pid=… after=…` for each killed process's exit, with the time from the kill to the exit. A kill's
-// line names the process by the probe's pids, which the probe writes once its growers have
-// started, so the lines from the first kill on wait for them. It answers the stop that prints the
-// rest, the probe's pids written or not, and then the longest time from a kill to its process's
-// exit beside the settings' wait, which c-gvisor-real asks be longer than every such time (`live:
-// trace longest_exit=…`).
+// reading it acted on, and whether it was the first kill of its rise, followed a kill of it at an
+// earlier reading, or was sent beside the kill before it at the same reading, at or above the
+// urgent share (`rise=first-of-rise`, `rise=after-a-kill` or `rise=same-reading`,
+// controllerLiveRise); and one `live: trace exit pid=… after=…` for each killed process's exit,
+// with the time from the kill to the exit. A kill's line names the process by the probe's pids,
+// which the probe writes once its growers have started, so the lines from the first kill on wait
+// for them. It answers the stop that prints the rest, the probe's pids written or not, and then
+// the longest time from a kill to its process's exit beside the settings' wait, which
+// c-gvisor-real asks be longer than every such time (`live: trace longest_exit=…`).
 func (r *controllerLiveRun) printTrace() (stop func()) {
 	path := filepath.Join(r.dir, controllerLiveCommandPIDs)
 	var names map[int]string
@@ -1445,46 +1448,57 @@ func (r *controllerLiveRun) printTrace() (stop func()) {
 //
 // First the go-on rule of R1 (spec version 26): once a killed process has exited, where the
 // reading has not fallen below the reading at its kill and a process the guard may end has grown
-// since that kill, the guard ends the next in its order at once. For each kill whose process its
-// pidfd showed exited before a later reading of the guard's, the first such reading at or above
-// the mark and controllerLiveGrowerStep or more above the reading at that kill while a grower
-// lived (controllerLiveGoOnReading) is one at which a grower has grown since that kill, since the
-// killed process's memory is gone and the reading is higher by more than anything but a grower
-// moves, so the guard's next kill must have acted on that reading.
+// since that kill, the guard ends the next in its order at once. It is judged for the kills of
+// each reading together (controllerLiveReadingKills): one kill, or at a reading at or above the
+// urgent share every process the guard may end that grew over its window, each a kill of its own
+// at that same reading (spec version 39), after which the guard waits until every one of them has
+// exited. For the kills of a reading whose processes its pidfds showed all exited before a later
+// reading of the guard's, the first such reading after the last exit, at or above the mark and
+// controllerLiveGrowerStep or more above the reading at those kills while a grower lived
+// (controllerLiveGoOnReading), is one at which a grower has grown since them, since the killed
+// processes' memory is gone and the reading is higher by more than anything but a grower moves, so
+// the guard's next kill must have acted on that reading.
 //
-// Then the order after a kill: each kill that follows a kill of the same rise (controllerLiveRise),
-// made at a reading controllerLiveGrowerStep or more above that kill's while a grower lived
-// (controllerLiveGrowerAt, at the kill), ended a grower, since a grower has grown since the
-// previous kill, and so since the stay's first kill, by which the guard's order ranks before size.
-// A first kill of a rise is not judged here by what it ended: where no grower grew over the guard's
-// window, none is new to the stay with memory of its own and none grew since the stay's first kill,
-// its order puts the largest first, a sleeping fork or the parent under gVisor; what a run's first
-// kill ended fails no run (printFirstKill). A kill after one, at a reading less than that above the
-// kill's, is not judged either, since the reading may have fallen and no grower need have grown.
+// Then the order after a kill: the first kill of each reading that follows a kill of the same rise
+// at an earlier reading (controllerLiveRise, `after-a-kill`), made at a reading
+// controllerLiveGrowerStep or more above that kill's while a grower lived (controllerLiveGrowerAt,
+// at the kill), ended a grower, since a grower has grown since the previous kill, and so since the
+// stay's first kill, by which the guard's order ranks before size. A first kill of a rise is not
+// judged here by what it ended: where no grower grew over the guard's window, none is new to the
+// stay with memory of its own and none grew since the stay's first kill, its order puts the
+// largest first, a sleeping fork or the parent under gVisor; what a run's first kill ended fails
+// no run (printFirstKill). A kill after one, at a reading less than that above the kill's, is not
+// judged either, since the reading may have fallen and no grower need have grown; nor is a kill
+// sent beside the first of its reading (`same-reading`), which shares that kill's reading and ended
+// a process that grew over the window.
 func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail string) {
 	t := r.watch.traceCopy()
-	for i, k := range t.kills {
-		reading, grower, found := controllerLiveGoOnReading(t, i, names, r.settings.ActPercent)
+	for i := 0; i < len(t.kills); {
+		end, last := controllerLiveReadingKills(t.kills, i)
+		reading, grower, found := controllerLiveGoOnReading(t, i, end, last, names, r.settings.ActPercent)
 		if !found {
+			i = end
 			continue
 		}
 		next := "it ended nothing more"
-		if i+1 < len(t.kills) {
-			n := t.kills[i+1]
+		if end < len(t.kills) {
+			n := t.kills[end]
 			if n.readingAt.Equal(reading.at) {
 				wentOn++
+				i = end
 				continue
 			}
 			next = fmt.Sprintf("its next kill, pid=%d, acted on its reading at +%dms (%.2f%% of the limit)",
 				n.PID, n.readingAt.Sub(t.first).Milliseconds(), controllerLivePercent(n.ReadingBytes, n.LimitBytes))
 		}
-		return wentOn, fmt.Sprintf("the process of the guard's kill %d of %d (pid=%d, on its reading of %.2f%% of the limit at +%dms) exited %s after the kill, and the guard's reading at +%dms was %.2f%%, at or above the mark and %d MiB above the reading at that kill, while its grower pid=%d lived, but the guard did not act on that reading: %s",
-			i+1, len(t.kills), k.PID, controllerLivePercent(k.ReadingBytes, k.LimitBytes), k.readingAt.Sub(t.first).Milliseconds(),
+		k := t.kills[last]
+		return wentOn, fmt.Sprintf("the process of the guard's kill %d of %d (pid=%d, on its reading of %.2f%% of the limit at +%dms), the last to exit of the %d it killed at that reading, exited %s after the kill, and the guard's reading at +%dms was %.2f%%, at or above the mark and %d MiB above the reading at that kill, while its grower pid=%d lived, but the guard did not act on that reading: %s",
+			last+1, len(t.kills), k.PID, controllerLivePercent(k.ReadingBytes, k.LimitBytes), k.readingAt.Sub(t.first).Milliseconds(), end-i,
 			k.exitAt.Sub(k.At), reading.at.Sub(t.first).Milliseconds(), controllerLivePercent(reading.reading, reading.limit),
 			(reading.reading-k.ReadingBytes)>>20, grower, next)
 	}
 	for i, k := range t.kills {
-		if i == 0 || k.firstOfRise || names[k.PID] == "grower" {
+		if i == 0 || k.firstOfRise || k.sameReading || names[k.PID] == "grower" {
 			continue
 		}
 		previous := t.kills[i-1]
@@ -1503,19 +1517,21 @@ func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail s
 
 // printKinds prints, beside the verdict, the trace's kills by what the probe says each process is
 // (names): one `live: kinds non_grower …` line for each kill that ended a process other than a
-// grower while a grower lived (controllerLiveGrowerAt, at the kill), marked first-of-rise or
-// after-a-kill (controllerLiveRise), and then `live: kinds …`, the count of each kind and of those
-// kills, all and by their place in the rise. It answers the counts in words, for the pass reason.
-// Such a kill fails a run only where judgeTrace says so: a first kill of a rise may end a sleeping
-// fork or the parent, and so may a kill after one at a reading less than controllerLiveGrowerStep
-// above that kill's.
+// grower while a grower lived (controllerLiveGrowerAt, at the kill), marked first-of-rise,
+// after-a-kill or same-reading (controllerLiveRise), and then `live: kinds …`, the count of each
+// kind and of those kills, all and by their place in the rise. It answers the counts in words, for
+// the pass reason. Such a kill fails a run only where judgeTrace says so: a first kill of a rise
+// may end a sleeping fork or the parent, and so may a kill after one at a reading less than
+// controllerLiveGrowerStep above that kill's; a kill sent beside another at the same reading ended
+// a process that grew over the guard's window (INFRA-3531 R1 of spec version 39), and is counted
+// apart, since it is neither the first of its rise nor the guard's answer to a later reading.
 func (r *controllerLiveRun) printKinds(names map[int]string) string {
 	t := r.watch.traceCopy()
 	counts := map[string]int{}
 	for _, name := range names {
 		counts[name] = 0
 	}
-	firstOfRise, afterAKill := 0, 0
+	firstOfRise, afterAKill, sameReading := 0, 0, 0
 	for i, k := range t.kills {
 		name := controllerLiveName(names, k.PID)
 		counts[name]++
@@ -1526,9 +1542,12 @@ func (r *controllerLiveRun) printKinds(names map[int]string) string {
 		if grower == 0 {
 			continue
 		}
-		if k.firstOfRise {
+		switch {
+		case k.sameReading:
+			sameReading++
+		case k.firstOfRise:
 			firstOfRise++
-		} else {
+		default:
 			afterAKill++
 		}
 		r.out.printf("kinds non_grower kill=%d/%d pid=%d is=%s rise=%s size=%d reading_share=%.2f%% kill_at=+%dms grower_lived=%d",
@@ -1540,41 +1559,69 @@ func (r *controllerLiveRun) printKinds(names map[int]string) string {
 		parts = append(parts, fmt.Sprintf("%s=%d", name, counts[name]))
 	}
 	byKind := strings.Join(parts, " ")
-	r.out.printf("kinds kills=%d %s non_grower_while_grower_lived=%d first_of_rise=%d after_a_kill=%d",
-		len(t.kills), byKind, firstOfRise+afterAKill, firstOfRise, afterAKill)
-	return fmt.Sprintf("by kind %s, %d of them of no grower while a grower lived (%d first-of-rise, %d after-a-kill)",
-		byKind, firstOfRise+afterAKill, firstOfRise, afterAKill)
+	nonGrower := firstOfRise + afterAKill + sameReading
+	r.out.printf("kinds kills=%d %s non_grower_while_grower_lived=%d first_of_rise=%d after_a_kill=%d same_reading=%d",
+		len(t.kills), byKind, nonGrower, firstOfRise, afterAKill, sameReading)
+	return fmt.Sprintf("by kind %s, %d of them of no grower while a grower lived (%d first-of-rise, %d after-a-kill, %d same-reading)",
+		byKind, nonGrower, firstOfRise, afterAKill, sameReading)
 }
 
 // controllerLiveRise is where k stands in its rise, as its trace line and printKinds mark it:
-// `first-of-rise` for the trace's first kill and a kill after a reading of the guard's below the
-// mark, and `after-a-kill` for one that follows a kill of the same rise.
+// `same-reading` for a kill sent beside the one before it at the same reading, at or above the
+// urgent share (INFRA-3531 R1 of spec version 39); else `first-of-rise` for the trace's first kill
+// and a kill after a reading of the guard's below the mark, and `after-a-kill` for one that
+// follows a kill of the same rise at a later reading.
 func controllerLiveRise(k controllerLiveTraceKill) string {
-	if k.firstOfRise {
+	switch {
+	case k.sameReading:
+		return "same-reading"
+	case k.firstOfRise:
 		return "first-of-rise"
 	}
 	return "after-a-kill"
 }
 
-// controllerLiveGoOnReading is, for the trace's kill i, the first of the guard's readings after
-// the one that kill acted on, and up to the one the next kill acted on, that was taken after the
-// killed process's exit, is at or above the mark of act percent and controllerLiveGrowerStep or
-// more above the reading at the kill, and at which a grower of names lived, with that grower, and
-// false where none is. A reading after the next kill's is the next kill's to answer for, so a next
-// kill that came earlier, on a reading that had fallen or risen less, holds the rule; and a kill
-// whose exit was not measured has none.
-func controllerLiveGoOnReading(t controllerLiveTrace, i int, names map[int]string, act int) (controllerLiveReading, int, bool) {
-	k := t.kills[i]
-	if k.exitAt.IsZero() {
+// controllerLiveReadingKills is, for the trace's kill i, the first of the kills the guard sent at
+// one reading, end, the index after the last of them (each after the first marked sameReading),
+// and last, the one of them whose process exited last, -1 where the exit of one of them was not
+// measured. At a reading at or above the urgent share the guard ends every process it may end that
+// grew over its window, and it waits after them until every one has exited (INFRA-3531 R1 of spec
+// version 39), so its go-on is judged from the last of those exits; below that share a reading's
+// kills are one, and end is i+1.
+func controllerLiveReadingKills(kills []controllerLiveTraceKill, i int) (end, last int) {
+	last = i
+	for end = i; end < len(kills) && (end == i || kills[end].sameReading); end++ {
+		switch {
+		case last < 0:
+		case kills[end].exitAt.IsZero():
+			last = -1
+		case kills[end].exitAt.After(kills[last].exitAt):
+			last = end
+		}
+	}
+	return end, last
+}
+
+// controllerLiveGoOnReading is, for the kills the guard sent at one reading, kills i to end of the
+// trace (controllerLiveReadingKills), the first of the guard's readings after the one they acted
+// on, and up to the one the next kill acted on, that was taken after the exit of every process
+// they killed, the last of which is kill last's, is at or above the mark of act percent and
+// controllerLiveGrowerStep or more above the reading at those kills, and at which a grower of names
+// lived, with that grower, and false where none is. A reading after the next kill's is the next
+// kill's to answer for, so a next kill that came earlier, on a reading that had fallen or risen
+// less, holds the rule; and kills of which one's exit was not measured (last -1) have none.
+func controllerLiveGoOnReading(t controllerLiveTrace, i, end, last int, names map[int]string, act int) (controllerLiveReading, int, bool) {
+	if last < 0 {
 		return controllerLiveReading{}, 0, false
 	}
+	k, exit := t.kills[i], t.kills[last].exitAt
 	for _, rd := range t.readings {
 		switch {
 		case !rd.at.After(k.readingAt):
 			continue
-		case i+1 < len(t.kills) && rd.at.After(t.kills[i+1].readingAt):
+		case end < len(t.kills) && rd.at.After(t.kills[end].readingAt):
 			return controllerLiveReading{}, 0, false
-		case !k.exitAt.Before(rd.at) || rd.reading < controllerLiveShare(rd.limit, act) || rd.reading < k.ReadingBytes+controllerLiveGrowerStep:
+		case !exit.Before(rd.at) || rd.reading < controllerLiveShare(rd.limit, act) || rd.reading < k.ReadingBytes+controllerLiveGrowerStep:
 			continue
 		}
 		if grower := controllerLiveGrowerAt(names, t.kills, rd.at); grower != 0 {
@@ -2065,14 +2112,18 @@ type controllerLiveReading struct {
 // controllerLiveTraceKill is one kill as the guard's sink took it. readingAt is the time of the
 // reading it acted on, the guard's latest when its sink took the kill; firstOfRise whether it is
 // the first kill of its rise, the trace's first or one after a reading below the mark, and not one
-// that follows a kill of the same rise; and exitAt the time the pidfd the sink opened on the
-// process it ended first read readable, the process's exit, zero while it has not or where it was
-// not measured; exitNote says why it was not, or how it was where that was not the pidfd's own
-// word (sink).
+// that follows a kill of the same rise; sameReading whether the kill before it acted on the same
+// reading, a process the guard ended beside the first of that reading at a reading at or above
+// the urgent share, where it ends every process it may end that grew over its window (INFRA-3531
+// R1 of spec version 39), which keeps the first's firstOfRise; and exitAt the time the pidfd the
+// sink opened on the process it ended first read readable, the process's exit, zero while it has
+// not or where it was not measured; exitNote says why it was not, or how it was where that was not
+// the pidfd's own word (sink).
 type controllerLiveTraceKill struct {
 	shimwire.LauncherMemoryKill
 	readingAt   time.Time
 	firstOfRise bool
+	sameReading bool
 	exitAt      time.Time
 	exitNote    string
 }
@@ -2141,7 +2192,8 @@ func (w *controllerLiveWatch) observe(now time.Time, reading, limit uint64) {
 
 // sink takes the guard's kills before the launcher's own sink does, and keeps the first. A traced
 // watch keeps each in its trace, marked the first of its rise where it is the trace's first or a
-// reading below the mark came since the kill before, and holds the process it ended by a pidfd,
+// reading below the mark came since the kill before, and marked sent at the same reading where the
+// kill before acted on the guard's same latest reading, and holds the process it ended by a pidfd,
 // opened here on the guard's loop right after the kill, before the process's parent can reap it
 // and its pid pass to another, and waited on off that loop (timeExit). A process its parent reaped
 // before the open is gone by then, and the open's time is taken as its exit: later than the real
@@ -2161,9 +2213,10 @@ func (w *controllerLiveWatch) sink(k memoryguard.Kill) {
 	}
 	i := len(t.kills)
 	if w.traced {
-		first := i == 0 || t.belowMark
+		same := i > 0 && t.kills[i-1].readingAt.Equal(s.lastAt)
+		first := i == 0 || t.belowMark || (same && t.kills[i-1].firstOfRise)
 		t.belowMark = false
-		t.kills = append(t.kills, controllerLiveTraceKill{LauncherMemoryKill: k.LauncherMemoryKill, readingAt: s.lastAt, firstOfRise: first})
+		t.kills = append(t.kills, controllerLiveTraceKill{LauncherMemoryKill: k.LauncherMemoryKill, readingAt: s.lastAt, firstOfRise: first, sameReading: same})
 		t.events = append(t.events, controllerLiveEvent{kind: controllerLiveEventKill, index: i})
 	}
 	w.mu.Unlock()
