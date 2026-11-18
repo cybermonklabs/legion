@@ -37,7 +37,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
-	"golang.org/x/net/idna"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlockproxy"
@@ -50,7 +49,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
-	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -59,15 +57,14 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/reread"
+	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
@@ -986,17 +983,21 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: a host the proxy
-// never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
-// is the Lean model's, then an entry whose name is not a name a session can ask for. The hosts
-// come first because ruleHostRefusal names each host's reason and repeats no text of the file,
-// where Validate's refusal of a host HostShapeOK refuses quotes the host as written; and because
-// every host ruleHostRefusal accepts HostShapeOK accepts too, Validate then refuses no host. So a
-// file with two faults reports its first bad host ahead of any other fault Validate finds (a
-// repeated name, an entry with no host, a judge above 900 seconds, another kind). Two of the host
-// refusals are this program's own and not the Lean model's: a last label that is 0x and hex
-// digits (0x1f, a.0x7f000001), which HostShapeOK accepts as no all-digit label but clients read
-// as an IPv4 address, and a wildcard over one.
+// that the boot and airlock-check refuse the same file in the same words: a host outside the one
+// grammar a rules host is written in (rulehost.Refusal), then airlock.Validate's answer, which is
+// the Lean model's, then an entry whose name is not a name a session can ask for. The hosts come
+// first because rulehost.Refusal names each host's reason and repeats no text of the file but the
+// form to write, where Validate's refusal of a host airlock.HostShapeOK refuses quotes the host as
+// written; and because that grammar's first test is HostShapeOK, Validate then refuses no host. So
+// a file with two faults reports its first bad host, by entry and then by position, ahead of any
+// other fault Validate finds (a repeated name, an entry with no host, a judge above 900 seconds,
+// another kind). Some of the host refusals are this program's own and not the Lean model's, the
+// ones the grammar adds to HostShapeOK: a last label that is 0x and hex digits (0x1f,
+// a.0x7f000001) or 0x alone, which clients read as an IPv4 address, and a wildcard over one; a
+// name of more than 253 characters or a label of more than 63; and a label with "--" as its
+// third and fourth characters (ab--cd.example) or an xn-- label the IDNA lookup profile refuses
+// (xn--zz.example). A host in upper or mixed case is served, as HostShapeOK accepts it and
+// airlock.HostBound folds both sides.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -1007,7 +1008,7 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 func validateRulesFile(rules airlock.Rules) error {
 	for i, s := range rules.Secrets {
 		for j, h := range s.Hosts {
-			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
+			if why := rulehost.Refusal(h); why != "" {
 				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
 			}
 		}
@@ -1021,228 +1022,6 @@ func validateRulesFile(rules airlock.Rules) error {
 		}
 	}
 	return nil
-}
-
-// ruleHostRefusal is why validateRulesFile refuses one host of an entry, or "" for a host it
-// serves: h is parsed by the one grammar a rules host is written in (ruleHostGrammar), and a host
-// that grammar does not read is refused, saying why and naming the form to write where one exists.
-//
-// The grammar is the one spelling of a host every request for it is compared in.
-// airlock.HostBound compares an entry's hosts with a request's host as text, folding ASCII case;
-// the proxy reads that host after net.SplitHostPort has taken its port and brackets off; and a
-// client sends a name without a trailing dot in its TLS server name, an internationalized name as
-// its punycode, and no server name at all for an address. A host in another spelling is refused
-// as no host in that one spelling, and what it would do served differs by kind: one in upper case
-// binds by the fold, so the file would hold two spellings of one host; a name with a trailing
-// dot, and an address in its canonical form, are decrypted and every request on them refused
-// ("sni mismatch"), so the entry would carry nothing, while an address in any other spelling
-// binds nothing and a CONNECT to it is tunnelled unread; one with an underscore, a reserved "--"
-// label or a Fake A-label binds when DNS answers for it, but is outside the LDH grammar public
-// names are written in; and the rest - white space, a port, brackets, an empty or overlong label
-// - is no name a client sends at all.
-//
-// The form named is the host in the grammar's spelling, and only when it is that same host
-// written another way: in upper or mixed case (fold.ASCII), with a trailing dot, or as a Unicode
-// name the IDNA lookup profile converts (canonicalHostForm); and for an IP address, the address in
-// netaddr.Canonical's form (ipHostRefusal), with the reason every address is refused. A refusal
-// repeats nothing else of the host as written, since a rules file's text is any text.
-func ruleHostRefusal(h string) string {
-	why := ruleHostGrammar(h)
-	if why == "" {
-		return ""
-	}
-	if addr, ok := ipLiteral(h); ok {
-		return ipHostRefusal(h, addr)
-	}
-	if form := canonicalHostForm(h); form != "" {
-		return why + "; write it as " + form
-	}
-	return why + "; write a host name of lower-case letters, digits and hyphens between single dots, with at most one leading \"*.\""
-}
-
-// maxHostName and maxHostLabel are the longest name and the longest label DNS carries.
-const (
-	maxHostName  = 253
-	maxHostLabel = 63
-)
-
-// ruleHostGrammar is why h is not a host in the one grammar a rules host is written in, or "" for
-// one that is: labels of lower-case ASCII letters, digits and hyphens (LDH), each 1 to 63
-// characters with no hyphen at either end and no "--" as their third and fourth characters but
-// in the punycode of an internationalized label (weborigin.ReservedLabel); at most 253
-// characters in all; no empty label, so no leading, trailing or doubled dot; at most one leading
-// "*." as the only wildcard; and a last label that is not a number as the WHATWG URL parser's
-// IPv4 reading takes one - decimal, or 0x and hex digits, 0x alone among them - since such a host
-// is an IPv4 address in one client and a name, or no host, in the next. An IP address breaks the
-// last rule; ruleHostRefusal names it as the address it is.
-func ruleHostGrammar(h string) string {
-	switch {
-	case h == "":
-		return "is empty, so it names no host and binds nothing"
-	case !isASCII(h):
-		return "is not ASCII, and a client sends an internationalized name as its punycode, so no request names this spelling and the host binds nothing"
-	case strings.HasSuffix(h, "."):
-		// Before the length: a 253-character name with a trailing dot is a name DNS carries,
-		// written with the dot no client sends, and the dot is what is wrong with it. Every
-		// trailing dot is taken off at once and the rest read once, in lower case, as
-		// airlock.HostBound compares it: so a name in upper case with one trailing dot binds and
-		// is decrypted as the same name in lower case does, and the reading is linear however
-		// many dots the file writes.
-		name := strings.TrimRight(h, ".")
-		if len(h)-len(name) > 1 || ruleHostGrammar(fold.ASCII(name)) != "" {
-			return "ends in a dot, and without it is no host name either, so no request is bound to it and the host binds nothing"
-		}
-		return "ends in a dot, which a client drops from the TLS server name it sends, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there"
-	case len(h) > maxHostName:
-		return "is longer than 253 characters, the longest name DNS carries, so the host binds nothing"
-	}
-	name, wildcard := strings.CutPrefix(h, "*.")
-	labels := strings.Split(name, ".")
-	for _, label := range labels {
-		if why := labelRefusal(label); why != "" {
-			return why
-		}
-	}
-	switch {
-	case !numericLabel(labels[len(labels)-1]):
-		return ""
-	case wildcard:
-		return "is a wildcard whose last label is a number, which no host name has, so airlock.HostBound would match it against addresses by their text"
-	}
-	return "ends in a number, which no host name does: the WHATWG URL parser reads a host whose last label is a number as an IPv4 address - in a form netip does not read when it has a leading zero, fewer than four parts or a hex part - or refuses it as no host, and clients read such a host differently, so it is no host in the one spelling a rules host is written in"
-}
-
-// labelRefusal is why one label of an ASCII host breaks ruleHostGrammar, or "" for one that keeps
-// it. The first character outside a-z, 0-9 and a hyphen decides the reason, which names that
-// character's kind and never the character.
-func labelRefusal(label string) string {
-	switch {
-	case label == "":
-		return "has an empty label, from a leading or doubled dot, so no request names it and the host binds nothing"
-	case len(label) > maxHostLabel:
-		return "has a label longer than 63 characters, the longest DNS carries, so the host binds nothing"
-	}
-	for i := range len(label) {
-		switch c := label[i]; {
-		case 'a' <= c && c <= 'z', '0' <= c && c <= '9', c == '-':
-		case c == '*':
-			return "has a * other than one leading \"*.\", the only wildcard airlock.HostBound reads, so the host binds nothing"
-		case c == ':':
-			return "holds a colon, and a host carries no port, so no request names it and the host binds nothing"
-		case c == '[' || c == ']':
-			return "holds a bracket, which the proxy takes off a request's host, so no request names it and the host binds nothing"
-		case c == '%':
-			return "holds a %, which no host name holds, so the host binds nothing"
-		case c <= ' ' || c == 0x7f:
-			return "holds white space or a control character, which no host name holds, so the host binds nothing"
-		case c == '_':
-			return "holds an underscore, which is outside the LDH grammar public host names are written in: it binds when DNS answers for it, but it is no host in the one spelling a rules host is written in"
-		case 'A' <= c && c <= 'Z':
-			return "is not in lower case, the one case a rules host is written in: airlock.HostBound folds case, so it would bind as a second spelling of one host"
-		default:
-			return "holds a character other than a-z, 0-9, a hyphen and a dot, which no host name holds, so the host binds nothing"
-		}
-	}
-	switch {
-	case label[0] == '-' || label[len(label)-1] == '-':
-		return "has a label that starts or ends with a hyphen, which a host name does not have"
-	case weborigin.ReservedLabel(label) == nil:
-		return ""
-	case strings.HasPrefix(label, "xn--"):
-		return "has an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1) that is the punycode of no internationalized name, so it is no host in the one spelling a rules host is written in"
-	}
-	return "has a label with \"--\" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for, so it is no host in the one spelling a rules host is written in"
-}
-
-// numericLabel reports whether a label is a number as the WHATWG URL parser's IPv4 reading takes
-// one: decimal, or 0x and hex digits, where 0x alone is the number 0. The last label of no host
-// name is one; the WHATWG parser reads a host ending in one as an IPv4 address or refuses it.
-func numericLabel(label string) bool {
-	digits, hex := label, false
-	if rest, ok := strings.CutPrefix(label, "0x"); ok {
-		digits, hex = rest, true
-	}
-	if digits == "" {
-		return hex
-	}
-	for i := range len(digits) {
-		c := digits[i]
-		if !('0' <= c && c <= '9' || hex && 'a' <= c && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// isASCII reports whether s holds only ASCII bytes.
-func isASCII(s string) bool {
-	for i := range len(s) {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
-
-// ipLiteral is the address h writes in any spelling netip or the proxy reads one in: with a port,
-// in brackets, after a trailing dot, with a zone, or IPv4-mapped.
-func ipLiteral(h string) (netip.Addr, bool) {
-	s := h
-	if host, _, err := net.SplitHostPort(s); err == nil {
-		s = host
-	}
-	addr, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(s, "["), "]"), "."))
-	return addr, err == nil
-}
-
-// ipHostRefusal is the refusal of a host that is an IP address, in any spelling, with what that
-// spelling would do served. The proxy reads the address a CONNECT names in netaddr.Canonical's
-// form (netaddr.Host) and airlock.HostBound folds ASCII case, so the canonical spelling, and an
-// IPv6 address in upper case, bind: a client sends no TLS server name for an address, so the
-// proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries. With a
-// trailing dot it is a name of numbers alone, which the resolver refuses, so a CONNECT to it is
-// refused before anything is bound. Any other spelling - a port, brackets, a zone, an IPv4-mapped
-// or not-canonical IPv6 address - is no CONNECT's host, so it binds nothing and a CONNECT to the
-// address is tunnelled unread. Either way the entry carries no secret. It names the address in
-// netaddr.Canonical's form when h writes it another way, which holds no zone, so it repeats
-// nothing of h.
-func ipHostRefusal(h string, addr netip.Addr) string {
-	const rename = "; name the service by its host name"
-	canonical := netaddr.Canonical(addr).String()
-	written := "is an IP address, and "
-	if canonical != h {
-		written = "is an IP address, " + canonical + " in its canonical form, and "
-	}
-	switch {
-	case fold.ASCII(h) == canonical:
-		return written + "a client sends no TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there" + rename
-	case strings.HasSuffix(strings.TrimSuffix(h, "]"), "."):
-		return written + "with a trailing dot it is a name of numbers alone, which the resolver refuses, so a CONNECT to it is refused before anything is bound: the entry carries no secret there" + rename
-	}
-	return written + "this spelling is no CONNECT's host, since the proxy reads the address a CONNECT names in its canonical form, so it binds nothing and a CONNECT to the address is tunnelled unread: the entry carries no secret there" + rename
-}
-
-// canonicalHostForm is the spelling of h ruleHostGrammar reads, when h is that host written
-// another way: in upper or mixed case, with one trailing dot, or as a Unicode name the IDNA lookup
-// profile converts to its punycode; "" when there is no such spelling. It names only a host the
-// grammar reads, so a refusal never repeats the file's own text.
-func canonicalHostForm(h string) string {
-	prefix, name := "", h
-	if rest, ok := strings.CutPrefix(h, "*."); ok {
-		prefix, name = "*.", rest
-	}
-	if !isASCII(name) {
-		ascii, err := idna.Lookup.ToASCII(name)
-		if err != nil {
-			return ""
-		}
-		name = ascii
-	}
-	form := prefix + strings.TrimSuffix(fold.ASCII(name), ".")
-	if form == h || ruleHostGrammar(form) != "" {
-		return ""
-	}
-	return form
 }
 
 // readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An

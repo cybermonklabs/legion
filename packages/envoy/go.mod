@@ -21,6 +21,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/go-logr/logr v1.4.4
+	github.com/go-logr/stdr v1.2.2
 	github.com/google/pprof v0.0.0-20261026192309-dbd0ed30aa88
 	github.com/google/uuid v1.6.0
 	github.com/googleapis/gax-go/v2 v2.26.2
@@ -98,7 +99,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
-	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect

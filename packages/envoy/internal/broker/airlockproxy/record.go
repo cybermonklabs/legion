@@ -193,20 +193,20 @@ func maskAttr(a slog.Attr) *slog.Attr {
 // as fmt writes it, or its MarshalText, by the text handler; a []byte is its bytes as text, which
 // the text handler writes and the JSON handler writes in base64.
 //
-// Each form is computed under a recover of its own (formOf), and a form whose method panicked is
-// dropped: a method of a nil receiver - an Error, a MarshalText - may dereference it, and
-// encoding/json re-panics the panic of a MarshalJSON, while a panic in a handler would be the
-// whole process's (SetDefaultLog). No handler writes such a form either, since slog writes the
-// value as "<nil>" or "!PANIC: …", which holds none of its text. So a value no remaining form of
-// which holds a placeholder is handed to the handler as it is, and written as slog writes it.
-// A nil value has no form of its own: a nil receiver's String may show text all the same, which
-// the text handler would write, so its forms are read as any value's are.
+// Each form is computed under a recover of its own (formOf), since a method of a nil receiver - an
+// Error, a MarshalText - may dereference it, encoding/json re-panics the panic of a MarshalJSON,
+// and fmt re-panics a String whose panic value panics in its turn, while a panic in a handler
+// would be the whole process's (SetDefaultLog). A form that failed is read as what slog writes in
+// its place, "!ERROR:" and the error's text for a method that answered an error and "!PANIC: "
+// and the value for one that panicked, since that text can hold what the value held. So a value
+// no form of which holds a placeholder is handed to the handler as it is, and written as slog
+// writes it, and one some form of which does is written as that form, masked. A nil value has no
+// form of its own: a nil receiver's String may show text all the same, which the text handler
+// would write, so its forms are read as any value's are.
 func anyForms(v any) []string {
 	var forms []string
 	add := func(form func() (string, error)) {
-		if text, ok := formOf(form); ok {
-			forms = append(forms, text)
-		}
+		forms = append(forms, formOf(form)...)
 	}
 	err, isError := v.(error)
 	if _, marshals := v.(json.Marshaler); isError && !marshals {
@@ -223,7 +223,7 @@ func anyForms(v any) []string {
 	if isError {
 		add(func() (string, error) { return err.Error(), nil })
 	}
-	forms = append(forms, fmt.Sprint(v))
+	add(func() (string, error) { return fmt.Sprint(v), nil })
 	if marshaler, ok := v.(encoding.TextMarshaler); ok {
 		add(func() (string, error) {
 			text, err := marshaler.MarshalText()
@@ -233,16 +233,43 @@ func anyForms(v any) []string {
 	return forms
 }
 
-// formOf is form's text, and false where form failed or panicked: encoding/json re-panics the
-// panic of a MarshalJSON method, and a method of a value can panic of its own.
-func formOf(form func() (string, error)) (text string, ok bool) {
+// formOf is the text a handler may write for one form of a value: the form's own text; for a form
+// whose method answered an error, "!ERROR:" and the error's text, as slog writes it; and for one
+// whose method panicked, "!PANIC: " and the panic's value, as slog writes it. Each is computed
+// under a recover, and a text whose own computation panicked - an error whose Error panics, a
+// panic value whose String does - is dropped.
+func formOf(form func() (string, error)) []string {
+	var (
+		text     string
+		err      error
+		panicked any
+		failed   bool
+	)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked, failed = r, true
+			}
+		}()
+		text, err = form()
+	}()
+	switch {
+	case failed:
+		return guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+	case err != nil:
+		return guarded(func() string { return "!ERROR:" + err.Error() })
+	}
+	return []string{text}
+}
+
+// guarded is text's one result, and none where computing it panicked.
+func guarded(text func() string) (texts []string) {
 	defer func() {
 		if recover() != nil {
-			text, ok = "", false
+			texts = nil
 		}
 	}()
-	text, err := form()
-	return text, err == nil
+	return []string{text()}
 }
 
 // The codes the proxy port's own answers name: the refusal line and the count read them, one for

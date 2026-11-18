@@ -6,6 +6,7 @@ package airlockproxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
 	"log/slog"
 	"net/netip"
@@ -167,6 +168,40 @@ type nilShows struct{}
 
 func (*nilShows) String() string { return workerPlaceholder }
 
+// marshalErrorQuotes answers MarshalJSON with an error that quotes the placeholder, which slog's
+// JSON handler writes after "!ERROR:".
+type marshalErrorQuotes struct{}
+
+func (marshalErrorQuotes) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("cannot marshal " + workerPlaceholder)
+}
+
+// marshalPanicsWith panics in MarshalJSON with the placeholder, which slog writes after "!PANIC: ".
+type marshalPanicsWith struct{}
+
+func (marshalPanicsWith) MarshalJSON() ([]byte, error) { panic(workerPlaceholder) }
+
+// errorPanicsWith is an error whose Error panics with the placeholder.
+type errorPanicsWith struct{}
+
+func (errorPanicsWith) Error() string { panic(workerPlaceholder) }
+
+// panicsTwice has a String that panics with a value whose own Error panics: fmt cannot print that
+// value and panics again, out of fmt.Sprint, where slog's own recover writes "!PANIC: …".
+type panicsTwice struct{}
+
+type errorThatPanics struct{}
+
+func (errorThatPanics) Error() string { panic("an Error that panics") }
+func (panicsTwice) String() string    { panic(errorThatPanics{}) }
+
+// marshalErrorPanics answers MarshalJSON with an error whose Error panics: the text slog writes
+// for the failure, "!ERROR:" and that error's text, cannot be computed, and the mask must drop
+// that form rather than panic (guarded).
+type marshalErrorPanics struct{}
+
+func (marshalErrorPanics) MarshalJSON() ([]byte, error) { return nil, errorThatPanics{} }
+
 // TestTheMaskWritesWhatSlogWritesForAValueThatPanics: the mask computes a value's forms by
 // calling its methods, and a method of a nil receiver, or one that panics of its own, must not
 // crash the log call: with SetDefaultLog that call is the whole process's. A nil pointer, a nil
@@ -190,6 +225,18 @@ func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 		// A nil receiver whose String does not dereference it shows text all the same, which the
 		// text handler writes: a nil value is read as any other, not given a form of its own.
 		{"a nil pointer whose String holds the placeholder", (*nilShows)(nil), true},
+		// A method that fails is written as slog writes its failure, "!ERROR:" and the error or
+		// "!PANIC: " and the panic's value, which holds the placeholder here: the mask reads that
+		// text as a form too.
+		{"a MarshalJSON whose error quotes the placeholder", marshalErrorQuotes{}, true},
+		{"a MarshalJSON that panics with the placeholder", marshalPanicsWith{}, true},
+		{"an Error that panics with the placeholder", errorPanicsWith{}, true},
+		// fmt.Sprint itself panics for this value; the mask must read that form under its
+		// recover too, and write what slog alone writes.
+		{"a String that panics with a value whose Error panics", panicsTwice{}, false},
+		// The text of the failure itself panics: the mask drops that form and writes what slog
+		// alone writes.
+		{"a MarshalJSON whose error's Error panics", marshalErrorPanics{}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, handler := range []struct {

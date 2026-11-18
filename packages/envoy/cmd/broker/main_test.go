@@ -1119,12 +1119,13 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		})
 	}
 	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in
-	// upper case is refused naming its lower case, and a host made of a placeholder is written
-	// masked, as one JSON line of the broker's shape. A broker whose main does not set its logging
-	// up writes the refusal as text, with the placeholder in it.
+	// upper case with a trailing dot is refused naming the name without the dot, in lower case,
+	// and a host made of a placeholder is written masked, as one JSON line of the broker's shape.
+	// A broker whose main does not set its logging up writes the refusal as text, with the
+	// placeholder in it.
 	t.Run("a host made of a placeholder in upper case, which the broker's log masks", func(t *testing.T) {
 		placeholder := strings.ToUpper(requests.PlaceholderPrefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
-		path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE"))
+		path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
 		refused(t, path, []string{`"severity":"ERROR"`, `"message":"broker: fatal"`, "write it as [placeholder].example"},
 			[]string{placeholder, strings.ToLower(placeholder)})
 	})

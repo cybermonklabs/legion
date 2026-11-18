@@ -838,32 +838,34 @@ the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
 A host is written in one form, the one every request for it is compared in: a DNS host name of
-lower-case letters, digits and hyphens between single dots, with no label longer than 63
-characters, starting or ending with a hyphen, or holding `--` as its third and fourth characters
-other than the `xn--` of an internationalized name, no name longer than 253 characters, no
-leading, trailing or doubled dot, at most one leading `*.` as the wildcard, an internationalized
-name as its punycode (`xn--bcher-kva.example`, not `bücher.example`), and a last label that is not
-a number (`foo.123` and `foo.0x` are refused, `123.foo` is read). The broker refuses to start with
-a file that writes a host any other way, and `airlock-check` refuses that file too, naming the
-form to write where there is one: `api.github.com` for `API.GitHub.com` or `api.github.com.`, and
-the punycode for a Unicode name. What a host in another spelling would do if it were served
-depends on the spelling, and in every case the refusal keeps the file to the one spelling:
+letters, digits and hyphens between single dots, with no label longer than 63 characters,
+starting or ending with a hyphen, or holding `--` as its third and fourth characters other than
+the `xn--` of an internationalized name, no name longer than 253 characters, no leading,
+trailing or doubled dot, at most one leading `*.` as the wildcard, an internationalized name as
+its punycode (`xn--bcher-kva.example`, not `bücher.example`), and a last label that is not a
+number (`foo.123` and `foo.0x` are refused, `123.foo` is read). Case does not matter: the proxy
+compares hosts without regard to it, so `API.GitHub.com` is the same host as `api.github.com`
+and is served. The broker refuses to start with a file that writes a host any other way, and
+`airlock-check` refuses that file too, naming the form to write where there is one:
+`api.github.com` for `api.github.com.`, and the punycode for a Unicode name. Every host the
+airlock's own validation refuses is among these, so that validation refuses no host after them.
+What a host in another spelling would do if it were served depends on the spelling:
 
-- An upper-case name binds, because the proxy compares hosts without regard to case, so the file
-  would hold a second spelling of one host.
 - An IP address in its canonical form, or an IPv6 address in upper case, and a name with a
   trailing dot are decrypted, and every request on them is refused `sni mismatch`, because a
   client sends no TLS server name (SNI) for an address and drops the dot from the one it sends
-  for a name: the entry would carry nothing. An address in any other spelling — with a port, in
-  brackets, with a zone, IPv4-mapped or not canonical — binds nothing, because the proxy reads the
-  address a `CONNECT` names in its canonical form, so a `CONNECT` to it is tunnelled unread; and
-  an address with a trailing dot is a name of numbers alone, which the resolver refuses, so a
-  `CONNECT` to it is refused before anything is bound.
+  for a name: the entry would carry nothing. A name the grammar refuses for another reason, such
+  as `a_b.example.com.` or `foo.123.`, is decrypted the same way with its dot, and the refusal
+  says both. An address in any other spelling — with a port, in brackets, with a zone,
+  IPv4-mapped or not canonical — binds nothing, because the proxy reads the address a `CONNECT`
+  names in its canonical form, so a `CONNECT` to it is tunnelled unread; and an address with a
+  trailing dot is a name of numbers alone, which the resolver refuses, so a `CONNECT` to it is
+  refused before anything is bound.
 - A name with an underscore, a `--` label other than an internationalized one, or an `xn--` label
   the IDNA lookup profile refuses binds when DNS answers for it, but it is outside the LDH grammar
   public host names are written in.
-- The rest — white space, a port, brackets, an empty or overlong label, a number for a last
-  label — is no name a client sends, or one clients read differently.
+- The rest — white space, a scheme, a port, brackets, an empty or overlong label, a number for a
+  last label — is no name a client sends, or one clients read differently.
 
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of

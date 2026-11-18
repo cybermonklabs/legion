@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	smithylogging "github.com/aws/smithy-go/logging"
+	"github.com/go-logr/stdr"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc/grpclog"
 
@@ -67,13 +69,25 @@ func isolateAWS(t *testing.T) {
 // the rest is its stack; a run of bytes net/http's transport quotes from a service - here an
 // answer's bytes on an idle connection, the line no ErrorLog reaches - is written as a fixed
 // phrase; the AWS SDK's line is a WARNING of the broker's own shape, cut as a call line's fields
-// are, and its debug line is not written; grpc's error is an ERROR and its info is not written;
+// are, and its debug line is not written; grpc's error is an ERROR, cut as a call line's fields
+// are, its info and its warning are not written, and its V is true at level 0 and false past it;
 // and OpenTelemetry's error is an ERROR.
 func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	placeholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	const mark, shown = "[placeholder]", `"[service bytes not shown]"`
 	out := &logtest.Buffer{}
 	logtest.Swap(t, slog.NewJSONHandler(io.Discard, nil))
+	// setUpLogging points grpc's and OpenTelemetry's global loggers at the broker's, and neither
+	// library hands back the logger it held, so the test cannot put back what it found. It puts
+	// back each library's own default for an environment with no GRPC_GO_LOG_* variable, built as
+	// the library builds it: grpclog's init (errors to stderr, infos and warnings dropped,
+	// verbosity 0, text lines) and OpenTelemetry's internal/global (stdr on a log.Logger of
+	// stderr). Otherwise a later test's OpenTelemetry lines would go into this test's finished
+	// buffer, and its grpc lines through grpcLog rather than grpc's own logger.
+	t.Cleanup(func() {
+		grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, os.Stderr))
+		otel.SetLogger(stdr.New(log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)))
+	})
 	setUpLogging(out)
 
 	// The default logger, and the log package with a first line past the cut and a second line.
@@ -129,10 +143,17 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	awsCfg.Logger.Logf(smithylogging.Warn, "%s", strings.Repeat("y", 300))
 	awsCfg.Logger.Logf(smithylogging.Debug, "a debug line of the SDK's")
 
-	// grpc, an error and an info; and OpenTelemetry, whose global state logs an error when its
-	// tracer provider is set to the one it already holds.
+	// grpc, an error, an error past the cut, a warning and an info, and its verbosity; and
+	// OpenTelemetry, whose global state logs an error when its tracer provider is set to the one
+	// it already holds.
 	grpclog.Errorf("a grpc error of %s", placeholder)
+	longGRPC := "a long grpc error: " + strings.Repeat("z", 300)
+	grpclog.Errorf("%s", longGRPC)
+	grpclog.Warningf("a grpc warning line")
 	grpclog.Infof("a grpc info line")
+	if !grpclog.V(0) || grpclog.V(1) {
+		t.Errorf("grpc's V(0), V(1) = %v, %v; want true, false, as grpc's default answers with no GRPC_GO_LOG_VERBOSITY_LEVEL", grpclog.V(0), grpclog.V(1))
+	}
 	otel.SetTracerProvider(otel.GetTracerProvider())
 
 	written := out.String()
@@ -163,11 +184,17 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	if _, ok := lineWhere(lines, aws(strings.Repeat("y", answer.FieldBytes))); !ok {
 		t.Errorf("no line of the AWS SDK is its long warning cut to %d bytes: %q", answer.FieldBytes, written)
 	}
-	if strings.Contains(written, "a debug line of the SDK's") || strings.Contains(written, "a grpc info line") {
-		t.Errorf("the broker's log holds a debug or info line of a library's, which its INFO handler drops: %q", written)
+	if strings.Contains(written, "a debug line of the SDK's") || strings.Contains(written, "a grpc info line") || strings.Contains(written, "a grpc warning line") {
+		t.Errorf("the broker's log holds the AWS SDK's debug line or grpc's info or warning line, each written at DEBUG, which its INFO handler drops: %q", written)
 	}
-	if grpc, ok := lineWhere(lines, message(grpcMessage)); !ok || grpc["severity"] != "ERROR" || grpc["text"] != "a grpc error of "+mark {
-		t.Errorf("grpc's error line = %v; want %q at ERROR, its text masked (log: %q)", grpc, grpcMessage, written)
+	grpc := func(text string) func(map[string]any) bool {
+		return func(line map[string]any) bool { return line["message"] == grpcMessage && line["text"] == text }
+	}
+	if line, ok := lineWhere(lines, grpc("a grpc error of "+mark)); !ok || line["severity"] != "ERROR" {
+		t.Errorf("grpc's error line = %v; want %q at ERROR, its text masked (log: %q)", line, grpcMessage, written)
+	}
+	if line, ok := lineWhere(lines, grpc(longGRPC[:answer.FieldBytes])); !ok || line["severity"] != "ERROR" {
+		t.Errorf("grpc's long error line = %v; want %q at ERROR, its text cut to %d bytes (log: %q)", line, grpcMessage, answer.FieldBytes, written)
 	}
 	if _, ok := lineWhere(lines, func(line map[string]any) bool {
 		return line["severity"] == "ERROR" && strings.Contains(stringOf(line["message"]), "tracer provider")

@@ -1246,19 +1246,25 @@ and net/http's and httputil's own `airlock proxy: net/http` lines among them, th
 lines, the standard logger's, the AWS SDK's, which the broker writes as `broker: aws sdk` at
 `WARNING`, grpc's, written as `broker: grpc` (its errors at `ERROR`; its infos and warnings, which
 grpc drops by default, at `DEBUG`, which the broker drops too), and OpenTelemetry's internal
-errors. net/http's transport has no error log of its own: when a service sends bytes after a
-whole answer on a connection the proxy keeps, the transport writes them to the standard logger,
-which the broker writes as one line for each write, its first line cut to 256 bytes and the rest
-kept as `stack`. So no such line holds a placeholder as it was minted or lowercased: a command
-that writes its placeholder into its request's path, its `X-Correlation-Id` or the host it asks
-for, or a service that names it in its certificate, has `[placeholder]` written there. A value the
-mask reads that is nil, or one whose methods panic, is written as slog writes it — `<nil>`,
-`null` or `!PANIC: …` — and never ends the call. Two kinds of text are not masked. A library that
-writes to stderr itself writes past it — the Anthropic SDK's warnings, go-retryablehttp's default
-client, the pg_query WebAssembly module's stderr — as does the Go runtime's report of a fatal
-error or a panic no handler recovered, and anything written before `main` runs. And a `[]byte`
-inside a struct, map or slice field is written by the JSON handler in base64, which the mask does
-not decode. A placeholder encoded on purpose — its characters percent-escaped, written in
+errors. grpc's own `GRPC_GO_LOG_SEVERITY_LEVEL` and `GRPC_GO_LOG_VERBOSITY_LEVEL` therefore change
+nothing the broker writes. net/http's transport has no error log of its own: when a service
+sends bytes after a whole answer on a connection the proxy keeps, the transport writes them to
+the standard logger, which the broker writes as one line for each write, its first line cut to
+256 bytes and the rest kept as `stack`. So no such line holds a placeholder as it was minted or
+lowercased: a command that writes its placeholder into its request's path, its
+`X-Correlation-Id` or the host it asks for, or a service that names it in its certificate, has
+`[placeholder]` written there. A value the mask reads that is nil, or one whose methods fail or
+panic, is written as slog writes it — `<nil>`, `null`, `!ERROR:…` or `!PANIC: …`, with a
+placeholder in that text masked too — and never ends the call. Two kinds of text are not masked.
+A library that writes to stderr or stdout itself writes past it — the Anthropic SDK's warnings,
+go-retryablehttp's default client, the pg_query WebAssembly module's stdout and stderr, and the
+Google client libraries' own logger when `GOOGLE_SDK_GO_LOGGING_LEVEL` is set and a client was
+given no logger (the broker's Secret Manager client is given one that drops every line, since at
+debug it prints each response, and a read's response holds the value) — as does the Go runtime's
+report of a fatal error or a panic no handler recovered, and anything written before `main`
+runs. And a `[]byte` inside a struct, map or slice field is written by the JSON handler in
+base64, which the mask does not decode. A placeholder encoded on purpose — its characters
+percent-escaped, written in
 fullwidth letters, a separator written after the prefix, an invisible character written inside
 it, or its 32 characters after the prefix written alone — is text the proxy cannot tell from any
 other, and is written as it came; that is out of the mask's scope, since a command that wants its
