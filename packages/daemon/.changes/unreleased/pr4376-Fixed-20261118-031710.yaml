@@ -1,0 +1,5 @@
+kind: Fixed
+body: A refused spend attribute names the length of a key or a value past the 255 the detector takes with no unit, `has a key 300 long once percent-decoded`, where it called that UTF-16 count characters.
+time: 2026-11-18T03:17:10.415582688Z
+custom:
+    Issue: pr4376

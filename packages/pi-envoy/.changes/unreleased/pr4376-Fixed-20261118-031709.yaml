@@ -1,0 +1,5 @@
+kind: Fixed
+body: The typed shell says it cut its output at 8,000 UTF-16 code units, where it called them characters, and the answers list says it left items out to stay under 8,000 UTF-16 code units.
+time: 2026-11-18T03:17:09.231346356Z
+custom:
+    Issue: pr4376
