@@ -94,9 +94,9 @@ type RefusedError struct {
 	Status int
 	// Code and Description are the OAuth error the broker answered.
 	Code, Description string
-	// Identity names the identity the broker refused, as its Source describes it
-	// (Source.Describe): a person's sign-in on this machine, this machine's Google identity, a
-	// pod's projected token. Empty is a refusal of an identity no Source named.
+	// Identity names the identity the broker refused (refusedIdentity): a person's sign-in on
+	// this machine names the person, and every machine source reads "this machine's identity".
+	// Empty is a refusal of an identity no Source named.
 	Identity string
 	// answer is this same refusal as x/oauth2's own token-endpoint error, which Unwrap says
 	// why it is kept.
@@ -104,7 +104,7 @@ type RefusedError struct {
 }
 
 // newRefusedError is the refusal a broker answered with an OAuth error body to a trade of
-// identity, the trading Source's own description of it.
+// identity, as refusedIdentity names it.
 func newRefusedError(identity string, status int, code, description string) *RefusedError {
 	return &RefusedError{
 		Status: status, Code: code, Description: description, Identity: identity,
@@ -116,8 +116,27 @@ func newRefusedError(identity string, status int, code, description string) *Ref
 	}
 }
 
-// Error names the identity refused, as the Source that traded it describes itself, so a person
-// whose own sign-in the broker refused reads their sign-in named, and never "this machine".
+// namedInRefusal is a Source whose refusal names it: a person's sign-in, whose name in a refusal
+// (PersonIdentity's) holds the person and nothing configured.
+type namedInRefusal interface {
+	nameInRefusal() string
+}
+
+// refusedIdentity is how a refusal of a trade of s names the identity refused. A person's sign-in
+// names the person, so a person whose own sign-in the broker refused never reads "this machine".
+// Every other source reads "this machine's identity", as a refusal always has: a machine source's
+// Describe names configured values (a token file's path, a pool's audiences and account), which a
+// refusal's text has never carried.
+func refusedIdentity(s Source) string {
+	if named, ok := s.(namedInRefusal); ok {
+		if name := named.nameInRefusal(); name != "" {
+			return name
+		}
+	}
+	return "this machine's identity"
+}
+
+// Error names the identity refused (refusedIdentity) and the broker's answer.
 func (e *RefusedError) Error() string {
 	identity := e.Identity
 	if identity == "" {
@@ -520,7 +539,7 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.logf(ctx, "traded an identity for one of the broker's access tokens", "identity", c.subject.Describe(),
+	c.logf(ctx, "traded an identity for one of the broker's access tokens",
 		"session", c.session, "credential", answer.CredentialID, "expires", answer.Expiry.UTC().Format(time.RFC3339))
 	return answer, nil
 }
@@ -571,7 +590,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	}
 	if resp.StatusCode/100 != 2 {
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, newRefusedError(c.subject.Describe(), resp.StatusCode, answer.Error, answer.ErrorDescription)
+			return nil, newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription)
 		}
 		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", endpoint, resp.StatusCode, answer.Error)
 	}

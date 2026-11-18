@@ -1604,7 +1604,8 @@ func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) boo
 func (s *Server) revokeOnce(ctx context.Context, id string) error {
 	err := s.Broker.Revoke(ctx, id)
 	var be *BrokerError
-	if errors.As(err, &be) && be.notTheEnrollingCredential() {
+	if errors.As(err, &be) && be.Status == http.StatusForbidden &&
+		(be.Code == "OPERATOR_MISMATCH" || be.Code == "NOT_ENROLLING_CREDENTIAL") {
 		s.Log.Warn("the enrollment belongs to another launcher credential; leaving it to its lease",
 			"enrollment_id", id, "code", be.Code)
 		return nil

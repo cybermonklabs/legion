@@ -186,10 +186,11 @@ func TestTheTokenInHandServesEveryEnrolmentUntilItLapses(t *testing.T) {
 // TestARevokedSignInFallsBackToTheMachine: the broker refuses the trade once the person has
 // revoked the sign-in, which is a definite answer — that sign-in is over — so the authority
 // answers nothing, the caller enrols under the machine, and nothing asks again until somebody
-// signs in afresh. It logs the refusal once, in the broker's words with its code, and adds no
-// command of its own: the broker's words say what ends a refusal where a login does.
+// signs in afresh. It logs the refusal once, with the person and the code, and prints none of the
+// broker's words, which the log redaction does not read: here they plant a credential in a URL. It
+// adds no command of its own either: the broker's words say what ends a refusal where a login does.
 func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
-	const refusal = "this sign-in was revoked"
+	const refusal = "sign in again at https://not-a-secret-user:not-a-secret-password@issuer.example/?access_token=not-a-secret-token"
 	rig := newSignInRig(t, func(int, url.Values) (int, map[string]any) {
 		return 400, map[string]any{"error": "invalid_grant", "error_description": refusal}
 	})
@@ -211,10 +212,15 @@ func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
 		t.Fatalf("the authority logged %v; want one WARN that the sign-in was refused", messagesOf(records))
 	}
 	attrs := attrsOf(t, records[0])
-	if attrs["person"] != "ada@example.com" || attrs["code"] != "invalid_grant" || !strings.Contains(attrs["error"], refusal) {
-		t.Errorf("the refused sign-in's line carries %v; want ada@example.com, invalid_grant and the broker's words %q", attrs, refusal)
+	if attrs["person"] != "ada@example.com" || attrs["code"] != "invalid_grant" {
+		t.Errorf("the refused sign-in's line carries %v; want ada@example.com and invalid_grant", attrs)
 	}
 	for key, value := range attrs {
+		for _, secret := range []string{"not-a-secret-user", "not-a-secret-password", "not-a-secret-token"} {
+			if strings.Contains(value, secret) {
+				t.Errorf("the refused sign-in's line carries %s=%q: it prints %s from the broker's words", key, value, secret)
+			}
+		}
 		if strings.Contains(value, SignInCommand) || key == "command" {
 			t.Errorf("the refused sign-in's line carries %s=%q: it names a login the broker's words did not", key, value)
 		}

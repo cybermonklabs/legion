@@ -265,10 +265,6 @@ func (e *BrokerError) Error() string {
 	return s
 }
 
-func (e *BrokerError) notTheEnrollingCredential() bool {
-	return e.Status == http.StatusForbidden && (e.Code == "OPERATOR_MISMATCH" || e.Code == "NOT_ENROLLING_CREDENTIAL")
-}
-
 // readOperator reads OperatorFile, trimmed, per call: it names the login_hint for a machine
 // login, and the "operator" of an enrolment signed with the credential such a login minted,
 // which is the one launcher credential of the three the helper can hold whose operator it
@@ -1560,16 +1556,13 @@ func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, er
 
 // Revoke deletes the enrollment and every grant under it. 204 and 404 both mean done.
 //
-// It signs with the credential enrolAuthority would choose now and, where the broker refuses that
-// credential (any 403), again with this machine's own. The broker lets a credential end only the
-// enrolments of its own operator, and a machine's only those it made itself (enroll.authorized,
-// ErrNotEnrollingCredential), while the helper keeps no note of which of the two enrolled a given
-// session: a key it enrolled for a launcher leaves it none at all, and a restart leaves it the
-// enrollment id alone. Two attempts settle every case. A 403 that is not "not this credential's"
-// (a person Dispatch holds, MEMBERSHIP_HELD) is a refusal of the person's credential, and an
-// enrolment the machine made is still the machine's to end, so the second attempt runs for it too;
-// but where the machine is then told the enrolment is not its own either, the person's refusal is
-// the answer, since it says why, and the machine's would only lose that.
+// It signs with the credential enrolAuthority would choose now and, where the broker answers
+// that this is not that enrolment's credential (403), with this machine's own. The broker lets
+// a credential end only the enrolments of its own operator, and a machine's only those it made
+// itself (enroll.authorized, ErrNotEnrollingCredential), while the helper keeps no note of
+// which of the two enrolled a given session: a key it enrolled for a launcher leaves it none at
+// all, and a restart leaves it the enrollment id alone. Two attempts settle every case, and
+// only a 403 — the broker's "not this credential's" — costs the second.
 func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	authority, cred, err := b.signingAuthority(ctx)
 	if err != nil {
@@ -1584,12 +1577,7 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	if machine == nil {
 		return err
 	}
-	again := b.revokeUnder(ctx, &brokerclient.Authority{Key: machine.key, CredentialID: machine.id}, machine, enrollmentID)
-	var mine *BrokerError
-	if !be.notTheEnrollingCredential() && errors.As(again, &mine) && mine.notTheEnrollingCredential() {
-		return err
-	}
-	return again
+	return b.revokeUnder(ctx, &brokerclient.Authority{Key: machine.key, CredentialID: machine.id}, machine, enrollmentID)
 }
 
 // revokeUnder is one DELETE /v1/enrollments/{id} signed with authority; cred is this machine's

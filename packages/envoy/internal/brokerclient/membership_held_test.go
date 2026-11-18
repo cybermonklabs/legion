@@ -98,19 +98,34 @@ func TestMembershipHeldKeepsTheSignInAuthority(t *testing.T) {
 	}
 }
 
-// TestARefusalNamesTheIdentityItRefused: a refusal names the identity the broker refused as its
-// Source describes it, through the client's real trade: a person's sign-in names that person, and
-// a pod's projected token names its file. Neither reads "this machine's identity", which a person
-// whose own sign-in was refused would take for a fault of the machine.
+// personScriptedSource is a scriptedSource that names itself in a refusal as a person's sign-in
+// does (PersonIdentity.nameInRefusal), the stand-in for a sign-in whose own Flow has its own tests.
+type personScriptedSource struct {
+	scriptedSource
+	person string
+}
+
+func (s *personScriptedSource) nameInRefusal() string {
+	return (&PersonIdentity{Person: s.person}).nameInRefusal()
+}
+
+// TestARefusalNamesTheIdentityItRefused: a refusal names the identity the broker refused, through
+// the client's real trade. A person's sign-in names that person, so a person whose own sign-in was
+// refused never reads "this machine". A machine source reads "this machine's identity", as a
+// refusal always has, and carries no configured value its Describe names: a pod's projected token
+// prints no file path.
 func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
+	const tokenFile = "/var/run/secrets/tokens/not-a-secret-path"
 	for _, tc := range []struct {
 		name   string
 		source Source
+		names  string // how the refusal names the identity
 	}{
-		{"a person's sign-in", &scriptedSource{token: "person.google.identity.token", tokenType: oauthwire.SubjectTokenTypeGoogle,
-			describe: (&PersonIdentity{Person: "ada@example.com"}).Describe()}},
+		{"a person's sign-in", &personScriptedSource{
+			scriptedSource: scriptedSource{token: "person.google.identity.token", tokenType: oauthwire.SubjectTokenTypeGoogle},
+			person:         "ada@example.com"}, "ada@example.com's sign-in on this machine"},
 		{"a pod's projected token", &scriptedSource{token: "projected.service.account.token", tokenType: oauthwire.SubjectTokenTypeKubernetes,
-			describe: NewProjectedToken("/var/run/secrets/tokens/broker").Describe()}},
+			describe: NewProjectedToken(tokenFile).Describe()}, "this machine's identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {
@@ -121,9 +136,12 @@ func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = client.Token(context.Background())
-			want := "the secrets broker refused " + tc.source.Describe() + ": HTTP 400 invalid_grant: no entry lists this identity"
+			want := "the secrets broker refused " + tc.names + ": HTTP 400 invalid_grant: no entry lists this identity"
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refusal reads %v; want %q", err, want)
+			}
+			if strings.Contains(err.Error(), tokenFile) {
+				t.Fatalf("the refusal reads %q: it prints the token file's path, a configured value", err)
 			}
 		})
 	}

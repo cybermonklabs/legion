@@ -211,3 +211,7 @@ func (p *PersonIdentity) Token(ctx context.Context) (string, string, error) {
 func (p *PersonIdentity) Describe() string {
 	return p.Person + "'s sign-in on this machine"
 }
+
+// nameInRefusal is how a refusal of this sign-in names it (refusedIdentity): the person's sign-in,
+// which holds the person and nothing configured.
+func (p *PersonIdentity) nameInRefusal() string { return p.Describe() }
