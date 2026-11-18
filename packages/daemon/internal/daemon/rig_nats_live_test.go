@@ -32,7 +32,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,6 +42,7 @@ import (
 
 	"github.com/sjawhar/envoy/daemonpermissions"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/testenvoy"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -139,11 +139,15 @@ type rigNATS struct {
 }
 
 // startRigNATS writes the server's configuration and starts it. The client and monitoring ports
-// are the kernel's own picks on the first start, read back from the server's log, and the same
-// ones on every later start, since every process under test was told them.
+// are reserved for the whole run (testenvoy.ReservePort) and named in the configuration, so every
+// later start binds the same ones, which every process under test was told: a port the server
+// chose and freed at its stop was any program's while it was down, and on 2026-11-18 an outbound
+// connection took the client port during w4's NATS outage, so the server's restart failed with
+// `address already in use`.
 func startRigNATS(t *testing.T, binary string, grants rigGrants, logDir string) *rigNATS {
 	t.Helper()
-	n := &rigNATS{t: t, binary: binary, dir: t.TempDir(), grants: grants, log: filepath.Join(logDir, "nats.log")}
+	n := &rigNATS{t: t, binary: binary, dir: t.TempDir(), grants: grants, log: filepath.Join(logDir, "nats.log"),
+		port: testenvoy.ReservePort(t), monitorPort: testenvoy.ReservePort(t)}
 	var listenerSeed, daemonSeed string
 	listenerSeed, n.listenerPublic = testnkeys.User(t)
 	daemonSeed, n.daemonPublic = testnkeys.User(t)
@@ -164,12 +168,6 @@ func startRigNATS(t *testing.T, binary string, grants rigGrants, logDir string) 
 
 // configuration is the server's file: listen and monitor addresses, JetStream, and the users.
 func (n *rigNATS) configuration() string {
-	port := func(p int) string {
-		if p == 0 {
-			return "-1"
-		}
-		return strconv.Itoa(p)
-	}
 	user := func(comment, key string, grant natsGrant) string {
 		body, err := marshalNoEscape(map[string]any{"nkey": key, "permissions": grant})
 		if err != nil {
@@ -183,7 +181,7 @@ func (n *rigNATS) configuration() string {
 	}
 	var b strings.Builder
 	b.WriteString("# Written by packages/daemon/internal/daemon/rig_nats_live_test.go.\n")
-	fmt.Fprintf(&b, "server_name: legion-rig\nlisten: 127.0.0.1:%s\nhttp: 127.0.0.1:%s\n", port(n.port), port(n.monitorPort))
+	fmt.Fprintf(&b, "server_name: legion-rig\nlisten: 127.0.0.1:%d\nhttp: 127.0.0.1:%d\n", n.port, n.monitorPort)
 	fmt.Fprintf(&b, "jetstream {\n  store_dir: %q\n}\n", filepath.Join(n.dir, "store"))
 	b.WriteString("authorization {\n  users = [\n")
 	b.WriteString(user("the listener's own user: core.ListenerHostPermissions("+n.grants.Machine+") at "+n.grants.Revision, n.listenerPublic, n.grants.Listener))
@@ -206,11 +204,6 @@ func marshalNoEscape(value any) (string, error) {
 	}
 	return strings.TrimSpace(b.String()), nil
 }
-
-var (
-	natsClientPort  = regexp.MustCompile(`Listening for client connections on 127\.0\.0\.1:(\d+)`)
-	natsMonitorPort = regexp.MustCompile(`Starting http monitor on 127\.0\.0\.1:(\d+)`)
-)
 
 // start runs the server and returns once it says it is ready, and once the harness has
 // connected to it as its own user.
@@ -244,10 +237,6 @@ func (n *rigNATS) start() {
 	for {
 		text := readFrom(t, n.log, from)
 		if strings.Contains(text, "Server is ready") {
-			if n.port == 0 {
-				n.port = portIn(t, natsClientPort, text, n.log)
-				n.monitorPort = portIn(t, natsMonitorPort, text, n.log)
-			}
 			break
 		}
 		select {
@@ -420,17 +409,4 @@ func readFrom(t *testing.T, path string, from int64) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
-}
-
-func portIn(t *testing.T, pattern *regexp.Regexp, text, log string) int {
-	t.Helper()
-	match := pattern.FindStringSubmatch(text)
-	if match == nil {
-		t.Fatalf("the nats-server's log %s names no port matching %s:\n%s", log, pattern, text)
-	}
-	port, err := strconv.Atoi(match[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return port
 }

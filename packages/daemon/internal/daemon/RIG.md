@@ -89,7 +89,7 @@ A check that runs the project's controller as a daemon claim sets `r.cfg.Control
 | Every registration and role claim of a session as it reached the front, before any hold, with when it ended and how it was answered (w4) | `r.front.arrivals(session)` |
 | The listener gone | `r.listener.Stop(t)` |
 | The listener started again on its port each time it exits, as its Kubernetes Deployment does (w4's NATS outage: the pinned listener ends itself after 10 minutes without NATS) | `r.listener.RestartOnExit(delay)`; `r.listener.Restarts()` |
-| NATS drops every connection (w4) | `r.nats.stop()`, then `r.nats.start()`, on the same ports and store |
+| NATS drops every connection (w4) | `r.nats.stop()`, then `r.nats.start()`, on the same ports and store; the NATS ports, the listener's and the daemon's API port are each reserved for the whole run (`testenvoy.ReservePort`), so a restart finds its port free |
 | A stored message | `r.nats.storedOn(subject)`; a wildcard subject reads every subject it matches |
 | The daemon stops for an outage (w1) | `r.d.stop()`; `r.holdPortAgain()` holds the port open and nobody answers on it; `r.boot()` starts the daemon again on the same port |
 | Restart the daemon | `r.restartDaemon()` |

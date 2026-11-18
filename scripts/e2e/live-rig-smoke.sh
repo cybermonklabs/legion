@@ -9,7 +9,9 @@
 #                                                                   a publish a client with no
 #                                                                   credential is refused
 #   the front stops and lets through a session's registrations     blockRegistrations, unblock
-#   nats stops and starts and the session connects again           rigNATS.stop, start
+#   nats stops and starts and the session connects again           rigNATS.stop, start; while it
+#                                                                   is down its ports refuse
+#                                                                   another socket's bind
 #   the daemon restarts on its own port and the pane binds again   restartDaemon
 #   the scratch dispatch publishes on the rig's NATS               an issue's event on the stream
 #

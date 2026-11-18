@@ -35,6 +35,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
+- A server a daemon test stops and starts again on the same port, as the rig of `packages/daemon/internal/daemon/RIG.md` does its nats-server, its Envoy listener and the daemon, binds a port `testenvoy.ReservePort(t)` reserved for the test's whole run.
+  The reservation is a socket bound on every address with `SO_REUSEADDR` that never listens: a Go server binds beside it at each start, a dial of it is refused while the server is down, and no bind to port 0 and no connect of any program is given the port meanwhile.
+  A port the server chose and freed at its stop is any program's while it is down, and the rig's nats-server once failed its restart with `address already in use` because an outbound connection had been given its port.
+  The solution note "A server a test starts serves on a port the kernel chose and something holds until it serves", under `docs/solutions/testing/`, has the rule, and `packages/envoy`'s `reservePorts` is the same reservation in that module.
+
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
   The package documentation is the whole list and the rule each check holds.
