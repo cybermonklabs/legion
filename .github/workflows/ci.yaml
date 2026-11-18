@@ -2788,15 +2788,22 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the committed
-            # copies its text checks hold to the texts they copy, so the module's other files -
-            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
+            # every package of this module it imports - and the committed copies its text checks
+            # hold to the texts they copy; and its credential-argument check reads every text file
+            # of the repository, so `**` below selects the job for every change but one under
+            # docs/plans or docs/superpowers. The patterns after it name what the other checks
+            # read, which `**` covers too, so that each read keeps its reason here.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
+              # credential_argument_test.go:143,174 lists every file git tracks or would track and
+              # reads each of them, but docs/plans and docs/superpowers, which are dated history.
+              - '**'
+              - '!docs/plans/**'
+              - '!docs/superpowers/**'
               # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
               # of the phrase it reads in place of importing internal/workflow (:23-24), and the
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
@@ -4657,8 +4664,10 @@ jobs:
   # The same two halves of the Bun install, proved again on an arm64 runner.
   # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
   # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
-  # python3 with PyYAML. No other step of this repository that runs on ubuntu-24.04-arm imports
-  # yaml, so nothing says that runner image carries it until the arm64 leg of
+  # python3 with PyYAML. Of the steps a pull request runs on ubuntu-24.04-arm, the one other that
+  # imports yaml is that same action in dispatch-browser.yaml's `merge` job, which runs only when
+  # a change selects the browser suite,
+  # so on most pull requests nothing says that runner image carries it until the arm64 leg of
   # .github/workflows/release-envoy-listener.yaml runs, which happens on a push to main and so
   # only after a merge. This job says it on the pull request instead, and a release that would
   # have failed on the first push fails here.
