@@ -215,22 +215,25 @@ function inboxThreadLine(row: MyReplyRow, now: number): string {
  *  longer `awaitsDecision` (the rule the Inbox page reads too), is marked `expired` and its
  *  deadline as the broker wrote it, the same mark the Inbox page gives it, or `expired` alone
  *  from a broker that names no deadline; a pending row carries no mark, and so does a row with no
- *  `state`, which comes from a broker older than the mark. A row that names no session leaves
- *  that field out rather than printing two dashes, and a machine login, which is decided with
+ *  `state`, which comes from a broker older than the mark. An expired row names no page either:
+ *  the broker refuses every decision of it, so, as the Inbox page links that row nowhere, the
+ *  line prints no `approve_url` the broker still sends. A row that names no session leaves that
+ *  field out rather than printing two dashes, and a machine login, which is decided with
  *  `dispatch` rather than on a broker page, carries no url to print. */
 function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
+  const pending = awaitsDecision(request);
   return [
     `- ${request.kind}`,
     (request.identifiers ?? []).join(", "),
     request.requested_at,
-    ...(awaitsDecision(request)
+    ...(pending
       ? []
       : [request.expires_at === undefined ? "expired" : `expired ${request.expires_at}`]),
     ...(session === null
       ? []
       : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
-    ...(request.approve_url === undefined ? [] : [request.approve_url]),
+    ...(!pending || request.approve_url === undefined ? [] : [request.approve_url]),
   ].join(" · ");
 }
 

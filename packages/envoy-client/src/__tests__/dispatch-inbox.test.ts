@@ -116,9 +116,10 @@ const PENDING = [
   },
 ];
 
-/** The line `rec-3` prints: the request time, then the mark and the deadline. */
+/** The line `rec-3` prints: the request time, then the mark and the deadline, and no page to
+ *  decide it on, though the broker still names one. */
 const EXPIRED_LINE =
-  "- agent_secret · stripe/key · 2026-11-01T08:00:00Z · expired 2026-11-01T08:30:00Z · session request=ses-7, enrollment=- · https://broker.theorem.dev/approve/rec-3";
+  "- agent_secret · stripe/key · 2026-11-01T08:00:00Z · expired 2026-11-01T08:30:00Z · session request=ses-7, enrollment=-";
 
 /** A time `ms` before `now`, as the server writes one. */
 function ago(now: number, ms: number): string {
