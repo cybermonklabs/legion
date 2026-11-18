@@ -4308,14 +4308,16 @@ export default function envoyExtension(pi: PiApi): void {
     // its handoff prompt and a remote compaction's conversions too; `withSessionAnswers` leaves
     // the answers off those and records nothing for them. Oh My Pi hands this handler no abort
     // signal: it races the handler against the run's own and drops what an aborted handler
-    // returns, and the read it shares goes on to fill the cache.
+    // returns, and the handler goes on to its read, which it shares and which goes on to fill the
+    // cache, and to its decision and its record, which come after those of every earlier request
+    // of the session, so the request after it rebuilds what it recorded (`withSessionAnswers`).
     pi.on("context", async (event, context) => {
       // The host's own live id, as `message_end` reads it: this one process serves one session at
       // a time and moves between them, and a session that followed the same topic reads the same
       // event when its own host writes it, not when the session before it did (`../src/card-age`).
       // It is also the session the request is built from, as it began: the host can move to
-      // another session while the read waits, and an answers message this request sent belongs
-      // to this one alone.
+      // another session while the read waits, and an answers message this request sent, like the
+      // branch it reads again after the read, belongs to this one alone.
       const id = context.sessionManager.getSessionId();
       const aged = cardAges.annotate(
         event.messages,
@@ -4325,7 +4327,13 @@ export default function envoyExtension(pi: PiApi): void {
       if (!atStart.dispatch.enabled) return aged === undefined ? undefined : { messages: aged };
       const withSkill = withDispatchFirst(aged ?? event.messages, DISPATCH_FIRST_CONTEXT);
       const messages = await withSessionAnswers(withSkill ?? aged ?? event.messages, {
-        branch: () => context.sessionManager.getBranch?.() ?? [],
+        // The session's branch, read before the read and again after it: undefined once the host
+        // is on another session than `id`, whose branch is not this request's, and the request
+        // then decides from the branch as it began, and `record` below writes nothing.
+        branch: () =>
+          context.sessionManager.getSessionId() === id
+            ? (context.sessionManager.getBranch?.() ?? [])
+            : undefined,
         session: context.sessionManager,
         id,
         // Read off the live `AgentSession` (18.12.2), whose getters the declared host surface
@@ -4333,9 +4341,11 @@ export default function envoyExtension(pi: PiApi): void {
         // `get compactionSpeculation() { return this.#C.speculationState; }`, the compaction
         // controller's `this.#i !== undefined || this.#u !== undefined || this.#l !== undefined`
         // (an automatic or manual compaction, or a handoff) and `e.armed ? "armed" : "running"`
-        // for a speculative one. A session the registry does not list reads as not compacting.
+        // for a speculative one. A session the registry does not list reads as not compacting. It
+        // is read after the read too, so it asks about `id`, the session the request was built
+        // from, and not the one the host may have moved to while the read waited.
         compacting: () => {
-          const live = liveAgentSession(context.sessionManager.getSessionId());
+          const live = liveAgentSession(id);
           return (
             live !== undefined &&
             (("isCompacting" in live && live.isCompacting === true) ||
@@ -4351,7 +4361,7 @@ export default function envoyExtension(pi: PiApi): void {
         record: (entry) => {
           if (context.sessionManager.getSessionId() !== id) {
             logger.warn(
-              "envoy: the list of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read"
+              "envoy: the message of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read"
             );
             return;
           }
@@ -4359,7 +4369,7 @@ export default function envoyExtension(pi: PiApi): void {
             pi.appendEntry(ANSWERS_SENT_ENTRY, entry);
           } catch (error) {
             logger.warn(
-              "envoy: the list of people's answers this request sent could not be recorded in the session file",
+              "envoy: the message of people's answers this request sent could not be recorded in the session file",
               { error: messageFor(error) }
             );
           }
@@ -4375,7 +4385,7 @@ export default function envoyExtension(pi: PiApi): void {
           logger.warn(
             shown
               ? `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`
-              : `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`
+              : `envoy: people's answers could not be read (${reason}); the request keeps the answers messages sent, which do not name this read's failure`
           ),
       });
       const result = messages ?? withSkill ?? aged;

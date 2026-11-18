@@ -18758,7 +18758,7 @@ console.log(JSON.stringify(args));
     });
     const unshown = () => warnings.filter((warning) => warning.includes("could not be read"));
     const failure =
-      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not name this read's failure";
+      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the answers messages sent, which do not name this read's failure";
     try {
       const first = contextMessages(
         await fixture.handlers.get("context")?.({ messages: [prompt] }, context)
@@ -18807,8 +18807,8 @@ console.log(JSON.stringify(args));
   // after it rebuild that line where it went and log nothing. A read that answers ends the
   // episode, and its empty window appends nothing, so the failure line stays the newest answers
   // message; the next failed read begins a new episode and logs once more, now that the request
-  // keeps the line sent before. A Dispatch URL and a session of their own: the read's cache is
-  // the process's, by session and URL.
+  // keeps the answers messages sent. A Dispatch URL and a session of their own: the read's cache
+  // is the process's, by session and URL.
   test("a Dispatch answering 503 with nothing cached logs one line per failure episode, whether the request shows the failure or keeps the line sent", async () => {
     const id = "ses_answers_503";
     process.env.DISPATCH_URL = "http://dispatch-503.test";
@@ -18844,7 +18844,7 @@ console.log(JSON.stringify(args));
     });
     const reason = "UNAVAILABLE: the database is unavailable";
     const shown = `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`;
-    const kept = `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`;
+    const kept = `envoy: people's answers could not be read (${reason}); the request keeps the answers messages sent, which do not name this read's failure`;
     const failureLine = {
       role: "user",
       content: [{ type: "text", text: sessionAnswersFailureLine(reason) }],
@@ -18992,7 +18992,7 @@ console.log(JSON.stringify(args));
       expect(live).toBe("ses_answers_moved");
       expect(answersSent(fixture.entries)).toEqual(recorded);
       expect(warnings).toEqual([
-        "envoy: the list of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read",
+        "envoy: the message of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read",
       ]);
     } finally {
       stopSink();

@@ -482,10 +482,10 @@ test("an item written after a list kept with another read line appends a list wi
 });
 
 // A read gives no text and no words when a server with no answers route has nothing cached, or
-// when Dispatch is off. Taking the placed list out of the conversation changes the request from
-// its place on, as changing its bytes would, and the next read that answers from the cache puts it
-// back: the pair alternates, and every request pays for it.
-test("a read with no text and no words leaves a placed list where it is", async () => {
+// when Dispatch is off. Such a read compares nothing: taking the list sent out of the conversation
+// would change the request from its place on, as changing its bytes would, and the next read that
+// answers from the cache would show it again: the pair would alternate, and every request pay.
+test("a read with no text and no words keeps the list sent where it went", async () => {
   const session = {};
   const read = readingEach(LIST, undefined, LIST);
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
@@ -789,18 +789,49 @@ test("a retry after an aborted tool call, whose results the host wrote, carries 
   ).toEqual([skill, ask, list]);
 });
 
-test("each session on one sessionManager keeps its own list's place", async () => {
+// Oh My Pi keeps one `sessionManager` when it switches sessions, so a failure episode is kept by
+// session id as well (`episodes`): a failed read of one session is told while another session on
+// the same `sessionManager` is inside an episode of its own, and each session's episode tells its
+// first failure once.
+test("each session on one sessionManager has its own failure episode", async () => {
   const manager = {};
-  const read = readingEach(LIST);
-  await withSessionAnswers([skill, ask], requestOf(read, noBranch, manager, false, "ses_a"));
+  const down = "database is down";
+  const told: [string, string, boolean][] = [];
+  const failingFor = (id: string) => ({
+    ...requestOf(readingEach(failedRead(down)), noBranch, manager, false, id),
+    readFailed: (reason: string, shown: boolean) => {
+      told.push([id, reason, shown]);
+    },
+  });
+  const downLine = sent(sessionAnswersFailureLine(down));
+  expect(await withSessionAnswers([skill, ask], failingFor("ses_a"))).toEqual([
+    skill,
+    ask,
+    downLine,
+  ]);
+  expect(told).toStrictEqual([["ses_a", down, true]]);
   const other = { ...ask, content: [{ type: "text", text: "Another task." }], timestamp: 50 };
-  await withSessionAnswers([skill, other], requestOf(read, noBranch, manager, false, "ses_b"));
-  expect(
-    await withSessionAnswers(
-      [skill, ask, readCall, readResult],
-      requestOf(read, noBranch, manager, false, "ses_a")
-    )
-  ).toEqual([skill, ask, list, readCall, readResult]);
+  expect(await withSessionAnswers([skill, other], failingFor("ses_b"))).toEqual([
+    skill,
+    other,
+    downLine,
+  ]);
+  const both: [string, string, boolean][] = [
+    ["ses_a", down, true],
+    ["ses_b", down, true],
+  ];
+  expect(told).toStrictEqual(both);
+  // ses_a's episode is still open: its next failed read keeps the failure line sent where it went
+  // and tells nothing.
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], failingFor("ses_a"))).toEqual([
+    skill,
+    ask,
+    downLine,
+    readCall,
+    readResult,
+  ]);
+  expect(told).toStrictEqual(both);
 });
 
 test("tool results with one timestamp are told apart by their call ids", async () => {
@@ -856,12 +887,99 @@ test("a request whose write was guarded still carries the list, and the next req
   const read = readingEach(LIST);
   const guarded = { ...requestOf(read, noBranch, session), record: () => undefined };
   expect(await withSessionAnswers([skill, ask], guarded)).toEqual([skill, ask, list]);
-  expect(recordedFor(session)).toEqual([]);
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
     ...turn,
     list,
   ]);
+});
+
+// Oh My Pi does not wait for the `context` handler of a run that was stopped: it races the handler
+// and drops what it returns, and the handler goes on to its read and its record. The next run's
+// request can start while that read is still open, so both requests' reads can come back with the
+// same change. The stopped request decides first and appends the change after its own last
+// message; the request after it rebuilds that message where it went and appends nothing, so the
+// request after both begins with the bytes of the one the host sent.
+test("two overlapping requests on one shared read: the next request carries the stopped request's list where it went", async () => {
+  const session = {};
+  await withSessionAnswers([skill, ask], requestOf(readingEach(LIST), noBranch, session));
+  const stopped = [skill, ask, readCall, readResult];
+  const next = [...stopped, grepCall];
+  const shared = Promise.withResolvers<CarriedAnswers | undefined>();
+  const read = () => shared.promise;
+  const deciding = [
+    withSessionAnswers([...stopped], requestOf(read, noBranch, session)),
+    withSessionAnswers([...next], requestOf(read, noBranch, session)),
+  ];
+  shared.resolve(carry(LATER));
+  const [, carried] = await Promise.all(deciding);
+  const after = await withSessionAnswers(
+    [...next, grepResult],
+    requestOf(readingEach(LATER), noBranch, session)
+  );
+  keepsSent(carried, after);
+  expect(recordedFor(session)).toStrictEqual([
+    { after: "user@1", blocks: [LIST, REPLACES], words: carry(LIST)?.words },
+    { after: "toolResult@3#call-1", blocks: [LATER, REPLACES], words: carry(LATER)?.words },
+  ]);
+});
+
+// The same two requests, each on a read of its own, the later request's coming back first: the
+// earlier request still decides first, and the later one decides from the branch as the earlier
+// one left it, whichever read settles first.
+test("two overlapping requests whose reads settle out of order: the earlier request decides first", async () => {
+  const session = {};
+  await withSessionAnswers([skill, ask], requestOf(readingEach(LIST), noBranch, session));
+  const stopped = [skill, ask, readCall, readResult];
+  const next = [...stopped, grepCall];
+  const stoppedRead = Promise.withResolvers<CarriedAnswers | undefined>();
+  const nextRead = Promise.withResolvers<CarriedAnswers | undefined>();
+  const first = withSessionAnswers(
+    [...stopped],
+    requestOf(() => stoppedRead.promise, noBranch, session)
+  );
+  const second = withSessionAnswers(
+    [...next],
+    requestOf(() => nextRead.promise, noBranch, session)
+  );
+  nextRead.resolve(carry(LATER));
+  // Every callback queued so far runs, so a request free to decide on its read alone has decided.
+  const drained = Promise.withResolvers<void>();
+  setImmediate(drained.resolve);
+  await drained.promise;
+  stoppedRead.resolve(carry(LATER));
+  const [, carried] = await Promise.all([first, second]);
+  const after = await withSessionAnswers(
+    [...next, grepResult],
+    requestOf(readingEach(LATER), noBranch, session)
+  );
+  keepsSent(carried, after);
+  expect(recordedFor(session)).toStrictEqual([
+    { after: "user@1", blocks: [LIST, REPLACES], words: carry(LIST)?.words },
+    { after: "toolResult@3#call-1", blocks: [LATER, REPLACES], words: carry(LATER)?.words },
+  ]);
+  expect(carried).toEqual([skill, ask, list, readCall, readResult, later, grepCall]);
+});
+
+// The host can move to another session while a request's read waits, and the branch it lists then
+// is that session's. The request reads none of it (`branch` gives undefined) and decides from the
+// branch as it began, so it still rebuilds the list sent where it went.
+test("a request whose host moved to another session while its read waited decides from the branch as it began", async () => {
+  const session = {};
+  await withSessionAnswers([skill, ask], requestOf(readingEach(LIST), noBranch, session));
+  const request = requestOf(readingEach(LIST), noBranch, session);
+  let reads = 0;
+  const moved = { ...request, branch: () => (reads++ === 0 ? request.branch() : undefined) };
+  const turn = [skill, ask, readCall, readResult];
+  expect(await withSessionAnswers([...turn], moved)).toEqual([
+    skill,
+    ask,
+    list,
+    readCall,
+    readResult,
+  ]);
+  // Read before the read, and again after it.
+  expect(reads).toBe(2);
 });
 
 // A message is rebuilt from the blocks its entry recorded, never from a constant read again, so a

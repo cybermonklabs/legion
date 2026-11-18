@@ -202,6 +202,20 @@ const conversionsGlobal = globalThis as typeof globalThis & {
 const conversions = conversionsGlobal[CONVERSIONS_KEY] ?? new WeakMap<object, Conversion>();
 conversionsGlobal[CONVERSIONS_KEY] = conversions;
 
+/** The decision of the newest request of each session to start a read, by the session's
+ *  `sessionManager`: a promise that settles, and never rejects, once that request has decided or
+ *  failed, which is never before every request of the session that started a read before it has.
+ *  Each such request waits on the one before it (`decidedInTurn`), so the requests of one session
+ *  decide one after another in the order they started, whatever order their reads settle in. On
+ *  `globalThis` as `decided` is, since any copy of this extension may decide a request of the
+ *  session. A change to its shape takes a new key (`.v2`). */
+const DECIDING_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers-deciding.v1");
+const decidingGlobal = globalThis as typeof globalThis & {
+  [DECIDING_KEY]?: WeakMap<object, Promise<void>>;
+};
+const deciding = decidingGlobal[DECIDING_KEY] ?? new WeakMap<object, Promise<void>>();
+decidingGlobal[DECIDING_KEY] = deciding;
+
 /** What one request's read hands on (`carriedAnswers`): its text, the list or the failure line,
  *  undefined when the read gave none; when the read gave them, what the people wrote in every item
  *  Dispatch sent inside the read's window (`SessionAnswersRead.words`) and where that window starts
@@ -221,8 +235,7 @@ export interface CarriedAnswers {
   readonly answered?: boolean | undefined;
 }
 
-/** A read that gave text, or an answers message a request sent as its first block and its words:
- *  what `showsNew` compares. */
+/** A read that gave text: what `showsNew` compares the newest answers message sent with. */
 type ShownAnswers = CarriedAnswers & { readonly text: string };
 
 /**
@@ -234,8 +247,9 @@ type ShownAnswers = CarriedAnswers & { readonly text: string };
  * Dispatch answered the read (`source: "fresh"`). Undefined when it gave neither text nor words:
  * Dispatch is off, or has no answers route and no list read from it before has an item inside the
  * 72 hours (none was read, or every item of the one read has aged out). The extension's
- * `sessionAnswersText` and the placement cases of `session-answers-read.test.ts` both call it, so
- * those cases check the extension's own mapping.
+ * `sessionAnswersText` calls it, and so does `session-answers-read.test.ts`, whose cases check on
+ * reads through the real `readSessionAnswers` the rules by which `withSessionAnswers` keeps every
+ * list sent, so those cases check the extension's own mapping.
  */
 export function carriedAnswers(read: SessionAnswersRead): CarriedAnswers | undefined {
   if (read.text === undefined && read.words === undefined) return undefined;
@@ -260,14 +274,14 @@ export const ANSWERS_SENT_ENTRY = "envoy-answers-sent";
 /** One answers message a request sent, as the session records it (`ANSWERS_SENT_ENTRY`'s data):
  *  `after`, the `messageKey` of the request's last message before the answers message was added,
  *  which every later request that still holds that message carries it right after; `blocks`, the
- *  exact text of each of its text blocks in order, which it is rebuilt from with no constant read
- *  again, so a later release that rewords the sentence still rebuilds the old bytes; and `words`,
- *  the read's words when the read gave them (`CarriedAnswers.words`). Its kind is its first
- *  block's: a list, the "no item" list included, starts with `SESSION_ANSWERS_MARKER`, and the
- *  failure line with its own marker. */
+ *  exact text of each of its text blocks in order, of which there is at least one, which it is
+ *  rebuilt from with no constant read again, so a later release that rewords the sentence still
+ *  rebuilds the old bytes; and `words`, the read's words when the read gave them
+ *  (`CarriedAnswers.words`). Its kind is its first block's: a list, the "no item" list included,
+ *  starts with `SESSION_ANSWERS_MARKER`, and the failure line with its own marker. */
 export interface AnswersSent {
   readonly after: string;
-  readonly blocks: readonly string[];
+  readonly blocks: readonly [string, ...string[]];
   readonly words?: readonly string[];
 }
 
@@ -334,18 +348,19 @@ function isList(text: string): boolean {
 }
 
 /**
- * Whether `next` shows something `shown` did not: an item, an answer or comment a person changed,
- * an item a person retracted, or that the list could not be read. `shown` is the newest answers
- * message a request sent, as its entry records it (`AnswersSent`). The failure line, which a read
- * gives when it has no list to give (a Dispatch config error, a changed Dispatch URL, a cache
- * whose every item aged out, a read that threw), is a change after a list sent, so it is appended
- * after the last message and the model reads that this read failed rather than bytes sent before
- * that look like a read that answered. A read that fails but gives the cached list is a list: with
- * the same items it appends nothing, the request keeps the bytes sent, and only the log says that
- * this read failed (`SessionAnswersRequest.readFailed`). A list after a failure line sent is a
- * change too. Two failure lines show the same thing and differ only in their reason, so a failure
- * line after one sent appends nothing, and the one sent stays the newest message with its own
- * reason, as a list does with its read note.
+ * Whether `next` shows something `sent` did not: an item, an answer or comment a person changed,
+ * an item a person retracted, or that the list could not be read. `sent` is the newest answers
+ * message a request sent, as its entry records it (`AnswersSent`), read by its first block and
+ * its words. The failure line, which a read gives when it has no list to give (a Dispatch config
+ * error, a changed Dispatch URL, a cache whose every item aged out, a read that threw), is a
+ * change after a list sent, so it is appended after the last message and the model reads that
+ * this read failed rather than bytes sent before that look like a read that answered. A read that
+ * fails but gives the cached list is a list: with the same items it appends nothing, the request
+ * keeps the bytes sent, and only the log says that this read failed
+ * (`SessionAnswersRequest.readFailed`). A list after a failure line sent is a change too. Two
+ * failure lines show the same thing and differ only in their reason, so a failure line after one
+ * sent appends nothing, and the one sent stays the newest message with its own reason, as a list
+ * does with its read note.
  *
  * Between two lists, the two reads' words (`sessionAnswersWords`, one string per item Dispatch
  * sent inside the read's window, shown or left out by the list's character cap) answer it
@@ -370,13 +385,14 @@ function isList(text: string): boolean {
  * read with no text, which appends the "no item" list after such a list whenever the read gives
  * words; the older-copy path is in both places, and goes from both.
  */
-function showsNew(shown: ShownAnswers, next: ShownAnswers): boolean {
-  if (isList(shown.text) !== isList(next.text)) return true;
+function showsNew(sent: AnswersSent, next: ShownAnswers): boolean {
+  const [shown] = sent.blocks;
+  if (isList(shown) !== isList(next.text)) return true;
   if (!isList(next.text)) return false;
-  if (shown.words === undefined || next.words === undefined) {
-    return withoutReadLine(shown.text) !== withoutReadLine(next.text);
+  if (sent.words === undefined || next.words === undefined) {
+    return withoutReadLine(shown) !== withoutReadLine(next.text);
   }
-  return sessionAnswersChanged(shown.words, next.words, next.since);
+  return sessionAnswersChanged(sent.words, next.words, next.since);
 }
 
 /** Whether `value` is an array of strings. */
@@ -488,14 +504,12 @@ function whileCompacting(
 function addedBlocks(
   present: readonly AnswersSent[],
   carried: CarriedAnswers | undefined
-): string[] | undefined {
+): AnswersSent["blocks"] | undefined {
   const text = carried?.text;
   if (carried !== undefined && text !== undefined) {
     const next = { ...carried, text };
     const newest = present.at(-1);
-    if (newest !== undefined && !showsNew({ text: newest.blocks[0], words: newest.words }, next)) {
-      return undefined;
-    }
+    if (newest !== undefined && !showsNew(newest, next)) return undefined;
     return isList(text) ? [text, SESSION_ANSWERS_REPLACES] : [text];
   }
   const words = carried?.words;
@@ -553,8 +567,10 @@ function withAnswersSent(
 
 /** `messages` decided with `carried`: through the compaction path (`whileCompacting`) when
  *  `compacting`, else through the rule over the answers messages the branch `entries` record
- *  (`withAnswersSent`), the only path that calls `entries`. A result is added to `decided`, so no
- *  other copy of this extension decides the request again. */
+ *  (`withAnswersSent`), the only path that calls `entries`. `withSessionAnswers` hands it the
+ *  branch read again after the read, once every earlier request of the session has decided
+ *  (`decidedInTurn`); `placedLegacy`, which awaits nothing, the branch as it is. A result is added
+ *  to `decided`, so no other copy of this extension decides the request again. */
 function decide(
   messages: readonly unknown[],
   entries: () => readonly unknown[],
@@ -570,10 +586,14 @@ function decide(
 }
 
 export interface SessionAnswersRequest {
-  /** The session's branch entries (`sessionManager.getBranch`): where the request ends on the
-   *  branch (`branchPosition`), and every answers message an earlier request of the session sent
-   *  (`ANSWERS_SENT_ENTRY`). Read once per request, before the read. */
-  readonly branch: () => readonly unknown[];
+  /** The session's branch entries (`sessionManager.getBranch`), or undefined once the host is on
+   *  another session than the one the request was built from (`id`), whose branch holds none of
+   *  this request's answers messages. `withSessionAnswers` reads it before the read, for where the
+   *  request ends (`branchPosition`), and again after it, once every earlier request of the
+   *  session has decided, for every answers message an earlier request of the session sent
+   *  (`ANSWERS_SENT_ENTRY`); when the second read gives undefined, the request decides from the
+   *  first. */
+  readonly branch: () => readonly unknown[] | undefined;
   /** The session the request is for (its `sessionManager`): the key of its last conversion, and
    *  with `id` the key of its failure episode. */
   readonly session: object;
@@ -592,11 +612,13 @@ export interface SessionAnswersRequest {
   /** Records in the session the answers message this request appends after its last message
    *  (`ANSWERS_SENT_ENTRY`), so every later request of the session, in this process or in one
    *  that resumed the session, rebuilds it where it went with the bytes it carried. Called at
-   *  most once per request, after the read, only by the copy that decided the request, and never
-   *  while a compaction may be converting the conversation. The request carries the message
-   *  whether or not the write happened: the extension writes nothing when the host moved to
-   *  another session while the read waited, since the entry belongs to the session the request
-   *  was built from, and logs that, or a write that failed. */
+   *  most once per request, only by the copy that decided the request: after its read and after
+   *  every earlier request of the session that read has decided, or at once for a list an older
+   *  copy added (`placedLegacy`), and never while a compaction may be converting the
+   *  conversation. The request carries the message whether or not the write happened: the
+   *  extension writes nothing when the host moved to another session while the read waited, since
+   *  the entry belongs to the session the request was built from, and logs that, or a write that
+   *  failed. */
   readonly record: (entry: AnswersSent) => void;
   /** Told why a read failed (`CarriedAnswers.reason`) on the first failed read of the session's
    *  failure episode (`episodes`), and whether this request shows the model a message for it
@@ -630,12 +652,29 @@ export interface SessionAnswersRequest {
  * after the last message. The first failed read of a failure episode is told to
  * `request.readFailed`, which the extension logs, and not again until a read answers.
  *
+ * The branch is read before the read, for where the request ends (`branchPosition`), and again
+ * after it, for the answers messages sent, once every earlier request of the session has decided
+ * (`deciding`): the request starts its read at once, and decides when both its read and the
+ * decision of the request before it have settled (`decidedInTurn`). Oh My Pi does not wait for
+ * the `context` handler of a run that was stopped: it races the handler against the run and drops
+ * what the handler returns, and the handler goes on to its read and its record. The next run's
+ * request can start while that read is still open; in this order it decides after the stopped
+ * one, rebuilds the message that one appended where it went, and appends only what that message
+ * did not show, so a stopped request whose handler goes on and the request after it never both
+ * append the same change, whichever read settles first. A read waits on Dispatch at most its
+ * deadline (800 ms, `readSessionAnswers`), and the reads of the requests before this one started
+ * before its own, so this request waits on them about as long as on its own read. The second read
+ * of the branch is of the session the request was built from: once the host is on another,
+ * `request.branch` gives undefined, and the request decides from the branch as it began, and the
+ * extension's `record` writes nothing.
+ *
  * While a compaction may be converting the conversation (`request.compacting`, or the request
  * right after a remote compaction's cut) the request carries none of the messages sent, and the
  * read's text goes after the last message and is not recorded (`whileCompacting`): such a
  * request's bytes differ from the request before it from the first message sent on, this path's
  * known limit. Undefined when the request carries no answers message: the read appends nothing and
- * the request holds no message sent, or one of these, for which `read` is not called:
+ * the request holds no message sent, or one of these, for which `read` is not called and which
+ * takes no place in that order:
  *
  * - another copy of this extension already decided this request: it added its answers messages
  *   (and passed on the array it returned), or it read and found none to carry, or the request is
@@ -674,7 +713,7 @@ export async function withSessionAnswers(
   ) {
     return undefined;
   }
-  const entries = request.branch();
+  const entries = request.branch() ?? [];
   const position = branchPosition(messages, entries);
   const previous = conversions.get(request.session);
   if (position.at === "before") {
@@ -695,9 +734,39 @@ export async function withSessionAnswers(
   ) {
     return undefined;
   }
-  const carried = await request.read();
+  const earlier = deciding.get(request.session);
+  const decision = decidedInTurn(messages, entries, earlier, previous, request);
+  deciding.set(
+    request.session,
+    decision.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return decision;
+}
+
+/**
+ * `messages` for a request that read, decided in its turn among the session's requests: it starts
+ * `request.read` at once, and decides once both that read and `earlier`, the decision of the
+ * session's request before it (`deciding`), have settled, whichever settles first, with the branch
+ * read again then; with `entries`, the branch as the request began, when the second read gives
+ * undefined because the host is on another session. A read that throws still waits on `earlier`
+ * before this decision fails with its error, so the request after it never decides ahead of the
+ * one before it. `previous` is the session's conversion before this request (`conversions`):
+ * right after a remote compaction's cut, the request goes through the compaction path.
+ */
+async function decidedInTurn(
+  messages: readonly unknown[],
+  entries: readonly unknown[],
+  earlier: Promise<void> | undefined,
+  previous: Conversion | undefined,
+  request: SessionAnswersRequest
+): Promise<unknown[] | undefined> {
+  const [read] = await Promise.allSettled([request.read(), earlier]);
+  if (read.status === "rejected") throw read.reason;
   const compacting = previous === "cut" || request.compacting();
-  return decide(messages, () => entries, carried, request, compacting);
+  return decide(messages, () => request.branch() ?? entries, read.value, request, compacting);
 }
 
 /**
@@ -714,6 +783,11 @@ export async function withSessionAnswers(
  * answered, so such a list ends the session's failure episode, as this copy's own answered read
  * does, and the next failure an older copy's list names is told again. An older copy's failure
  * line names no reason here and ends no episode.
+ *
+ * It decides at once, with no await: nothing can come between its read of the branch and its
+ * record, so it takes no place in the order in which the session's requests that read decide
+ * (`deciding`), and reads the branch as it is (a branch that gives undefined, the host on
+ * another session, reads as empty).
  */
 function placedLegacy(
   messages: readonly unknown[],
@@ -734,5 +808,5 @@ function placedLegacy(
     reason,
     answered: reason === undefined && isList(text),
   };
-  return decide(messages.slice(0, -1), request.branch, carried, request, compacting);
+  return decide(messages.slice(0, -1), () => request.branch() ?? [], carried, request, compacting);
 }
