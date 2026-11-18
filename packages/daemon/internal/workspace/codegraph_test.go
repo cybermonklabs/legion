@@ -57,7 +57,8 @@ esac
 // codegraphEnvironments returns the variables of each environment stubCodegraph recorded beside
 // callLog, one map per invocation, read whole by name (envlisting). It lists callLog's directory
 // and keeps the names that start with callLog's own, rather than matching a glob: a temporary
-// directory can hold a glob character ([, * or ?), and a pattern built on it would not compile.
+// directory can hold a glob character, and an unclosed [ stops the pattern from compiling, while
+// a * or ? would make it match other paths too.
 func codegraphEnvironments(t *testing.T, callLog string) []map[string]string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Dir(callLog))
