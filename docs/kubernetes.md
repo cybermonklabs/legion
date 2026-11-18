@@ -2159,13 +2159,13 @@ For an operator-launched controller, stop `legion controller start` and run it a
 
 The daemon-launched controller's pod is in scope for the warning and in no round:
 it has no issue workspace and nothing to push, so `PodDrift` answers nothing for it (`internal/runtime/sandbox/drift.go`).
-Its pod is replaced by a launch: one that finds it not live — its Sandbox suspended, its pod ended, its init container failed, or its launcher binding lost
+Its pod is replaced by a launch: one that finds it not live — its Sandbox suspended, its pod ended, its init container failed, its launcher binding lost, or its pod never started by its node (`neverStarted`, `internal/runtime/sandbox/provisioning.go`: scheduled with `PodReadyToStartContainers=False`, created longer than the boot timeout ago, and scheduled longer than half the boot timeout or a minute ago, whichever is less)
 — and, since no round covers it, one that finds it drifted in any way, its image and pod shape included, unless that launch installs a stale-plugin pair (`roundCovers`, `shapeDrift`).
 So an operator moving the controller onto a new image suspends its claim and resumes it (`legion claims suspend`, then `legion claims resume`).
 
 A launch replaces a pod other roles of its issue still run in only when the pod cannot run the launching role as a pod created now would and no worker in it can be asked to push first (`movedInPod`, `internal/runtime/sandbox/addresses.go`):
 it runs the layout before one container, one launcher container per role, or its launchers dial a worker stream other than the one a pod created now is handed and never redial it.
-A pod the launch finds suspended, ended, with a failed init container, with a disk of the shape before the pod-owned disk, or whose launcher Secret no longer binds it is replaced too.
+A pod the launch finds suspended, ended, with a failed init container, never started by its node (scheduled with `PodReadyToStartContainers=False`, created longer than the boot timeout ago, and scheduled longer than half the boot timeout or a minute ago, whichever is less), with a disk of the shape before the pod-owned disk, or whose launcher Secret no longer binds it is replaced too.
 A pod running as a ServiceAccount other than the configured one is replaced by a launch only where no round covers that pod, the project controller's (`accountDrift`, `roundCovers`): the account is fixed for the pod's life, and no round will ever come for such a pod.
 Everything else a running pod cannot be changed to carry — its image, its pod kind's reservation, the operator's volumes and mounts, the disk size, a role's overlays, the secrets broker's enrollment and the session store, and the ServiceAccount it runs as wherever a round covers the pod
 — is drift, and the update round replaces the pod for it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).

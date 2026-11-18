@@ -157,37 +157,36 @@ func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 }
 
 // A pod has never started only while it is scheduled, still Pending, and its node has not made it
-// ready to start its containers, once it was created longer than the bound ago and bound longer
+// ready to start its containers, once it was created longer than the bound ago and scheduled longer
 // than its margin ago: half the bound, or a minute where that is less. Its age counts from its
 // creation, not from the conditions, which come seconds after it (the row 30 s later); and a pod
 // that waited unscheduled for room for longer than the bound reads the same in the seconds after
-// its node gets it, so its binding must be old too (the rows of a pod created 15 min ago, against
-// the minute at the 10 min bound and against half of a 90 s bound). The binding's clock is
+// its node gets it, so its scheduling must be old too (the rows of a pod created 15 min ago,
+// against the minute at the 10 min bound and against half of a 90 s bound). The scheduling clock is
 // PodScheduled's, not PodReadyToStartContainers', which the kubelet writes later (the rows where
 // the two differ). A pod whose node reports no readiness to start is the launcher wait's, as an
 // image pull is; a pod not scheduled is the scheduler's; a pod ready to start whose init container
-// still waits is starting; a pod whose creation or binding time is unknown is not judged; and a pod
-// that has left Pending has started, whatever its node reports of it since.
+// still waits is starting; a pod whose creation or scheduling time is unknown is not judged; and a
+// pod that has left Pending has started, whatever its node reports of it since.
 func TestAPodNotReadyToStartHasNeverStartedOnceCreatedPastTheBoundAndScheduledPastItsMargin(t *testing.T) {
 	now := time.Date(2026, 11, 17, 15, 8, 0, 0, time.UTC)
 	bound, short := 10*time.Minute, 90*time.Second
 	waited := 15 * time.Minute
-	// undated stands for a condition that carries no time.
+	// undated stands for a time the pod does not carry: its creation or a condition's, unknown.
 	const undated time.Duration = -1
 	for _, tc := range []struct {
 		name  string
 		phase corev1.PodPhase
 		// bound is the bound the row is judged against, the 10 min one where it is 0.
 		bound time.Duration
-		// created is how long ago the pod was created, 0 for a pod whose creation is unknown;
-		// scheduledAgo how long ago PodScheduled took its status, and readyAgo how long ago
-		// PodReadyToStartContainers did, each undated for a condition with no time. scheduled
-		// and ready are their statuses, "" for a condition the pod does not carry.
+		// created is how long ago the pod was created, scheduledAgo how long ago PodScheduled took
+		// its status, and readyAgo how long ago PodReadyToStartContainers did, each undated where
+		// that time is unknown. scheduled and ready are the two conditions' statuses, "" for a
+		// condition the pod does not carry.
 		created, scheduledAgo, readyAgo time.Duration
 		scheduled, ready                corev1.ConditionStatus
-		// unstarted is the pod's age as neverStarted counts it, 0 for a pod it does not judge.
-		// The binding's age it counts is scheduledAgo for every pod it judges, and 0 for the
-		// others.
+		// unstarted is the pod's age as neverStarted counts it, 0 for a pod it does not judge. The
+		// scheduling age it counts is scheduledAgo for every pod it judges, and 0 for the others.
 		unstarted time.Duration
 		never     bool
 	}{
@@ -221,9 +220,9 @@ func TestAPodNotReadyToStartHasNeverStartedOnceCreatedPastTheBoundAndScheduledPa
 			scheduledAgo: 6 * time.Minute, readyAgo: 30 * time.Second, scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse, unstarted: waited, never: true},
 		{name: "a pod created 15 min ago that its node got 30 s ago and reported not ready to start with no time", created: waited,
 			scheduledAgo: 30 * time.Second, readyAgo: undated, scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse, unstarted: waited},
-		{name: "a pod not ready to start whose creation is unknown", scheduledAgo: time.Hour, readyAgo: time.Hour,
+		{name: "a pod not ready to start whose creation is unknown", created: undated, scheduledAgo: time.Hour, readyAgo: time.Hour,
 			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse},
-		{name: "a pod not ready to start whose binding time is unknown", created: time.Hour, scheduledAgo: undated, readyAgo: time.Hour,
+		{name: "a pod not ready to start whose scheduling time is unknown", created: time.Hour, scheduledAgo: undated, readyAgo: time.Hour,
 			scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse},
 		{name: "a pod Running whose node has since stopped making it ready", phase: corev1.PodRunning, created: time.Hour,
 			scheduledAgo: time.Hour, readyAgo: time.Hour, scheduled: corev1.ConditionTrue, ready: corev1.ConditionFalse},
@@ -234,15 +233,13 @@ func TestAPodNotReadyToStartHasNeverStartedOnceCreatedPastTheBoundAndScheduledPa
 			if tc.phase != "" {
 				pod.Status.Phase = tc.phase
 			}
-			if tc.created > 0 {
-				pod.CreationTimestamp = metav1.NewTime(now.Add(-tc.created))
-			}
 			at := func(ago time.Duration) metav1.Time {
 				if ago == undated {
 					return metav1.Time{}
 				}
 				return metav1.NewTime(now.Add(-ago))
 			}
+			pod.CreationTimestamp = at(tc.created)
 			for _, condition := range []corev1.PodCondition{
 				{Type: corev1.PodScheduled, Status: tc.scheduled, LastTransitionTime: at(tc.scheduledAgo)},
 				{Type: corev1.PodReadyToStartContainers, Status: tc.ready, LastTransitionTime: at(tc.readyAgo)},
