@@ -239,8 +239,9 @@ describe("a card in a model request", () => {
   });
 
   // The process ended after the host wrote the card and before its ledger record was appended: the
-  // card's entry carries the time it was handed, so the entries written before it bound the write.
-  test("written before this process started, its ledger record lost, takes the newest entry time up to its own entry", () => {
+  // card's entry carries the time it was handed, so the message entries written before it bound
+  // the write.
+  test("written before this process started, its ledger record lost, takes the newest message time up to its own entry", () => {
     const old = card("evt-old", SENT, SENT);
     const ages = new CardAges({ now: () => LATE + 86_400_000 });
     const branch = [
@@ -261,6 +262,43 @@ describe("a card in a model request", () => {
 
     expect(text).toContain('delivered: "2026-10-31T11:12:58Z"');
     expect(text).toContain('waited: "4 h 45 min');
+  });
+
+  // Oh My Pi appends a `custom` entry such as `date-cwd-reminder` as it prepares a request, after
+  // the `context` hooks showed the card, and writes the card's own entry later through its
+  // message_end queue, stamped with the time it was handed the card: the `custom` entry stands
+  // before the card's entry with a later stamp.
+  test("written before this process started, its ledger record lost, takes no time from a custom entry the host appended before the card's entry", () => {
+    const old = card("evt-old", SENT, SENT);
+    const ages = new CardAges({ now: () => LATE + 86_400_000 });
+    const branch = [
+      {
+        type: "custom",
+        customType: "date-cwd-reminder",
+        timestamp: "2026-10-31T11:13:03.256Z",
+        data: {},
+      },
+      {
+        type: "custom_message",
+        customType: "envoy-message",
+        timestamp: "2026-10-31T11:13:02.910Z",
+        details: { event_id: "evt-old" },
+        content: old.content,
+      },
+      {
+        type: "custom",
+        customType: "system-prompt-digest",
+        timestamp: "2026-10-31T11:13:03.357Z",
+        data: {},
+      },
+    ];
+
+    const text = textOf(
+      ages.annotate([old], () => branch, SESSION),
+      "evt-old"
+    );
+
+    expect(text).toContain('delivered: "2026-10-31T11:13:02Z"');
   });
 
   test("handed before this process started and never written into the session is left as it is", () => {
@@ -459,6 +497,50 @@ describe("a card after a resume", () => {
     expect(before).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
     expect(textOf(after, "evt-old")).toBe(before);
     expect(textOf(after, "evt-new")).toContain('\n  delivered: "2026-10-31T11:18:02Z"\n');
+  });
+
+  // A session an earlier release wrote records no delivery for its cards, nor does one whose
+  // record was not written. A process that resumed such a session and wrote an old card again
+  // before its first request took the time of that write for the old card, and its `delivered:`
+  // line moved on by the hours between the two processes.
+  test("after a resume of a session that records no delivery, an old card the resumed process writes again before its first request keeps its delivered line, and a new card carries its own time", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    let clock = LATE;
+    // An earlier release, which records nothing. Oh My Pi writes a card's entry into the session
+    // file a few milliseconds after the extension's `message_end` handler returns.
+    const first = new CardAges({ now: () => clock });
+    const old = card("evt-old", SENT, LATE);
+    first.written(old, SESSION, () => file);
+    file.push(cardEntry(old, LATE + 400));
+    const before = textOf(
+      first.annotate([old], () => file, SESSION),
+      "evt-old"
+    );
+
+    // The process that resumes the session three hours later writes the card again, its ledger
+    // record never written, and then a new card, both before its first request.
+    clock = LATE + 3 * 3_600_000;
+    const resumed = new CardAges({ now: () => clock, record: files.record });
+    const replayed = card("evt-old", SENT, clock);
+    resumed.written(replayed, SESSION, () => file);
+    file.push(cardEntry(replayed, clock + 400));
+    clock += 2_000;
+    const fresh = card("evt-new", clock - 1_000, clock);
+    resumed.written(fresh, SESSION, () => file);
+    file.push(cardEntry(fresh, clock + 400));
+    const after = resumed.annotate([old, replayed, fresh], () => file, SESSION);
+
+    expect(before).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
+    expect(textOf(after, "evt-old")).toBe(before);
+    expect(textOf(after?.slice(1), "evt-old")).toBe(before);
+    expect(textOf(after, "evt-new")).toContain('\n  delivered: "2026-10-31T14:13:04Z"\n');
+    // The old card's delivery is the time of its entry, which the resumed process fixed and
+    // recorded, and the new card's the time the resumed process wrote it.
+    expect(files.recorded(SESSION)).toEqual([
+      { event_id: "evt-old", at: LATE + 400 },
+      { event_id: "evt-new", at: LATE + 3 * 3_600_000 + 2_000 },
+    ]);
   });
 });
 

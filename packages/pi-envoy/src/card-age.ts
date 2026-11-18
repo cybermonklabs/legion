@@ -101,17 +101,19 @@ interface CardText {
  * The delivery a session first gives a card is recorded in the session (`CARD_DELIVERED_ENTRY`,
  * through `CardAgesDeps.record`) and read back from it, so a card's text is the same in every
  * request of the session, in this process and in one that resumed it. That first delivery is the
- * time the host emitted the card's `message_end` (`written`), unless the session already records
- * one for the card's event: a card the host writes again, as a process that resumed the session
- * replays a card whose ledger record the process before it never wrote, takes that delivery, and
- * the card already in the session keeps its text. A card whose `message_end` this process did not
- * see before its first request takes the delivery the session records for it; else the time its
- * replay ledger record was written (`REPLAY_DELIVERED_ENTRY`, its `at`), when the session's entries
- * hold one; else, when they hold the card's own entry (written, its record lost to a process that
- * ended in between), the newest entry time up to it; else the time of that first request, when the
- * host handed the card to this process (`timestamp`) after this instance started. Any of those
- * times but the session's own record is fixed when first used and recorded then. A card known by
- * none of them keeps its text as it is.
+ * time the host emitted the card's `message_end` (`written`), or the time of the card's own entry,
+ * milliseconds from it, when the host wrote that entry first, unless the session already holds the
+ * card's event: a card the host writes again, as a process that resumed the session replays a card
+ * whose ledger record the process before it never wrote, takes the delivery of the card already in
+ * the session, as below, never the time of its own write, and both copies read the same. A card
+ * whose `message_end` this process did not see before its first request takes the delivery the
+ * session records for it; else the time its replay ledger record was written
+ * (`REPLAY_DELIVERED_ENTRY`, its `at`), when the session's entries hold one; else, when they hold
+ * the card's own entry (written, its record lost to a process that ended in between), the newest
+ * time of a `message` or `custom_message` entry up to it; else the time of that first request,
+ * when the host handed the card to this process (`timestamp`) after this instance started. Any of
+ * those times but the session's own record is fixed when first used and recorded then. A card
+ * known by none of them keeps its text as it is.
  *
  * Each of those deliveries is remembered and recorded under the session it belongs to as well as
  * the event, because one process serves a session at a time and moves between sessions: a session
@@ -129,7 +131,8 @@ interface CardText {
  * records it again then, with the same time, so a process that resumes the session reads the same
  * difference. A card the session holds no readable record for (written by an older release, or one
  * whose record `CardAgesDeps.record` did not write) takes, after a resume, its ledger record's time
- * or its branch position, which can differ from the time the process before showed by seconds.
+ * or its branch position, also when the resumed process writes it again before its first request,
+ * and that can differ from the time the process before showed by seconds.
  */
 export class CardAges {
   readonly #deps: CardAgesDeps;
@@ -143,19 +146,28 @@ export class CardAges {
 
   /**
    * The host wrote `message` in session `sessionID`: that session's first write of a card fixes
-   * the delivery it reads there, and records it. A write of a card whose event the session already
-   * records a delivery for (`branch`, that session's entries, read only when this process holds no
-   * delivery for the pair), such as the card a process that resumed the session replays before its
-   * first request, takes that delivery and records nothing.
+   * the delivery it reads there. `branch` is that session's entries, read only when this process
+   * holds no delivery for the pair. A write of a card whose event the session already records a
+   * delivery for, such as the card a process that resumed the session replays before its first
+   * request, takes that delivery and records nothing. A write of a card the session already holds
+   * with no delivery recorded for it (a card an older release wrote, or one whose record was not
+   * written) takes the time its ledger record gives, else the newest message time up to its entry
+   * (`branchTimes`), as `annotate` does for a card whose `message_end` this process did not see,
+   * and a card written for the first time takes the time of this write; either is fixed and
+   * recorded.
    */
   written(message: unknown, sessionID: string, branch: () => readonly unknown[]): void {
     const eventID = writtenCardIdentity(message)?.event_id;
     if (eventID === undefined) return;
     const key = deliveryKey(sessionID, eventID);
     if (this.#delivered.has(key)) return;
-    const recorded = recordedDeliveries(branch()).get(eventID);
-    if (recorded === undefined) this.#fix(key, sessionID, eventID, this.#deps.now());
-    else this.#remember(key, recorded);
+    const entries = branch();
+    const recorded = recordedDeliveries(entries).get(eventID);
+    if (recorded === undefined) {
+      this.#fix(key, sessionID, eventID, branchTimes(entries).get(eventID) ?? this.#deps.now());
+    } else {
+      this.#remember(key, recorded);
+    }
   }
 
   /**
@@ -286,21 +298,27 @@ function isCardDelivered(data: unknown): data is CardDelivered {
  * The time each card was written, from the session's entries, for a card the session records no
  * delivery for (`recordedDeliveries`): its ledger record's (`ReplayLedgerEntry.at`), else, for a
  * card whose entry is there with no record (the process ended between the host's write and the
- * record's), the newest time of any entry up to the card's own. The card's entry carries the time
- * the host was handed the card, and every entry before it was written before it, so that newest
- * time is the write's lower bound, within one step of it.
+ * record's), the newest time of a `message` or `custom_message` entry up to and including the
+ * card's own. Oh My Pi writes a card's entry through its message_end persistence queue, stamped
+ * with the time it was handed the card, while it appends a `custom` entry such as
+ * `date-cwd-reminder` synchronously as it prepares a request, after the `context` hooks have shown
+ * the card, so such an entry can stand before the card's entry with a later stamp, and no entry of
+ * another type moves the time. `message` and `custom_message` entries go through the same queue,
+ * in message_end order, so the newest of them up to the card's own is no later than the time the
+ * session first showed the card.
  */
 function branchTimes(entries: readonly unknown[]): Map<string, number> {
   const ledger = new Map<string, number>();
   const positions = new Map<string, number>();
   let newest = Number.NEGATIVE_INFINITY;
   for (const entry of entries) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const stamp = Date.parse(
-      "timestamp" in entry && typeof entry.timestamp === "string" ? entry.timestamp : ""
-    );
-    if (!Number.isNaN(stamp)) newest = Math.max(newest, stamp);
-    if (!("type" in entry)) continue;
+    if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
+    if (entry.type === "message" || entry.type === "custom_message") {
+      const stamp = Date.parse(
+        "timestamp" in entry && typeof entry.timestamp === "string" ? entry.timestamp : ""
+      );
+      if (!Number.isNaN(stamp)) newest = Math.max(newest, stamp);
+    }
     if (entry.type === "custom_message") {
       const eventID = writtenCardIdentity(entry)?.event_id;
       if (eventID !== undefined && !positions.has(eventID) && Number.isFinite(newest)) {
