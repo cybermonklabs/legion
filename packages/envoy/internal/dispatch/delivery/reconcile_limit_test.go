@@ -239,7 +239,7 @@ func TestALimitOfOneInstallationEndsNoStepForAnother(t *testing.T) {
 	}
 	limitedPartials := numbersFrom(30, reconcilePartialConcurrency)
 	for repo, numbers := range map[string][]int{limitBeta: {owed, open, noFacts, partial}, limitAcme: {21, 22, 23}} {
-		if err := owePullRequestRead(ctx, pool, repo, numbers[0], owedFailure); err != nil {
+		if err := owePullRequestRead(ctx, pool, repo, numbers[0], owedFailure, ""); err != nil {
 			t.Fatalf("owe the read of %s#%d: %v", repo, numbers[0], err)
 		}
 		storeOpenRow(t, ctx, pool, repo, numbers[1], now.Add(-time.Hour))
