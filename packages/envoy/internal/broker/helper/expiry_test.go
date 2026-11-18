@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // expiryLogin logs b in against f, whose poll answers issued at once, and waits for the
@@ -122,7 +124,7 @@ func (et *expiryTimers) fire(t *testing.T, cred *machineCredential, n int) time.
 func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil)), expiryWarning: 2 * time.Hour}
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
@@ -176,7 +178,7 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 			f.mu.Lock()
 			f.loginLifetime = tc.lifetime
 			f.mu.Unlock()
-			b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+			b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 				Log: slog.New(slog.NewJSONHandler(&out, nil))}
 			t.Cleanup(b.Close)
 			expiryLogin(t, b)
@@ -200,7 +202,7 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 func TestANewerLoginSilencesTheExpiryOfTheCredentialItReplaces(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil)), expiryWarning: time.Hour}
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
@@ -236,7 +238,7 @@ func TestATokenAnswerWithoutTheCredentialIsNotKept(t *testing.T) {
 	f.mu.Lock()
 	f.loginLifetime = 0
 	f.mu.Unlock()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil))}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "example-host-devbox"); err != nil {

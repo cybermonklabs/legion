@@ -175,7 +175,7 @@ theorem T3 {rules : Rules} (hv : validate rules = true) :
     ∀ sr ∈ rules.secrets, ∀ l, sr.judge = some l → l ≤ 900 := by
   intro sr hm l hj
   simp only [validate, Bool.and_eq_true, List.all_eq_true] at hv
-  have hjo := (hv.2 sr hm).1
+  have hjo := (hv.2 sr hm).1.1
   rw [hj] at hjo
   simpa [judgeOK] using hjo
 

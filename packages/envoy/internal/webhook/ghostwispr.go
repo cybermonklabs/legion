@@ -25,7 +25,9 @@ func ghostWisprSkip(event string) bool {
 // GhostWisprHandler returns the HTTP handler for Ghost Wispr webhook events. Its publish runs under
 // the request's own context, so it ends when the sender gives up on the request, and at the bus's
 // own 5 s bound otherwise (bus.Client.PublishWithin), inside the 10 s the listener's server gives a
-// route to answer: Ghost Wispr sets no answer deadline of its own.
+// route to answer: Ghost Wispr sets no answer deadline of its own. It checks the signature of every
+// event with secret and answers 401 to one that does not check, so a handler built with an empty
+// secret refuses every event (verify.GhostWispr).
 func GhostWisprHandler(secret string, publisher Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -49,11 +51,9 @@ func GhostWisprHandler(secret string, publisher Publisher) http.HandlerFunc {
 			http.Error(w, "missing ghostwispr headers", http.StatusBadRequest)
 			return
 		}
-		if secret != "" {
-			if !verify.GhostWispr(secret, body, signature) {
-				http.Error(w, "invalid signature", http.StatusUnauthorized)
-				return
-			}
+		if !verify.GhostWispr(secret, body, signature) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
 		}
 		var payload map[string]any
 		if err := json.Unmarshal(body, &payload); err != nil || payload == nil {

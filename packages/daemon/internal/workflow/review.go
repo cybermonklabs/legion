@@ -252,14 +252,14 @@ func namedConclusions(conclusions map[string]record.RunConclusion) string {
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
 // the worker that holds the phase decides whether to re-run, wait or fix
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
-// phase, the implementer, whose code the checks ran on, and the tree's architect - each on its own
-// role topic (record.RoleMessage), the way the daemon reaches a role holder with a message. A role
-// named twice, the implementer holding the phase, is told once, and a phase no worker holds names
-// none (addressRoles). told is what the settlement standing for the head said before this one, so
-// a second settlement of the same head that leaves the same conclusions tells nobody again, and so
-// does a settlement that stands for no head. Linger holds a member of a closed tree where it stood
-// (record.TreeLingers): every role of the tree is suspended there, so the settlement is recorded
-// and nobody is told.
+// phase, the implementer, whose code the checks ran on, and the architect that owns the issue
+// (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
+// a role holder with a message. A role named twice, the implementer holding the phase, is told
+// once, and a phase no worker holds names none (addressRoles). told is what the settlement
+// standing for the head said before this one, so a second settlement of the same head that leaves
+// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
+// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
+// suspended there, so the settlement is recorded and nobody is told.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
@@ -282,11 +282,18 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	// The tree's architect owns the tree, so its claim is the tree root's; a phase the architect
-	// itself holds (accepting) is that same claim, and is told once with it.
+	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
+	// while its claim holds its role, else the nearest one above it that does, else the tree
+	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
+	// so it is told once, as the owner; and an architect this settlement woke would be the issue's
+	// own released claim, which holds its role and so is that owner too.
 	recipients := []roleRecipient{}
 	if woken != claim.RoleArchitect {
-		recipients = append(recipients, roleRecipient{issue: issue.Tree, role: claim.RoleArchitect, row: issue.Key})
+		owner, err := e.owningArchitect(ctx, tx, *issue)
+		if err != nil {
+			return err
+		}
+		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
 	for _, role := range []claim.Role{RoleFor(issue.Phase), claim.RoleImplementer} {
 		if role == claim.RoleArchitect || role == woken {
@@ -305,6 +312,26 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 	}
 	return nil
+}
+
+// owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
+// walk from issue itself, as the outbox routes a notice of issue's phase, over the architect
+// claims of issue's tree this transaction reads (record.ReadOwnerWalk). That is issue's own
+// architect while its claim holds its role, else the nearest one above it whose claim does, else
+// the tree root's. A tree root is its own without a read.
+func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return issue.Tree, nil
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, project, issue.Tree)
+	if err != nil {
+		return "", err
+	}
+	return walk.Owner(issue, false), nil
 }
 
 // answerSkew bounds how far GitHub's clock, which stamps a review's submission, and the daemon's,

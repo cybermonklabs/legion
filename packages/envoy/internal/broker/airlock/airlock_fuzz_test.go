@@ -187,6 +187,10 @@ func (s *src) port() uint16 {
 }
 
 var (
+	// Every seed of the committed corpus decodes its hosts through this list by its length,
+	// so adding an entry here changes what every seed means: a seed that isolated one
+	// refusal can start drawing a host that masks it. The hosts validate refuses for their
+	// shape are compared against the model in TestModelAgreesOnHostShapes instead.
 	hostPool   = []string{"api.github.com", "*.github.com", "github.com", "*.com", "*.", "API.GitHub.com", "*.GitHub.COM", "uploads.github.com", "a.b.github.com", ".github.com", "githu\u212a.com", "githuk.com", "\u0130.github.com", ""}
 	namePool   = []string{"gh", "aws", "GH", ""}
 	hdrPool    = []string{"authorization", "Authorization", "AUTHORIZATION", "x-api-key", "X-Api-Key", "x-api-\u212aey", "proxy-authorization", "cookie"}
@@ -353,15 +357,14 @@ func allValidUTF8(c wireCase) bool {
 	return utf8.Valid(b) && !bytes.Contains(b, []byte(`\ufffd`))
 }
 
-// FuzzAirlock compares the two sides on the one fixed case compareHostlessEntryWithGuidance
-// writes and on every case the byte string generates. The committed corpus under
-// testdata/fuzz/FuzzAirlock reaches every refusal reason and both answers of Validate, so
-// `go test -run FuzzAirlock` is already the differential test; -fuzz goes on from those seeds.
+// FuzzAirlock compares the two sides on every case the byte string generates. The committed
+// corpus under testdata/fuzz/FuzzAirlock reaches every refusal reason and both answers of
+// Validate, so `go test -run FuzzAirlock` is already the differential test; -fuzz goes on
+// from those seeds.
 func FuzzAirlock(f *testing.F) {
 	if modelPath() == "" {
 		f.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
 	}
-	compareHostlessEntryWithGuidance(f)
 	f.Add([]byte{}) // the empty byte string: no entry, no header, every pool at its head
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c := genCase(data)
@@ -385,17 +388,17 @@ func FuzzAirlock(f *testing.F) {
 	})
 }
 
-// compareHostlessEntryWithGuidance: a rules file whose entry binds no host and carries a judge
-// and guidance — the entry that says who decides a key the airlock binds nowhere — is valid on
-// both sides, and both refuse a proxy request for it as a secret not behind the airlock. The
-// generator never writes guidance, so this case is the one that puts the field on the wire to the
-// model, whose derived FromJson must read past it. FuzzAirlock runs it before the generated
-// cases, and it is no test of its own: it needs the model FuzzAirlock needs, so it runs wherever
-// the two sides are compared (`go test -run FuzzAirlock`: the airlock-lean job's two steps,
-// scripts/airlock-check.sh and scripts/airlock-mutants.sh) and skips with FuzzAirlock where no
-// model is built, the one skip scripts/database-skips.sh expects of this package.
-func compareHostlessEntryWithGuidance(t testing.TB) {
-	t.Helper()
+// TestTheModelReadsAHostlessEntryWithGuidance: a rules file whose entry binds no host and
+// carries a judge and guidance — the entry that says who decides a key the airlock binds
+// nowhere — is valid on both sides, and both refuse a proxy request for it as a secret not
+// behind the airlock. The generator never writes guidance, so this case is the one that puts the
+// field on the wire to the model, whose derived FromJson must read past it. It needs the model,
+// as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh expects its skip and the
+// airlock-lean job's seed step runs it by name.
+func TestTheModelReadsAHostlessEntryWithGuidance(t *testing.T) {
+	if modelPath() == "" {
+		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
+	}
 	judge := uint32(600)
 	c := wireCase{
 		Rules: Rules{Secrets: []SecretRule{{
@@ -419,5 +422,49 @@ func compareHostlessEntryWithGuidance(t testing.TB) {
 	}
 	if !got.Valid || got.Allow || got.Reason != "secret not behind airlock" {
 		t.Fatalf("the host-less entry answers %+v; want a valid file and a refusal, secret not behind airlock", got)
+	}
+}
+
+// TestModelAgreesOnHostShapes compares Go's Validate with the Lean model's validate over the
+// host shapes the rules file may hold, the ones no request can ever match among them. They are
+// read here rather than added to hostPool, because every seed of the committed corpus decodes
+// its hosts through that list by its length.
+func TestModelAgreesOnHostShapes(t *testing.T) {
+	if modelPath() == "" {
+		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
+	}
+	hosts := []string{
+		"slack.com", "*.googleapis.com", "API.GitHub.com", "a-b.example.com", "localhost",
+		"1e100.net", "*.0.example.com", "xn--p1ai", "93.184.216.34", "*.216.34", "*.34", "8080",
+		"https://slack.com", "*", "slack.com/", "slack.com:443",
+		".slack.com", "slack..com", "slack.com.", "*.", "", "-slack.com", "slack-.com",
+		"slack_com", "*.*.com", "sl\u212aack.com",
+	}
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			c := wireCase{
+				Rules:   Rules{Secrets: []SecretRule{{Name: "gh", Hosts: []string{host}, Headers: []string{"authorization"}}}},
+				Grant:   Grant{Secret: "gh", Placeholder: "agent-secrets-placeholder-gh"},
+				Value:   "the-value",
+				Request: &Request{ConnectHost: "slack.com", ConnectPort: 443, Method: "GET", Path: "/", SNI: "slack.com", HostHeader: "slack.com", Headers: [][2]string{}},
+			}
+			if !allValidUTF8(c) {
+				t.Skip("the case does not go over the wire as valid UTF-8")
+			}
+			line, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := leanModel(t).ask(t, line)
+			got := goAnswer(c)
+			if !reflect.DeepEqual(want, got) {
+				wj, _ := json.Marshal(want)
+				gj, _ := json.Marshal(got)
+				t.Fatalf("Go and the Lean model disagree on host %q\nlean: %s\ngo:   %s", host, wj, gj)
+			}
+			if want.Valid != HostShapeOK(host) {
+				t.Errorf("the model calls the file valid=%v for host %q, and HostShapeOK says %v", want.Valid, host, HostShapeOK(host))
+			}
+		})
 	}
 }

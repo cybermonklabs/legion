@@ -100,6 +100,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -111,7 +112,7 @@ import (
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person or for the model judge
+	exitPending      = 75  // request still waiting for a person or for the model judge, or its status could not be read when --wait ran out
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -251,7 +252,7 @@ AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
   CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
                              that order; the store's IAM decides what each may do
 
-exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
+exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval (or its status unreadable when --wait ran out), 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;
 secret create and set end by the signal on hang-up (SIGHUP), interrupt (Ctrl-C), quit (Ctrl-\)
 or termination (SIGTERM) at the value prompt: a shell reports 129, 130, 131 or 143
@@ -629,14 +630,14 @@ func signInSigner() (*fileSigner, error) {
 // sessionContext resolves the broker URL and this process's Signer every session-authenticated
 // subcommand (renew, request, status, cancel, revoke, self, and the exec form) needs, plus the
 // enrollment id buildSigner read (empty in helper mode). A missing broker URL is a settingError.
-func sessionContext() (base, enrollmentID string, signer Signer, err error) {
+func sessionContext() (base brokeraddr.Address, enrollmentID string, signer Signer, err error) {
 	base = brokerBaseURL()
-	if base == "" {
-		return "", "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
+	if base.Empty() {
+		return brokeraddr.Address{}, "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
 	}
 	enrollmentID, signer, err = buildSigner()
 	if err != nil {
-		return "", "", nil, err
+		return brokeraddr.Address{}, "", nil, err
 	}
 	return base, enrollmentID, signer, nil
 }
@@ -1121,6 +1122,11 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
+	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
+	// the approver may still decide before --wait runs out, and a grant this command has stopped
+	// waiting for is one nothing collects.
+	var pollErr error
 	if state == "pending" {
 		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
 		judging := result.JudgeDeciding
@@ -1132,24 +1138,37 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				break
 			}
 			time.Sleep(minDuration(backoff, remaining))
+			backoff = nextBackoff(backoff)
 			status, _, err := c.GetRequest(ctx, signer, requestID)
-			if err != nil {
+			switch {
+			case err == nil:
+				pollErr = nil
+				state, grantID, detail = status.State, status.GrantID, status.Detail
+				// The judge held the request and has given it up: it is its person's now, and the
+				// agent is told who that is and where they decide it, once.
+				if judging && !status.JudgeDeciding && state == "pending" {
+					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+					judging = false
+				}
+			case retryable(err):
+				// Said once per run of failed polls, not once per poll.
+				if pollErr == nil {
+					fmt.Fprintf(stderr, "agent-secrets: %s; still waiting for request %s\n", refusalText(src(), err), requestID)
+				}
+				pollErr = err
+			default:
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			state, grantID, detail = status.State, status.GrantID, status.Detail
-			// The judge held the request and has given it up: it is its person's now, and the
-			// agent is told who that is and where they decide it, once.
-			if judging && !status.JudgeDeciding && state == "pending" {
-				fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
-				judging = false
-			}
-			backoff = nextBackoff(backoff)
 		}
 	}
 	switch state {
 	case "granted":
 	case "pending":
+		if pollErr != nil {
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), pollErr, requestID)
+			return exitPending
+		}
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), requestID)
 		return exitPending
 	case "denied":

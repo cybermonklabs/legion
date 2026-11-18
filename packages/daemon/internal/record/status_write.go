@@ -69,8 +69,8 @@ type StatusWrite struct {
 	ObservedStatus string        `json:"observedStatus"`
 	// Reason is posted as a message on the issue before the runner writes the status, so it is on
 	// the issue before the status lands: a done write's reason, and the reason of a workflow move
-	// nothing else on Dispatch explains (workflow's moveReason). Empty for a write with no reason
-	// to record.
+	// nothing else on Dispatch explains (workflow's moveReason: a conflicting head, a worker's
+	// backward move). Empty for a write with no reason to record.
 	Reason string `json:"reason,omitempty"`
 	// HandOverTree and HandOverLinger fence a hand-over (HandOverStatusRow): the runner writes it
 	// only while the issue is still that tree's and the tree's root still lingers at that

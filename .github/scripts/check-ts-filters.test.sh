@@ -15,8 +15,9 @@
 # Each case builds a miniature repository under a temporary directory - a ci.yaml whose changes
 # job defines two filters through an anchor, a package and a library it compiles, and a
 # ci_ts_programs.py pairing them - and symlinks the real script, the engine it borrows the
-# changes job's filters from (ci_filter_coverage.py) and the path model both import
-# (workflow_paths.py) into it, so the code under test is the code CI runs. The programs are
+# changes job's filters from (ci_filter_coverage.py), the path model both import
+# (workflow_paths.py) and the Go build-tag module the engine imports (go_build_tags.py) into it,
+# so the code under test is the code CI runs. The programs are
 # listed by a stand-in bunx on the fixture's PATH, which prints the list the fixture wrote for
 # the project, and the bundles built by a stand-in bun beside it, which writes the metafile of
 # the list the fixture wrote beside the entry: a case's input is then the file list itself, and
@@ -46,7 +47,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/bin" "$root/pkg/app/src" "$root/pkg/lib" \
     "$root/other"
-  for linked in check-ts-filters.sh ci_filter_coverage.py workflow_paths.py; do
+  for linked in check-ts-filters.sh ci_filter_coverage.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   echo '{}' > "$root/pkg/app/tsconfig.json"

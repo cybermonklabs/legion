@@ -555,9 +555,9 @@ proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
 # response with a body. So both are read, and a status this cannot name is reported whole.
 call_s() { # <proxy password> <header value>
 	local CALL_OUT
-	CALL_OUT="$(curl -sS -o "$WORK_DIR/call.out" -w 'http_code=%{http_code}' --noproxy '' \
+	CALL_OUT="$(printf 'Authorization: Bearer %s' "$2" | curl -sS -o "$WORK_DIR/call.out" -w 'http_code=%{http_code}' --noproxy '' \
 		--cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "$1" "$PROXY_ADDR")" \
-		-H "Authorization: Bearer $2" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+		-H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	CALL_BODY="$(tr -d '\n' <"$WORK_DIR/call.out")"
 	case "$CALL_OUT" in
 	*"http_code=200"*) CALL_STATUS=200 ;;
@@ -627,15 +627,15 @@ judged_field() { # <request id> <jq path>
 # account_get and account_post call the routes a listed service calls with its own ServiceAccount
 # token, relaying a signed-in person: the grant list and the human revoke. They are what
 # `agent-secrets grant list|revoke` reach through this machine's login, which this pod's kernel
-# cannot pin (the header comment).
+# cannot pin (the header comment). The token reaches curl on standard input, in no command line.
 account_get() { # <path>
-	curl -sS -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" "$AGENT_SECRETS_URL$1"
+	printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -sS -H @- "$AGENT_SECRETS_URL$1"
 }
 
 account_post() { # <path> <body>
-	curl -sS -o "$WORK_DIR/account.out" -w '%{http_code}' -X POST \
-		-H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" \
-		-H 'Content-Type: application/json' --data "$2" "$AGENT_SECRETS_URL$1"
+	printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" |
+		curl -sS -o "$WORK_DIR/account.out" -w '%{http_code}' -X POST \
+			-H @- -H 'Content-Type: application/json' --data "$2" "$AGENT_SECRETS_URL$1"
 }
 
 # sign_in signs one login in at the broker through the stack's own issuer, the way the approval
@@ -1143,10 +1143,10 @@ declare -A K10C=()
 # placeholder in its Authorization header, which the proxy swaps the real value into on its way
 # out. The CLI puts the placeholder in the environment under the secret's own name and starts
 # the command with no shell, so the command is a shell of its own: the two variables are the
-# child's to expand, never this script's.
+# child's to expand, never this script's, and curl reads the header on standard input.
 curl_through() { # <the secret whose placeholder goes in the header>
 	# shellcheck disable=SC2016 # $<NAME> and $AIRLOCK_S_URL are the child shell's to expand, not this one's
-	printf '%s' 'curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $'"$1"'" "$AIRLOCK_S_URL/ok"'
+	printf '%s' 'printf "Authorization: Bearer %s" "$'"$1"'" | curl -sS -o /dev/null -w "%{http_code}" -H @- "$AIRLOCK_S_URL/ok"'
 }
 
 # k10c_call runs the CLI as the check names it - agent-secrets NAME -- curl through the proxy
