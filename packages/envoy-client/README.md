@@ -545,10 +545,14 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
 Every write `DispatchClient` makes carries one key. `#send`, which every JSON, multipart and file
-call goes through, mints a `crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call and
-sends it on every attempt of that call, so Dispatch runs the write once however many attempts
-reach it and answers a repeat with the first answer (`packages/envoy/cmd/dispatch/README.md`,
-"Keyed writes"); a `GET`, `PUT` or `DELETE` carries none and is sent once. The body is encoded once
+call goes through, sends one `Idempotency-Key` per `POST` and `PATCH` call on every attempt of that
+call, so Dispatch runs the write once however many attempts reach it and answers a repeat with the
+first answer (`packages/envoy/cmd/dispatch/README.md`, "Keyed writes"); a `GET`, `PUT` or `DELETE`
+carries none and is sent once. The key is the caller's own where it names one; else, for a client
+a `dispatch` command made (its `commandKey`), the command's next (`CommandKey`): the command's key
+for its first write and `<key>.<n>` for its n-th, taken once per call before any no-route retry, a
+`POST` that writes nothing (`related`, `markdownRoundTrip`) taking a key of its own; else a
+`crypto.randomUUID()` minted for that call. The body is encoded once
 for the whole call, a multipart form under a boundary of its own, since a retry whose bytes differ
 from the first attempt's is a different request to Dispatch and its key is refused. A transport
 failure, any 5xx, a 408, a 429 and Dispatch's `409 KEY_IN_FLIGHT` (`retriesUnderKey`, the rule
@@ -649,6 +653,43 @@ means: a picture upload (nothing else was written: run the call again, which upl
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0.
+
+A write of a `dispatch` command that ends with no definitive answer after an attempt of it may have
+reached Dispatch may have landed with its answer lost, whatever the command throws: a
+`DispatchWriteUnsettledError`, Dispatch's own 5xx, a transport failure, a timeout or a
+cancellation while an attempt was out, a final answer Dispatch's keyed layer did not judge after
+such an attempt, or a 2xx whose body was lost while it was read (`#answer`). The client tells the
+command's `CommandKey` (`markUnsettled`, per write key), and the command exits 75 (sysexits'
+`EX_TEMPFAIL`, as `envoy-send` exits for a send it cannot confirm) rather than 1, which a caller
+reads as a refusal and runs again under a new key, a second write. After the error it prints one
+line, kept whole however the output is cut, that names the key of each write that may have landed
+and the command that sends the call again under the call's key: the argv with
+`--idempotency-key <key>` added unless it names the key already, each word quoted as
+`commandLine` quotes one (a word that opens with `=` too, which zsh would expand bare). Every text
+the call read from stdin or from a `--<field>-file`, and every value over 500 characters given
+inline, is kept in a copy under the session's `resend/` directory, which the command reads instead
+(`rerunWords`), so it needs no stdin, reads what the call read, and fits the 25,000 characters
+Claude Code shows. The line also names the settings the call found its Dispatch, its login and its
+session through (`settingsRead`: the host and session variables, and `ENVOY_CONFIG_FILE`,
+`DISPATCH_URL`, `DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN_BROKER`, `LEGION_ISSUE`,
+`OMP_PROFILE`, `PI_CODING_AGENT_DIR`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME` and `HOME` where set)
+and the envoy.json it read, which the resend must find as they were, since Dispatch keeps a key for
+the login that sent it: their names, not their values, since the token is a secret and AskGate
+posts no command that opens with an assignment. Dispatch keeps a key 24 hours from the first call
+that used it (`IDEMPOTENCY_KEY_TTL_MS`). Sent again under the key, each write of the command takes
+the key it took the first time, so Dispatch answers a write it ran with that write's first answer,
+or `409 KEY_COMMITTED` (a landing, exit 0), and runs only the writes it never got; a write whose
+request changed in between is refused `422 KEY_REUSED`, never run. Two exceptions: a command that
+reads what the first call wrote refuses before it sends again (`dispatch artifact` finds its name
+held, `issue-update --status done` finds the issue closed), and `architecture-sync` with no
+`--repo`, which falls back to the older per-source route on a Dispatch without the plural one, can
+send its write under a key the first call left unused (a second sync imports again). A call sent
+again under a key that is refused, before or after it reaches Dispatch, exits 1 or 2 as any
+refusal does, and adds a line, also to its ledger entry, `dispatch: the earlier call's write may
+have landed: …`, since the earlier call's write may have landed all the same. Where Dispatch's
+`/healthz` answered and named no keyed layer, a resend under the key could run the write again, so
+the line says the write may have landed and to read it back, and prints no command. A `POST` that
+writes nothing never exits 75.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -842,6 +883,8 @@ strict schema, the cross-field checks and the picture files), refusing the argum
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
 so it runs with Dispatch off too, and a call it passed can still stop on either.
+`--idempotency-key <key>` sends the call's writes again under the key a write that exited 75 named,
+a lower-case UUID; any other value is a usage error.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
@@ -855,7 +898,8 @@ could not be read or used, each exiting 2. `DISPATCH_HOST` unset with
 `CLAUDE_CODE_CHILD_SESSION=1` is host `claude`. stdout carries what
 the model reads: the result, one `- picture: <path>` line per image (written under the session
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
-on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error. A usage error
+on success, 1 when Dispatch or AskGate refused the call, 2 on a usage error, and 75 when a write
+may have landed with its answer lost (above). A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.

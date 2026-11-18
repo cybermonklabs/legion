@@ -6,46 +6,19 @@ import {
   commandHelp,
   commandLine,
   commandName,
+  dispatchLine,
   flagName,
   parseCommand,
+  rerunWords,
   toolForCommand,
 } from "../dispatch-command";
+import { shellWords } from "./shell-words";
 
 const noFiles = {
   readText: (path: string): string => {
     throw new Error(`unexpected read ${path}`);
   },
 };
-
-function shellWords(line: string): string[] {
-  // Splits the POSIX single-quoted output of commandLine back into argv.
-  const words: string[] = [];
-  let current = "";
-  let quoted = false;
-  let inWord = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quoted) {
-      if (c === "'") quoted = false;
-      else current += c;
-    } else if (c === "'") {
-      quoted = true;
-      inWord = true;
-    } else if (c === "\\" && line[i + 1] === "'") {
-      current += "'";
-      i++;
-    } else if (c === " ") {
-      if (inWord) words.push(current);
-      current = "";
-      inWord = false;
-    } else {
-      current += c;
-      inWord = true;
-    }
-  }
-  if (inWord) words.push(current);
-  return words;
-}
 
 describe("the dispatch command surface", () => {
   test("every spec's example survives commandLine then parseCommand unchanged", () => {
@@ -66,6 +39,124 @@ describe("the dispatch command surface", () => {
     }
     expect(commandName("dispatch_issue_update")).toBe("issue-update");
     expect(flagName("reply_to_ask")).toBe("reply-to-ask");
+  });
+
+  // A write that may have landed names its key; the same command sent again with
+  // `--idempotency-key <key>` sends its writes under it. The key is the call's, not an argument
+  // of the tool, so the arguments are the ones the first call sent.
+  test("--idempotency-key takes the key a write that may have landed named, beside the arguments", () => {
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    const message = ["message", "--issue", "LEGION-2", "--body", "hi"];
+    const expected = {
+      kind: "call" as const,
+      tool: "dispatch_message",
+      args: { issue: "LEGION-2", body: "hi" },
+      dryRun: false,
+      idempotencyKey: key,
+    };
+    expect(parseCommand([...message, "--idempotency-key", key], noFiles)).toEqual(expected);
+    expect(parseCommand([...message, `--idempotency-key=${key}`], noFiles)).toEqual(expected);
+    expect(parseCommand(message, noFiles)).not.toHaveProperty("idempotencyKey");
+    // A refusal keeps a key it read whole, so the CLI can say beside it that the write the key
+    // names may have landed; a refusal of the key itself has none to keep.
+    for (const [extra, problem, named] of [
+      [
+        ["--idempotency-key", key, "--idempotency-key", key],
+        "--idempotency-key is given twice",
+        key,
+      ],
+      [["--idempotency-key"], "--idempotency-key needs a value", undefined],
+      [
+        ["--idempotency-key", "retry-1"],
+        '--idempotency-key must be the key a write that exited 75 named, a lower-case UUID; got "retry-1"',
+        undefined,
+      ],
+      [["--idempotency-key", key, "--bogus"], "unknown flag --bogus", key],
+    ] as const) {
+      expect(parseCommand([...message, ...extra], noFiles)).toEqual({
+        kind: "refused",
+        tool: "dispatch_message",
+        problems: [problem],
+        ...(named === undefined ? {} : { idempotencyKey: named }),
+      });
+    }
+    expect(commandFlags("dispatch_message")).toContain("--idempotency-key");
+  });
+
+  test("dispatchLine quotes each word so the shell splits the line back into the same words", () => {
+    const words = ["message", "--body", "it's\ntwo lines", "--issue", "LEGION-2", "--x=--y", ""];
+    expect(shellWords(dispatchLine(words))).toEqual(["dispatch", ...words]);
+    expect(dispatchLine(["read", "LEGION-2"])).toBe("dispatch read LEGION-2");
+  });
+
+  // The command that sends a call again reads what the call read: each text a flag read from a
+  // file or from stdin comes from a copy, and a long value moves to a copy read through the flag's
+  // file twin. Everything else, the inline `--flag=value` form included, stays as written.
+  test("rerunWords reads every text the call read from a copy, and a long value from one", () => {
+    const kept: string[] = [];
+    const keep = (text: string, place: number): string => {
+      kept.push(text);
+      return `/copies/${place}`;
+    };
+    const read = new Map([
+      ["-", "from stdin\n"],
+      ["/tmp/ops.json", '[{"op":"delete","find":"x"}]'],
+    ]);
+    const long = "x".repeat(21);
+    expect(
+      rerunWords(
+        [
+          "doc-edit",
+          "LEGION-2",
+          "--artifact=spec",
+          "--summary-file",
+          "-",
+          "--ops-json-file=/tmp/ops.json",
+          "--precondition-json",
+          `{"blocks":[{"id":"${long}"}]}`,
+          "--idempotency-key",
+          "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71",
+        ],
+        read,
+        20,
+        keep
+      )
+    ).toEqual([
+      "doc-edit",
+      "LEGION-2",
+      "--artifact=spec",
+      "--summary-file",
+      "/copies/1",
+      "--ops-json-file",
+      "/copies/2",
+      "--precondition-json-file",
+      "/copies/3",
+      "--idempotency-key",
+      "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71",
+    ]);
+    expect(kept).toEqual([
+      "from stdin\n",
+      '[{"op":"delete","find":"x"}]',
+      `{"blocks":[{"id":"${long}"}]}`,
+    ]);
+    // A value at the bound, a flag with no file twin (a number), and words of no known command
+    // stay as they are.
+    expect(rerunWords(["issues", "--limit", "12345678901234567890123"], read, 20, keep)).toEqual([
+      "issues",
+      "--limit",
+      "12345678901234567890123",
+    ]);
+    expect(rerunWords(["message", "--body", "x".repeat(20)], read, 20, keep)).toEqual([
+      "message",
+      "--body",
+      "x".repeat(20),
+    ]);
+    expect(rerunWords(["nope", "--body-file", "-"], read, 20, keep)).toEqual([
+      "nope",
+      "--body-file",
+      "-",
+    ]);
+    expect(kept).toHaveLength(3);
   });
 
   // A flag that takes JSON lists the keys of its object, or of each item of its list, from the

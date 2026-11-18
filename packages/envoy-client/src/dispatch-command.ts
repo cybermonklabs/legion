@@ -26,7 +26,7 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
- * Every command also takes `--help` and `--dry-run`.
+ * Every command also takes `--help`, `--dry-run` and `--idempotency-key <key>`.
  */
 
 type ScalarArray = "string" | "number" | "number-or-null";
@@ -52,7 +52,8 @@ type FlagAction =
   | "true"
   | "false"
   | "help"
-  | "dry-run";
+  | "dry-run"
+  | "idempotency-key";
 
 interface FlagEntry {
   readonly field?: string;
@@ -84,6 +85,9 @@ export type ParsedCommand =
       readonly tool: string;
       readonly args: Record<string, unknown>;
       readonly dryRun: boolean;
+      /** The key a write that may have landed named (`--idempotency-key`), which the call sends
+       *  its writes under again; absent for a new call. */
+      readonly idempotencyKey?: string;
     }
   | { readonly kind: "help"; readonly tool?: string }
   | {
@@ -93,6 +97,9 @@ export type ParsedCommand =
       /** False when every problem is a bare `-` given to a text flag, so the refusal lists no
        *  flags. */
       readonly aboutAFlag?: false;
+      /** The key `--idempotency-key` named, when it is one: a call that sends again a write an
+       *  earlier call may have landed, refused all the same. */
+      readonly idempotencyKey?: string;
     };
 
 export interface CommandFlagRow {
@@ -102,6 +109,8 @@ export interface CommandFlagRow {
 }
 
 const STDIN = "-";
+/** The key the CLI mints for a call and names when a write may have landed: a lower-case UUID. */
+const COMMAND_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const BARE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const OPTION_SEPARATOR = ": ";
 
@@ -131,7 +140,7 @@ export function toolForCommand(command: string): string | undefined {
   return toolsByCommand.get(command);
 }
 
-/** Every flag spelling the command accepts, `--help` and `--dry-run` included. */
+/** Every flag spelling the command accepts, `--help`, `--dry-run` and `--idempotency-key` included. */
 export function commandFlags(tool: string): readonly string[] {
   return [...surfaceFor(tool).flags.keys()];
 }
@@ -370,6 +379,11 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
     action: "dry-run",
     text: "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
+  add("--idempotency-key", {
+    action: "idempotency-key",
+    value: "<key>",
+    text: "Only to send again a write that exited 75: the key its message named. Dispatch then makes each write of the command at most once. Omit it for a new write.",
+  });
   return flags;
 }
 
@@ -397,6 +411,7 @@ export function parseCommand(
   const bareDashes = new Set<string>();
   let help = false;
   let dryRun = false;
+  let idempotencyKey: string | undefined;
   let stdinFlag: string | undefined;
 
   const read = (flag: string, path: string): string | undefined => {
@@ -491,11 +506,11 @@ export function parseCommand(
       else if (field !== undefined && claim(field, flag, false)) args[field] = action === "true";
       continue;
     }
-    if (field === undefined) continue;
-    const info = surface.fields.get(field) as FieldInfo;
     if (action === "clear") {
       if (inline !== undefined) problems.push(`${flag} takes no value`);
-      else if (claim(field, flag, false)) args[field] = info.nullable ? null : [];
+      else if (field !== undefined && claim(field, flag, false)) {
+        args[field] = (surface.fields.get(field) as FieldInfo).nullable ? null : [];
+      }
       continue;
     }
     let value = inline;
@@ -510,6 +525,18 @@ export function parseCommand(
       value = next;
       index++;
     }
+    if (action === "idempotency-key") {
+      if (idempotencyKey !== undefined) problems.push(`${flag} is given twice`);
+      else if (COMMAND_KEY.test(value)) idempotencyKey = value;
+      else {
+        problems.push(
+          `${flag} must be the key a write that exited 75 named, a lower-case UUID; got ${JSON.stringify(value)}`
+        );
+      }
+      continue;
+    }
+    if (field === undefined) continue;
+    const info = surface.fields.get(field) as FieldInfo;
     switch (action) {
       case "set": {
         // Claimed whatever the value, so a repeat is named even after a value that did not parse.
@@ -558,12 +585,71 @@ export function parseCommand(
 
   if (help) return { kind: "help", tool };
   if (problems.length > 0) {
+    const named = idempotencyKey === undefined ? {} : { idempotencyKey };
     // When every problem is a bare `-`, the refusal is about values and lists no flags.
     return problems.length === bareDashes.size
-      ? { kind: "refused", tool, problems, aboutAFlag: false }
-      : { kind: "refused", tool, problems };
+      ? { kind: "refused", tool, problems, aboutAFlag: false, ...named }
+      : { kind: "refused", tool, problems, ...named };
   }
-  return { kind: "call", tool, args, dryRun };
+  return {
+    kind: "call",
+    tool,
+    args,
+    dryRun,
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+  };
+}
+
+/**
+ * The words that send `argv` (the words after `dispatch`) again so that it reads what it read the
+ * first time. A value a flag read from a file or from stdin (`--<field>-file`,
+ * `--<field>-json-file`; `read` holds each text by the path the flag named, `-` for stdin) is
+ * read instead from a copy `keep` writes, since stdin is gone and a file can change; a value
+ * longer than `longest` given to a flag that has a file-reading twin (`--body`, `--ops-json`) is
+ * moved to a copy `keep` writes and read through the twin (`--body-file`, `--ops-json-file`), so
+ * the command fits on a line. `keep` takes the text and its place among the copies, from 1, and
+ * answers the copy's path. Every other word stays as written.
+ */
+export function rerunWords(
+  argv: readonly string[],
+  read: ReadonlyMap<string, string>,
+  longest: number,
+  keep: (text: string, place: number) => string
+): string[] {
+  const [command, ...rest] = argv;
+  const tool = command === undefined ? undefined : toolForCommand(command);
+  if (command === undefined || tool === undefined) return [...argv];
+  const { flags } = surfaceFor(tool);
+  const words = [command];
+  let place = 0;
+  for (let index = 0; index < rest.length; index++) {
+    const word = rest[index] as string;
+    const eq = word.indexOf("=");
+    const flag = eq === -1 ? word : word.slice(0, eq);
+    const entry = word.startsWith("--") ? flags.get(flag) : undefined;
+    const inline = eq === -1 ? undefined : word.slice(eq + 1);
+    const value = entry?.value === undefined ? undefined : (inline ?? rest[index + 1]);
+    if (entry === undefined || value === undefined) {
+      words.push(word);
+      continue;
+    }
+    const given = inline === undefined ? [word, value] : [word];
+    if (inline === undefined) index++;
+    const text = read.get(value);
+    const twin = `${flag}-file`;
+    if ((entry.action === "file" || entry.action === "json-file") && text !== undefined) {
+      words.push(flag, keep(text, ++place));
+    } else if (
+      (entry.action === "set" || entry.action === "json") &&
+      value.length > longest &&
+      flags.has(twin)
+    ) {
+      words.push(twin, keep(value, ++place));
+    } else {
+      words.push(...given);
+    }
+  }
+  return words;
 }
 
 function appendedItem(
@@ -590,9 +676,13 @@ function appendedItem(
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
-/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */
+/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. A word that opens
+ *  with `=` is quoted too: zsh's EQUALS option reads a bare `=word` as the path of the command
+ *  `word`. */
 function quoteWord(value: string): string {
-  return BARE_WORD.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+  return BARE_WORD.test(value) && !value.startsWith("=")
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /** `--flag value`, or `--flag=value` when the value itself starts with `--`. */
@@ -636,6 +726,12 @@ function optionText(option: unknown): string | undefined {
   return "description" in option && option.description !== undefined
     ? `${label}${OPTION_SEPARATOR}${scalarText(option.description)}`
     : label;
+}
+
+/** `dispatch` and `words` as a command line, each word POSIX single-quoted where it needs to be,
+ *  as `commandLine` quotes a value. */
+export function dispatchLine(words: readonly string[]): string {
+  return ["dispatch", ...words.map(quoteWord)].join(" ");
 }
 
 /** The command line that sends `args`: `dispatch <command> <flags>`, POSIX single-quoted. */

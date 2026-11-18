@@ -11,7 +11,7 @@ import type {
 } from "@legion/contracts";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import { type CommandKey, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
@@ -65,6 +65,10 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** The key of the `dispatch` command this call is (`CommandKey`): each of its writes takes its
+   *  key from it, and it hears of each that may have landed unanswered. Unset, each write mints
+   *  a key of its own. */
+  readonly commandKey?: CommandKey;
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
@@ -326,6 +330,7 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        commandKey: input.commandKey,
       }),
   };
 }

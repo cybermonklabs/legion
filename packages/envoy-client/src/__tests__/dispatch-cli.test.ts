@@ -1051,7 +1051,8 @@ describe("the dispatch CLI", () => {
   // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
   // within one. One older than that, one dated ahead of the clock, and anything that is not a
   // sighting say nothing, so the write asks /healthz and, with no yes from it, is reported rather
-  // than sent twice.
+  // than sent twice: its one attempt failed in transport and may have reached Dispatch, so the
+  // call exits 75, a write that may have landed, and never 1, which a caller reads as a refusal.
   test("a carried sighting of the keyed layer is trusted only while it is under five minutes old", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
@@ -1077,7 +1078,7 @@ describe("the dispatch CLI", () => {
       "garbage",
     ]) {
       expect(await call(keyedLayer), JSON.stringify(keyedLayer)).toEqual({
-        code: 1,
+        code: 75,
         posts: 1,
         probes: 1,
       });
@@ -1088,7 +1089,8 @@ describe("the dispatch CLI", () => {
   // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
   // again, and the call's save leaves the sighting out of state.json, so the next call trusts
   // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
-  // the test's 30 s bound lets that show as five posts rather than as a timeout.
+  // the test's 30 s bound lets that show as five posts rather than as a timeout. Dispatch's 5xx
+  // can come after it committed, so the call exits 75, a write that may have landed.
   test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const file = join(stateDir, "sessions", "ses-1", "state.json");
@@ -1117,7 +1119,7 @@ describe("the dispatch CLI", () => {
       "",
       fetchImpl
     );
-    expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
+    expect({ code, posts, probes }).toEqual({ code: 75, posts: 1, probes: 1 });
     expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
   }, 30_000);
 

@@ -14,7 +14,7 @@ import { inline, writePage } from "./lib/markdown.ts";
 
 function render(): string {
   const lines = [
-    `Agents work in Dispatch through the \`dispatch\` command in their shell: ${dispatchToolSpecs.length} commands, each with the flags and example \`dispatch <command> --help\` prints. A flag \`--<name>-file <path>\` reads the value from a file, and \`-\` reads stdin. Only one flag of a call may read stdin. The command refuses \`--<name> -\` for each text flag except \`dispatch artifact --path\`, whose value names a local file. A flag the command does not list is refused. A command exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It exits 2 on a usage error, such as flags it refused before any request.`,
+    `Agents work in Dispatch through the \`dispatch\` command in their shell: ${dispatchToolSpecs.length} commands, each with the flags and example \`dispatch <command> --help\` prints. A flag \`--<name>-file <path>\` reads the value from a file, and \`-\` reads stdin. Only one flag of a call may read stdin. The command refuses \`--<name> -\` for each text flag except \`dispatch artifact --path\`, whose value names a local file. A flag the command does not list is refused. A command exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It exits 2 on a usage error, such as flags it refused before any request. It exits 75 when a write may have landed and its answer was lost: it names the write's idempotency key and the command that sends it again with \`--idempotency-key <key>\`, under which Dispatch makes each write at most once.`,
     "",
   ];
   for (const spec of dispatchToolSpecs) {

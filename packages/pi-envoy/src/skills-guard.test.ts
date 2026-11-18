@@ -172,7 +172,16 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
 // 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
 // before set and adding none.
-test("the three Dispatch skills total fewer than 2,340 words", () => {
+//
+// The same rule moved it by 11 when the `dispatch` command began to exit 75 for a write that may
+// have landed with its answer lost, which the line that names the exit codes says in
+// skills/dispatch/SKILL.md: "75 a write that may have landed: resend with its key." Every session
+// with Dispatch runs the command, and an agent that took 75 for exit 1's refusal would run the
+// write again under a new key and could make it twice, so the clause is the one each session
+// needs, beside the two codes it already reads there; no other skill holds the codes. The three
+// skills, 2,339 words on main, stand at 2,339 + 11 = 2,350, and the bound moves from 2,340 by
+// those 11 to 2,351.
+test("the three Dispatch skills total fewer than 2,351 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -182,7 +191,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_340);
+  expect(words).toBeLessThan(2_351);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

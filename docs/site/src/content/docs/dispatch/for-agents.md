@@ -99,7 +99,15 @@ New epic waits for the create's answer before registering parent changes. Start 
 
 A command with several problems is refused once, with every problem listed, so the next run can
 fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
-exits 2 on a usage error, such as an unknown command or flags it refused before any request.
+exits 2 on a usage error, such as an unknown command or flags it refused before any request. It
+exits 75 when a write may have landed and its answer was lost: its last line names the write's
+idempotency key, the settings the command found Dispatch through, and the command that sends it
+again with `--idempotency-key <key>`. Send that command, from a shell where those settings are as
+they were, and not the first one again: under the key, Dispatch makes each write at most once, and
+a run without it may make the write twice. The command reads copies of anything the first one read
+from stdin or a file, so run it as printed, with no here-document. If that resend is refused, the
+earlier write may still have landed, and the command says so: read the write back before you send
+anything new.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:

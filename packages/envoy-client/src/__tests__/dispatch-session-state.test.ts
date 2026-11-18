@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -24,6 +25,7 @@ import {
   resultsEnd,
   saveSessionMemory,
   writePicture,
+  writeResendInput,
 } from "../dispatch-session-state";
 
 const root = temporaryDirectories("dispatch-state");
@@ -86,6 +88,22 @@ describe("per-session state", () => {
     expect(a.path).toBe(b.path);
     expect(a.path.endsWith(".png")).toBe(true);
     expect(readFileSync(a.path).subarray(0, 4).toString("hex")).toBe("89504e47");
+  });
+
+  // A write that may have landed is sent again by a command the CLI prints. What it read from
+  // stdin, or a value too long to print, is kept here for that command to read, under the key the
+  // command is sent with.
+  test("a resend's input is kept whole and owner-only, by its key and place", () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s10");
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    const text = "line one\nEOF\n$HOME `pwd`\n";
+    const path = writeResendInput(dir, key, 2, text);
+    expect(path).toBe(join(dir, "resend", `${key}.2`));
+    expect(readFileSync(path, "utf-8")).toBe(text);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // The same call sent again keeps the same file, its text unchanged.
+    expect(writeResendInput(dir, key, 2, text)).toBe(path);
+    expect(readFileSync(path, "utf-8")).toBe(text);
   });
 
   test("pruning removes sessions idle for 14 days and keeps the rest", () => {

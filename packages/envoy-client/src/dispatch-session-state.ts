@@ -256,6 +256,20 @@ export function writeLongOutput(dir: string, text: string): string {
   return path;
 }
 
+/**
+ * Keeps one input of a call whose write may have landed, `text`, at `resend/<key>.<place>`, and
+ * returns its path: what the call read from stdin, or a value too long for the command line the CLI
+ * prints, which that command then reads from the file. Written atomically and owner-only; a call
+ * sent again under the same key keeps the same file.
+ */
+export function writeResendInput(dir: string, key: string, place: number, text: string): string {
+  const resend = join(dir, "resend");
+  ensureDirectory(resend);
+  const path = join(resend, `${key}.${place}`);
+  writeAtomically(path, text);
+  return path;
+}
+
 /** Writes the session's title to `title`, atomically: a concurrent read sees the old or the new. */
 export function writeSessionTitle(dir: string, title: string): void {
   ensureDirectory(dir);

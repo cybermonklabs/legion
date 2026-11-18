@@ -700,7 +700,7 @@ describe("executeDispatchTool", () => {
         "- --body is required (string)",
         "- unknown flag --message",
         "- in_reply_to must be a full message id (uuid), a dispatch://KEY/message/<id> reference, or a block of one (dispatch://KEY/message/<id>#b-<block id>)",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run, --idempotency-key",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'",
       ].join("\n")
     );

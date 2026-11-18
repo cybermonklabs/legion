@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import {
   askgateState,
   bytesDigest,
@@ -13,14 +14,16 @@ import {
   commandHelp,
   commandName,
   commandsHelp,
+  dispatchLine,
   type ParsedCommand,
   parseCommand,
+  rerunWords,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { CommandKey, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -31,6 +34,7 @@ import {
   recordOutcome,
   writeLongOutput,
   writePicture,
+  writeResendInput,
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
@@ -54,13 +58,23 @@ export interface DispatchCliIo {
   readonly fetchImpl?: typeof fetch;
 }
 
-/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
- *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
+/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, a usage error, and
+ *  a write that may have landed. REFUSED is a call Dispatch itself turned down (a near copy, an
+ *  AskGate block, a server refusal); an argument this CLI refuses before any request is USAGE,
+ *  whether the argv named a command or not. UNSETTLED (sysexits' EX_TEMPFAIL, as `envoy-send`
+ *  exits for a send it cannot confirm) is a call that failed after one of its writes ended with no
+ *  definitive answer while an attempt of it may have reached Dispatch (`CommandKey.unsettled`):
+ *  the write may have landed, so a caller that ran the call again under a new key could make it
+ *  twice, and the CLI names the call's key and the command that sends it again under that key. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
+const UNSETTLED = 75;
+type ExitCode = typeof OK | typeof REFUSED | typeof USAGE | typeof UNSETTLED;
+
+/** The longest value the command line that sends a call again carries as it was given; a longer
+ *  one is kept in a file it reads (`rerunWords`), so the line stays far under what a host shows. */
+const RESEND_VALUE_MAX = 500;
 
 const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
 
@@ -80,6 +94,61 @@ function stateWriteFailed(problem: string): string {
   return `${STATE_WRITE_FAILED} could not be written: ${problem}`;
 }
 
+/** How the line opens that names the key and the resend command of a call that exited UNSETTLED. */
+const MAY_HAVE_LANDED = "dispatch: this write may have landed";
+
+/** How the line opens beside the refusal of a call sent again under a key an earlier call named:
+ *  this call wrote nothing, and the earlier call's write may still have landed. */
+const EARLIER_MAY_HAVE_LANDED = "dispatch: the earlier call's write may have landed";
+
+/** The settings beside the host and the session that a call may find its Dispatch, its login or
+ *  its request through (`settingsRead`): its Dispatch section and token, the issue it defaults
+ *  to, and what chooses the envoy.json it reads when `ENVOY_CONFIG_FILE` names none
+ *  (`envoyConfigPath`). */
+const CALL_SETTINGS = [
+  "ENVOY_CONFIG_FILE",
+  "DISPATCH_URL",
+  "DISPATCH_TOKEN",
+  "DISPATCH_TOKEN_FILE",
+  "DISPATCH_TOKEN_BROKER",
+  "LEGION_ISSUE",
+  "OMP_PROFILE",
+  "PI_CODING_AGENT_DIR",
+  "CLAUDE_CONFIG_DIR",
+  "XDG_CONFIG_HOME",
+  "HOME",
+] as const;
+
+/**
+ * The settings a call found its Dispatch, its login and its session through, by name: the host,
+ * the session's id, and each of CALL_SETTINGS the environment sets. A resend under the call's key
+ * must find them as they were, since Dispatch keeps a key for the login that sent it. They are
+ * named rather than spelled out: `DISPATCH_TOKEN` is a secret, and AskGate lets no command that
+ * opens with an assignment post.
+ */
+function settingsRead(
+  env: Readonly<Partial<Record<string, string>>>,
+  host: DispatchHost
+): string[] {
+  let session = "DISPATCH_SESSION_ID";
+  if (host === "claude") {
+    session = env.ENVOY_SESSION_ID === undefined ? "CLAUDE_CODE_SESSION_ID" : "ENVOY_SESSION_ID";
+  }
+  return [
+    env.DISPATCH_HOST === undefined ? "CLAUDE_CODE_CHILD_SESSION" : "DISPATCH_HOST",
+    session,
+    ...CALL_SETTINGS.filter((name) => env[name] !== undefined),
+  ];
+}
+
+/**
+ * What the CLI adds beside the refusal of a call that names the key of a write an earlier call
+ * may have landed: this call made no write, and its exit says nothing of the earlier call's.
+ */
+function earlierWriteLine(key: string, code: ExitCode): string {
+  return `${EARLIER_MAY_HAVE_LANDED}: this call sent it again under its idempotency key ${key} and ended without writing it (exit ${code}), which says nothing of the earlier call's write. Read the write back before you send it again; a run without the key may make it twice.`;
+}
+
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
 const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
@@ -90,11 +159,15 @@ const LITERAL_FORM =
  *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
  *  nothing: a result's warning
  *  (`dispatch: warning: `), the note that the session's state was not written
- *  (STATE_WRITE_FAILED), and the notice of a file that is not read, printed beside a result. */
+ *  (STATE_WRITE_FAILED), the notice of a file that is not read, printed beside a result, and the
+ *  lines that name a write that may have landed and its key (MAY_HAVE_LANDED,
+ *  EARLIER_MAY_HAVE_LANDED). */
 const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
 const NOT_A_REFUSAL = [
   "dispatch: warning: ",
   STATE_WRITE_FAILED,
+  MAY_HAVE_LANDED,
+  EARLIER_MAY_HAVE_LANDED,
   // readEnvoyConfig's warnings: the OpenCode-era `.opencode/envoy.json` beside a checkout.
   /^dispatch: \S+ is not read(?:: | for this profile| under | and is on another filesystem )/,
 ];
@@ -215,19 +288,23 @@ export async function runDispatchCli(
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
   const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+  // The key of a write an earlier call may have landed, which this call names to send it again:
+  // every refusal of such a call says that the earlier call's write may still have landed.
+  let namedKey: string | undefined;
   const refuse = (
     text: string,
-    code: number,
+    code: ExitCode,
     tool?: string,
     askgate?: ResultInput["askgate"]
   ): number => {
-    print(text);
+    const printed = namedKey === undefined ? text : `${text}\n${earlierWriteLine(namedKey, code)}`;
+    print(printed);
     const sessionId = claudeSession ?? env.DISPATCH_SESSION_ID;
     if (sessionId !== undefined) {
       try {
         appendResult(sessionDirectory(env, sessionId), {
           tool: tool ?? "dispatch",
-          error: text.trimEnd(),
+          error: printed.trimEnd(),
           ...(askgate === undefined ? {} : { askgate }),
         });
       } catch {
@@ -237,12 +314,22 @@ export async function runDispatchCli(
     return code;
   };
 
+  // Every text the call read, by the path it read it from (`-` for stdin): a call sent again reads
+  // the same texts from copies (`rerunWords`), since stdin is gone and a file can change.
+  const read = new Map<string, string>();
   let parsed: ParsedCommand;
   try {
-    parsed = parseCommand(argv, io);
+    parsed = parseCommand(argv, {
+      readText: (path) => {
+        const text = io.readText(path);
+        read.set(path, text);
+        return text;
+      },
+    });
   } catch (error) {
     return refuse(`dispatch: ${messageFor(error)}`, USAGE);
   }
+  if (parsed.kind !== "help") namedKey = parsed.idempotencyKey;
   if (parsed.kind === "help") {
     print(parsed.tool === undefined ? commandsHelp() : commandHelp(parsed.tool));
     return OK;
@@ -485,7 +572,14 @@ export async function runDispatchCli(
   const notes: string[] = [];
   const problems: string[] = [];
   let entry: ResultInput;
-  let code: number;
+  let code: ExitCode;
+  // The call's key: the one a write that may have landed named, sent again, else a new one. Each
+  // write the call makes takes its own key from it (`CommandKey`).
+  const commandKey = new CommandKey(parsed.idempotencyKey ?? crypto.randomUUID());
+  // The line that names the call's key, kept whole however the output is cut: how to send again a
+  // write that may have landed, or, beside the refusal of a call that sent one again, that the
+  // earlier call's write may still have landed.
+  let keyLine: string | undefined;
   try {
     const result = await executeDispatchTool({
       tool,
@@ -499,6 +593,7 @@ export async function runDispatchCli(
       env,
       ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
       subscriptions,
+      commandKey,
     });
     text = result.text;
     for (const warning of result.warnings ?? []) {
@@ -530,6 +625,32 @@ export async function runDispatchCli(
     if (error instanceof DispatchWriteLandedError) {
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;
+    } else if (commandKey.unsettled) {
+      // A write of the call ended with no definitive answer after an attempt of it may have
+      // reached Dispatch, so it may have landed. It is no refusal: a caller that read exit 1 would
+      // run the call again under a new key and could make the write twice. The line names the key
+      // of each such write and, unless Dispatch said it keeps no keys, the command that sends the
+      // call again under its key: the argv with every text it read kept in a copy, the key added
+      // unless the argv names it, run where the settings this call found Dispatch through are as
+      // they were.
+      const lost = `${MAY_HAVE_LANDED} (idempotency key ${commandKey.unsettledKeys.join(", ")}); its answer was lost`;
+      if (commandKey.noKeyedLayer) {
+        keyLine = `${lost}, and this Dispatch says it keeps no idempotency keys, so sending it again may make it twice: read the write back before you send it again.`;
+      } else {
+        let words: string[];
+        try {
+          words = rerunWords(argv, read, RESEND_VALUE_MAX, (input, place) =>
+            writeResendInput(dir, commandKey.key, place, input)
+          );
+        } catch (error) {
+          problems.push(messageFor(error));
+          words = [...argv];
+        }
+        if (parsed.idempotencyKey === undefined) words.push("--idempotency-key", commandKey.key);
+        keyLine = `${lost}. Send the call again under its idempotency key ${commandKey.key}, within ${IDEMPOTENCY_KEY_TTL_MS / 3_600_000} hours of the first call that used that key, and Dispatch makes each of its writes at most once; a run without the key may make them twice. Send it from a shell where these are set as they were for this call: ${settingsRead(env, host).join(", ")}; this call read Dispatch's settings from ${file.path}, and Dispatch keeps a key for the login that sent it. Run: ${dispatchLine(words)}`;
+      }
+      entry = { tool, error: `${text}\n${keyLine}` };
+      code = UNSETTLED;
     } else {
       entry = { tool, error: text };
       // An argument the executor refuses (a ref naming another owner, a picture that is not
@@ -542,12 +663,23 @@ export async function runDispatchCli(
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
+  // A call that sent again under its key a write an earlier call may have landed, and was refused
+  // or failed: exit 1 or 2 alone would read as though nothing was written at all, so the line
+  // says so beside the refusal and in the ledger.
+  if (parsed.idempotencyKey !== undefined && (code === REFUSED || code === USAGE)) {
+    keyLine = earlierWriteLine(commandKey.key, code);
+    if (entry.error !== undefined) entry = { ...entry, error: `${entry.error}\n${keyLine}` };
+  }
   try {
     recordOutcome(dir, sessionId, follows, entry);
   } catch (error) {
     problems.push(messageFor(error));
   }
-  const kept = [...notes, ...problems.map(stateWriteFailed)];
+  const kept = [
+    ...notes,
+    ...problems.map(stateWriteFailed),
+    ...(keyLine === undefined ? [] : [keyLine]),
+  ];
   const writeFull = (full: string): string => {
     try {
       return writeLongOutput(dir, full);
