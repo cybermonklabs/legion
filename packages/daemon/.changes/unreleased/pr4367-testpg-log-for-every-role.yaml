@@ -7,3 +7,7 @@ body: |-
   login holds `pg_monitor`, so a role whose connect failed can tell a failure in the server from a
   connect that never reached it. The worker image makes the file the log is bound over, and the
   daemon's image probe proves that bind under the deployment's runtime.
+
+  The loader now refuses an operator mount at `/var/run/legion/testpg.log`
+  (`runtime.kubernetes.pod.volume_mounts[].mount_path`), in every deployment: run this release's
+  `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.

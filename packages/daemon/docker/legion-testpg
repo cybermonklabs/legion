@@ -55,9 +55,10 @@ sockets=$dir/sockets
 # self-check, the daemon's image probe (`legion probe-image --test-postgres`,
 # launcher.CheckTestPostgres, which passes no LEGION_TESTPG_LOG) and a run by hand. The script and
 # the server only ever append to the log or truncate it in place (`>` on initdb keeps the inode),
-# and never replace or remove it, because every role's namespace binds that inode: a new file
-# under the same name would leave each running role reading the old one for the rest of its
-# generation.
+# and never replace or remove a regular file there, because every role's namespace binds that
+# inode: a new file under the same name would leave each running role reading the old one for the
+# rest of its generation. own_log recreates the file only where it is already gone or no regular
+# file, and puts its mode back before every start.
 log=${LEGION_TESTPG_LOG:-$dir/server.log}
 superuser=$(id -un)
 
@@ -193,7 +194,30 @@ super() {
 	psql -X -q -h "$sockets" -p "$port" -U "$superuser" "$@"
 }
 
+# own_log puts the log back as this script writes it, a regular file of this user's with mode
+# 0600, and dies naming the log where it cannot. A role reaches the log through role-init's
+# read-only bind alone, but under gVisor a role's own `unshare -Urm` can remount its view of that
+# bind read-write, and then, since the file is the launcher's and a role's agent maps to that
+# user, it can `chmod 000` it (measured in an issue pod on 2026-11-18). Every `> "$log"`,
+# `>> "$log"` and `pg_ctl --log` of a later start would then fail, and `ensure` could never
+# restart the server. A postmaster already running keeps writing through the descriptor it holds,
+# so the next start is the one write that needs the mode, and start() calls this first. A file
+# made again here leaves every running role bound to the old one for the rest of its generation;
+# that is reached only when something other than this script and the server replaced the file,
+# which no role can do, since the bind is a mount point: a rename, an unlink or a link over it
+# answers EBUSY, measured the same day. `rm -rf --` removes a link itself, never what it names.
+own_log() {
+	if [ -L "$log" ] || { [ -e "$log" ] && [ ! -f "$log" ]; }; then
+		rm -rf -- "$log" || die "removing $log, which is no regular file, failed"
+	fi
+	if [ ! -e "$log" ]; then
+		(umask 077 && : > "$log") || die "creating $log failed"
+	fi
+	chmod 600 "$log" || die "making $log mode 600 failed"
+}
+
 start() {
+	own_log
 	bin=$(bindir)
 	mkdir -p "$data" "$sockets"
 	chmod 700 "$data"

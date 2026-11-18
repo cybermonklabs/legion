@@ -81,8 +81,9 @@ heavy run goes where your deployment's instructions say.
   sees it, and libpq reports such a connect as `server closed the connection unexpectedly` or
   waits until its own timeout. Open the connections in smaller steps, or retry them. Your login
   holds `pg_monitor`, so `pg_stat_activity` also shows the detail of connections under the other
-  logins of the server, such as the ones a suite creates. `LEGION_TEST_PG_LOG` unset with the DSN
-  set: your pod's image predates the log, so report without it.
+  logins of the server, such as the ones a suite creates. `LEGION_TEST_PG_LOG` unset: a server
+  you started yourself (next bullet) logs to `$LEGION_TESTPG_DIR/server.log`; with the DSN your
+  pod set and no such variable, your pod's image predates the log, so report without it.
 - `LEGION_TEST_PG_DSN` unset: your deployment has not turned the pod's server on, so no launcher
   is starting one and nothing will appear while you wait. With `legion-testpg` on `PATH`, start
   one yourself on the issue's volume: the directory it defaults to is a 1 MiB filesystem your

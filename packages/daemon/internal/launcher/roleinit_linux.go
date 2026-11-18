@@ -147,15 +147,26 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	// role that tried, and that role could replace the log with a link, which the next `pg_ctl
 	// --log` or the script's own append would follow: into postgresql.auto.conf, say, where a
 	// line the role made the server log becomes configuration of a server that runs in the
-	// launcher's namespace. A bound file can at worst be written to, and nothing privileged
-	// reads the log; it can be neither replaced nor removed, since it is a mount point.
+	// launcher's namespace. A role that remounts its view of the bound file read-write can write
+	// it, truncate it or chmod it, and can neither replace it with a link or another file nor
+	// remove it, since it is a mount point: measured in an issue pod on 2026-11-18, a rename,
+	// an unlink and a link over it from such a namespace each answered EBUSY. legion-testpg puts
+	// the log's mode back before each start, so a chmod cannot stop a restart, and nothing that
+	// reads the cluster's configuration reads the log.
+	//
+	// The source is opened without following a link and bound through that descriptor, and
+	// anything but a regular file is refused: a link planted at the source would otherwise bind
+	// its target into every role. Nothing can plant one today, since the directory is behind the
+	// locked cover, and the check costs nothing.
 	source, target := testPGLog(cfg.RolesDir), filepath.Join(cfg.FixedRoot, RoleTestPGLog)
-	switch _, err := os.Stat(source); {
-	case errors.Is(err, fs.ErrNotExist):
+	switch fd, err := unix.Open(source, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); {
+	case errors.Is(err, unix.ENOENT):
 	case err != nil:
-		return fmt.Errorf("the pod's test database log: %w", err)
+		return fmt.Errorf("the pod's test database log %s: %w", source, err)
 	default:
-		if err := bindReadOnly(source, target); err != nil {
+		err := bindRegularFileReadOnly(fd, target)
+		_ = unix.Close(fd)
+		if err != nil {
 			return fmt.Errorf("bind %s read-only at %s: %w", source, target, err)
 		}
 	}
@@ -817,4 +828,20 @@ func bindReadOnly(source, target string) error {
 		return fmt.Errorf("make the mount read-only: %w", err)
 	}
 	return nil
+}
+
+// bindRegularFileReadOnly binds the file fd was opened on read-only at target, through the
+// descriptor's own /proc/self/fd entry, so the mount is of that file and never of whatever its
+// name names by the time the mount runs. fd is an O_PATH|O_NOFOLLOW descriptor, which on Linux
+// opens a link itself rather than failing, so a link is refused here, with anything else that is
+// no regular file.
+func bindRegularFileReadOnly(fd int, target string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fmt.Errorf("read what the file is: %w", err)
+	}
+	if kind := stat.Mode & unix.S_IFMT; kind != unix.S_IFREG {
+		return fmt.Errorf("it is no regular file (kind %#o)", kind)
+	}
+	return bindReadOnly("/proc/self/fd/"+strconv.Itoa(fd), target)
 }

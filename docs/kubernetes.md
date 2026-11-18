@@ -332,7 +332,11 @@ Then:
   It binds the file and not its directory because gVisor does not lock a read-only bind.
   Measured in an issue pod on 2026-11-17, a role's own `unshare -Urm` remounted a read-only bind read-write, which Linux refuses; the cover over the roles directory held (its unmount answered `EINVAL`).
   A role with a writable view of the directory could replace `server.log` with a link, and the next `pg_ctl start` or `ensure` would write the server's output through it, into `postgresql.auto.conf` for one.
-  A bound file can at worst be written to, and nothing that reads the cluster's configuration reads the log; it cannot be replaced or removed, since it is a mount point.
+  A role that remounts its view of the bound file read-write the same way can write the file, truncate it or `chmod` it, since the file is the launcher's and a role's agent maps to the launcher's user;
+  it can neither replace the file with a link or another file nor remove it, since the file is a mount point: measured in an issue pod on 2026-11-18, after that remount a rename over it, an unlink of it and a link over it each answered `EBUSY`.
+  Nothing that reads the cluster's configuration reads the log.
+  A `chmod 000` would make the next start's writes to the log fail, and with them the start, so `legion-testpg` puts the log back as a regular file of its own, mode 0600, at the head of every start, and the image's build proves a restart over a `chmod 000` log.
+  role-init opens the log without following a link and binds it only when it is a regular file, so nothing planted at the log's path reaches a role.
   The script and the server only ever append to the file or truncate it in place, so every role's bind keeps pointing at the file the server writes.
   The daemon's image probe (`legion probe-image --role-namespaces`) makes the same read-only bind of a file, so a runtime that refuses it fails the boot probe rather than every role's start.
   The server logs every connection with `log_connections=all`: the backend the postmaster forks for a connect writes a `connection received` line with the client's port, then the authentication, the authorization, and the setup time with the fork's share of it.
@@ -392,6 +396,13 @@ Then:
 - `template1` carries the `vector` extension, so every database made from it has pgvector, and the Dispatch browser suite runs on a database a role makes for it there (`createdb`, then `DATABASE_URL`).
 
 - The image's own build runs `legion-testpg check` and a real `initdb`, start, `create database` and extension read as the runtime user, so a build whose server package or script stops working fails there rather than at every pod's start.
+
+- **Upgrading.**
+  This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
+  The loader refuses it in every deployment, whether or not it sets `runtime.kubernetes.test_postgres`:
+  `runtime.kubernetes.pod.volume_mounts[<i>].mount_path /var/run/legion/testpg.log overlaps /var/run/legion/testpg.log, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.
+  A pod on a worker image of an earlier release reads no log and tells no role `LEGION_TEST_PG_LOG`, whatever release the daemon runs: the launcher, role-init and the file the log is bound over all come from the image.
 
 ### Image size and pull time
 
@@ -4229,7 +4240,7 @@ A mount at, under or above `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc` is 
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p>
 overlaps /dev/pts, which every role's namespace in an issue pod replaces with a filesystem of its
 own and carries no mount back onto: a mount may be neither at, under, nor above /dev/pts`.
-A mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home` or `/var/run/legion/role-probe` (the image probe's volume, [The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) is refused as any other path Legion mounts is:
+A mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home` or `/var/run/legion/role-probe` (the image probe's volume, [The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), or at `/var/run/legion/testpg.log`, where role-init binds the pod's test server log ([A test database in the pod](#a-test-database-in-the-pod)), is refused as any other path Legion mounts is:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> overlaps /var/run/legion/roles, which
 Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`.
 Every one of these rules, and the check of the paths Legion mounts and the image owns, compares a mount through the worker image's links to directories (`/var/run` to `/run`, `/var/lock` to `/run/lock`, `/run/shm` to `/dev/shm`, and the merged `/bin`, `/sbin`, `/lib` and `/lib64`), since the kubelet mounts a path spelled through one where the link points:

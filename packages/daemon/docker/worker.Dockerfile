@@ -1037,11 +1037,15 @@ ENV AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt COREPACK_DEFAULT_TO_LATEST=
 # directory as the runtime user, starts it, makes a database from template1 and reads pgvector back
 # out of it, then stops it with `legion-testpg stop`, a fast shutdown it waits for — a postmaster
 # killed instead would leave its shutdown checkpoint running and the `rm -rf` below would race it.
-# An issue pod's launcher runs the same command, so a build whose server package, extension or
-# script no longer works fails here rather than at every role's start in every pod. The DSN is the
-# one this image's own launcher serves to every role of an issue pod: a loopback host, no password,
-# and legion_test for both the login and the database — the non-superuser role `ensure` creates,
-# not the cluster's own superuser, and the database `ensure` creates with that role as its owner.
+# It then makes the server's log mode 000, as a role that remounts its view of the bound log
+# read-write can, and runs `ensure` again over the stopped cluster: the restart must put the log
+# back to mode 600 and serve the DSN, where a start that wrote the log as it found it would fail at
+# its first write, and that server is stopped the same way. An issue pod's launcher runs the same
+# command, so a build whose server package, extension or script no longer works fails here rather
+# than at every role's start in every pod. The DSN is the one this image's own launcher serves to
+# every role of an issue pod: a loopback host, no password, and legion_test for both the login and
+# the database — the non-superuser role `ensure` creates, not the cluster's own superuser, and the
+# database `ensure` creates with that role as its owner.
 RUN set -eu; \
     scratch="$(mktemp -d)"; \
     export TMPDIR="$scratch" COREPACK_HOME="$scratch/corepack" XDG_CONFIG_HOME="$scratch/config"; \
@@ -1069,6 +1073,11 @@ RUN set -eu; \
     psql -X -q "$probe_dsn" -c 'create database probe'; \
     psql -X -tAq 'postgres://legion_test@127.0.0.1:5433/probe?sslmode=disable' -c "select extname from pg_extension where extname = 'vector'" | grep -qx vector; \
     psql -X -q "$probe_dsn" -c 'drop database probe with (force)'; \
+    LEGION_TESTPG_DIR="$scratch/testpg" legion-testpg stop; \
+    chmod 000 "$scratch/testpg/server.log"; \
+    LEGION_TESTPG_DIR="$scratch/testpg" LEGION_TEST_PG_DSN="$probe_dsn" legion-testpg ensure; \
+    test "$(stat -c %a "$scratch/testpg/server.log")" = 600; \
+    test "$(psql -X -tAq "$probe_dsn" -c 'select 1')" = 1; \
     LEGION_TESTPG_DIR="$scratch/testpg" legion-testpg stop; \
     rm -rf "$scratch"
 # Claude Code's pin, packages/daemon/docker/claude-code's package.json and package-lock.json, at
