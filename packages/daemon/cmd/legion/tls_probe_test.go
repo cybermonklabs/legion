@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -148,52 +149,14 @@ const (
 	// compromised chain.
 	gitEmSignAccepted = `fatal: https://dv-g3b-emudhra.we-have-a-problem.com/info/refs not valid: is this a git repository?`
 	goEmSignAccepted  = `go: dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe@latest: unrecognized import path "dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe": parse https://dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe?go-get=1: no go-import meta tags ()`
+	// redis-cli 8.0.2's, measured on 2026-11-18 on the pull request's image (sha256:25d2edfc…) as
+	// `redis-cli --tls --sni <host> -h <host> -p 443 PING`: the emSign site refuses at the
+	// handshake, example.com answers past it with HTTP, and with --insecure the emSign site closes
+	// the connection only after the handshake.
+	redisEmSignRefusal  = `Could not connect to Redis at dv-g3b-emudhra.we-have-a-problem.com:443: SSL_connect failed: certificate verify failed`
+	redisControlAnswer  = `Error: Protocol error, got "H" as reply type byte`
+	redisEmSignAccepted = `Error: Server closed the connection`
 )
-
-// GNU wget and git's https transport verify through GnuTLS, and each names a refusal in words of
-// its own. Neither control answer is a refusal: git's is a failure, but one the site answered.
-func TestTLSCertificateErrorRecognizesWgetAndGitRefusals(t *testing.T) {
-	for _, testCase := range []struct {
-		name, detail string
-		want         bool
-	}{
-		{"wget refusal", wgetEmSignRefusal, true},
-		{"wget control", wgetControlAnswer, false},
-		{"git refusal", gitEmSignRefusal, true},
-		{"git control", gitControlAnswer, false},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := tlsCertificateError(testCase.detail); got != testCase.want {
-				t.Fatalf("tlsCertificateError(%q) = %v, want %v", testCase.detail, got, testCase.want)
-			}
-		})
-	}
-}
-
-// git and go fail at the control too, since example.com serves neither a git repository nor a Go
-// module path, but each names the site's answer, after a handshake it accepted. So does each at a
-// compromised site once it has accepted that chain, which the probe must report as accepted and
-// never as unavailable. A refusal names no answer.
-func TestGitAndGoResponseSeenReadTheSitesAnswer(t *testing.T) {
-	for _, testCase := range []struct {
-		name, detail string
-		seen         func(string) bool
-		want         bool
-	}{
-		{"git control", gitControlAnswer, gitResponseSeen, true},
-		{"git refusal", gitEmSignRefusal, gitResponseSeen, false},
-		{"git accepting a compromised chain", gitEmSignAccepted, gitResponseSeen, true},
-		{"go control", goControlAnswer, goResponseSeen, true},
-		{"go refusal", goEmSignRefusal, goResponseSeen, false},
-		{"go accepting a compromised chain", goEmSignAccepted, goResponseSeen, true},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := testCase.seen(testCase.detail); got != testCase.want {
-				t.Fatalf("response seen in %q = %v, want %v", testCase.detail, got, testCase.want)
-			}
-		})
-	}
-}
 
 func TestTLSCommandDetailKeepsCertificateErrorTail(t *testing.T) {
 	detail := trimTLSDetail(tlsCommandMessage(nil, strings.Repeat("x", tlsDetailLimit)+" invalid peer certificate"))
@@ -282,85 +245,24 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 	}
 }
 
-// workerTLSClients calls itself the complete TLS client inventory of the worker image. GNU wget
-// (the `wget` the capability check's toolchain row requires on PATH, packages/daemon/internal/
-// capabilities/image.go) and git (the PATH's git, which fetches over https with its own TLS
-// library) are TLS clients on that PATH, so each must be probed against both refused chains and
-// the control like every other client. wget is on the floor every deployment's image is held to,
-// so its client must not be one an image may lack and still pass.
-func TestWorkerTLSInventoryHoldsGNUWgetAndGit(t *testing.T) {
-	clients := map[string]tlsClient{}
-	for _, client := range imageTLSClients("omp", nil, "", "") {
-		clients[client.name()] = client
-	}
-	for _, name := range []string{"wget", "git"} {
-		if _, ok := clients[name]; !ok {
-			t.Errorf("the TLS client inventory %q holds no %s client, although %s is a TLS client on the image's PATH", workerTLSClientNames(), name, name)
-		}
-	}
-	if _, optional := clients["wget"].(tlsOptionalClient); optional {
-		t.Errorf("the wget TLS client is optional, but the toolchain capability row requires wget on PATH")
-	}
-}
+// optionalTLSClientNames is the name of each optional client of the image: gcloud, bq, az, mise
+// and socat.
+var optionalTLSClientNames = []string{"gcloud", "bq", "az", "mise", "socat"}
 
-// redis-cli is a TLS client on the floor: the capability check's toolchain row requires it on PATH
-// (packages/daemon/internal/capabilities/image.go), and `redis-cli --tls` reaches any host and port
-// a role names, verifying its peer against OpenSSL's default store. It reaches a verdict at each
-// site, measured on 2026-11-18 on the pull request's image (sha256:25d2edfc…, redis-cli 8.0.2) as
-// `redis-cli --tls --sni <host> -h <host> -p 443 PING`: the emSign and AAA sites refuse at the
-// handshake, example.com answers past it with HTTP, and with --insecure the compromised sites
-// close the connection only after the handshake. So, as wget, go and kubectl, it is a floor client
-// the inventory holds, and an answer past the handshake at a compromised site reads as accepting
-// the chain rather than as unavailable.
-func TestWorkerTLSInventoryHoldsRedisCLI(t *testing.T) {
-	var client tlsCommandClient
-	found := false
-	for _, candidate := range imageTLSClients("omp", nil, "", t.TempDir()) {
-		if candidate.name() != "redis-cli" {
-			continue
-		}
-		command, ok := candidate.(tlsCommandClient)
-		if !ok {
-			t.Fatalf("the redis-cli TLS client is a %T, want a floor command client: the toolchain capability row requires redis-cli on PATH", candidate)
-		}
-		client, found = command, true
-	}
-	if !found {
-		t.Fatalf("the TLS client inventory %q holds no redis-cli client, although redis-cli is a TLS client on the floor's toolchain row", workerTLSClientNames())
-	}
-	for _, testCase := range []struct {
-		name, stderr string
-		want         tlsStatus
-	}{
-		{"refusal", "Could not connect to Redis at dv-g3b-emudhra.we-have-a-problem.com:443: SSL_connect failed: certificate verify failed", tlsCertificateRefused},
-		{"control", `Error: Protocol error, got "H" as reply type byte`, tlsConnectionAccepted},
-		{"accepting a compromised chain", "Error: Server closed the connection", tlsConnectionAccepted},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			probe := client
-			probe.command = func(tlsSite) (string, []string, []string) {
-				return "sh", []string{"-c", `printf %s "$1" >&2; exit 1`, "sh", testCase.stderr}, nil
-			}
-			if outcome := probe.probe(context.Background(), emSignTLSSite); outcome.status != testCase.want {
-				t.Fatalf("redis-cli probe of %q = %+v, want status %q", testCase.stderr, outcome, testCase.want)
-			}
-		})
-	}
-}
-
-// imageFloorTLSClients returns the image's command clients that are not optional, by name, each of
-// wget, git, go, kubectl and redis-cli present.
-func imageFloorTLSClients(t *testing.T, workDir, stateDir string) map[string]tlsCommandClient {
+// imageTLSClientsOf returns the image's clients of type T by name, built with no environment,
+// failing t unless each of names is one of them.
+func imageTLSClientsOf[T tlsClient](t *testing.T, workDir, stateDir string, names ...string) map[string]T {
 	t.Helper()
-	clients := map[string]tlsCommandClient{}
+	clients := map[string]T{}
 	for _, client := range imageTLSClients("omp", nil, workDir, stateDir) {
-		if command, ok := client.(tlsCommandClient); ok {
-			clients[command.name()] = command
+		if typed, ok := client.(T); ok {
+			clients[typed.name()] = typed
 		}
 	}
-	for _, name := range []string{"wget", "git", "go", "kubectl", "redis-cli"} {
+	for _, name := range names {
 		if _, ok := clients[name]; !ok {
-			t.Fatalf("imageTLSClients() has no %s command client", name)
+			var zero T
+			t.Fatalf("imageTLSClients() has no %T named %s", zero, name)
 		}
 	}
 	return clients
@@ -374,12 +276,13 @@ var tlsSiteHosts = map[tlsSite]string{
 	controlTLSSite: "example.com",
 }
 
-// wget, git, go and kubectl are each classified from the output and exit status their program
-// gave: the control's answer is an acceptance and the emSign site's refusal a refusal. git and go
-// fail at the control as well, so each needs the response marker its client reads, and the same
-// marker reads the answer each gives at a compromised site whose chain it accepted.
+// wget, git, go, kubectl and redis-cli are each classified from the output and exit status their
+// program gave: the control's answer is an acceptance and the emSign site's refusal a refusal. git,
+// go and redis-cli fail at the control as well, so each needs the response marker its client
+// reads, and the same marker reads the answer each gives at a compromised site whose chain it
+// accepted.
 func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
-	clients := imageFloorTLSClients(t, "", t.TempDir())
+	clients := imageTLSClientsOf[tlsCommandClient](t, "", t.TempDir(), "wget", "git", "go", "kubectl", "redis-cli")
 	for _, testCase := range []struct {
 		client, name, stderr, exit string
 		want                       tlsStatus
@@ -394,6 +297,9 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 		{client: "go", name: "accepting a compromised chain", exit: "1", stderr: goEmSignAccepted, want: tlsConnectionAccepted},
 		{client: "kubectl", name: "control", exit: "0", want: tlsConnectionAccepted},
 		{client: "kubectl", name: "refusal", exit: "1", stderr: kubectlEmSignRefusal, want: tlsCertificateRefused},
+		{client: "redis-cli", name: "control", exit: "1", stderr: redisControlAnswer, want: tlsConnectionAccepted},
+		{client: "redis-cli", name: "refusal", exit: "1", stderr: redisEmSignRefusal, want: tlsCertificateRefused},
+		{client: "redis-cli", name: "accepting a compromised chain", exit: "1", stderr: redisEmSignAccepted, want: tlsConnectionAccepted},
 	} {
 		t.Run(testCase.client+" "+testCase.name, func(t *testing.T) {
 			client := clients[testCase.client]
@@ -408,100 +314,198 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 	}
 }
 
-// go runs in the probe's state directory, so no go.mod of the probe's working directory is read,
-// and every path it writes is under that directory; it fetches the module path from the site's
-// host itself and never downloads a toolchain. kubectl keeps its home and configuration there too,
-// and with the in-cluster variables empty client-go never takes the in-cluster configuration,
-// which would send the pod's service-account token to a test site. The pod's values below are
-// ones each client's own environment must override.
+// go changes to the probe's state directory (-C) before it reads anything, so no go.mod of the
+// probe's working directory, where go and every other client run, is read, and every path go
+// writes is under the state directory; it fetches the module path from the site's host itself,
+// never downloads a toolchain and runs no authentication command. kubectl keeps its home and
+// configuration in the state directory too, and with the in-cluster variables absent client-go
+// never takes the in-cluster configuration, which would send the pod's service-account token to a
+// test site. The pod's values below are ones each client's own environment must override or drop.
 func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 	stateDir, remove, err := newTLSStateDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
-	clients := imageFloorTLSClients(t, t.TempDir(), stateDir)
+	workDir := t.TempDir()
+	clients := imageTLSClientsOf[tlsCommandClient](t, workDir, stateDir, "go", "kubectl")
 	goClient, kubectl := clients["go"], clients["kubectl"]
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 	pod := []string{
 		"HOME=/home/legion", "XDG_CONFIG_HOME=/home/legion/.config", "GOPATH=/home/legion/go",
 		"GOMODCACHE=/legion/go/mod", "GOCACHE=/legion/go/build", "GOPROXY=https://proxy.golang.org",
-		"GOTOOLCHAIN=auto", "GOFLAGS=-mod=mod", "GOWORK=/legion/go.work", "KUBECONFIG=/home/legion/.kube/config",
-		"KUBERNETES_SERVICE_HOST=192.0.2.1", "KUBERNETES_SERVICE_PORT=443",
+		"GOTOOLCHAIN=auto", "GOFLAGS=-mod=mod", "GOWORK=/legion/go.work", "GOAUTH=netrc",
+		"KUBECONFIG=/home/legion/.kube/config", "KUBERNETES_SERVICE_HOST=192.0.2.1", "KUBERNETES_SERVICE_PORT=443",
 	}
+	goClient.env, kubectl.env = pod, pod
 
-	if goClient.workDir != stateDir {
-		t.Errorf("go runs in %q, want the state directory %s", goClient.workDir, stateDir)
+	if goClient.workDir != workDir {
+		t.Errorf("go runs in %q, want the probe's working directory %s", goClient.workDir, workDir)
 	}
 	for site, host := range tlsSiteHosts {
-		program, args, extraEnv := goClient.command(site)
-		if want := []string{"mod", "download", host + "/legion-tls-probe@latest"}; program != "go" || !slices.Equal(args, want) {
+		program, args, env := goClient.commandLine(site)
+		if want := []string{"mod", "download", "-C", stateDir, host + "/legion-tls-probe@latest"}; program != "go" || !slices.Equal(args, want) {
 			t.Errorf("go command for %s = %s %q, want go %q", site.name, program, args, want)
 		}
-		env := tlsEnvironment(pod, extraEnv)
 		for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
 			if value := envValue(env, name); !inStateDir(value) {
 				t.Errorf("go at %s has %s %q, want a path under %s", site.name, name, value, stateDir)
 			}
 		}
-		for name, want := range map[string]string{"GOPROXY": "direct", "GOTOOLCHAIN": "local", "GOFLAGS": "", "GOWORK": "off"} {
+		for name, want := range map[string]string{"GOPROXY": "direct", "GOTOOLCHAIN": "local", "GOFLAGS": "", "GOWORK": "off", "GOAUTH": "off"} {
 			if got := envValue(env, name); got != want {
 				t.Errorf("go at %s has %s=%q, want %q", site.name, name, got, want)
 			}
 		}
 
-		program, args, extraEnv = kubectl.command(site)
+		program, args, env = kubectl.commandLine(site)
 		if want := []string{"--server=" + site.url, "--token=" + tlsProbeSignIn, "get", "--raw", "/"}; program != "kubectl" || !slices.Equal(args, want) {
 			t.Errorf("kubectl command for %s = %s %q, want kubectl %q", site.name, program, args, want)
 		}
-		env = tlsEnvironment(pod, extraEnv)
 		for _, name := range []string{"HOME", "KUBECONFIG"} {
 			if value := envValue(env, name); !inStateDir(value) {
 				t.Errorf("kubectl at %s has %s %q, want a path under %s", site.name, name, value, stateDir)
 			}
 		}
 		for _, name := range []string{"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"} {
-			if got := envValue(env, name); got != "" {
-				t.Errorf("kubectl at %s has %s=%q, want it empty so client-go never takes the in-cluster configuration", site.name, name, got)
+			if slices.ContainsFunc(env, func(pair string) bool { return tlsVariableName(pair) == name }) {
+				t.Errorf("kubectl at %s has %s=%q, want it absent so client-go never takes the in-cluster configuration", site.name, name, envValue(env, name))
 			}
 		}
 	}
 }
 
 // redis-cli connects to the site's host, names that host in its SNI, and uses the https port,
-// since no site's URL names another; it sends PING, which no site answers as Redis. It sends
-// REDISCLI_AUTH as AUTH to the server it reaches, here a test site, so the pod's REDISCLI_AUTH must
-// not reach redis-cli; every other variable of the pod's does.
+// since no site's URL names another; it sends PING, which no site answers as Redis. Every
+// variable of the pod's but the credential it would send as AUTH reaches it.
 func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
-	client := imageFloorTLSClients(t, "", t.TempDir())["redis-cli"]
-	pod := []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
+	client := imageTLSClientsOf[tlsCommandClient](t, "", t.TempDir(), "redis-cli")["redis-cli"]
+	client.env = []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
 	for site, host := range tlsSiteHosts {
-		program, args, extraEnv := client.command(site)
+		program, args, env := client.commandLine(site)
 		if want := []string{"--tls", "--sni", host, "-h", host, "-p", "443", "PING"}; program != "redis-cli" || !slices.Equal(args, want) {
 			t.Errorf("redis-cli command for %s = %s %q, want redis-cli %q", site.name, program, args, want)
 		}
-		if env, want := tlsEnvironment(pod, extraEnv), []string{"HOME=/home/legion", "PATH=/usr/bin"}; !slices.Equal(env, want) {
+		if want := []string{"HOME=/home/legion", "PATH=/usr/bin", "LEGION_TLS_URL=" + site.url}; !slices.Equal(env, want) {
 			t.Errorf("redis-cli environment at %s = %q, want %q: REDISCLI_AUTH dropped and nothing else", site.name, env, want)
 		}
 	}
 }
 
-// imageOptionalTLSClients returns the image's optional clients by name, each of gcloud, bq, az,
-// mise and socat present.
-func imageOptionalTLSClients(t *testing.T, stateDir string) map[string]tlsOptionalClient {
-	t.Helper()
-	clients := map[string]tlsOptionalClient{}
-	for _, client := range imageTLSClients("omp", nil, "", stateDir) {
-		if optional, ok := client.(tlsOptionalClient); ok {
-			clients[optional.name()] = optional
+// No client carries a credential of the pod's to a site. The pod below holds, with a value of the
+// shape a real one has, every variable a probed client reads a credential from; at every site,
+// each client's environment holds none of those names and none of those values, but for a name
+// the client sets again to a dummy value of its own. The names are written out here rather than
+// read from tlsCredentialVariables, so a name dropped from that list fails this test. Each value is
+// one no client sets of its own.
+func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
+	githubToken := func(seed string) string { return "ghp_" + strings.Repeat(seed, 9) }
+	pod := map[string]string{
+		"CLOUDSDK_AUTH_ACCESS_TOKEN":                "ya29." + strings.Repeat("a0Zb1Yc2", 8),
+		"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE":           "/var/run/secrets/google/access-token",
+		"CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE":    "/var/run/secrets/google/credentials.json",
+		"CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT": "deployer@legion-prod.iam.gserviceaccount.com",
+		"CLOUDSDK_CORE_ACCOUNT":                     "operator@legion-prod.iam.gserviceaccount.com",
+		"CLOUDSDK_ACTIVE_CONFIG_NAME":               "legion-prod",
+		"GOOGLE_APPLICATION_CREDENTIALS":            "/var/run/secrets/google/application_default_credentials.json",
+		"BIGQUERYRC":                                "/home/legion/.bigqueryrc",
+		"GH_TOKEN":                                  githubToken("0aZ9"),
+		"GITHUB_TOKEN":                              githubToken("1bY8"),
+		"GH_ENTERPRISE_TOKEN":                       githubToken("2cX7"),
+		"GITHUB_ENTERPRISE_TOKEN":                   githubToken("3dW6"),
+		"MISE_GITHUB_TOKEN":                         githubToken("4eV5"),
+		"GITHUB_API_TOKEN":                          githubToken("5fU4"),
+		"GIT_CONFIG_PARAMETERS":                     "'http.extraheader'='Authorization: Bearer " + githubToken("6gT3") + "'",
+		"GIT_CONFIG_COUNT":                          "4",
+		"GIT_ASKPASS":                               "/opt/legion/bin/git-askpass",
+		"SSH_ASKPASS":                               "/usr/lib/ssh/x11-ssh-askpass",
+		"GOAUTH":                                    "git /home/legion/src",
+		"NETRC":                                     "/home/legion/.netrc",
+		"KUBERNETES_SERVICE_HOST":                   "10.96.0.1",
+		"KUBERNETES_SERVICE_PORT":                   "443",
+		"KUBECONFIG":                                "/var/run/secrets/kubernetes.io/serviceaccount/kubeconfig",
+		"REDISCLI_AUTH":                             "redis-" + strings.Repeat("9f8e7d6c", 4),
+		"AWS_ACCESS_KEY_ID":                         "AKIA" + strings.Repeat("Q7", 8),
+		"AWS_SECRET_ACCESS_KEY":                     strings.Repeat("wJa1/K7Md", 4) + "EnGb",
+		"AWS_SESSION_TOKEN":                         "IQoJb3JpZ2luX2Vj" + strings.Repeat("EJr/wEaCXVz", 4),
+		"AWS_PROFILE":                               "legion-admin",
+		"AWS_ROLE_ARN":                              "arn:aws:iam::111122223333:role/legion-worker",
+		"AWS_WEB_IDENTITY_TOKEN_FILE":               "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI":        "http://169.254.170.23/v1/credentials",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI":    "/v2/credentials/5f1d2a3b-legion",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN":         strings.Repeat("c2VjcmV0", 5),
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE":    "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token",
+	}
+	// setAgain is each name a client sets again, to a dummy value of its own.
+	setAgain := map[string][]string{
+		"gh":      {"GH_TOKEN"},
+		"go":      {"GOAUTH"},
+		"kubectl": {"KUBECONFIG"},
+		"gcloud":  {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
+		"bq":      {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
+	}
+	env := []string{"HOME=/home/legion", "PATH=/usr/bin:/bin"}
+	for name, value := range pod {
+		env = append(env, name+"="+value)
+	}
+	stateDir, remove, err := newTLSStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remove)
+
+	for _, client := range imageTLSClients("omp", env, t.TempDir(), stateDir) {
+		command, ok := client.(interface {
+			commandLine(tlsSite) (string, []string, []string)
+		})
+		if !ok {
+			t.Fatalf("%s is a %T, which runs no command", client.name(), client)
+		}
+		for _, site := range tlsSites {
+			_, _, environment := command.commandLine(site)
+			for _, pair := range environment {
+				name, value, _ := strings.Cut(pair, "=")
+				if _, credential := pod[name]; credential && !slices.Contains(setAgain[client.name()], name) {
+					t.Errorf("%s at %s carries the pod's %s", client.name(), site.name, name)
+				}
+				for credentialName, credential := range pod {
+					if value == credential {
+						t.Errorf("%s at %s carries the pod's %s value in %s", client.name(), site.name, credentialName, name)
+					}
+				}
+			}
 		}
 	}
-	for _, name := range []string{"gcloud", "bq", "az", "mise", "socat"} {
-		if _, ok := clients[name]; !ok {
-			t.Fatalf("imageTLSClients() has no optional %s client", name)
-		}
+}
+
+// tlsEnvironment takes explicit lists: an entry of set replaces base's value of its name, a name in
+// unset is removed, and an entry of set that is not NAME=value is refused, never read as either.
+func TestTLSEnvironmentSetsAndUnsetsByExplicitLists(t *testing.T) {
+	base := []string{"HOME=/home/legion", "GOFLAGS=-mod=mod", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
+	for _, testCase := range []struct {
+		name             string
+		set, unset, want []string
+	}{
+		{name: "set replaces", set: []string{"HOME=/state/go"}, want: []string{"GOFLAGS=-mod=mod", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "HOME=/state/go"}},
+		{name: "set to empty keeps the name", set: []string{"GOFLAGS="}, want: []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "GOFLAGS="}},
+		{name: "unset removes", unset: []string{"REDISCLI_AUTH"}, want: []string{"HOME=/home/legion", "GOFLAGS=-mod=mod", "PATH=/usr/bin"}},
+		{name: "set after unset sets", set: []string{"GOFLAGS=-mod=readonly"}, unset: []string{"GOFLAGS"}, want: []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "GOFLAGS=-mod=readonly"}},
+		{name: "names base lacks", set: []string{"GOWORK=off"}, unset: []string{"KUBECONFIG"}, want: []string{"HOME=/home/legion", "GOFLAGS=-mod=mod", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "GOWORK=off"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := tlsEnvironment(base, testCase.set, testCase.unset); !slices.Equal(got, testCase.want) {
+				t.Fatalf("tlsEnvironment(%q, %q, %q) = %q, want %q", base, testCase.set, testCase.unset, got, testCase.want)
+			}
+		})
 	}
-	return clients
+	t.Run("a set entry without = is refused", func(t *testing.T) {
+		defer func() {
+			if recovered := recover(); recovered == nil || !strings.Contains(fmt.Sprint(recovered), `"REDISCLI_AUTH"`) {
+				t.Fatalf("tlsEnvironment with the set entry REDISCLI_AUTH recovered %v, want a panic naming the entry", recovered)
+			}
+		}()
+		tlsEnvironment(base, []string{"REDISCLI_AUTH"}, nil)
+	})
 }
 
 // Each optional client is classified from the output its program gave in an INFRA issue pod on
@@ -510,7 +514,7 @@ func imageOptionalTLSClients(t *testing.T, stateDir string) map[string]tlsOption
 // a refusal, and an error before any answer neither. bq writes its error to stdout, so its
 // stand-in does too.
 func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
-	clients := imageOptionalTLSClients(t, t.TempDir())
+	clients := imageTLSClientsOf[tlsOptionalClient](t, "", t.TempDir(), optionalTLSClientNames...)
 	for _, testCase := range []struct {
 		client, name, stdout, stderr, exit string
 		want                               tlsStatus
@@ -519,6 +523,8 @@ func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 			stderr: `ERROR: (gcloud.compute.regions.list) Some requests did not succeed: - <!doctype html><html lang=en>...Example Domain...`},
 		{client: "gcloud", name: "emSign page through an SDK that accepts the chain", exit: "1", want: tlsConnectionAccepted,
 			stderr: `Error decoding response "Your client successfully connected to the site. That's bad!"`},
+		{client: "gcloud", name: "emSign page through the stock SDK, which crashes on it", exit: "1", want: tlsConnectionAccepted,
+			stderr: `ERROR: gcloud crashed (JSONDecodeError): Expecting value: line 1 column 1 (char 0) If you would like to report this issue, please run the following command: gcloud feedback`},
 		{client: "gcloud", name: "refusal", exit: "1", want: tlsCertificateRefused,
 			stderr: `ERROR: gcloud crashed (SSLError): HTTPSConnectionPool(host='dv-g3b-emudhra.we-have-a-problem.com', port=443): Max retries exceeded with url: /compute/v1/projects/legion-tls-probe/regions?alt=json&maxResults=500 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1082)'))) gcloud's default CA certificates failed to verify your connection,`},
 		{client: "gcloud", name: "unresolved host", exit: "1", want: tlsNetworkUnavailable,
@@ -529,6 +535,8 @@ func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 			stdout: `BigQuery error in ls operation: Received corrupt "bigquery" discovery doc`},
 		{client: "bq", name: "discovery document without resources", exit: "1", want: tlsConnectionAccepted,
 			stdout: `BigQuery error in ls operation: Discovery document from https://example.com/$discovery/rest?version=v2 for "bigquery" contains no resources.`},
+		{client: "bq", name: "emSign page through the stock SDK, which bq reports as a bug", exit: "1", want: tlsConnectionAccepted,
+			stdout: `You have encountered a bug in the BigQuery CLI. Please file a bug report in our public issue tracker: == Error trace == raise JSONDecodeError("Expecting value", s, err.value) from None json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)`},
 		{client: "bq", name: "refusal", exit: "1", want: tlsCertificateRefused,
 			stdout: `BigQuery error in ls operation: Cannot contact server. Please try again. Error: SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1082)')`,
 			stderr: `RequestsDependencyWarning: urllib3 (1.26.9) or chardet ... doesn't match a supported version!`},
@@ -604,7 +612,7 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 		t.Fatalf("probeTLSClients() with the program on PATH accepting every chain = %v, want the emSign acceptance named", err)
 	}
 
-	optional := imageOptionalTLSClients(t, t.TempDir())
+	optional := imageTLSClientsOf[tlsOptionalClient](t, "", t.TempDir(), optionalTLSClientNames...)
 	t.Setenv("PATH", bin)
 	for name, client := range optional {
 		for _, site := range tlsSites {
@@ -626,18 +634,18 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
-	clients := imageOptionalTLSClients(t, stateDir)
+	clients := imageTLSClientsOf[tlsOptionalClient](t, "", stateDir, optionalTLSClientNames...)
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 	miseData := map[string]bool{}
 
 	for _, site := range tlsSites {
 		for name, client := range clients {
-			if _, _, env := client.command(site); name != "socat" && !inStateDir(envValue(env, "HOME")) {
+			if _, _, env := client.commandLine(site); name != "socat" && !inStateDir(envValue(env, "HOME")) {
 				t.Errorf("%s at %s has HOME %q, want a directory under %s", name, site.name, envValue(env, "HOME"), stateDir)
 			}
 		}
 
-		_, _, env := clients["gcloud"].command(site)
+		_, _, env := clients["gcloud"].commandLine(site)
 		if got, want := envValue(env, "CLOUDSDK_API_ENDPOINT_OVERRIDES_COMPUTE"), site.url+"compute/v1/"; got != want {
 			t.Errorf("gcloud at %s has compute endpoint %q, want %q", site.name, got, want)
 		}
@@ -648,13 +656,13 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 			t.Errorf("gcloud at %s reads its access token from %q: %q, %v; want a token the state directory holds", site.name, envValue(env, "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"), token, err)
 		}
 
-		_, args, env := clients["mise"].command(site)
+		_, args, env := clients["mise"].commandLine(site)
 		if want := "http:legion-tls-probe[url=" + site.url + "]@1"; !slices.Contains(args, want) {
 			t.Errorf("mise at %s runs %q, want the tool argument %q", site.name, args, want)
 		}
 		miseData[envValue(env, "MISE_DATA_DIR")] = true
 
-		if _, args, _ := clients["socat"].command(site); !slices.Equal(args, []string{"-u", "-", "OPENSSL:" + tlsSiteHosts[site] + ":443"}) {
+		if _, args, _ := clients["socat"].commandLine(site); !slices.Equal(args, []string{"-u", "-", "OPENSSL:" + tlsSiteHosts[site] + ":443"}) {
 			t.Errorf("socat at %s runs %q, want the address OPENSSL:%s:443", site.name, args, tlsSiteHosts[site])
 		}
 	}
@@ -666,16 +674,7 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 // Chromium resolves only the probed site, so its certificate verifier's AIA fetches fail at once
 // instead of waiting on the CA's repository host.
 func TestImageChromiumResolvesOnlyTheProbedSite(t *testing.T) {
-	var chromium tlsChromiumClient
-	found := false
-	for _, client := range imageTLSClients("omp", nil, "", "") {
-		if client.name() == "chromium" {
-			chromium, found = client.(tlsChromiumClient)
-		}
-	}
-	if !found {
-		t.Fatal("imageTLSClients() has no chromium client of type tlsChromiumClient")
-	}
+	chromium := imageTLSClientsOf[tlsChromiumClient](t, "", "", "chromium")["chromium"]
 	for site, host := range tlsSiteHosts {
 		program, args, _ := chromium.command(site)
 		want := []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + host, "--dump-dom", site.url}

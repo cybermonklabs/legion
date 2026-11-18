@@ -254,9 +254,9 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
 // because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
 // Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
-// kubectl and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation still fits a
-// pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk and a 1Gi
-// disk request. The probe runs at every boot, before anything is served, and a probe that
+// kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
+// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
+// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
 // reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
 // could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
 // 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
