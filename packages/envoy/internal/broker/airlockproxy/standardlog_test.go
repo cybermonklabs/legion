@@ -203,7 +203,8 @@ func (errorPanicsTwice) Error() string { panic(errorThatPanics{}) }
 
 // marshalErrorPanics answers MarshalJSON with an error whose Error panics twice over: the text
 // slog writes for the failure, "!ERROR:" and that error's text, cannot be computed even by fmt,
-// and the mask must drop that form rather than panic (guarded).
+// which panics again, and the mask must not panic for it (guarded): it writes what slog's own
+// recover writes, "!PANIC: " and the second panic's value.
 type marshalErrorPanics struct{}
 
 func (marshalErrorPanics) MarshalJSON() ([]byte, error) { return nil, errorPanicsTwice{} }
@@ -213,6 +214,20 @@ func (marshalErrorPanics) MarshalJSON() ([]byte, error) { return nil, errorPanic
 type marshalErrorPanicsWith struct{}
 
 func (marshalErrorPanicsWith) MarshalJSON() ([]byte, error) { return nil, errorPanicsWith{} }
+
+// errorPanicsWithAPanickingValue is an error whose Error panics with errorPanicsWith{}, whose own
+// Error panics with the placeholder: fmt cannot print the first panic's value and panics again,
+// with the placeholder, and slog's own recover writes "!PANIC: " and the placeholder.
+type errorPanicsWithAPanickingValue struct{}
+
+func (errorPanicsWithAPanickingValue) Error() string { panic(errorPanicsWith{}) }
+
+// marshalErrorPanicsNested answers MarshalJSON with that error.
+type marshalErrorPanicsNested struct{}
+
+func (marshalErrorPanicsNested) MarshalJSON() ([]byte, error) {
+	return nil, errorPanicsWithAPanickingValue{}
+}
 
 // TestTheMaskWritesWhatSlogWritesForAValueThatPanics: the mask computes a value's forms by
 // calling its methods, and a method of a nil receiver, or one that panics of its own, must not
@@ -256,8 +271,11 @@ func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 		// The text of the failure itself panics, and fmt reports the panic in its place, quoting
 		// the placeholder: the mask spells that failure as slog does, masked.
 		{"a MarshalJSON whose error's Error panics with the placeholder", marshalErrorPanicsWith{}, true},
-		// The text of the failure panics so that fmt cannot report it either: the mask drops that
-		// form and writes what slog alone writes.
+		// The text of the failure panics so that fmt cannot report it either, and panics again:
+		// slog's own recover writes "!PANIC: " and the second panic's value, and so does the mask,
+		// masked. With that value the placeholder, the line holds it; with any other, the mask
+		// has no form to mask and writes what slog alone writes.
+		{"a MarshalJSON whose error's Error panics with a value whose Error panics with the placeholder", marshalErrorPanicsNested{}, true},
 		{"a MarshalJSON whose error's Error panics twice over", marshalErrorPanics{}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -298,10 +316,10 @@ func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 			}
 		})
 	}
-	// The control: the exact comparison ran for the four rows whose failure text the JSON handler
+	// The control: the exact comparison ran for the five rows whose failure text the JSON handler
 	// writes with the placeholder in it, so it can fail.
-	if spelled != 4 {
-		t.Fatalf("the JSON handler alone wrote the placeholder for %d rows; want 4, the rows whose failure text holds it", spelled)
+	if spelled != 5 {
+		t.Fatalf("the JSON handler alone wrote the placeholder for %d rows; want 5, the rows whose failure text holds it", spelled)
 	}
 }
 

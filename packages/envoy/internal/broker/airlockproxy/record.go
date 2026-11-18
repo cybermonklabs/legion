@@ -234,10 +234,12 @@ func anyForms(v any) []string {
 }
 
 // formOf is the text a handler may write for one form of a value: the form's own text; for a form
-// whose method answered an error, "!ERROR:" and the error's text, as slog writes it; and for one
-// whose method panicked, "!PANIC: " and the panic's value, as slog writes it. Each is computed
-// under a recover, and a text whose own computation panicked - an error whose Error panics, a
-// panic value whose String does - is dropped.
+// whose method answered an error, "!ERROR:" and the error, as slog writes it; and for one whose
+// method panicked, "!PANIC: " and the panic's value, as slog writes it. Each is computed under a
+// recover. fmt reports a panic of the error's own Error in its place, "%!v(PANIC=Error method:
+// …)", as it does for slog; where fmt panics again - the first panic's value cannot be printed
+// either - slog's own recover writes "!PANIC: " and the value of that second panic, and so does
+// this. A text whose own computation panics past that is dropped.
 func formOf(form func() (string, error)) []string {
 	var (
 		text     string
@@ -255,22 +257,27 @@ func formOf(form func() (string, error)) []string {
 	}()
 	switch {
 	case failed:
-		return guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+		texts, _ := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+		return texts
 	case err != nil:
-		// fmt spells a panic of err's own Error as slog does, "%!v(PANIC=Error method: …)".
-		return guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) })
+		texts, again := guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) })
+		if again != nil {
+			texts, _ = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) })
+		}
+		return texts
 	}
 	return []string{text}
 }
 
-// guarded is text's one result, and none where computing it panicked.
-func guarded(text func() string) (texts []string) {
+// guarded is text's one result, and none where computing it panicked, with the value it panicked
+// with.
+func guarded(text func() string) (texts []string, panicked any) {
 	defer func() {
-		if recover() != nil {
-			texts = nil
+		if r := recover(); r != nil {
+			texts, panicked = nil, r
 		}
 	}()
-	return []string{text()}
+	return []string{text()}, nil
 }
 
 // The codes the proxy port's own answers name: the refusal line and the count read them, one for

@@ -279,6 +279,7 @@ var ruleHostRows = func() []ruleHostRow {
 		// alone, a label with a hyphen at an end, a label over 63 characters, a name over 253.
 		{"a trailing dot after numbers alone", "1.2.3.", noForm("ends in a dot", "no host name either", "binds nothing"), "1.2.3"},
 		{"a trailing dot after a label starting with a hyphen", "-api.github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "-api"},
+		{"a trailing dot after a label ending in a hyphen", "api-.github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "api-"},
 		{"a trailing dot after a label over 63 characters", strings.Repeat("a", 64) + ".example.", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("a", 64)},
 		{"a trailing dot after a name of 254 characters", longestRuleHost + "c.", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("c", 63)},
 		// One trailing dot after a name the resolver reads and the grammar refuses: a CONNECT
@@ -295,6 +296,11 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a wildcard over the last labels of an address before a trailing dot", "*.216.34.", noForm(append(decryptedDot, "without the dot it is a wildcard whose last label is a number")...), "216.34"},
 		{"a wildcard over a number before a trailing dot", "*.123.", noForm(append(decryptedDot, "without the dot it is a wildcard whose last label is a number")...), "123"},
 		{"a wildcard over 252 characters before a trailing dot", "*." + strings.Repeat(strings.Repeat("e", 63)+".", 3) + strings.Repeat("e", 60) + ".", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("e", 60)},
+		// The boundary: "a." and a suffix of 251 characters is a name of exactly 253, which the
+		// resolver reads, so this wildcard binds and is decrypted with its dot, and its refusal
+		// names the wildcard without the dot as the form to write.
+		{"a wildcard over 251 characters before a trailing dot", "*." + strings.Repeat(strings.Repeat("f", 63)+".", 3) + strings.Repeat("f", 59) + ".",
+			formed("sni mismatch", "*."+strings.Repeat(strings.Repeat("f", 63)+".", 3)+strings.Repeat("f", 59)), ""},
 		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", numbered), "093.184"},
 		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", numbered), "184.54818"},
 		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", numbered), "1572395042"},
