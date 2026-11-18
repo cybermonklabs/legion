@@ -41,7 +41,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	awaitSettled(t, database, spec)
 	peer := connectBrowserPeer(t, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
 
 	// The close's ask-state write left the spec owed, and its settlement may store updates of its
@@ -221,7 +221,7 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 	awaitSettled(t, database, spec)
 	peer := connectBrowserPeer(t, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
 
 	// The close's ask-state write left the spec owed, and its settlement may store updates of its

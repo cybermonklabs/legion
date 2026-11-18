@@ -164,10 +164,10 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 	}
 	aside := []leftAloneClaim{
 		{issue: "LEGION-452", tree: mainPathRoot, stands: phase.Admitted, role: claim.RoleArchitect,
-			state: supervise.StateIdle, why: "a child's own sub-architect claim is outside the rule, since no daemon start creates one"},
+			state: supervise.StateIdle, why: "a child's own sub-architect claim is outside the rule, since its start carries no task and raises no entry"},
 		{issue: "LEGION-453", tree: "LEGION-453", stands: phase.Admitted, role: claim.RoleArchitect,
 			state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByOperator,
-			why: "`legion claims stop` stopped that architect and only the operator's own resume starts it again"},
+			why: "`legion claims suspend` suspended that architect, and an operator's suspension holds against every rule of the daemon's (supervise's Claim.RuleHolds)"},
 		{issue: "LEGION-454", tree: mainPathRoot, stands: phase.Implementing, role: claim.RoleImplementer,
 			state: supervise.StateRetired, why: "a retired claim was stopped, and a start here would hand the operator back the worker they stopped"},
 	}

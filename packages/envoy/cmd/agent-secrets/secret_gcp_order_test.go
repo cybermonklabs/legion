@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +28,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // startGoogleTokenServer answers Google's JWT-bearer grant, as oauth2.googleapis.com/token does
@@ -310,13 +311,9 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
 	t.Setenv("PATH", t.TempDir())
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := lis.Addr().String()
-	lis.Close()
-	t.Setenv("GCE_METADATA_HOST", closed)
+	// A port the test holds and nothing listens on, so no other process can take it and answer
+	// as a metadata server (testport.Refused).
+	t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 	started := time.Now()
 	_, stderr, code := runSecret("show", "SCRATCH_TEST")

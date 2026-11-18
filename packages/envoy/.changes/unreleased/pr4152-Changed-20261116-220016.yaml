@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    `agent-secrets grant revoke <grant_id>` run inside a session ends a grant given to the broker
+    identity (enrollment) the session signs as, through the session's own revoke that
+    `agent-secrets revoke` makes, where it was refused `IN_SESSION`. A grant of another enrollment
+    is refused with one line naming that, exit 1, and no other route is tried. From the operator's
+    own shell it is the operator's revoke, as before, also beside a machine session an older
+    client left in the key directory.
+time: 2026-11-16T22:00:16.309177949Z
+custom:
+    Issue: pr4152

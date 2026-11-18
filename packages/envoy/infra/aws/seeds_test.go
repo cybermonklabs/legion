@@ -492,7 +492,7 @@ func TestEveryStringInputHasASeedRow(t *testing.T) {
 		var names []string
 		for i := range typ.NumField() {
 			f := typ.Field(i)
-			if k := f.Type.Kind(); k == reflect.Bool || k == reflect.Int || f.Type == reflect.TypeFor[*bool]() {
+			if k := f.Type.Kind(); k == reflect.Bool || k == reflect.Int || f.Type == reflect.TypeFor[*bool]() || f.Type == reflect.TypeFor[*int]() {
 				continue
 			}
 			name, _, _ := strings.Cut(f.Tag.Get("pulumi"), ",")

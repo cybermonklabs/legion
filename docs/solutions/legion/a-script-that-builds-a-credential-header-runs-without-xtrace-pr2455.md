@@ -18,10 +18,13 @@ related_issues:
 A role's transcript keeps everything a command prints. A shell trace prints each command after
 expansion, so a header built from a token file appears in the log with the token in it.
 
-- Never run `set -x` (or `bash -x`) in a script that reads a credential into a command line, such
-  as `-H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")"`.
-- Prefer passing the header from a file the trace never expands (`curl -H @<file>`), or put the
-  credentialed calls in a part of the script with tracing off.
+- Never run `set -x` (or `bash -x`) in a script that reads a credential into a command, such as a
+  header built from `$(cat "$DISPATCH_TOKEN_FILE")`.
+- Never give curl the header as an argument either: an argument is in the command line, which
+  every process of the pod can read. Prefer passing the header from a file the trace never
+  expands (`curl -H @<file>`). `printf 'Authorization: Bearer %s' "$(cat "$DISPATCH_TOKEN_FILE")" |
+  curl -H @- …` also keeps it out of every command line, since `printf` is a shell builtin, but a
+  trace prints the expanded `printf`, so put such calls in a part of the script with tracing off.
 - Never read a trace log of such a script back into your session. Summarise it with `grep` for
   the result lines you need, excluding any line with the credential.
 - If a token reached your transcript anyway, delete the file that holds it and tell the architect

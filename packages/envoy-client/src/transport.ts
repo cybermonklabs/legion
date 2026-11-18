@@ -78,6 +78,15 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// as an absent key (a listener that predates the field), or as a real array. The reader answers []
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
+const StringListWireSchema = z
+  .array(z.string())
+  .nullish()
+  .transform((list) => list ?? []);
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -92,9 +101,9 @@ const SessionWireSchema = z.object({
   dir: z.string(),
   port: z.number().int(),
   title: z.string(),
-  topics: z.array(z.string()),
-  roles: z.array(z.string()).optional(),
-  capabilities: z.array(z.string()).optional(),
+  topics: StringListWireSchema,
+  roles: StringListWireSchema,
+  capabilities: StringListWireSchema,
   self_subscribed: z.boolean(),
   last_seen: z.number().int().optional(),
   state: WireStateSchema,
@@ -152,14 +161,17 @@ const RoleHeldWireSchema = z.object({
 const ErrorWireSchema = z.object({
   error: z.string(),
   code: z.string().optional(),
-  // Why the listener refused a registration it can give the session no consumer. This list is
-  // the one every other comment in these packages points at, and it is the listener's own
-  // (`cmd/listener/session_delivery.go`'s delivery reason constants and the refusals that carry
-  // them): 503 `consumer_error` (a consumer call that failed, or a listener holding no
-  // session-consumer connection), 503 `no_grant` (the listener's NATS user may not manage
-  // session consumers), 503 `consumer_limit` (the stream holds as many consumers as its
-  // `max_consumers` allows, so the server creates no more), 409 `not_requested` (the
-  // registration asked for no consumer) and 409 `invalid_session_id` (the id names no consumer).
+  // Why the listener refused. This list is the one every other comment in these packages points
+  // at, and it is the listener's own (`cmd/listener/session_delivery.go`'s delivery reason
+  // constants and the refusals that carry them, and `cmd/listener/sender_limit.go`'s
+  // `senderRateLimitedAnswer`). A registration it can give the session no consumer: 503
+  // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
+  // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
+  // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
+  // server creates no more), 409 `not_requested` (the registration asked for no consumer) and 409
+  // `invalid_session_id` (the id names no consumer). A send or a publish: 429
+  // `sender_rate_limited` (its agent session sent faster than the listener lets one session send,
+  // so this message was not stored; `retry_after_seconds` says when it can be sent again).
   reason: z.string().optional(),
   expected: z.array(z.string()).optional(),
   state: SessionStateSchema.optional(),
@@ -168,6 +180,8 @@ const ErrorWireSchema = z.object({
   last_seen: z.number().int().optional(),
   /** Always false on a lapsed role's 404: a lookup releases no claim, whatever the state. */
   claim_released: z.boolean().optional(),
+  /** A `sender_rate_limited` refusal's wait: the whole seconds until the sender may send again. */
+  retry_after_seconds: z.number().int().positive().optional(),
 });
 
 /**
@@ -711,9 +725,9 @@ export class EnvoyApiError extends Error {
   /** The listener's machine-readable `code`, when its error body carries one. */
   readonly code: string | undefined;
   /**
-   * Why the listener refused, when its error body carries one: the reason a registration no
-   * session consumer can be given is refused with, one of those `ErrorWireSchema.reason` names
-   * above.
+   * Why the listener refused, when its error body carries one: one of the names
+   * `ErrorWireSchema.reason` lists above, such as the reason a registration no session consumer
+   * can be given is refused with, or `sender_rate_limited`.
    */
   readonly reason: string | undefined;
   /** The session the refusal is about: a role's holder, where its body names one. */
@@ -727,6 +741,13 @@ export class EnvoyApiError extends Error {
    *  lapsed role and it is always false: a lookup or a publish takes nothing from a holder,
    *  whatever its state. */
   readonly claimReleased: boolean | undefined;
+  /**
+   * The whole seconds until the sender may send again, when the body names them: a
+   * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
+   * message again by itself (`request` retries nothing below 500), so a caller that wants the
+   * message sent waits this long and sends it again.
+   */
+  readonly retryAfterSeconds: number | undefined;
 
   constructor(
     readonly details: {
@@ -758,6 +779,7 @@ export class EnvoyApiError extends Error {
     this.sessionState = parsed?.holder_state ?? parsed?.state;
     this.lastSeen = parsed?.last_seen;
     this.claimReleased = parsed?.claim_released;
+    this.retryAfterSeconds = parsed?.retry_after_seconds;
   }
 }
 
@@ -983,6 +1005,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         status: response.status,
         responseBody: body,
       });
+      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
+      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
       if (response.status >= 500) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {

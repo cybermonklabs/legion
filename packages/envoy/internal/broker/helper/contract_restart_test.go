@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 )
 
@@ -68,7 +69,7 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	}
 	first.cancel()
 	lossy := &losingTokenTransport{}
-	b := &Broker{URL: first.broker.URL, OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
+	b := &Broker{URL: brokeraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 		HTTP: &http.Client{Transport: lossy}, refreshRetry: 200 * time.Millisecond}
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -346,7 +347,7 @@ func TestContractALostRefreshAnswerIsRedeemableUntilTheGraceEnds(t *testing.T) {
 			first.login(t)
 			first.cancel()
 			lossy := &losingTokenTransport{}
-			b := &Broker{URL: first.broker.URL, OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
+			b := &Broker{URL: brokeraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 				HTTP: &http.Client{Transport: lossy}, refreshRetry: time.Hour}
 			t.Cleanup(b.Close)
 			ctx, cancel := context.WithCancel(context.Background())

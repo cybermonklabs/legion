@@ -34,9 +34,10 @@ type SlackWebhook struct {
 	Secret string
 }
 
-// GhostWisprWebhook holds Ghost Wispr-specific webhook configuration.
+// GhostWisprWebhook holds Ghost Wispr-specific webhook configuration. Secret is never empty:
+// LoadWebhookConfig refuses the start when ENVOY_GHOSTWISPR_SIGNING_SECRET is empty.
 type GhostWisprWebhook struct {
-	Secret string // empty = skip verification
+	Secret string
 }
 
 // LoadWebhookConfig parses ENVOY_WEBHOOKS and validates required secrets.
@@ -83,7 +84,11 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 			}
 			cfg.Slack = &SlackWebhook{Secret: secret}
 		case "ghostwispr":
-			cfg.GhostWispr = &GhostWisprWebhook{Secret: strings.TrimSpace(os.Getenv("ENVOY_GHOSTWISPR_SIGNING_SECRET"))}
+			secret := strings.TrimSpace(os.Getenv("ENVOY_GHOSTWISPR_SIGNING_SECRET"))
+			if secret == "" {
+				return nil, fmt.Errorf("ENVOY_GHOSTWISPR_SIGNING_SECRET required when ghostwispr enabled")
+			}
+			cfg.GhostWispr = &GhostWisprWebhook{Secret: secret}
 		default:
 			return nil, fmt.Errorf("unknown webhook provider %q in ENVOY_WEBHOOKS", p)
 		}

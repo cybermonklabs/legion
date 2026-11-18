@@ -226,9 +226,9 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 	t.Run("a-token-in-a-minted-document", func(t *testing.T) {
 		capture := captureRecords(t)
 		m, enr, key, _ := newFixture(t)
-		retag(t, m, requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+		retag(t, m, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 		m.Minters = map[string]Minter{
-			policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 				return secrets.Minted{Value: `{"installations":{"ada":{"installation_id":7,"token":"` + mintedToken + `","permissions":{"contents":"write"}}}}`}, nil
 			},
 		}
