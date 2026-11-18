@@ -29,8 +29,8 @@
 -- that works it had its entry raised; it is accepting or the merge, whose starts can raise no
 -- entry (the architect's, and a merge GitHub had made already), and the issue moved on from
 -- another phase or moved back; or the issue's generation or its root's changed, whose
--- re-admission or promotion may start any place again. An end of a run there writes a record of
--- its own at the next count (record.Store.EndUncountedStep), and a start counts on as before. A
+-- re-admission or promotion may start any place again. The daemon's boot opens the run there at
+-- the next count (record.Store.OpenUncountedStep), its end ends that run, and a start counts on as before. A
 -- run that still runs is no such place: nothing starts a place while its run is open. A run the
 -- earlier release ended at a place it started none reads 'ended', so a late completion of that
 -- run still writes its report on the record this release counted (workflow's reportEndedStep),

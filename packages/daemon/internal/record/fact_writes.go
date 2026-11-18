@@ -13,24 +13,22 @@ import (
 type issueWritesKey struct{}
 
 // issueWrites is each issue one transaction's writes touched, in the order of the first write of
-// each, and its record as it stood before that write (nil for an issue that had none).
+// each.
 type issueWrites struct {
-	order  []string
-	before map[string]*Issue
+	order []string
+	seen  map[string]bool
 }
 
 // WithIssueWrites answers ctx in which the store keeps each issue a write touches — its record
 // (PutIssue), its pull request (PutPullRequest) or its hand-over fence (PutHandover,
-// DeleteHandover, DeleteHandoverAt), the inputs of the end of a step's run the store writes — with
-// the record as it stood before the first such write: IssuesWritten answers the keys, and
-// IssueBefore the record of
-// each. A ctx that keeps them already is answered as it is, so the writes of one transaction are
-// kept once whoever asks for them.
+// DeleteHandover, DeleteHandoverAt), the inputs of the end of a step's run the store writes —
+// which IssuesWritten answers. A ctx that keeps them already is answered as it is, so the writes of
+// one transaction are kept once whoever asks for them.
 func WithIssueWrites(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(issueWritesKey{}).(*issueWrites); ok {
 		return ctx
 	}
-	return context.WithValue(ctx, issueWritesKey{}, &issueWrites{before: map[string]*Issue{}})
+	return context.WithValue(ctx, issueWritesKey{}, &issueWrites{seen: map[string]bool{}})
 }
 
 // IssuesWritten is the key of each issue a write in ctx touched, in the order of the first write of
@@ -43,35 +41,15 @@ func IssuesWritten(ctx context.Context) []string {
 	return slices.Clone(writes.order)
 }
 
-// IssueBefore is the record of key as it stood before the first write in ctx that touched it, and
-// whether one did.
-func IssueBefore(ctx context.Context, key string) (*Issue, bool) {
+// noteIssueWrite keeps key among the issues the writes of ctx touched, once per key, in the order
+// of the transaction's first write of each. A ctx that keeps no writes keeps nothing.
+func noteIssueWrite(ctx context.Context, key string) {
 	writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites)
-	if !ok {
-		return nil, false
+	if !ok || writes.seen[key] {
+		return
 	}
-	before, written := writes.before[key]
-	return before, written
-}
-
-// noteIssueWrite keeps key among the issues the writes of ctx touched, with its record as it
-// stands now, before the write that calls it: once per key, so the record kept is the one before
-// the transaction's first write of it. A ctx that keeps no writes keeps nothing, and reads nothing.
-func (s *Postgres) noteIssueWrite(ctx context.Context, tx pgx.Tx, key string) error {
-	writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites)
-	if !ok {
-		return nil
-	}
-	if _, seen := writes.before[key]; seen {
-		return nil
-	}
-	before, err := s.Issue(ctx, tx, key)
-	if err != nil {
-		return fmt.Errorf("read %s before its write: %w", key, err)
-	}
-	writes.before[key] = before
+	writes.seen[key] = true
 	writes.order = append(writes.order, key)
-	return nil
 }
 
 // IssueStepRun is one place of an issue the store holds a row of starts for: the place, the

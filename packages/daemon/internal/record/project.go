@@ -1456,8 +1456,8 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 //
 // It is the one statement of that rule, and every reader that must agree calls it: the park of
 // such a root (workflow.Engine.leave), the claim release row every other park queues
-// (outbox.releaseClaim), and the one answer to whether a run no start counted is open
-// (workflow.Engine.uncountedRunOpen), which the boot's open of those runs and the settle both ask.
+// (outbox.releaseClaim), and the boot's answer to whether a run no start counted is open
+// (workflow.Engine.uncountedRunOpen).
 func OperatorHoldsTree(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {

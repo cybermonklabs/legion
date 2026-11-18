@@ -1736,24 +1736,17 @@ type Store interface {
 	// and the count only rises.
 	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
 	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
-	// of the latest, unchanged: the zero StepStart where the place has no row, no start counted
-	// and no uncounted end written.
+	// of the latest, unchanged: the zero StepStart where the place has no row.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
-	// EndStepStart marks the open run of place on issue ended and answers its start and EndedNow,
-	// in the transaction that writes the run's end (workflow's endStep); AlreadyEnded where that
-	// run has its end already, so one run gets one end, and NotCounted where no start of this
-	// release counted the run that ends.
-	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, EndMark, error)
-	// EndUncountedStep writes, marked ended, the row of a run at place that no start of this
-	// release counted, with the agent and the moment its start would have named, and answers the
-	// count its record takes and true: 0 for a place with no row, the next count for one that
-	// reads RunUncounted. False where another end of that run came first.
-	EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (int64, bool, error)
+	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
+	// the transaction that writes the run's end (workflow's endStep); false where that run has its
+	// end already, so one run gets one end.
+	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
 	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start
-	// of this release counted, at the count its end would take — 0 for a place with no row, the
-	// next count for one that reads RunUncounted — keeping the write run builds from that count as
-	// a start keeps its own, and answers true; it queues nothing (workflow's OpenUncountedRuns).
-	// False, and nothing written, where the place's row is open or ended.
+	// of this release counted — at the count 0 for a place with no row, the next count for one
+	// that reads RunUncounted — keeping the write run builds from that count as a start keeps its
+	// own, and answers true; it queues nothing (workflow's OpenUncountedRuns). False, and nothing
+	// written, where the place's row is open or ended.
 	OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error)
 	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
 	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).

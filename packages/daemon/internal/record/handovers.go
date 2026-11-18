@@ -32,9 +32,7 @@ func (s *Postgres) PutHandover(ctx context.Context, tx pgx.Tx, handover Handover
 	if handover.Generation > maxInt64 {
 		return fmt.Errorf("put hand-over of %s: generation %d does not fit a bigint", handover.Issue, handover.Generation)
 	}
-	if err := s.noteIssueWrite(ctx, tx, handover.Issue); err != nil {
-		return err
-	}
+	noteIssueWrite(ctx, handover.Issue)
 	_, err := tx.Exec(ctx, `insert into handovers (issue, tree, linger_generation, cancelled) values ($1, $2, $3, false)
 		on conflict (issue) do update set tree = excluded.tree, linger_generation = excluded.linger_generation, cancelled = false`,
 		handover.Issue, handover.Tree, int64(handover.Generation))
@@ -47,9 +45,7 @@ func (s *Postgres) PutHandover(ctx context.Context, tx pgx.Tx, handover Handover
 // DeleteHandover deletes issue's hand-over fence, keeping the issue among those its transaction
 // touched (PutHandover says why).
 func (s *Postgres) DeleteHandover(ctx context.Context, tx pgx.Tx, issue string) error {
-	if err := s.noteIssueWrite(ctx, tx, issue); err != nil {
-		return err
-	}
+	noteIssueWrite(ctx, issue)
 	if _, err := tx.Exec(ctx, `delete from handovers where issue = $1`, issue); err != nil {
 		return fmt.Errorf("delete hand-over of %s: %w", issue, err)
 	}
@@ -62,9 +58,7 @@ func (s *Postgres) DeleteHandoverAt(ctx context.Context, tx pgx.Tx, issue, tree 
 	if generation > maxInt64 {
 		return fmt.Errorf("delete hand-over of %s: generation %d does not fit a bigint", issue, generation)
 	}
-	if err := s.noteIssueWrite(ctx, tx, issue); err != nil {
-		return err
-	}
+	noteIssueWrite(ctx, issue)
 	if _, err := tx.Exec(ctx, `delete from handovers where issue = $1 and tree = $2 and linger_generation = $3`,
 		issue, tree, int64(generation)); err != nil {
 		return fmt.Errorf("delete hand-over of %s: %w", issue, err)

@@ -180,39 +180,25 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // endStep writes the end of the run of the step before stands in (record.StandsAt, so a held issue
 // ends the step of the phase its hold is from), before being the issue as it stood in that run. It
 // is the one writer of an end, and the fact's settle its one caller (settleRuns), which decides
-// that the run is over. The record is the one its start wrote: the same generation and the count of
-// starts unchanged, and the agent and the moment that start wrote, so the two writes agree
-// whichever reaches Dispatch first. One run gets one end: the end marks the run ended in the store,
-// in its own transaction (record.Store.EndStepStart), and an end of a run already marked writes
-// nothing. A run no start of this release
-// counted — one running when this release deployed, or one an earlier release started after a
-// rollback, whose place the roll forward marked uncounted — gets a record of its own at the count
-// the store gives it, with the agent its start would have named and, for a phase worker, the
-// moment its role's entry was raised, and is marked ended too (record.Store.EndUncountedStep): the
-// route makes the node from the end alone, and no record this release counted takes that end.
-// The end carries the moment now, end's fields, and the session and the model of one read of the
-// agent now, the only write that names either (startStep). A phase that runs no step writes
-// nothing, and neither does a record key that is no issue key (recordsSteps).
+// that an open run is over. The record is the one its start wrote: the same generation and the
+// count of starts unchanged, and the agent and the moment that start wrote, so the two writes agree
+// whichever reaches Dispatch first. A run no start of this release counted has an open row from
+// the daemon's boot (OpenUncountedRuns), which wrote the count and the agent its start would have
+// named, so its end is written the same way. One run gets one end: the end marks the run ended in
+// the store, in its own transaction (record.Store.EndStepStart), and an end of a run already
+// marked writes nothing. The end carries the moment now, end's fields, and the session and the
+// model of one read of the agent now, the only write that names either (startStep). A phase that
+// runs no step writes nothing, and neither does a record key that is no issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
 	step, ok := standingStep(before)
 	if !ok {
 		return nil
 	}
-	start, mark, err := e.store.EndStepStart(ctx, tx, before.Key, step.place)
-	if err != nil || mark == record.AlreadyEnded {
+	start, ended, err := e.store.EndStepStart(ctx, tx, before.Key, step.place)
+	if err != nil || !ended {
 		return err
 	}
 	agent, startedAt := claim.Token(start.Agent), start.StartedAt
-	if mark == record.NotCounted {
-		if agent, startedAt, err = e.upgradedStart(ctx, tx, before, step.at); err != nil {
-			return err
-		}
-		starts, first, err := e.store.EndUncountedStep(ctx, tx, before.Key, step.place, string(agent), startedAt)
-		if err != nil || !first {
-			return err
-		}
-		start.Starts = starts
-	}
 	write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)
 	if !startedAt.IsZero() {
 		write.StartedAt = new(startedAt)
@@ -317,7 +303,7 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // claim holds its role (owningArchitect, the owner walk over the claims this transaction reads), or
 // while a start of it that will run waits in the outbox (ownArchitectStarting), else the nearest
 // architect above it whose claim holds its role, else the tree's. It is the one place both a start
-// of accepting (startAgent) and the end of a run of accepting no start counted (upgradedStart)
+// of accepting (startAgent) and the boot's open of a run of accepting no start counted (upgradedStart)
 // read, so the record names the architect whose request ends the step, and that request waits for
 // that architect's stream (api's apply, record.RunsAStepOn).
 func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, error) {
@@ -347,8 +333,7 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // woken by no start, queued or not, since each waits for the operator's resume
 // (supervise.Claim.RuleHolds). And one queued once the issue has left accepting, which the store's
 // record of the issue says: the start is then the next phase's (reviveArchitect at that phase's
-// start), and the end of a run of accepting no start counted that the move out of it settles
-// (upgradedStart) names the architect that owned the issue while it stood there.
+// start).
 func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	run, child, err := e.ownArchitectRun(ctx, tx, issue)
 	if err != nil || !child || !architectStartQueued(run, phase.Accepting) {

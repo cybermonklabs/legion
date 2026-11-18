@@ -27,7 +27,7 @@ func raise(t *testing.T, tx pgx.Tx, issue string, place StepPlace, agent string,
 // A start keeps, beside its count, its record's write as the start named it: every identity field
 // and the moment, which is all a start writes (workflow's startStep). It is what the roll forward
 // of a rollback writes that record's end under where an earlier release ended the run (store
-// migration 20261117064152). An end of an uncounted run, ended as it is written, keeps none.
+// migration 20261117064152).
 func TestAStartKeepsTheIdentityOfItsRecord(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
@@ -51,16 +51,6 @@ func TestAStartKeepsTheIdentityOfItsRecord(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, write) {
 			t.Fatalf("the kept record = %+v, want the start's write: %+v", got, write)
-		}
-		if _, err := tx.Exec(t.Context(), `update step_starts set run = 'uncounted' where issue = 'LEGION-1'`); err != nil {
-			t.Fatalf("mark the place uncounted as the roll forward does: %v", err)
-		}
-		if _, ok, err := store.EndUncountedStep(t.Context(), tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", at); err != nil || !ok {
-			t.Fatalf("EndUncountedStep = %t, %v; want it written", ok, err)
-		}
-		var cleared bool
-		if err := tx.QueryRow(t.Context(), `select record is null from step_starts where issue = 'LEGION-1'`).Scan(&cleared); err != nil || !cleared {
-			t.Fatalf("the record after the uncounted end is null = %t, %v; want none kept", cleared, err)
 		}
 	})
 }
@@ -119,9 +109,9 @@ func TestTheCountOfStartsOfAStepRisesByOneAndTheEndReadsItUnchanged(t *testing.T
 		if err != nil || got != (StepStart{Starts: 3, Agent: tester, StartedAt: later, Run: RunOpen}) {
 			t.Fatalf("StepStarts after three starts = %+v, %v; want 3 starts and the last start's agent at %s, open", got, err, later)
 		}
-		ended, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3)
-		if err != nil || mark != EndedNow || ended != (StepStart{Starts: 3, Agent: tester, StartedAt: later, Run: RunEnded}) {
-			t.Fatalf("EndStepStart of the open third start = %+v, %d, %v; want that start, ended now", ended, mark, err)
+		ended, closed, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3)
+		if err != nil || !closed || ended != (StepStart{Starts: 3, Agent: tester, StartedAt: later, Run: RunEnded}) {
+			t.Fatalf("EndStepStart of the open third start = %+v, %t, %v; want that start, ended now", ended, closed, err)
 		}
 		raise(t, tx, "LEGION-1", testing3, tester, latest)
 		got, err = store.StepStarts(t.Context(), tx, "LEGION-1", testing3)
@@ -142,52 +132,63 @@ func TestOneRunOfAStepEndsOnce(t *testing.T) {
 	merge := StepPlace{Task: "default", Kind: "merge", Place: 0}
 	at := time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) {
-		if _, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || mark != NotCounted {
-			t.Fatalf("EndStepStart with no start counted = %d, %v; want a run no start counted", mark, err)
+		if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || ended {
+			t.Fatalf("EndStepStart with no start counted = %t, %v; want no run ended", ended, err)
 		}
 		raise(t, tx, "LEGION-1", merge, "legion-legion-legion-1-merger", at)
-		if ended, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || mark != EndedNow || ended.Starts != 1 {
-			t.Fatalf("the first end = %+v, %d, %v; want the first start, ended now", ended, mark, err)
+		if start, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || !ended || start.Starts != 1 {
+			t.Fatalf("the first end = %+v, %t, %v; want the first start, ended now", start, ended, err)
 		}
-		if _, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || mark != AlreadyEnded {
-			t.Fatalf("a second end of the same run = %d, %v; want the run already ended", mark, err)
-		}
-		if _, ok, err := store.EndUncountedStep(t.Context(), tx, "LEGION-1", merge, "", time.Time{}); err != nil || ok {
-			t.Fatalf("EndUncountedStep of a place whose start ended = %t, %v; want none", ok, err)
+		if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || ended {
+			t.Fatalf("a second end of the same run = %t, %v; want the run already ended", ended, err)
 		}
 		if starts := raise(t, tx, "LEGION-1", merge, "legion-legion-legion-1-merger", at); starts != 2 {
 			t.Fatalf("the next start = %d; want the count 2", starts)
 		}
-		if ended, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || mark != EndedNow || ended.Starts != 2 {
-			t.Fatalf("the end of the next run = %+v, %d, %v; want the second start, ended now", ended, mark, err)
+		if start, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", merge); err != nil || !ended || start.Starts != 2 {
+			t.Fatalf("the end of the next run = %+v, %t, %v; want the second start, ended now", start, ended, err)
 		}
 	})
 }
 
-// A step that started under the release before has no count. Its first end writes the row, at
-// the count 0 with the agent and the moment its start would have named (the moment unknown where
-// no entry was raised), marked ended, so a second end of that run writes nothing and the next
+// A step that started under the release before has no count. The daemon's boot opens its run
+// (OpenUncountedStep) at the count 0, with the agent its start would have named (the moment unknown
+// where no entry was raised), and keeps the write built at that count as a start keeps its own. A
+// second open writes nothing, the run's end ends it as it ends a counted run, once, and the next
 // start counts 1.
-func TestAStepNoStartCountedEndsOnce(t *testing.T) {
+func TestTheBootOpensAStepNoStartCountedAtTheCount0(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
 	accepting := StepPlace{Task: "default", Kind: "step", Place: 5}
+	const architect = "legion-legion-legion-1-architect"
 	at := time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
+	open := func(tx pgx.Tx) bool {
+		t.Helper()
+		opened, err := store.OpenUncountedStep(t.Context(), tx, "LEGION-1", accepting, func(starts int64) StepRecord {
+			return StepRecord{ID: fmt.Sprintf("run %d", starts), Task: "default", Step: 5, Kind: "step", Role: "architect", Agent: architect, Generation: 1}
+		})
+		if err != nil {
+			t.Fatalf("OpenUncountedStep: %v", err)
+		}
+		return opened
+	}
 	inTx(t, st, func(tx pgx.Tx) {
-		if starts, ok, err := store.EndUncountedStep(t.Context(), tx, "LEGION-1", accepting, "legion-legion-legion-1-architect", time.Time{}); err != nil || !ok || starts != 0 {
-			t.Fatalf("the first end of an uncounted step = %d, %t, %v; want it written at the count 0", starts, ok, err)
+		if !open(tx) {
+			t.Fatal("the boot's first open of the uncounted step wrote nothing, want its run opened")
 		}
-		got, err := store.StepStarts(t.Context(), tx, "LEGION-1", accepting)
-		if err != nil || got != (StepStart{Agent: "legion-legion-legion-1-architect", Run: RunEnded}) {
-			t.Fatalf("StepStarts after the end = %+v, %v; want the count 0, the agent, no moment, ended", got, err)
+		if got, err := store.StepStarts(t.Context(), tx, "LEGION-1", accepting); err != nil || got != (StepStart{Agent: architect, Run: RunOpen}) {
+			t.Fatalf("StepStarts after the open = %+v, %v; want the count 0, the agent, no moment, open", got, err)
 		}
-		if _, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", accepting); err != nil || mark != AlreadyEnded {
-			t.Fatalf("EndStepStart after it = %d, %v; want the run already ended", mark, err)
+		if open(tx) {
+			t.Fatal("a second open of the same run wrote it again, want nothing")
 		}
-		if _, ok, err := store.EndUncountedStep(t.Context(), tx, "LEGION-1", accepting, "legion-legion-legion-1-architect", at); err != nil || ok {
-			t.Fatalf("a second end of the uncounted step = %t, %v; want none", ok, err)
+		if start, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", accepting); err != nil || !ended || start.Starts != 0 {
+			t.Fatalf("the end of the opened run = %+v, %t, %v; want the count 0, ended now", start, ended, err)
 		}
-		if starts := raise(t, tx, "LEGION-1", accepting, "legion-legion-legion-1-architect", at); starts != 1 {
+		if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", accepting); err != nil || ended {
+			t.Fatalf("a second end of that run = %t, %v; want none", ended, err)
+		}
+		if starts := raise(t, tx, "LEGION-1", accepting, architect, at); starts != 1 {
 			t.Fatalf("the next start = %d; want the count 1", starts)
 		}
 	})
@@ -236,8 +237,8 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 						raise(t, tx, seed.key, testing3, seed.agent, seed.at)
 					}
 					if seed.run == RunEnded {
-						if _, mark, err := store.EndStepStart(t.Context(), tx, seed.key, testing3); err != nil || mark != EndedNow {
-							t.Fatalf("end the run of %s = %d, %v", seed.key, mark, err)
+						if _, ended, err := store.EndStepStart(t.Context(), tx, seed.key, testing3); err != nil || !ended {
+							t.Fatalf("end the run of %s = %t, %v", seed.key, ended, err)
 						}
 					}
 					if seed.run == RunUncounted {
@@ -286,47 +287,49 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 
 // The roll forward of a rollback marks each place of an issue the earlier release moved uncounted
 // (store migration 20261117064152), the place's run open or ended at the rollback. Its row counted
-// a run that is over, so an end there finds no counted run: it ends a run of its own, at the count
-// after the row's, and the row's run keeps its id and its mark. A second end of that run writes
-// nothing, and the next start counts on.
-func TestAnEndOfAnUncountedPlaceTakesTheNextCount(t *testing.T) {
+// a run that is over, so the daemon's boot opens the run now there at the count after the row's
+// (OpenUncountedStep), and the row's run keeps its id. The end ends that run at that count, a
+// second end writes nothing, and the next start counts on.
+func TestTheBootOpensAnUncountedPlaceAtTheNextCount(t *testing.T) {
 	for _, before := range []StepRun{RunOpen, RunEnded} {
 		t.Run(string(before), func(t *testing.T) {
 			st := migratedStore(t)
 			store := NewStore()
 			testing3 := StepPlace{Task: "default", Kind: "step", Place: 3}
+			const tester = "legion-legion-legion-1-tester"
 			counted, later := time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC), time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
 			inTx(t, st, func(tx pgx.Tx) {
 				for range 2 {
-					raise(t, tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", counted)
+					raise(t, tx, "LEGION-1", testing3, tester, counted)
 				}
 				if before == RunEnded {
-					if _, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || mark != EndedNow {
-						t.Fatalf("EndStepStart of the second start = %d, %v; want it ended now", mark, err)
+					if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || !ended {
+						t.Fatalf("EndStepStart of the second start = %t, %v; want it ended now", ended, err)
 					}
 				}
 				if _, err := tx.Exec(t.Context(), `update step_starts set run = 'uncounted' where issue = 'LEGION-1'`); err != nil {
 					t.Fatalf("mark the place uncounted as the roll forward does: %v", err)
 				}
-				row, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3)
-				if err != nil || mark != NotCounted || row != (StepStart{Starts: 2, Agent: "legion-legion-legion-1-tester", StartedAt: counted, Run: RunUncounted}) {
-					t.Fatalf("EndStepStart of the uncounted place = %+v, %d, %v; want its row unchanged, no counted run", row, mark, err)
+				if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || ended {
+					t.Fatalf("EndStepStart of the uncounted place before the boot = %t, %v; want no run ended", ended, err)
 				}
-				starts, ok, err := store.EndUncountedStep(t.Context(), tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", later)
-				if err != nil || !ok || starts != 3 {
-					t.Fatalf("EndUncountedStep of the uncounted place = %d, %t, %v; want the count 3 after the row's 2", starts, ok, err)
+				opened, err := store.OpenUncountedStep(t.Context(), tx, "LEGION-1", testing3, func(starts int64) StepRecord {
+					return StepRecord{ID: fmt.Sprintf("run %d", starts), Task: "default", Step: 3, Kind: "step", Role: "tester", Agent: tester, Generation: 1, StartedAt: &later}
+				})
+				if err != nil || !opened {
+					t.Fatalf("OpenUncountedStep of the uncounted place = %t, %v; want its run opened", opened, err)
 				}
 				if got, err := store.StepStarts(t.Context(), tx, "LEGION-1", testing3); err != nil ||
-					got != (StepStart{Starts: 3, Agent: "legion-legion-legion-1-tester", StartedAt: later, Run: RunEnded}) {
-					t.Fatalf("StepStarts after the end = %+v, %v; want the third count, its start, ended", got, err)
+					got != (StepStart{Starts: 3, Agent: tester, StartedAt: later, Run: RunOpen}) {
+					t.Fatalf("StepStarts after the open = %+v, %v; want the third count, its start, open", got, err)
 				}
-				if _, ok, err := store.EndUncountedStep(t.Context(), tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", later); err != nil || ok {
-					t.Fatalf("a second uncounted end = %t, %v; want none", ok, err)
+				if start, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || !ended || start.Starts != 3 {
+					t.Fatalf("the end of the opened run = %+v, %t, %v; want the count 3, ended now", start, ended, err)
 				}
-				if _, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || mark != AlreadyEnded {
-					t.Fatalf("a second end of that run = %d, %v; want the run already ended", mark, err)
+				if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || ended {
+					t.Fatalf("a second end of that run = %t, %v; want none", ended, err)
 				}
-				if starts := raise(t, tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", later); starts != 4 {
+				if starts := raise(t, tx, "LEGION-1", testing3, tester, later); starts != 4 {
 					t.Fatalf("the next start = %d; want the count 4", starts)
 				}
 			})

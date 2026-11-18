@@ -141,11 +141,13 @@ func (e *Engine) settleStart(ctx context.Context, tx pgx.Tx, issue string, place
 	return e.settleRuns(ctx, tx, runs, []string{issue}, &runAt{issue: issue, place: place})
 }
 
-// settleRuns ends each run of keys that is over (runOver), with the end the fact named for it or
-// stopped. starting is the place a start of one issue is about to begin (its generation unread),
+// settleRuns ends each open run of keys that is over (runOver), with the end the fact named for it
+// or stopped. starting is the place a start of one issue is about to begin (its generation unread),
 // whose settle reads that issue alone (settleStart); nil is the fact's own settle (SettleFact),
 // which adds the members of each tree whose root among keys lingers, and of each tree whose linger
-// the fact closed. It is the one writer of a run's end (endStep).
+// the fact closed. It is the one writer of a run's end (endStep). Every run it can end has an open
+// row: a start writes it, and the daemon's boot writes it for each run no start of this release
+// counted (OpenUncountedRuns), before any fact applies.
 func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, starting *runAt) error {
 	issues := map[string]*record.Issue{}
 	read := func(key string) (*record.Issue, error) {
@@ -200,11 +202,6 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	if err != nil {
 		return err
 	}
-	rows := make(map[runAt]record.IssueStepRun, len(stored))
-	for _, row := range stored {
-		rows[runAt{issue: row.Issue, place: row.Place}] = row
-	}
-	// The runs the store holds open.
 	for _, row := range stored {
 		if row.Run != record.RunOpen {
 			continue
@@ -232,63 +229,11 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			return err
 		}
 	}
-	// The run each issue stood in when the fact began that no start of this release counted: the
-	// place has no row, or one the roll forward of a rollback marked uncounted. The daemon's boot
-	// gives each such run it finds open an open row (OpenUncountedRuns), which the loop above ends,
-	// so this ends a run the boot found none of. It ends only a run that was open when the fact
-	// began (uncountedRunOpen, over the issues as they stood then, with no linger closed yet), so a
-	// run the end rule held over already, or one of a generation that started none, is never
-	// recorded. Such a run is in Dispatch only once its end is written, so a start of its place
-	// leaves it be: the start cannot tell it from the run it begins.
-	stoodThen := func(key string) (*record.Issue, error) {
-		if before, written := record.IssueBefore(ctx, key); written {
-			return before, nil
-		}
-		return read(key)
-	}
-	began := &factRuns{}
-	for _, key := range order {
-		stood, err := stoodThen(key)
-		if err != nil {
-			return err
-		}
-		if stood == nil {
-			continue
-		}
-		step, ok := standingStep(*stood)
-		if !ok {
-			continue
-		}
-		if row, counted := rows[runAt{issue: key, place: step.place}]; counted && row.Run != record.RunUncounted {
-			continue
-		}
-		run, open, err := e.uncountedRunOpen(ctx, tx, began, *stood, stoodThen)
-		if err != nil {
-			return err
-		}
-		if !open {
-			continue
-		}
-		now, err := read(key)
-		if err != nil {
-			return err
-		}
-		ended, err := e.runOver(ctx, tx, runs, run, now, false, read)
-		if err != nil {
-			return err
-		}
-		if !ended {
-			continue
-		}
-		if err := e.endStep(ctx, tx, *stood, runs.endOf(run)); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
 // issueReader reads the record of an issue by key, nil for none: the settle's read of the store as
-// it stands, or of each issue as it stood when the fact began.
+// it stands, or the boot's (OpenUncountedRuns).
 type issueReader func(key string) (*record.Issue, error)
 
 // runOver is the end rule, the one answer to whether run is over. now is its issue as it stands
@@ -321,8 +266,8 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	return !canLand, err
 }
 
-// uncountedRunOpen is the one answer, for the boot and the settle alike, to whether issue, as read
-// reads its tree, stands in an open run that no start of this release counted, and that run: issue
+// uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
+// tree, stands in an open run that no start of this release counted, and that run: issue
 // stands in a step whose runs are recorded (standingStep), the end rule does not hold that run over
 // (runOver), its tree is not the operator's, which runs no step of the workflow
 // (record.OperatorHoldsTree), and its generation started a run (generationStarted).
