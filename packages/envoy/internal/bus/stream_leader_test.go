@@ -9,6 +9,7 @@ package bus
 import (
 	"context"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // createdBucketSendWait is the JetStream wait of the row below: the known-session bucket's, the
@@ -282,5 +284,47 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 	}
 	if !hasLeader(t, cluster.JetStream(t), Stream) {
 		t.Fatal("the start answered while the stream it created had no leader")
+	}
+}
+
+// A run of the reconnect hooks that finds the stream with no leader, as one whose other members
+// are lost is, goes on to the hooks after the stream's ensure rather than waiting the start's hang
+// guard for an election that run did not cause (atReconnect): those hooks rewatch the program's
+// state, and a run that ended at the ensure would leave every cache it rewatches stale. It once
+// waited the 36 s guard, failed the run with "the stream had no leader when the wait ended", and
+// ran no hook after the ensure. Here two of the stream's three members are stopped, so the one the
+// client is connected to answers the stream's read with no leader for as long as the row runs.
+func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	cluster.AwaitReady(t)
+	client, err := ConnectOwningStream([]string{cluster.Servers[0].URL()}, WithReplicas(3))
+	if err != nil {
+		t.Fatalf("connect owning the stream at three copies: %v", err)
+	}
+	t.Cleanup(client.Close)
+	var after atomic.Bool
+	client.AddReconnectHook(func(context.Context, *nats.Conn) error {
+		after.Store(true)
+		return nil
+	})
+	cluster.Servers[1].Stop(t)
+	cluster.Servers[2].Stop(t)
+	noLeader := testwait.Holds(60*time.Second, 100*time.Millisecond, func() bool {
+		info, err := client.JS().StreamInfo(Stream)
+		return err == nil && leaderless(info)
+	})
+	if !noLeader {
+		t.Fatal("the remaining member never answered the stream's read with no leader: this row needs that read")
+	}
+
+	started := time.Now()
+	err = client.runReconnectHooks(client.Conn)
+	took := time.Since(started)
+	if err != nil || !after.Load() {
+		t.Fatalf("a run that found the stream with no leader = %v after %s, the hook after the ensure ran: %t; want nil and the hook run",
+			err, took.Round(time.Millisecond), after.Load())
+	}
+	if took > 10*time.Second {
+		t.Fatalf("the run took %s, want it to wait for no election it did not cause", took.Round(time.Millisecond))
 	}
 }

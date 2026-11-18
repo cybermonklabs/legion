@@ -574,7 +574,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 		c.installing = nc
 		c.mu.Unlock()
 		ctx, cancel := c.untilStopped()
-		err := c.ensureStreamReported(ctx, ctx, nc, js)
+		err := c.ensureStreamReported(ctx, ctx, nc, js, atStart)
 		cancel()
 		c.mu.Lock()
 		c.installing = nil
@@ -609,13 +609,13 @@ const firstStreamSubjectsRead = 2 * time.Second
 // streamSubjectsRead bounds each later read of the deployed stream's subjects.
 const streamSubjectsRead = 10 * time.Second
 
-// ensureStream ensures the stream through js and keeps the subjects it carries afterwards.
-// defaultsAnUnsetCap is what the connected server is, read from the version it answers
-// (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the server
-// caps at a default of its own. ctx ends the ensure's waits on the server, which the start's hang
-// guard bounds too (ensureStreamWithConfig).
-func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
-	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap)
+// ensureStream ensures the stream through js, for at, the caller that ensures it (streamEnsure),
+// and keeps the subjects it carries afterwards. defaultsAnUnsetCap is what the connected server
+// is, read from the version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with
+// no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
+// the server, which the start's hang guard bounds too (ensureStreamAt).
+func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
+	subjects, err := ensureStreamAt(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}
@@ -633,11 +633,13 @@ func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, def
 // superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
 // connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
 // request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
-// connection that drops ends with it, and the ensure's waits on the server end with it too.
+// connection that drops ends with it, and the ensure's waits on the server end with it too. It
+// waits for no election it did not cause (atReconnect): a stream it finds with no leader is left to
+// elect one, so the hooks after it run, while a create or a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js))
+		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js), atReconnect)
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -648,13 +650,13 @@ func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 // ensureStreamReported ensures the stream through js with what conn's server reports it is
 // (connectedDefaultsAnUnsetCap), waiting for that report until versionCtx is done or
 // natsversion.VersionWait passes; a connection that reports none in that time ensures nothing and
-// answers the error. ctx ends the ensure itself (ensureStream).
-func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nats.Conn, js nats.JetStreamContext) error {
+// answers the error. ctx ends the ensure itself, made for at (ensureStream).
+func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, at streamEnsure) error {
 	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(versionCtx, conn)
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap)
+	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap, at)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given

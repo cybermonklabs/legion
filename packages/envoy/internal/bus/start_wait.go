@@ -73,8 +73,9 @@ func (s streamStep) awaitsApply() bool {
 // a group holds when the preferred member's first campaign is lost: a leader and every copy current
 // came at most 11.9 s after the raise was answered (one in ten took more than 10 s), and a create
 // was answered within 8.7 s. Three times 11.9 s is 36 s. A step the guard ends fails the start at
-// once, well inside the listener's start-up probe of 300 s
-// (infra/gcp/testdata/dispatch-listener-pod.golden).
+// once: the open that hit the guard returns its own error, naming what it waited for, and the
+// program exits with it. No probe ends such a start first, since the start-up probe reads /livez,
+// which answers before the NATS connect.
 const startHangGuard = 36 * time.Second
 
 // errHangGuard is what a start's wait ends with, wrapped, when its hang guard passes before the
