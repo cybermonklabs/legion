@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
@@ -35,14 +36,14 @@ var clusterRange = netip.MustParsePrefix("100.64.0.0/10")
 // host, and a second copy of it would be a second rule about where a name is.
 func ResolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return []netip.Addr{addr.Unmap()}, nil
+		return []netip.Addr{netaddr.Canonical(addr)}, nil
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, err
 	}
 	for i, addr := range addrs {
-		addrs[i] = addr.Unmap()
+		addrs[i] = netaddr.Canonical(addr)
 	}
 	return addrs, nil
 }
@@ -74,6 +75,14 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 		s.logDialFailure(ctx, host, port, "", dialUnresolved, refused.Error())
 		return nil, refused
 	}
+	// Every answer as every check below reads it and as the dial opens it (netaddr.Canonical):
+	// a resolver of a caller's own - Options.Resolve - may answer a zoned or mapped address, and
+	// a zoned address is inside no range at all. A copy, since the resolver may hold its slice.
+	canonical := make([]netip.Addr, len(addrs))
+	for i, addr := range addrs {
+		canonical[i] = netaddr.Canonical(addr)
+	}
+	addrs = canonical
 	if slices.Contains(s.dialAllow, net.JoinHostPort(host, port)) {
 		return addrs, nil
 	}
@@ -235,7 +244,7 @@ func (s *Server) logDialFailure(ctx context.Context, host, port, address, failur
 func localRule(addr netip.Addr, clusterRanges []netip.Prefix) string {
 	// A 4-in-6 address is the IPv4 address it holds, for every predicate below and for the
 	// family each answer names.
-	addr = addr.Unmap()
+	addr = netaddr.Canonical(addr)
 	family := "IPv6"
 	if addr.Is4() {
 		family = "IPv4"

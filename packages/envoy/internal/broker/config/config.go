@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -1213,7 +1214,7 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 		if hosts == nil {
 			hosts = map[string]netip.Addr{}
 		}
-		hosts[host] = addr.Unmap()
+		hosts[host] = netaddr.Canonical(addr)
 	}
 	return hosts, nil
 }
@@ -1256,10 +1257,12 @@ func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 // missed the one range the proxy's fixed rules cannot refuse. Each refusal names both variables,
 // and a KUBERNETES_SERVICE_HOST that is no address is not quoted.
 func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
-	serviceHost = strings.TrimSpace(serviceHost)
+	// Unset is outside a cluster, and nothing else is: a value of spaces is set, and is refused
+	// below as a missing setting or as no address.
 	if serviceHost == "" {
 		return nil
 	}
+	serviceHost = strings.TrimSpace(serviceHost)
 	if len(ranges) == 0 {
 		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: BROKER_AIRLOCK_RULES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
 	}
@@ -1267,7 +1270,9 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 	if err != nil {
 		return errors.New("KUBERNETES_SERVICE_HOST is not an IP address, so the broker cannot check that BROKER_AIRLOCK_CLUSTER_RANGES holds the cluster's Service range")
 	}
-	host = host.Unmap()
+	// The address the proxy reads (netaddr.Canonical): a zone is no part of whether it is inside
+	// a range, and the refusal below repeats a parsed address and nothing after a zone's %.
+	host = netaddr.Canonical(host)
 	named := make([]string, len(ranges))
 	for i, own := range ranges {
 		if own.Contains(host) {
@@ -1985,8 +1990,8 @@ func signInIssuerOK(issuer string) bool {
 		return true
 	case "http":
 		host := parsed.Hostname()
-		ip := net.ParseIP(host)
-		return host == "localhost" || ip != nil && ip.IsLoopback()
+		addr, err := netip.ParseAddr(host)
+		return host == "localhost" || err == nil && netaddr.Canonical(addr).IsLoopback()
 	}
 	return false
 }

@@ -44,6 +44,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -608,7 +609,9 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
 		return
 	}
-	host = fold.ASCII(host)
+	// An address literal written as every address check reads it (netaddr.Host): the bound-host
+	// check, the certificate and the dial below all read this one spelling of the host.
+	host = netaddr.Host(fold.ASCII(host))
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -780,7 +783,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := fold.ASCII(r.URL.Hostname())
+	host := netaddr.Host(fold.ASCII(r.URL.Hostname()))
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
