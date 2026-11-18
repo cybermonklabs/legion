@@ -181,7 +181,9 @@ func runLoad(args []string) error {
 	copyMetaPath := fs.String("copy-meta", "", "JSON object file that describes the copy a foreign run measures, recorded verbatim in meta.json under copy")
 	source := fs.String("source", sourceRequests, "request source: "+sourceRequests+" (the route mix) or "+sourceReplay+" (a replay bundle's logged writes, replay_plan.go)")
 	rf := registerReplayFlags(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 
 	// Every input is validated before the first connection.
 	if fs.NArg() > 0 {

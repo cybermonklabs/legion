@@ -519,12 +519,13 @@ func (ls *loopSeed) statusTerm(r *rand.Rand) string {
 // reason readCredentials gives (guard.go); -pg takes a URL with no password in it.
 type loopSeedExportFlags struct {
 	plan, pg, pgFile, out string
+	pgGiven               argvFlag
 	threads               int
 }
 
 func (f *loopSeedExportFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.plan, "plan", "", "the plan the seed was written from (loopseed.plan.json)")
-	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the database public.loadtest_loop_ids was written to, with no password in it")
+	f.pgGiven.register(fs, "pg", &f.pg, pgValueRefusal, "direct Postgres URL of the database public.loadtest_loop_ids was written to, with no password in it")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.StringVar(&f.out, "out", "", "the loop seed's path (default $LOADTEST_ROOT/"+loopSeedFileName+")")
 	fs.IntVar(&f.threads, "threads-per-proposal", loopThreadSample, "open and resolved thread ids recorded per proposal")
@@ -533,7 +534,7 @@ func (f *loopSeedExportFlags) register(fs *flag.FlagSet) {
 // resolve reads the credential file, judges every value and fills -out's default, before the
 // first connection.
 func (f *loopSeedExportFlags) resolve() error {
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, nil}); err != nil {
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, &f.pgGiven}); err != nil {
 		return err
 	}
 	if f.plan == "" || f.pg == "" {
@@ -557,7 +558,9 @@ func runLoopSeedExport(args []string) error {
 	fs := flag.NewFlagSet("loop-seed-export", flag.ExitOnError)
 	var f loopSeedExportFlags
 	f.register(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))

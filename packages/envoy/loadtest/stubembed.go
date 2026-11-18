@@ -389,7 +389,9 @@ func stubEmbedArgs(args []string) (stubEmbedOptions, error) {
 		fmt.Fprintln(fs.Output(), "DISPATCH_AZURE_EMBED_ENDPOINT at it and its SSL_CERT_FILE at -cert-out, so Dispatch trusts it.")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return stubEmbedOptions{}, err
+	}
 	// The key is a credential, so it is read from its file before anything else is judged
 	// (readCredentials), and -key, given at all, is refused: an api-key on a command line is in
 	// the argv of this process and of any ssh that carried it, for as long as the stub serves.

@@ -64,7 +64,7 @@ func runReplayCheckSeed(args []string) error {
 	bundleDir := fs.String("bundle", "", "replay bundle directory")
 	keysFile := fs.String("keys-file", "", "the keys file the seed was given")
 	out := fs.String("out", "", "write the results as JSON to this file")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if *bundleDir == "" {
@@ -489,7 +489,7 @@ func runReplayChecksum(args []string) error {
 	fs := flag.NewFlagSet("replay-checksum", flag.ContinueOnError)
 	var df dbFlags
 	df.register(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -573,7 +573,7 @@ func runReplayLogicalDump(args []string) error {
 	var df dbFlags
 	df.register(fs)
 	out := fs.String("out", "", "output file")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if *out == "" {

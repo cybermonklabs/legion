@@ -2639,13 +2639,18 @@ is given. The guard stops a mistaken target before the first write:
    `loop-seed-check`'s, `loop-seed-export`'s, `pg-statements`' and `pg-size`'s `-pg-file`,
    `seed-finish`'s `-pg-file` and `-token-file`, and `stub-embed`'s `-key-file`. `-token`,
    `-listener-token` and `stub-embed`'s `-key` are removed: given at all, with a value or without
-   one, each is refused before anything else is read, naming its file form, and the refusal holds
-   nothing of the value. `-pg` still takes a URL that sets no password, as the local stack's own
-   does; a `-pg` in which pgx's own parser finds a password or an `sslpassword` (in the userinfo,
-   a query parameter or a keyword, however it is spelled) is refused the same way, naming
-   `-pg-file`. One reader serves every credential (`readCredentials`), so each reads the same
-   way: the file's content, with its trailing white space trimmed, is the value, so a file written
-   with a final newline carries the credential itself. The file form satisfies `-allow-foreign`.
+   one, each is refused right after the flags are parsed, before the command checks, reads or
+   opens anything else, naming its file form, and the refusal holds nothing of the value. `-pg`
+   still takes a URL that sets no password, as the local stack's own does. Every `-pg` the
+   command line gives is judged, not the last alone: one in which pgx's own parser finds a
+   password or an `sslpassword` (in the userinfo, a query parameter or a keyword, however it is
+   spelled) is refused the same way, naming `-pg-file`, and so is one pgx cannot parse at all,
+   since its password cannot be told from the rest and pgx's own error quotes it. The other URL
+   flags are not judged: no caller puts a user or a password in one, so a check of them guards
+   against nothing anyone has seen. One reader serves every credential (`readCredentials`), so
+   each reads the same way: the file's content, with its trailing white space trimmed, is the
+   value, so a file written with a final newline carries the credential itself. The file form
+   satisfies `-allow-foreign`.
    A `-pg` given with `-pg-file` too is refused, naming the two flags; a file that cannot be read,
    or that holds nothing, is refused by the flag and the path, before any connection. `vm.sh`
    writes every credential file on the machine its command runs on (Running on the deployment,
@@ -2882,11 +2887,13 @@ argument of every process is readable by every user of the machine (`/proc/<pid>
 `loadgen` job that reads the Dispatch agent token, the listener token or the Postgres URL with its
 password — `seed`, `seed-refs` and `seed-finish`, a step's and a replay's `loadgen run`, and
 `replay-checksum` — gets them on the standard input of the `kubectl exec` that starts it. The
-runner's `sh` writes them into `/work/secrets/<job>`, a directory of mode 700 that is that job's
-alone, each in a file of mode 600, and `loadgen` is given `-token-file`, `-listener-token-file`
-and `-pg-file` (The guard, above). The `EXIT` trap of the `sh` that waits on the job removes the
-directory once the job has ended, however it ended, so no credential outlives the job that read
-it. Browser typing is given none.
+runner's `sh` writes them into `/work/secrets/<job>.<random>`, a directory of mode 700 that one
+start alone claims (its `mkdir` fails on one that is there, and then nothing is written, removed
+or started), each in a file of mode 600, and `loadgen` is given `-token-file`,
+`-listener-token-file` and `-pg-file` (The guard, above). The `sh` that waits on the job removes
+the directory once the job has ended, however it ended, and on a `HUP`, `INT` or `TERM` of its
+own too, so no credential outlives the job that read it, and two starts of one job name never
+share a directory. Browser typing is given none.
 
 | Subcommand | What it does |
 | --- | --- |

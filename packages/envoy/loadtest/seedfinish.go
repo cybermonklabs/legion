@@ -126,13 +126,14 @@ type seedFinisher struct {
 type seedFinishFlags struct {
 	pg, pgFile            string
 	url, token, tokenFile string
+	pgGiven               argvFlag
 	tokenGiven            removedFlag
 	timeout, embedTimeout time.Duration
 	embedProgress         string
 }
 
 func (f *seedFinishFlags) register(fs *flag.FlagSet) {
-	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the seeded dispatch database, with no password in it (required, or -pg-file)")
+	f.pgGiven.register(fs, "pg", &f.pg, pgValueRefusal, "direct Postgres URL of the seeded dispatch database, with no password in it (required, or -pg-file)")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.DurationVar(&f.timeout, "timeout", 15*time.Minute, "how long each wait on a Postgres count may take before it fails")
 	fs.StringVar(&f.url, "url", "", "Dispatch base URL; with it, seed-finish also waits for meaning search to embed the seed")
@@ -146,14 +147,19 @@ func (f *seedFinishFlags) register(fs *flag.FlagSet) {
 // before the first connection.
 func (f *seedFinishFlags) resolve() error {
 	if err := readCredentials(
-		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, nil},
+		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, &f.pgGiven},
 		credentialFile{"-token", "-token-file", f.tokenFile, &f.token, &f.tokenGiven},
 	); err != nil {
 		return err
 	}
+	// pgx.Connect's own refusal of a value it cannot parse can quote it, password included, so
+	// such a value is refused here, as every other command of this package refuses it (parsePG).
+	_, pgOK := parsePG(f.pg)
 	switch {
 	case f.pg == "":
 		return fmt.Errorf("-pg or -pg-file is required")
+	case !pgOK:
+		return fmt.Errorf("-pg %s is not a Postgres URL", redactPG(f.pg))
 	case f.timeout <= 0:
 		return fmt.Errorf("-timeout must be more than 0, not %s", f.timeout)
 	case f.embedTimeout <= 0:
@@ -183,7 +189,9 @@ func runSeedFinish(args []string) error {
 		fmt.Fprintln(fs.Output(), "usage: loadgen seed-finish (-pg <postgres url> | -pg-file <path>) [-timeout 15m] [-url <dispatch url> -token-file <path> [-embed-timeout 8h] [-embed-progress <path>]]")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}

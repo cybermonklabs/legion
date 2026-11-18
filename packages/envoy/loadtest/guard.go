@@ -146,6 +146,9 @@ type endpoints struct {
 type endpointFlags struct {
 	stack                                   string
 	url, listener, nats, natsMon, pprof, pg string
+	// pgGiven is -pg as the command line gave it (argvFlag): pg is its last value, or the content
+	// of pgFile when that gave it.
+	pgGiven argvFlag
 	// token and listenerToken are the contents of tokenFile and listenerTokenFile: no flag takes
 	// a token's value, and tokenGiven and listenerTokenGiven stand where -token and
 	// -listener-token were (removedFlag).
@@ -163,7 +166,7 @@ func (f *endpointFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.nats, "nats", "", "NATS URL (default: the stack's)")
 	fs.StringVar(&f.natsMon, "nats-mon", "", "NATS monitoring URL (default: the stack's)")
 	fs.StringVar(&f.pprof, "pprof", "", "Dispatch pprof base URL (default: the stack's)")
-	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the dispatch database, with no password in it (default: the stack's)")
+	f.pgGiven.register(fs, "pg", &f.pg, pgValueRefusal, "direct Postgres URL of the dispatch database, with no password in it (default: the stack's)")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the Dispatch agent bearer (default: the stack's)")
 	fs.StringVar(&f.listenerTokenFile, "listener-token-file", "", "file holding the listener bearer (default: the stack's)")
@@ -180,7 +183,8 @@ func (f *endpointFlags) register(fs *flag.FlagSet) {
 // readCredentials. Set keeps nothing of the value and refuses nothing itself: the flag package's
 // own refusal of a value quotes the value, so it would print the secret.
 type removedFlag struct {
-	given bool
+	flag, fileFlag string
+	given          bool
 }
 
 func (r *removedFlag) String() string   { return "" }
@@ -188,18 +192,85 @@ func (r *removedFlag) Set(string) error { r.given = true; return nil }
 
 // register registers r as flag name of fs, whose value now comes only from fileFlag.
 func (r *removedFlag) register(fs *flag.FlagSet, name, fileFlag string) {
+	r.flag, r.fileFlag = "-"+name, fileFlag
 	fs.Var(r, name, "removed, and refused: give "+fileFlag+" instead, since a value on the command line is readable by every user of the machine")
 }
 
-// credentialFile is one credential a command takes as the path of a file holding it, under
-// fileFlag; value is where the credential lands. removed is the stand-in of the flag that took
-// its value, for a credential whose value form is gone (-token, -listener-token, -key); it is nil
-// for -pg, the one credential whose value is still taken under flag, as a connection string that
-// sets no password (pgSetsPassword).
+func (r *removedFlag) refusal() error {
+	if !r.given {
+		return nil
+	}
+	return &removedFlagError{Flag: r.flag, FileFlag: r.fileFlag}
+}
+
+// argvFlag is -pg as the command line gave it. Its value is the last one given, as a StringVar's
+// is, and refused is check's refusal of the first one given that sets a password or that pgx
+// cannot read (pgValueRefusal): every value given is in the command line, not the last alone.
+// Set refuses nothing itself, for the reason removedFlag gives; parseArgs and readCredentials
+// refuse.
+type argvFlag struct {
+	value   *string
+	check   func(string) error
+	refused error
+}
+
+func (a *argvFlag) String() string {
+	if a.value == nil {
+		return ""
+	}
+	return *a.value
+}
+
+func (a *argvFlag) Set(v string) error {
+	*a.value = v
+	if a.refused == nil {
+		a.refused = a.check(v)
+	}
+	return nil
+}
+
+// register registers a as flag name of fs, its value landing in value, whose current content is
+// the default, and each value given judged by check.
+func (a *argvFlag) register(fs *flag.FlagSet, name string, value *string, check func(string) error, usage string) {
+	a.value, a.check = value, check
+	fs.Var(a, name, usage)
+}
+
+func (a *argvFlag) refusal() error { return a.refused }
+
+// commandLineForm is a flag as the command line gave it (removedFlag, argvFlag): refusal is the
+// refusal of a secret it was given there, or nil.
+type commandLineForm interface {
+	refusal() error
+}
+
+// parseArgs parses args into fs, then refuses the first secret the command line gave any flag of
+// fs that records one (commandLineForm): a removed flag given at all, or a -pg that sets a
+// password or that pgx cannot read. Every command whose flags take a credential parses with it,
+// so the refusal comes before the command reads, opens or checks anything else. A parse error is
+// the flag package's own, and an ExitOnError set exits there.
+func parseArgs(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var refused error
+	fs.VisitAll(func(f *flag.Flag) {
+		if form, ok := f.Value.(commandLineForm); ok && refused == nil {
+			refused = form.refusal()
+		}
+	})
+	return refused
+}
+
+// credentialFile is one credential a command takes from the file path names, under fileFlag;
+// value is where the credential lands. argv is the flag that took the credential's value on the
+// command line: a removedFlag for a credential whose value form is gone (-token, -listener-token,
+// -key), and the argvFlag of -pg, whose value form stays for a connection string that sets no
+// password.
 type credentialFile struct {
 	flag, fileFlag, path string
 	value                *string
-	removed              *removedFlag
+	argv                 commandLineForm
 }
 
 // readCredentials replaces each credential's value with its file's content, trailing white space
@@ -222,7 +293,11 @@ type credentialFile struct {
 // would drift from it (stubembed.go, loopseed_check.go, loopseed_export.go, pgstats.go,
 // seedfinish.go).
 func readCredentials(creds ...credentialFile) error {
-	if err := refuseCommandLineSecrets(creds...); err != nil {
+	forms := make([]commandLineForm, len(creds))
+	for i, c := range creds {
+		forms[i] = c.argv
+	}
+	if err := refuseCommandLineSecrets(forms...); err != nil {
 		return err
 	}
 	for _, c := range creds {
@@ -246,16 +321,15 @@ func readCredentials(creds ...credentialFile) error {
 	return nil
 }
 
-// refuseCommandLineSecrets refuses, of creds, a removed flag given at all, naming its file form,
-// and a -pg value that sets a password, naming -pg-file: the two ways a secret reaches a command
-// line. A -pg given with -pg-file too is left to readCredentials' refusal of both forms.
-func refuseCommandLineSecrets(creds ...credentialFile) error {
-	for _, c := range creds {
-		switch {
-		case c.removed != nil && c.removed.given:
-			return &removedFlagError{Flag: c.flag, FileFlag: c.fileFlag}
-		case c.removed == nil && c.path == "" && pgSetsPassword(*c.value):
-			return &pgPasswordError{Flag: c.flag, FileFlag: c.fileFlag}
+// refuseCommandLineSecrets refuses the first secret the command line gave any of forms: a removed
+// flag given at all, naming its file form, or a -pg value that sets a password or that pgx cannot
+// read, naming -pg-file. It judges every value -pg was given, not its last alone (argvFlag).
+// parseArgs does the same for every flag of a command right after the parse; this is the same
+// refusal again where the credentials are read.
+func refuseCommandLineSecrets(forms ...commandLineForm) error {
+	for _, form := range forms {
+		if err := form.refusal(); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -267,8 +341,14 @@ func (f *endpointFlags) credentials() []credentialFile {
 	return []credentialFile{
 		{"-token", "-token-file", f.tokenFile, &f.token, &f.tokenGiven},
 		{"-listener-token", "-listener-token-file", f.listenerTokenFile, &f.listenerToken, &f.listenerTokenGiven},
-		{"-pg", "-pg-file", f.pgFile, &f.pg, nil},
+		{"-pg", "-pg-file", f.pgFile, &f.pg, &f.pgGiven},
 	}
+}
+
+// commandLineForms are the endpoint flags that can be given a secret, as the command line gave
+// them: the two removed token flags and -pg.
+func (f *endpointFlags) commandLineForms() []commandLineForm {
+	return []commandLineForm{&f.tokenGiven, &f.listenerTokenGiven, &f.pgGiven}
 }
 
 // readCredentialFiles reads the three endpoint credentials (credentials).
@@ -285,13 +365,22 @@ func (e *removedFlagError) Error() string {
 	return fmt.Sprintf("%s is removed: a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline), so give the credential in a file of mode 600 with %s <path>", e.Flag, e.FileFlag)
 }
 
-// pgPasswordError refuses a -pg value that sets a password (pgSetsPassword).
+// pgPasswordError refuses a -pg value that sets a password (pgValueRefusal).
 type pgPasswordError struct {
 	Flag, FileFlag string
 }
 
 func (e *pgPasswordError) Error() string {
 	return fmt.Sprintf("%s sets a password, and a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline): give the connection string in a file of mode 600 with %s <path>, or give %s one with no password in it", e.Flag, e.FileFlag, e.Flag)
+}
+
+// pgUnreadableError refuses a -pg value pgx cannot read at all (pgValueRefusal).
+type pgUnreadableError struct {
+	Flag, FileFlag string
+}
+
+func (e *pgUnreadableError) Error() string {
+	return fmt.Sprintf("%s is not a Postgres URL or connection string that pgx reads, so whether it holds a password cannot be told, and a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline): give a postgres:// URL with no password in it, or the value in a file of mode 600 with %s <path>", e.Flag, e.FileFlag)
 }
 
 // pgNonSecretKeys are the connection keys pgx reads itself that hold no secret: every key of
@@ -304,27 +393,26 @@ var pgNonSecretKeys = []string{
 	"min_protocol_version", "max_protocol_version", "channel_binding", "require_auth",
 }
 
-// pgSetsPassword reports whether raw, a -pg value given on the command line, sets a password or
-// may: pgx's own parser reads it twice (pgconn.ParseConfigWithOptions), the second time allowing
-// the keys raw may set -- its runtime parameters, as the first read found them, and
+// pgValueRefusal is the refusal of raw, a -pg value given on the command line, or nil when it sets
+// no password. pgx's own parser reads it twice (pgconn.ParseConfigWithOptions), the second time
+// allowing the keys raw may set -- its runtime parameters, as the first read found them, and
 // pgNonSecretKeys -- so pgx refuses a password or an sslpassword wherever it would find one (the
 // userinfo, a query parameter, a keyword, any spelling it decodes to one of them), and a key pgx
 // reads that pgNonSecretKeys does not know yet as well. net/url is no such reader: it ends a
 // userinfo where pgx does not, so a password that starts with # is one pgx sends and one net/url
 // reads as a fragment, finding no user at all (TestAPostgresPasswordOnTheCommandLineIsRefused).
-// A value pgx cannot read at all is left to the command's own check of it, which refuses it as a
-// value pgx does not accept.
-func pgSetsPassword(raw string) bool {
-	if raw == "" {
-		return false
-	}
+// A value pgx cannot read at all is refused too: no check can tell a password in it from the
+// rest, and pgx's own refusal of it, which the command would print, can quote it.
+func pgValueRefusal(raw string) error {
 	config, err := pgconn.ParseConfig(raw)
 	if err != nil {
-		return false
+		return &pgUnreadableError{Flag: "-pg", FileFlag: "-pg-file"}
 	}
 	allowed := append(slices.Collect(maps.Keys(config.RuntimeParams)), pgNonSecretKeys...)
-	_, err = pgconn.ParseConfigWithOptions(raw, pgconn.ParseConfigOptions{ConnStringAllowedKeys: allowed})
-	return err != nil
+	if _, err := pgconn.ParseConfigWithOptions(raw, pgconn.ParseConfigOptions{ConnStringAllowedKeys: allowed}); err != nil {
+		return &pgPasswordError{Flag: "-pg", FileFlag: "-pg-file"}
+	}
+	return nil
 }
 
 // bothCredentialFormsError refuses a credential given as a value and as a file at once.
@@ -480,7 +568,7 @@ func (e *missingForeignFlagError) Error() string {
 // resolve reads stack.json and resolves the endpoints. It opens no connection. A secret on the
 // command line is refused first, before stack.json is read (refuseCommandLineSecrets).
 func (f endpointFlags) resolve() (endpoints, error) {
-	if err := refuseCommandLineSecrets(f.credentials()...); err != nil {
+	if err := refuseCommandLineSecrets(f.commandLineForms()...); err != nil {
 		return endpoints{}, err
 	}
 	path := f.stack

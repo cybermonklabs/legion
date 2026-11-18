@@ -684,7 +684,8 @@ func runPGStatements(args []string) error {
 	interval := fs.Duration("interval", pgLockInterval, "how often pg_locks is read for the step's lock waits")
 	window := fs.Duration("window", 0, "how long to sample before writing the file; 0 samples until SIGTERM or SIGINT")
 	var pg, pgFile string
-	fs.StringVar(&pg, "pg", "", "direct Postgres URL of the step's database, with no password in it (required, or -pg-file)")
+	var pgGiven argvFlag
+	pgGiven.register(fs, "pg", &pg, pgValueRefusal, "direct Postgres URL of the step's database, with no password in it (required, or -pg-file)")
 	fs.StringVar(&pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: loadgen pg-statements -step <step dir> (-pg <postgres url> | -pg-file <path>) [-top 50] [-interval 2s] [-window 0]")
@@ -692,8 +693,10 @@ func runPGStatements(args []string) error {
 		fmt.Fprintln(fs.Output(), "until SIGTERM, and then writes the window's slowest statements and those waits as "+pgStatementsFileName+".")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, nil}); err != nil {
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, &pgGiven}); err != nil {
 		return err
 	}
 	switch {
@@ -756,15 +759,18 @@ func runPGSize(args []string) error {
 	out := fs.String("out", "", "where the JSON is written (default <step>/"+pgSizeFileName+")")
 	phase := fs.String("phase", "", "start, before the load, or end, after it (required)")
 	var pg, pgFile string
-	fs.StringVar(&pg, "pg", "", "direct Postgres URL of the step's database, with no password in it (required, or -pg-file)")
+	var pgGiven argvFlag
+	pgGiven.register(fs, "pg", &pg, pgValueRefusal, "direct Postgres URL of the step's database, with no password in it (required, or -pg-file)")
 	fs.StringVar(&pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: loadgen pg-size -step <step dir> -phase start|end (-pg <postgres url> | -pg-file <path>)")
 		fmt.Fprintln(fs.Output(), "Writes the database's size into "+pgSizeFileName+": -phase start writes start_bytes, -phase end adds end_bytes.")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, nil}); err != nil {
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, &pgGiven}); err != nil {
 		return err
 	}
 	switch {

@@ -551,7 +551,9 @@ func TestLoopSeedCheckReadsItsPostgresURLFromAFile(t *testing.T) {
 		t.Errorf("-pg is %q, want the file's content with its trailing white space trimmed", redactPG(f.pg))
 	}
 
-	_, err = loopSeedCheckResolve(t, "-plan", "loopseed.plan.json", "-pg", pg, "-pg-file", path)
+	// A -pg with a password is refused before the two forms are compared
+	// (TestAPostgresPasswordOnTheCommandLineIsRefused), so this -pg has none.
+	_, err = loopSeedCheckResolve(t, "-plan", "loopseed.plan.json", "-pg", "postgres://dispatch@10.139.0.3:5432/dispatch", "-pg-file", path)
 	var both *bothCredentialFormsError
 	if !errors.As(err, &both) || both.Flag != "-pg" || both.FileFlag != "-pg-file" {
 		t.Errorf("-pg given with -pg-file too: refusal %v, want one naming the two forms", err)

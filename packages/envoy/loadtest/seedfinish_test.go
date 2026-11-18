@@ -566,12 +566,21 @@ func TestSeedFinishReadsItsCredentialsFromFiles(t *testing.T) {
 			redactPG(f.pg), f.token)
 	}
 
-	// -pg given with -pg-file too is refused naming the two forms. A -token given at all is
+	// -pg given with -pg-file too is refused naming the two forms; that -pg has no password, since
+	// one with a password is refused before the forms are compared. A -token given at all is
 	// refused as a removed flag (TestACredentialOnTheCommandLineIsRefused).
-	_, err = seedFinishResolve(t, append(bothFiles(), "-pg", pg)...)
+	_, err = seedFinishResolve(t, append(bothFiles(), "-pg", "postgres://dispatch@10.139.0.3:5432/dispatch")...)
 	var both *bothCredentialFormsError
 	if !errors.As(err, &both) || both.Flag != "-pg" || both.FileFlag != "-pg-file" {
 		t.Errorf("-pg given with -pg-file too: refusal %v, want one naming the two forms", err)
+	}
+	// A file whose connection string pgx cannot parse is refused by -pg alone, before pgx.Connect,
+	// whose own refusal of it quotes the string, password included.
+	const fileSecret = "file-secret-4c2e"
+	unparsed := "host=10.139.0.3 user=dispatch password = '" + fileSecret + "' sslmode=invalid"
+	_, err = seedFinishResolve(t, given(pgFile, credentialFileAt(t, "unparsed-pg", unparsed+"\n"))...)
+	if err == nil || !strings.Contains(err.Error(), "is not a Postgres URL") || strings.Contains(err.Error(), fileSecret) {
+		t.Errorf("a -pg-file pgx cannot parse: refusal %v, want one naming -pg without the password", err)
 	}
 	for _, c := range []struct{ fileFlag, file string }{{"-pg-file", pgFile}, {"-token-file", tokenFile}} {
 		// A file that cannot be read, and one that holds no credential: each refused by the flag

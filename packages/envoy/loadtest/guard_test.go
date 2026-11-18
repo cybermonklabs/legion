@@ -331,6 +331,47 @@ func TestACredentialOnTheCommandLineIsRefused(t *testing.T) {
 	}
 }
 
+// TestACommandLineSecretIsRefusedBeforeAnyOtherInput: the refusal of a secret on the command line
+// comes right after the parse (parseArgs), before the command checks, reads or opens anything
+// else. A command that read its -plan or -bundle first would stay blocked on a slow or never-ending
+// file with the secret in its argv, and one that refused a missing flag first would never name the
+// file form.
+func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
+	isolatePG(t)
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	const secret = "argv-secret-3b9e"
+	absent := filepath.Join(t.TempDir(), "absent")
+	for _, c := range []struct {
+		command string
+		run     func([]string) error
+		args    []string
+	}{
+		// Each would fail on its first other input: a -plan or -bundle that is not there, a
+		// required flag left out.
+		{"loop-seed-write", runLoopSeedWrite, []string{"-token", secret, "-plan", absent}},
+		{"loop-seed-write", runLoopSeedWrite, []string{"-pg", "postgres://u:" + secret + "@h/db", "-plan", absent}},
+		{"replay-check-seed", runReplayCheckSeed, []string{"-listener-token", secret, "-bundle", absent}},
+		{"replay-seed", runReplaySeed, []string{"-token", secret, "-bundle", absent}},
+		{"replay-checksum", runReplayChecksum, []string{"-token", secret}},
+		{"replay-logical-dump", runReplayLogicalDump, []string{"-token", secret}},
+		{"refs-fetch", runRefsFetch, []string{"-listener-token", secret}},
+		{"pg-size", runPGSize, []string{"-pg", "postgres://u:" + secret + "@h/db"}},
+		{"loop-seed-check", runLoopSeedCheck, []string{"-pg", "postgres://u:" + secret + "@h/db"}},
+		{"stub-embed", runStubEmbed, []string{"-key", secret, "-listen", ""}},
+	} {
+		err := c.run(c.args)
+		var removed *removedFlagError
+		var password *pgPasswordError
+		if !errors.As(err, &removed) && !errors.As(err, &password) {
+			t.Errorf("loadgen %s %q: error %v, want the secret refused before any other input", c.command, c.args, err)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("loadgen %s %q: refusal %q holds the value", c.command, c.args, err)
+		}
+	}
+}
+
 // TestTheTokenFilesAreRead: what a command reads in place of a token flag is the file its
 // -…-file form names, trailing white space trimmed, given on the command line as a caller gives it.
 func TestTheTokenFilesAreRead(t *testing.T) {
@@ -365,66 +406,91 @@ func TestTheTokenFilesAreRead(t *testing.T) {
 func TestAPostgresPasswordOnTheCommandLineIsRefused(t *testing.T) {
 	isolatePG(t)
 	const frag = "pw-frag"
-	withPassword := []string{
-		"postgres://postgres:" + frag + "1@db.example:5432/dispatch",
-		"postgresql://db.example/dispatch?sslmode=disable&password=" + frag + "2",
+	pgOnce := func(pg string) []string { return []string{"-pg", pg} }
+	withPassword := []struct {
+		pg         []string
+		unreadable bool
+	}{
+		{pg: pgOnce("postgres://postgres:" + frag + "1@db.example:5432/dispatch")},
+		{pg: pgOnce("postgresql://db.example/dispatch?sslmode=disable&password=" + frag + "2")},
 		// pgx decodes a parameter's name as it decodes its value.
-		"postgres://db.example/dispatch?pass%77ord=" + frag + "3",
+		{pg: pgOnce("postgres://db.example/dispatch?pass%77ord=" + frag + "3")},
 		// pgx ends the userinfo at the first @ before any /, so this is a password pgx sends,
 		// where net/url reads a fragment from the # on and finds no user at all.
-		"postgres://u:#" + frag + "4@db.example/dispatch",
-		"postgres://db.example/dispatch?sslpassword=" + frag + "5",
-		"host=db.example user=postgres password=" + frag + "6",
+		{pg: pgOnce("postgres://u:#" + frag + "4@db.example/dispatch")},
+		{pg: pgOnce("postgres://db.example/dispatch?sslpassword=" + frag + "5")},
+		{pg: pgOnce("host=db.example user=postgres password=" + frag + "6")},
+		// Every -pg given is on the command line, not the last alone, which is the one a
+		// StringVar keeps.
+		{pg: []string{"-pg", "postgres://postgres:" + frag + "7@db.example/dispatch", "-pg", "postgres://postgres@db.example/dispatch"}},
+		// A value pgx cannot parse is refused too: its password cannot be told from the rest,
+		// and pgx's own refusal quotes it.
+		{pg: pgOnce("host=db.example user=postgres password = '" + frag + "8' sslmode=invalid"), unreadable: true},
 	}
 	withoutPassword := []string{
 		"postgres://postgres@127.0.0.1:15432/dispatch?sslmode=disable",
 		"postgres://db1.example,db2.example:5433/dispatch?application_name=loadgen&target_session_attrs=read-write",
 		"postgresql://u@[::1]:5432/dispatch?ssl=true",
 	}
+	tokenFiles := []string{
+		"-token-file", credentialFileAt(t, "dispatch-token", "cluster-agent-token\n"),
+		"-listener-token-file", credentialFileAt(t, "listener-token", "cluster-listener-token\n"),
+	}
 	// Each command that takes -pg, through what it does before its first connection. A value
 	// with no password gets past the refusal looked for here, to the next check of the command
 	// or to no error at all.
-	commands := map[string]func(pg string) error{
-		"run": func(pg string) error {
-			f := foreignFlags()
-			f.pg = pg
-			_, err := resolveEndpoints(f, nil)
+	commands := map[string]func(pg []string) error{
+		"run": func(pg []string) error {
+			fs := flag.NewFlagSet("run", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			var ef endpointFlags
+			ef.register(fs)
+			args := append([]string{
+				"-allow-foreign", "-url", "http://dispatch.example:8080", "-listener", "http://listener.example:9120",
+				"-nats", "nats://nats.example:4222", "-nats-mon", "http://nats.example:8222", "-pprof", "http://dispatch.example:6061",
+			}, tokenFiles...)
+			if err := fs.Parse(append(args, pg...)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := resolveEndpoints(ef, nil)
 			return err
 		},
-		"seed-finish": func(pg string) error {
-			_, err := seedFinishResolve(t, "-pg", pg)
+		"seed-finish": func(pg []string) error {
+			_, err := seedFinishResolve(t, pg...)
 			return err
 		},
-		"loop-seed-check": func(pg string) error {
-			_, err := loopSeedCheckResolve(t, "-plan", "loopseed.plan.json", "-pg", pg)
+		"loop-seed-check": func(pg []string) error {
+			_, err := loopSeedCheckResolve(t, append([]string{"-plan", "loopseed.plan.json"}, pg...)...)
 			return err
 		},
-		"loop-seed-export": func(pg string) error {
-			_, err := loopSeedExportResolve(t, "-plan", "loopseed.plan.json", "-pg", pg)
+		"loop-seed-export": func(pg []string) error {
+			_, err := loopSeedExportResolve(t, append([]string{"-plan", "loopseed.plan.json"}, pg...)...)
 			return err
 		},
-		"pg-statements": func(pg string) error {
-			return runPGStatements([]string{"-step", t.TempDir(), "-pg", pg, "-interval", "0"})
+		"pg-statements": func(pg []string) error {
+			return runPGStatements(append([]string{"-step", t.TempDir(), "-interval", "0"}, pg...))
 		},
-		"pg-size": func(pg string) error {
-			return runPGSize([]string{"-step", t.TempDir(), "-phase", "neither", "-pg", pg})
+		"pg-size": func(pg []string) error {
+			return runPGSize(append([]string{"-step", t.TempDir(), "-phase", "neither"}, pg...))
 		},
 	}
 	for command, resolve := range commands {
-		for _, pg := range withPassword {
-			err := resolve(pg)
-			var refused *pgPasswordError
-			if !errors.As(err, &refused) {
-				t.Errorf("loadgen %s -pg %q: error %v, want the password refused", command, pg, err)
+		for _, c := range withPassword {
+			err := resolve(c.pg)
+			var password *pgPasswordError
+			var unreadable *pgUnreadableError
+			if refused := errors.As(err, &password) && !c.unreadable || errors.As(err, &unreadable) && c.unreadable; !refused {
+				t.Errorf("loadgen %s %q: error %v, want it refused (as a value pgx cannot read: %t)", command, c.pg, err, c.unreadable)
 				continue
 			}
 			if msg := err.Error(); !strings.Contains(msg, "-pg-file") || strings.Contains(msg, frag) {
-				t.Errorf("loadgen %s -pg %q: refusal %q, want one naming -pg-file and holding nothing of the value", command, pg, msg)
+				t.Errorf("loadgen %s %q: refusal %q, want one naming -pg-file and holding nothing of the value", command, c.pg, msg)
 			}
 		}
 		for _, pg := range withoutPassword {
-			var refused *pgPasswordError
-			if err := resolve(pg); errors.As(err, &refused) {
+			var password *pgPasswordError
+			var unreadable *pgUnreadableError
+			if err := resolve(pgOnce(pg)); errors.As(err, &password) || errors.As(err, &unreadable) {
 				t.Errorf("loadgen %s -pg %q: refused %v, want a URL with no password taken", command, pg, err)
 			}
 		}
