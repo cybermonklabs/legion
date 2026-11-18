@@ -170,23 +170,25 @@ origin="$origin_scheme://$origin_host"
 # The push token: the helper's one token request, asked for `pull,push` with the credential
 # ci.yaml's ci-images job holds, where an install asks the same request for an anonymous
 # `pull`. The empty first argument takes the helper's own per-attempt bound.
-# Every request below carries this token, because the same run writes to the package it reads.
+# Every request below carries this token, because the same run writes to the package it reads,
+# and each reads it on standard input from printf, a shell builtin, so it is in no process's
+# command line. None follows a redirect, so neither the token nor the credential it is minted
+# with reaches an origin a redirect names.
 if ! token=$(ci_tools_ghcr_token "" pull,push "$GITHUB_ACTOR:$GITHUB_TOKEN"); then
   error "the registry would not answer a pull,push token request for $registry ($token), so this run reads nothing and fills nothing."
   exit 1
 fi
 
-# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package, with that
-# answer's headers left in $headers. A registry may answer a read of a blob with a redirect to
-# the store that holds it, so curl follows it and this reads the status of the last hop. A
-# request the service did not answer at all reads 000, which is no status this script admits, so
-# it is refused like any other.
+# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package with the push
+# token, its answer's headers left in $headers: the helper's ci_tools_registry_head. A registry
+# may answer a read of a blob with a redirect to the store that holds it, and the helper follows
+# it in a request handed no token, so this reads the status and the headers of the last hop and
+# the token reaches the package alone. A request the service did not answer at all reads 000,
+# which is no status this script admits, so it is refused like any other.
 registry_head() {
-  local url=$1 status
+  local url=$1
   shift
-  status=$(curl -sSL -o /dev/null -D "$headers" -w '%{http_code}' -I \
-    -H "Authorization: Bearer $token" "$@" "$url") || status=000
-  printf '%s\n' "$status"
+  ci_tools_registry_head "$token" "$headers" "$url" "$@"
 }
 
 # header_value <name>: that header of the answer $headers holds, empty where it holds none.
@@ -203,9 +205,9 @@ header_value() {
 # carry a query, so the digest is appended with the separator that location needs.
 push_blob() {
   local row=$1 file=$2 digest=$3 what=$4 status location separator
-  status=$(curl -sS -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
-    -H "Authorization: Bearer $token" -H 'Content-Length: 0' \
-    "$registry_url/blobs/uploads/") || status=000
+  status=$(printf 'Authorization: Bearer %s' "$token" |
+    curl -sS -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
+      -H @- -H 'Content-Length: 0' "$registry_url/blobs/uploads/") || status=000
   if [ "$status" != 202 ]; then
     error "$row: the upload of the $what started with POST $registry_url/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
     return 1
@@ -223,9 +225,10 @@ push_blob() {
     *\?*) separator='&' ;;
     *) separator='?' ;;
   esac
-  status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $token" -H 'Content-Type: application/octet-stream' \
-    --data-binary "@$file" "${location}${separator}digest=sha256:$digest") || status=000
+  status=$(printf 'Authorization: Bearer %s' "$token" |
+    curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+      -H @- -H 'Content-Type: application/octet-stream' \
+      --data-binary "@$file" "${location}${separator}digest=sha256:$digest") || status=000
   if [ "$status" != 201 ]; then
     error "$row: the $what was PUT to $location and the package answered $status where the registry API answers 201. The copy of this row is unchanged."
     return 1
@@ -292,9 +295,10 @@ document = {
 with open(path, "w") as handle:
     handle.write(json.dumps(document, separators=(",", ":")))
 PY
-  status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $token" -H "Content-Type: $MANIFEST_TYPE" \
-    --data-binary "@$document" "$registry_url/manifests/$tag") || status=000
+  status=$(printf 'Authorization: Bearer %s' "$token" |
+    curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+      -H @- -H "Content-Type: $MANIFEST_TYPE" \
+      --data-binary "@$document" "$registry_url/manifests/$tag") || status=000
   if [ "$status" != 201 ]; then
     error "$row: the manifest was PUT to $registry_url/manifests/$tag and the package answered $status where the registry API answers 201. The blob is in the package and the tag $tag names nothing, so re-run the ci-images job."
     return 1

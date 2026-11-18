@@ -322,7 +322,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 	s.standIn = conn
-	agentSubject := contracts.AgentSubject(serverChangeSession)
+	agentSubject := contracts.LegacyAgentSubject(serverChangeSession)
 	if _, err := conn.Subscribe(bus.DeliverSubject(serverChangeSession), s.receive); err != nil {
 		t.Fatalf("the stand-in subscribe its relay subject: %v", err)
 	}
@@ -375,8 +375,18 @@ func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 // receive is the stand-in's handler on its relay subject: it answers the frame received and then
 // done, as a session that wrote the message does, and records the copy. The answer goes out from
 // the handler itself, so a stand-in whose connection is up never keeps the relay waiting
-// relayReceiptWait for a receipt.
+// relayReceiptWait for a receipt. The send route's connection probe (bus.ConnectionProbeHeader)
+// is no frame: it is answered done before anything is decoded, as a plugin answers it, and is
+// neither recorded nor a stray.
 func (s *serverChangeSoak) receive(msg *natsgo.Msg) {
+	if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+		if msg.Reply != "" {
+			// A probe answer that does not go out reads as the probe's silence, which is
+			// connected too, so it is no failure of the soak's.
+			_ = msg.Respond([]byte(relayReplyDone))
+		}
+		return
+	}
 	at := time.Now()
 	subject := msg.Header.Get(relayHeaderSubject)
 	var envelope contracts.Envelope

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,7 +181,14 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 // acknowledge admits the connection's hello and reads the launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
-	g.send(shimwire.LauncherHelloAck{})
+	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
+}
+
+// acknowledgeWith admits the connection's hello with ack, whatever memory guard settings it
+// carries, and reads the launcher's first state on it.
+func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
+	g.t.Helper()
+	g.send(ack)
 	state, ok := g.next().(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
@@ -586,6 +594,17 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // leak-check directory) besides the fields every fleet's launcher is given.
 func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
+	f := launchFleet(t, cfg, roles...)
+	for _, conn := range f.conns {
+		conn.acknowledge()
+	}
+	return f
+}
+
+// launchFleet is newFleetOf up to every role's hello, which it leaves unacknowledged, for a test
+// whose acknowledgements carry something of their own.
+func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
@@ -640,9 +659,6 @@ func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 			t.Fatalf("role %s opened two connections", conn.hello.Role)
 		}
 		f.conns[conn.hello.Role] = conn
-	}
-	for _, conn := range f.conns {
-		conn.acknowledge()
 	}
 	return f
 }
@@ -962,13 +978,7 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	guard := &pidGuard{pids: map[int]bool{guarded.Process.Pid: true}}
 	// Every one has exited and waits as a zombie for whoever reaps it.
 	for _, cmd := range []*exec.Cmd{tester, reviewer, orphan, guarded} {
-		deadline := time.Now().Add(5 * time.Second)
-		for !zombie(cmd.Process.Pid) {
-			if time.Now().After(deadline) {
-				t.Fatalf("process %d never exited", cmd.Process.Pid)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		awaitZombie(t, cmd.Process.Pid)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal, 1)
@@ -992,6 +1002,86 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	}
 }
 
+// awaitZombie waits for pid, a child of the test that exits at once, to have exited and to wait as
+// a zombie for whoever reaps it.
+func awaitZombie(t *testing.T, pid int) {
+	t.Helper()
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
+}
+
+// reapedByAnother is whether err is a child's own wait answering that another wait of the process
+// reaped it first: Linux answers ECHILD (`waitid: no child processes`), and gVisor, which a pod
+// runs under, answers ESRCH (`waitid: no such process`) for about half of them.
+func reapedByAnother(err error) bool {
+	return errors.Is(err, syscall.ECHILD) || errors.Is(err, syscall.ESRCH)
+}
+
+// A reap through the guard (pidGuard.reap, which the orphan reaper and the controller pod's drain
+// both run) leaves an exited child the launcher holds for a wait of its own (the leak-check
+// install's run, say) to that wait, which reads its own exit, and reaps any other exited child.
+func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
+	guard := &pidGuard{}
+	held := exec.Command("/bin/sh", "-c", "exit 5")
+	if _, err := guard.start(held); err != nil {
+		t.Fatal(err)
+	}
+	other := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	awaitZombie(t, held.Process.Pid)
+	awaitZombie(t, other.Process.Pid)
+	if _, err := guard.reap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the reap left it unreaped", err)
+	}
+	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+		t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+	}
+}
+
+// The controller pod's launcher is its container's PID 1, and once a generation has exited it
+// drains the namespace of what the generation left (cleanExitedGeneration): SIGTERM to every
+// process, then a reap until nothing is left. That drain reaps through the guard, so a child the
+// launcher holds for a wait of its own keeps its exit for that wait, and any other exited child is
+// reaped. It runs as PID 1 of a PID namespace of its own, since off PID 1 the drain does nothing
+// (TestControllerDrainPIDOneHelper).
+func TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits(t *testing.T) {
+	t.Logf("%s", runAsPIDOne(t, "TestControllerDrainPIDOneHelper"))
+}
+
+// TestControllerDrainPIDOneHelper is TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits's
+// body, run as PID 1.
+func TestControllerDrainPIDOneHelper(t *testing.T) {
+	if os.Getenv(pidOneHelperEnv) != "1" {
+		return
+	}
+	if os.Getpid() != 1 {
+		t.Fatal("the drain helper is not PID 1")
+	}
+	guard := &pidGuard{}
+	m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
+	held := exec.Command("/bin/sh", "-c", "exit 5")
+	if _, err := guard.start(held); err != nil {
+		t.Fatal(err)
+	}
+	other := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	awaitZombie(t, held.Process.Pid)
+	awaitZombie(t, other.Process.Pid)
+	m.cleanExitedGeneration()
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the drain left it unreaped", err)
+	}
+	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+		t.Errorf("the held child reads %v (%v), want its own exit 5: the drain took it", held.ProcessState, err)
+	}
+}
+
 // testInstance is the Cloud SQL instance a test's session database sits in. This repository is
 // public, so it is a placeholder, as is every login and database name beside it.
 const testInstance = "example-project:us-central1:example-instance"
@@ -999,20 +1089,26 @@ const testInstance = "example-project:us-central1:example-instance"
 // testDatabase is the session database a launcher under test proxies its generations to.
 var testDatabase = ompsessions.Database{Instance: testInstance, Name: "legion_sessions", User: "legion-sessions@example-project.iam"}
 
+// testServiceAccount is the Google service account a test's session database may name for the
+// proxy to impersonate; testDatabase's User is its IAM login.
+const testServiceAccount = "legion-sessions@example-project.iam.gserviceaccount.com"
+
 // sessionDialer stands in for the Cloud SQL connector: every connection is a fresh dial of addr,
 // which the test owns, and check is the credential work the connector does before each of them, so
 // a test can refuse one dial and allow the next. While stalling (stallAt), every dial reaches a
 // silent upstream instead and stalls in a real TLS handshake, which, like the connector's own, ends
 // only when the dial's context does. Every dial records when it began and its context's deadline,
 // and a stalled one when it ended (bounds), so a test reads the bound a dial was given from the
-// dial itself, and times only what the launcher did after it.
+// dial itself, and times only what the launcher did after it. Every build records the account the
+// launcher asked the connector to sign in as (accounts), "" for the pod itself.
 type sessionDialer struct {
 	addr  string
 	check func() error
 
-	mu     sync.Mutex
-	bounds []dialBound
-	silent string
+	mu       sync.Mutex
+	bounds   []dialBound
+	silent   string
+	accounts []string
 }
 
 // dialBound is what one Dial was given: the time it was entered and its context's deadline, if
@@ -1058,8 +1154,21 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake.
-func (d *sessionDialer) build(context.Context) (sessionproxy.Dialer, error) { return d, nil }
+// this very fake, and each build records the account it was given. A pod's roles start their
+// generations concurrently, so the record is held under mu.
+func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.accounts = append(d.accounts, account)
+	return d, nil
+}
+
+// built answers the account of every build so far, in the order they were made.
+func (d *sessionDialer) built() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.accounts)
+}
 
 // stalledDial opens a real connection to addr, a silent upstream, and runs a real TLS handshake
 // over it, which nothing ever answers, so it ends only when ctx does.
@@ -1144,6 +1253,12 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 			"launcher: the session database is named in part: no --session-user"},
 		"no instance": {ompsessions.Database{Name: testDatabase.Name, User: testDatabase.User},
 			"launcher: the session database is named in part: no --session-instance"},
+		// A service account to impersonate names a database too, so it is not the other stores:
+		// with it, each of the three it leaves out is missing.
+		"the account alone": {ompsessions.Database{ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"the account and the instance": {ompsessions.Database{Instance: testInstance, ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-database, no --session-user"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The connect address is one nothing listens on: a refused configuration must answer
@@ -1173,6 +1288,36 @@ func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
 		t.Fatalf("the child found its session socket %s, want it already bound", seen.socket)
 	}
 	g.stop(4)
+}
+
+// A generation's proxy is built for the service account the launcher is told its session database
+// names, and for none when it is told none: the account the dialer factory is given is the one the
+// Cloud SQL connector impersonates and signs in as, so a launcher that dropped it would sign every
+// generation in as the pod itself, which the database's login does not name.
+func TestAGenerationsProxyIsBuiltForTheServiceAccountTheLauncherIsTold(t *testing.T) {
+	impersonating := testDatabase
+	impersonating.ImpersonateServiceAccount = testServiceAccount
+	for name, tc := range map[string]struct {
+		database ompsessions.Database
+		want     string
+	}{
+		"impersonating " + testServiceAccount: {impersonating, testServiceAccount},
+		"as the pod itself":                   {testDatabase, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dialer := &sessionDialer{addr: idleUpstream(t)}
+			g := newSessionRig(t, Config{SessionDatabase: tc.database, SessionDialer: dialer.build})
+			marker := filepath.Join(t.TempDir(), "marker")
+			if got := g.start(g.childStart(2, marker, nil)); !got.OK {
+				t.Fatalf("start result = %#v", got)
+			}
+			if got := dialer.built(); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("the generation's dialer factory was given %q, want %q once", got, tc.want)
+			}
+			publishedAll(t, marker)
+			g.stop(2)
+		})
+	}
 }
 
 // A generation whose session database cannot be reached fails loudly rather than running an agent

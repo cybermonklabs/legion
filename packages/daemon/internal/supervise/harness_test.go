@@ -176,7 +176,16 @@ func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	// The step columns are PutClaimStep's alone, as they are in the store (store's putClaim): a
 	// machine's write carries whatever its in-memory claim last read, and a step recorded since
 	// that read must survive it.
-	c.Step = s.claims[c.Token].Step
+	held, stored := s.claims[c.Token]
+	c.Step = held.Step
+	// So are the four activity columns PutClaimActivity's (reportActivity), with the store's one
+	// exception: a write that moves the generation is a launch, and it clears them, as an insert
+	// leaves them at their defaults.
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds, c.ActivityNextReminderAt = time.Time{}, false, nil, time.Time{}
+	if stored && held.Generation == c.Generation {
+		c.ActivityAt, c.ActivityBackground = held.ActivityAt, held.ActivityBackground
+		c.ActivityKinds, c.ActivityNextReminderAt = slices.Clone(held.ActivityKinds), held.ActivityNextReminderAt
+	}
 	s.claims[c.Token] = c
 	s.puts = append(s.puts, c)
 	return nil
@@ -286,6 +295,41 @@ func (s *memStore) PutClaimStep(_ context.Context, token claim.Token, step StepR
 	c.Step = held
 	s.claims[token] = c
 	return true, nil
+}
+
+// reportActivity is a session's activity report reaching the store, with the rules the real one
+// holds to (store.Store.PutClaimActivity): it is written onto the launch it names alone, so a
+// report of a launch the claim has moved past is refused, and one older than the report recorded
+// is dropped. It answers whether the store holds the claim at that launch.
+func (s *memStore) reportActivity(token claim.Token, generation uint64, report ActivityReport) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, known := s.claims[token]
+	if !known || c.Generation != generation {
+		return false
+	}
+	if !c.ActivityAt.IsZero() && report.At.Before(c.ActivityAt) {
+		return true
+	}
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds = report.At, report.Background, slices.Clone(report.Kinds)
+	s.claims[token] = c
+	return true
+}
+
+// ClaimActivity is the store's read of one launch's activity report (store.Store.ClaimActivity):
+// the report of the launch the row records, and no report for any other launch or for a launch
+// that has reported nothing.
+func (s *memStore) ClaimActivity(_ context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["ClaimActivity"]; err != nil {
+		return ActivityReport{}, false, err
+	}
+	c, known := s.claims[token]
+	if !known || c.Generation != generation || c.ActivityAt.IsZero() {
+		return ActivityReport{}, false, nil
+	}
+	return ActivityReport{At: c.ActivityAt, Background: c.ActivityBackground, Kinds: slices.Clone(c.ActivityKinds)}, true, nil
 }
 
 // step is the record the store holds for token, as a claim read carries it back.
@@ -583,8 +627,11 @@ func newBareHarness(t *testing.T) *harness {
 		Runtime: h.rt,
 		Conns:   h.conns,
 		Store:   h.store,
-		Specs:   h.specs,
-		Clock:   h.clock,
+		// The store's read of a launch's activity report, which a let-go records the background
+		// work it ended from (recordEnd); a test reports into it through reportActivity.
+		ClaimActivity: h.store.ClaimActivity,
+		Specs:         h.specs,
+		Clock:         h.clock,
 		// Both handlers over the one logger: the text buffer every test that reads lines uses,
 		// and the recorder a test that reads an attribute's own value asks (logRecords.of).
 		Log: slog.New(logRecorder{
@@ -661,9 +708,13 @@ func (h *harness) post(ev Event, result bool) error {
 // promptInTurn is the delivery of the prompt the agent took and has not reported the end of: the
 // one whose work the turn now ending did. It is read before the end reaches the machine, so a
 // task that end re-sends is the next turn's prompt rather than this one's. A prompt the
-// connection refused reports nothing, and neither does one the agent has already refused late:
-// Oh My Pi answers a prompt once, a failure or a result, and the machine stops waiting for the
-// result at exactly the moment it takes that task back (awaitingResult).
+// connection refused reports nothing, and neither does one the agent has already answered with
+// no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
+// and the machine stops waiting for that prompt's result at exactly the moment it takes that
+// answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
+// its turn, starting late, reports it only while it is the last prompt the connection accepted:
+// the fake connection keeps that one alone (fake.Conn's TakePromptResult), so a test whose task
+// was sent again since posts the first prompt's result itself.
 func (h *harness) promptInTurn() string {
 	conn, ok := h.conns.Conn(h.token)
 	if !ok {
@@ -674,10 +725,22 @@ func (h *harness) promptInTurn() string {
 		return ""
 	}
 	delivery, _ := reporter.TakePromptResult()
-	if delivery != h.m.awaitingResult {
+	h.m.mu.Lock()
+	held := slices.Contains(h.m.outstanding, delivery)
+	h.m.mu.Unlock()
+	if !held {
 		return ""
 	}
 	return delivery
+}
+
+// outstanding is every prompt of the pending task the machine waits on a result for
+// (Machine.outstanding), read under the machine's lock, since a send's goroutine may be handling
+// its acknowledgement.
+func (h *harness) outstanding() []string {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	return slices.Clone(h.m.outstanding)
 }
 
 func (h *harness) must(ev Event) {

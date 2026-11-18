@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The origin this file's listener is reached at: a loopback name, so the Host fence an open
@@ -68,20 +69,20 @@ func (spentProofsUnanswered) CheckAndSetDPoPProofUsed(context.Context, string, s
 // a listener whose spent-proof bucket is open holds it.
 func listenerBrokerTokens(t *testing.T, broker *brokertokentest.StubBroker) *brokerTokens {
 	t.Helper()
-	return listenerBrokerTokensOver(t, broker, &spentProofsInMemory{})
+	return listenerBrokerTokensOver(t, broker.Server.URL, &spentProofsInMemory{})
 }
 
-// listenerBrokerTokensOver is listenerBrokerTokens over the spent-proof store named, which is
-// how the outcomes of that store reach apiAuth.
-func listenerBrokerTokensOver(t *testing.T, broker *brokertokentest.StubBroker, replay rfc9449.DPoPReplayStorage) *brokerTokens {
+// listenerBrokerTokensOver is the same credential over the broker at brokerURL and the spent-proof
+// store named, which is how the outcomes of that store reach apiAuth.
+func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
-		BrokerURL:        broker.Server.URL,
+		BrokerURL:        brokerURL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
 	verifier, err := brokertoken.New(brokertoken.Options{
-		BrokerURL: broker.Server.URL,
+		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    replay,
@@ -108,14 +109,31 @@ func sessionAnswer(session, person, jkt string) brokertoken.Introspection {
 }
 
 // serviceAnswer is the broker's answer about a token naming a service and no person: a machine
-// nobody has signed in on.
+// nobody has signed in on. It names no project, under the person scope, as the exchange mints it
+// (exchange.Set.Google), and as brokertoken holds such an answer to.
 func serviceAnswer(session, service, jkt string) brokertoken.Introspection {
 	return brokertoken.Introspection{
 		Active:       true,
 		Session:      session,
 		Service:      service,
-		Project:      "EXAMPLE",
-		ProjectScope: brokertoken.ProjectScopeNamed,
+		ProjectScope: brokertoken.ProjectScopePerson,
+		ClientID:     brokertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
+// readOnlyAnswer is the broker's answer about a token a read entry minted for Dispatch's read
+// list: the one scope read, the project scope none, a service, and no person and no project
+// (internal/broker/oauth, TestAReadEntrysPodExchangesForATokenThatOnlyReads). The listener's
+// verifier is built without the switch that serves one (brokertoken.Options.ServesReadOnly), so
+// such a token is no session's credential here.
+func readOnlyAnswer(session, service, jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      session,
+		Service:      service,
+		ProjectScope: brokertoken.ProjectScopeNone,
+		Scope:        brokertoken.ScopeRead,
 		ClientID:     brokertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -166,7 +184,7 @@ func assertBrokerRejectionLog(t *testing.T, logged, wantReason, token, proof str
 
 // The DPoP branch of /v1's authentication, outcome by outcome: who is admitted, who is refused
 // and with what, and the one line each refusal writes. The branch is driven through apiAuth
-// itself, as every other case in apiauth_test.go is, so the order it sits in — before the two
+// itself, as every other case in apiauth_test.go is, so the order it sits in — before the
 // bearers and before the open listener's pass-through — is part of what is proved.
 func TestAPIAuthBrokerToken(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +200,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 	const (
 		personToken   = "access-token-of-a-person"
 		serviceToken  = "access-token-of-a-service"
+		readOnlyToken = "access-token-that-only-reads"
 		revokedToken  = "access-token-that-was-revoked"
 		unknownToken  = "access-token-the-broker-never-issued"
 		strangerToken = "access-token-bound-to-another-key"
@@ -189,6 +208,7 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 	)
 	broker.Says(personToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	broker.Says(serviceToken, serviceAnswer("ses_service", "example-fleet", caller.JKT()))
+	broker.Says(readOnlyToken, readOnlyAnswer("ses_reader", "example-reader", caller.JKT()))
 	broker.Says(revokedToken, brokertoken.Introspection{Active: false})
 	broker.Says(strangerToken, sessionAnswer("ses_person", "ada@example.com", caller.JKT()))
 	// A machine login's own access token: live, bound to this key, and no session's credential.
@@ -262,6 +282,20 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			wantReason: "not_a_session",
 		},
 		{
+			// R4: the listener serves a read-only token on no route, and its code does not
+			// change for that: its verifier is built without the read-only switch, so the token
+			// is refused as a build before the switch refuses it. The row "admits a token naming
+			// a service and no person" sends the same request under a token of the same kind — a
+			// session and a service, no person — whose project scope is named, with a project
+			// and no scope read, and it is admitted, so the refusal is the scope's.
+			name:       "refuses a token that only reads",
+			configured: true,
+			started:    true,
+			token:      readOnlyToken,
+			wantStatus: http.StatusUnauthorized,
+			wantReason: "not_a_session",
+		},
+		{
 			// R9: with none of the broker variables set the listener takes no such credential,
 			// so the header is one it does not know and the open listener serves the request
 			// as it served every unauthenticated one before this credential existed. Refusing
@@ -301,8 +335,16 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 			request := brokerTokenRequest(t, signer, http.MethodPost, "/v1/messages/publish", tc.token, `{}`)
 			recorder := httptest.NewRecorder()
 			var logged bytes.Buffer
+			// A presentation apiAuth answers itself never reaches the routes behind it, so the
+			// handler of a row that wants anything but 200 fails the test if it runs.
+			handler := next
+			if tc.wantStatus != http.StatusOK {
+				handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Errorf("the handler behind apiAuth ran for a presentation it should answer %d", tc.wantStatus)
+				})
+			}
 
-			apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", &logged), next).ServeHTTP(recorder, request)
+			apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &logged)}, handler).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.wantStatus, recorder.Body.String())
@@ -352,14 +394,14 @@ func TestAPIAuthRefusesAReplayedProof(t *testing.T) {
 	replay.Header = signed.Header.Clone()
 
 	first := httptest.NewRecorder()
-	apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", io.Discard), next).ServeHTTP(first, signed)
+	apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(first, signed)
 	if first.Code != http.StatusNoContent {
 		t.Fatalf("the first presentation: status = %d, want 204; body = %s", first.Code, first.Body.String())
 	}
 
 	second := httptest.NewRecorder()
 	var logged bytes.Buffer
-	apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", &logged), next).ServeHTTP(second, replay)
+	apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &logged)}, next).ServeHTTP(second, replay)
 	if second.Code != http.StatusUnauthorized {
 		t.Fatalf("the replayed proof: status = %d, want 401; body = %s", second.Code, second.Body.String())
 	}
@@ -368,19 +410,16 @@ func TestAPIAuthRefusesAReplayedProof(t *testing.T) {
 
 // A broker that answers nothing is not a refusal of the caller's token: the token was never
 // judged, so the caller is asked to come back rather than told to discard a token that may be
-// perfectly live.
+// perfectly live. The broker is at a port the test holds and nothing listens on.
 func TestAPIAuthAnswers503WhenTheBrokerCannotBeReached(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
 	caller := brokertokentest.NewCaller(t)
 	const token = "access-token-nobody-answers-about"
-	broker.Says(token, sessionAnswer("ses_unreachable", "ada@example.com", caller.JKT()))
-	tokens := listenerBrokerTokens(t, broker)
-	broker.Server.Close()
+	tokens := listenerBrokerTokensOver(t, "http://"+testport.Refused(t), &spentProofsInMemory{})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
 	recorder := httptest.NewRecorder()
 	var logged bytes.Buffer
-	apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", &logged), next).
+	apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &logged)}, next).
 		ServeHTTP(recorder, brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", token, `{}`))
 
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -402,13 +441,13 @@ func TestAPIAuthAnswers503WhenTheSpentProofStoreCannotAnswer(t *testing.T) {
 	caller := brokertokentest.NewCaller(t)
 	const token = "access-token-whose-proof-could-not-be-recorded"
 	broker.Says(token, sessionAnswer("ses_unrecorded", "ada@example.com", caller.JKT()))
-	tokens := listenerBrokerTokensOver(t, broker, spentProofsUnanswered{})
+	tokens := listenerBrokerTokensOver(t, broker.Server.URL, spentProofsUnanswered{})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
 	recorder := httptest.NewRecorder()
 	var logged bytes.Buffer
 	request := brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", token, `{}`)
-	apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", &logged), next).ServeHTTP(recorder, request)
+	apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &logged)}, next).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body = %s", recorder.Code, recorder.Body.String())
@@ -428,7 +467,7 @@ func TestAPIAuthDoesNotRetryADPoPPresentationAsABearer(t *testing.T) {
 	broker := brokertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	handler := apiAuth(shared, nil, tokens, nil, logging.NewWithWriter("test-machine", io.Discard), next)
+	handler := apiAuth(listenerAPIAuth{token: shared, brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
 
 	asDPoP := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	asDPoP.Host = "127.0.0.1:9020"
@@ -456,7 +495,7 @@ func TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad(t *testing.T) {
 	broker := brokertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	handler := apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", io.Discard), next)
+	handler := apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
 
 	served := httptest.NewRecorder()
 	loopback := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -477,7 +516,7 @@ func TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad(t *testing.T) {
 	// The fence that refuses a non-loopback listener with no bearer counts no broker token
 	// either, for the same reason: this credential says who is calling, never whether /v1 may be
 	// reached at all.
-	if err := validateListenerAPIAuth(config.Service{ListenHost: "0.0.0.0"}, "", "", nil); err == nil {
+	if err := validateListenerAPIAuth(config.Service{ListenHost: "0.0.0.0"}, listenerAPIAuth{brokers: tokens}, ""); err == nil {
 		t.Fatal("a non-loopback listener with no bearer was allowed to start")
 	}
 }
@@ -597,7 +636,7 @@ func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
 	broker := brokertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	handler := apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", io.Discard), next)
+	handler := apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
 
 	for _, authorization := range []string{"", "DPoP", "DPoP ", "Bearer something"} {
 		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -665,7 +704,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bound = false
 			var logged bytes.Buffer
-			handler := apiAuth(tc.shared, tc.verifier, nil, nil, logging.NewWithWriter("test-machine", &logged), next)
+			handler := apiAuth(listenerAPIAuth{token: tc.shared, verifier: tc.verifier, logger: logging.NewWithWriter("test-machine", &logged)}, next)
 			request := brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", token, `{}`)
 
 			recorder := httptest.NewRecorder()
@@ -690,7 +729,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 
 	// And the boot log says what it always said: this listener names the bearers it takes and
 	// no third credential.
-	if got := describeListenerAPIAuth("expected-token", issuer.URL(), nil); got != "shared token and oidc "+issuer.URL() {
+	if got := describeListenerAPIAuth(listenerAPIAuth{token: "expected-token"}, issuer.URL()); got != "shared token and oidc "+issuer.URL() {
 		t.Fatalf("describeListenerAPIAuth with no broker setting = %q, want the two bearers alone", got)
 	}
 }

@@ -30,7 +30,9 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"sync"
+
+	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/ctxlock"
 )
 
 // SignInsDir is the directory that holds one record per person, so `agent-secrets login`, which
@@ -101,11 +103,16 @@ type SignInAuthority struct {
 	Flow *DeviceFlow
 	// BrokerURL, HTTP and Log are the trade's, as Config's own members of those names. The
 	// session name is not: it is the person's, and SessionFor settles it.
-	BrokerURL string
+	BrokerURL brokeraddr.Address
 	HTTP      *http.Client
 	Log       *slog.Logger
 
-	mu sync.Mutex
+	// mu guards every member below: Current holds it from its read of held to the end of the
+	// trade that renews it, and Refused for its one check. A caller waits for it only while its
+	// own context lives (LockContext): a trade runs on whatever context its caller gave, which
+	// for the helper's own enrolments has no deadline, and a call waiting behind one must still
+	// answer inside its own bound.
+	mu ctxlock.Mutex
 	// held is the client of the record heldFor names, and heldCredential the credential its
 	// last trade minted, which Refused is told about. A record the store no longer answers,
 	// or answers with another box key, is a different sign-in and gets a client of its own.
@@ -136,6 +143,11 @@ type SignInAuthority struct {
 // broker that did not answer says nothing about who is signed in here, and a box with two
 // sign-ins and nothing naming which is refused by name rather than acting as either
 // (SignInStore.Choose).
+//
+// One call at a time reads and renews the held credential, and a call that finds another doing
+// so waits for it only as long as its own ctx lives: once ctx ends it answers an error that
+// wraps ctx's (SignInWaitEnded), so its own bound, and not the other call's trade, decides when
+// it answers.
 func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	if a.Machine == nil || a.Flow == nil {
 		return nil, errors.New("brokerclient: a sign-in's authority needs this machine's own identity and the sign-in client that renews the person's")
@@ -148,7 +160,9 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 		return nil, err
 	}
 
-	a.mu.Lock()
+	if err := a.mu.LockContext(ctx); err != nil {
+		return nil, fmt.Errorf("%s: %w", SignInWaitEnded(record.Person, err), err)
+	}
 	defer a.mu.Unlock()
 	name := record.Person + "\x00" + record.Thumbprint
 	if a.refused[name] {
@@ -179,8 +193,11 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	case errors.As(err, &refusal) && refusal.Permanent():
 		// A refusal a retry could cure — the broker's 429, a skewed DPoP proof — is not this
 		// sign-in ending: marking it refused on one of those would enrol every later session
-		// under this machine for the life of the process.
-		a.markRefused(name, record.Person, refusal.Code)
+		// under this machine for the life of the process. The code is the answer's own text,
+		// so it is logged as the address lets it print (brokeraddr.Address.Words): beside an
+		// address that is not clean, whoever answers for it can write the credential the
+		// address carries into the code.
+		a.markRefused(name, record.Person, a.BrokerURL.Words(refusal.Code))
 		return nil, nil
 	case errors.Is(err, ErrSignInEnded):
 		// The issuer, not the broker, is what refused: a refresh token Google no longer
@@ -197,6 +214,18 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	}
 	a.heldCredential = token.CredentialID
 	return &Authority{Key: a.held.Key(), CredentialID: token.CredentialID, Operator: record.Person}, nil
+}
+
+// SignInWaitEnded says how a wait for person's sign-in on this machine, which another call holds
+// while it trades (Current, Refused), ended with err, its context's error: "timed out waiting
+// for …" when the context's deadline passed, and "wait for …" when it was cancelled. A message
+// made from it wraps err after it, so errors.Is still reads the context's error.
+func SignInWaitEnded(person string, err error) string {
+	wait := "wait for "
+	if errors.Is(err, context.DeadlineExceeded) {
+		wait = "timed out waiting for "
+	}
+	return wait + person + "'s sign-in on this machine, which another call holds while it trades"
 }
 
 // SessionFor is the session name a person's trade on this box asks under. The exchange fixes
@@ -226,18 +255,27 @@ func SessionFor(record SignInRecord) string {
 // which either answers a live credential or is refused and falls back to the machine, so one
 // enrolment settles in one call rather than failing for the caller to retry. A credential this
 // authority no longer holds — a trade since has replaced it — is nothing to do.
-func (a *SignInAuthority) Refused(credentialID string) {
-	a.mu.Lock()
+//
+// It waits for a Current in progress as Current waits for another: a ctx that ends first
+// answers its error and records nothing, so the credential stays held until a trade replaces it
+// or the broker, refusing it again, tells this authority again.
+func (a *SignInAuthority) Refused(ctx context.Context, credentialID string) error {
+	if err := a.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer a.mu.Unlock()
 	if credentialID != "" && credentialID == a.heldCredential {
 		a.held, a.heldFor, a.heldCredential = nil, "", ""
 	}
+	return nil
 }
 
 // markRefused records that this record's sign-in has been refused for good — by the broker, or
-// by the issuer that no longer honours the person's refresh token — and logs it once with the
-// code that named the refusal: the person reads it on Dispatch's sign-ins page, and the box
-// goes on working under its own authority. The caller holds a.mu.
+// by the issuer that no longer honours the person's refresh token — and logs it once with code,
+// the code that named the refusal as a message may print it (the broker's through
+// brokeraddr.Address.Words, the issuer's this package's own invalid_grant): the person reads it
+// on Dispatch's sign-ins page, and the box goes on working under its own authority. The caller
+// holds a.mu.
 func (a *SignInAuthority) markRefused(name, person, code string) {
 	if a.refused == nil {
 		a.refused = map[string]bool{}

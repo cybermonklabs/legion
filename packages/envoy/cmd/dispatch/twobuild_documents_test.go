@@ -122,7 +122,7 @@ func readManifest(t *testing.T, path string) blockManifest {
 
 // creatable is R for the manifest: the highest since among the elements an editor of its version
 // may create, by the rule the page states (schemaCreatable in
-// packages/dispatch/web/src/features/doc/schema.ts) and pmdoc.SchemaCreatable computes.
+// packages/dispatch/web/src/features/doc/schema-creatable.ts) and pmdoc.SchemaCreatable computes.
 func (m blockManifest) creatable() int {
 	creatable := 0
 	count := func(element elementVersions) {
@@ -252,9 +252,10 @@ const (
 // (docs.readSchemaFleet): the lowest schema_version and the highest schema_creatable among the
 // live server processes. A process of a build that predates those columns registers neither, and
 // the zeros its row holds are what it counts as, so one live process of such a build puts the
-// lowest version at 0.
+// lowest version at 0. live is how many live rows the numbers were read from.
 type fleetNumbers struct {
 	minVersion, maxCreatable int
+	live                     int
 }
 
 // fleet reads the live rows' numbers now. It fails when the registry holds no live row: the
@@ -262,16 +263,15 @@ type fleetNumbers struct {
 // say every page is read-only for a reason no build has.
 func (b *twoBuilds) fleet(t *testing.T) fleetNumbers {
 	t.Helper()
-	var live int
 	var numbers fleetNumbers
 	if err := b.database.Pool.QueryRow(context.Background(), `
 		select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
 		from server_processes
 		where heartbeat_at > now() - make_interval(secs => $1)`,
-		processes.LiveWindow.Seconds()).Scan(&live, &numbers.minVersion, &numbers.maxCreatable); err != nil {
+		processes.LiveWindow.Seconds()).Scan(&numbers.live, &numbers.minVersion, &numbers.maxCreatable); err != nil {
 		t.Fatalf("read the live fleet's schema numbers: %v", err)
 	}
-	if live == 0 {
+	if numbers.live == 0 {
 		t.Fatal("the registry holds no live server process, so there is no fleet to admit a page by")
 	}
 	return numbers
@@ -597,8 +597,17 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	for {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
+		// The carried approval is the person's, and its whole actor crosses the builds but one
+		// field: whether the actor reads proven depends on which of the two builds wrote the carry
+		// and which one lists it (a build that predates the field neither stores nor answers it),
+		// so the comparison leaves that flag out and holds every other field of the actor.
+		var carried model.Actor
+		if len(reviews) > 0 {
+			carried = reviews[0].Actor
+			carried.Proven = false
+		}
 		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin}) {
+			carried == (model.Actor{Kind: "user", ID: dispatchTestLogin}) {
 			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
 			return
 		}

@@ -31,6 +31,8 @@ type API interface {
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
+	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
+	FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error)
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
 	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error
@@ -75,13 +77,16 @@ type VersionResult struct {
 // names each readable ask block the batch left in the document that it did not hold before, in
 // document order (addedAskBlocks). Settlement opens an ask for each, except a block written back
 // under the id of an ask the document already holds and settlement leaves closed: answered, or
-// resolved by a person.
+// resolved by a person. Written is what the batch wrote, read back off the tree it wrote
+// (editBatch.readBack), so a caller sees the markdown it left rather than only how many
+// operations landed.
 type EditOutcome struct {
 	Applied        int
 	Changed        bool
 	Unchanged      []int
 	Token          string
 	AddedAskBlocks []AddedAskBlock
+	Written        string
 }
 
 // AddedAskBlock is one ask block an edit added: its block id and its question as settlement reads

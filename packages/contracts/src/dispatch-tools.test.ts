@@ -176,6 +176,7 @@ const validCalls = {
     summary: "A live sync replaces the nightly export.",
   },
   dispatch_plan_approve: { issue: "DSP-1", version: 2 },
+  dispatch_review: { issue: "DSP-1", version: 2, verdict: "approved" },
   dispatch_result: {
     issue: "DSP-1",
     check: "k1",
@@ -284,6 +285,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_doc_read",
       "dispatch_request_approval",
       "dispatch_plan_approve",
+      "dispatch_review",
       "dispatch_result",
       "dispatch_results",
       "dispatch_artifact",
@@ -443,6 +445,7 @@ describe("dispatchToolSpecs", () => {
       "acme/infra",
       "sjawhar/legion",
       "Owner-1/repo.name_2",
+      "mona-cat_octo/arch",
       "a/..b",
     ]) {
       expect(schema.safeParse({ project: "CORE", repo }).success, String(repo)).toBe(true);
@@ -1445,6 +1448,63 @@ describe("dispatchToolSpecs", () => {
     ).toBe(true);
   });
 
+  test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {
+    const schema = schemaFor("dispatch_review");
+
+    expect(schema.safeParse({ issue: "DSP-1", version: 1, verdict: "approved" }).success).toBe(
+      true
+    );
+    expect(
+      schema.safeParse({
+        issue: "DSP-1",
+        artifact: "verification-md",
+        version: 3,
+        verdict: "approved",
+        reason: "Reads well.",
+      }).success
+    ).toBe(true);
+    for (const args of [
+      { version: 2, verdict: "approved" },
+      { issue: "DSP-1", verdict: "approved" },
+      { issue: "DSP-1", version: 0, verdict: "approved" },
+      { issue: "DSP-1", version: 1.5, verdict: "approved" },
+      { issue: "DSP-1", version: 2 },
+      { issue: "DSP-1", version: 2, verdict: "rejected" },
+      { issue: "DSP-1", version: 2, verdict: "approved", state: "approved" },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(false);
+    }
+  });
+
+  test("dispatch_review requests changes only with a reason, and names the rule without one", () => {
+    const schema = schemaFor("dispatch_review");
+    const changes = { issue: "DSP-1", version: 2, verdict: "changes_requested" };
+
+    expect(schema.safeParse({ ...changes, reason: "Name the rollback path." }).success).toBe(true);
+    for (const args of [changes, { ...changes, reason: "" }, { ...changes, reason: "   " }]) {
+      const result = schema.safeParse(args);
+      expect(result.success, JSON.stringify(args)).toBe(false);
+      expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+        "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.",
+      ]);
+    }
+  });
+
+  test("dispatch_review's description, which --help prints, says whose name it writes in, what Dispatch refuses and what a build without its route does", () => {
+    const { description } = specFor("dispatch_review");
+
+    for (const words of [
+      "A review records an approval or a changes request in the person's name at that version, so it works only with a token that names a person who holds approve",
+      "403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED",
+      "it must be the version the review would record",
+      "409 REVIEW_VERSION_MOVED",
+      "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",
+      "every other browser action is dispatch://INFRA-910's",
+    ]) {
+      expect(description).toContain(words);
+    }
+  });
+
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
     const issue = dispatchToolSpecs.find((spec) => spec.name === "dispatch_issue");
     const documentEdit = dispatchToolSpecs.find((spec) => spec.name === "dispatch_doc_edit");
@@ -1541,7 +1601,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "One replace per paragraph: more new paragraphs go in one insert after the last one you rewrote, since two inserts at one anchor come out reversed; read the passage back with dispatch doc-read afterwards.",
+      "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again.",
     ],
     [
       "dispatch_artifact",

@@ -24,6 +24,7 @@ import {
   SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
   type SessionAnswersRead,
+  sessionAnswersChanged,
   sessionAnswersFailureLine,
   sessionAnswersSettled,
   sessionAnswersWords,
@@ -31,6 +32,8 @@ import {
 
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
 const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOString();
+/** Where a read at `NOW` starts its window: 72 hours before it. */
+const SINCE = hoursAgo(72);
 const stateDir = temporaryDirectories("session-answers");
 
 function message(id: string, at: string, text: string): SessionAnswer {
@@ -272,38 +275,55 @@ describe("renderSessionAnswers", () => {
   });
 });
 
-describe("sessionAnswersWords", () => {
-  const isNew = (before: readonly SessionAnswer[], after: readonly SessionAnswer[]) => {
-    const shown = new Set(sessionAnswersWords(before));
-    return sessionAnswersWords(after).some((word) => !shown.has(word));
-  };
+describe("sessionAnswersWords and sessionAnswersChanged", () => {
+  const changed = (
+    before: readonly SessionAnswer[],
+    after: readonly SessionAnswer[],
+    since = SINCE
+  ) => sessionAnswersChanged(sessionAnswersWords(before), sessionAnswersWords(after), since);
 
-  test("a new item, a changed answer or an edited comment is new", () => {
-    expect(isNew([comment, direct], [answer, comment, direct])).toBe(true);
+  test("a new item, a changed answer or an edited comment is a change", () => {
+    expect(changed([comment, direct], [answer, comment, direct])).toBe(true);
     const edited = {
       ...comment,
       edited_at: "2026-10-27T11:30:00Z",
       text: "Step 3 needs the production URL.",
     };
-    expect(isNew([comment, direct], [edited, direct])).toBe(true);
+    expect(changed([comment, direct], [edited, direct])).toBe(true);
     const replaced = {
       ...answer,
       at: "2026-10-27T11:40:00Z",
       selected: ["JSON"],
       replaced: true as const,
     };
-    expect(isNew([answer], [replaced])).toBe(true);
+    expect(changed([answer], [replaced])).toBe(true);
   });
 
-  test("the same items, fewer items, or a changed title or question is nothing new", () => {
-    expect(isNew([answer, comment, direct], [answer, comment, direct])).toBe(false);
-    expect(isNew([answer, comment, direct], [answer, direct])).toBe(false);
+  test("the same items, or a changed title or question, is no change", () => {
+    expect(changed([answer, comment, direct], [answer, comment, direct])).toBe(false);
     const retitled = {
       ...answer,
       owner: { issue: { key: "CORE-7", title: "A new title" } },
       ask: { id: "ask-1", question: "Which format, now?" },
     };
-    expect(isNew([answer], [retitled])).toBe(false);
+    expect(changed([answer], [retitled])).toBe(false);
+  });
+
+  // An item a read no longer holds: its time tells one the window left behind from one a person
+  // retracted (an answer set back to none), or Dispatch removed, while the window still held it.
+  test("an item gone because the window left it behind is no change; one gone inside the window is", () => {
+    // The window starts after the oldest item (10:00), so that one aged out.
+    const later = "2026-10-27T10:15:00.000Z";
+    expect(changed([answer, comment, direct], [answer, comment], later)).toBe(false);
+    // The answer (11:00) is still inside the window, so it was retracted.
+    expect(changed([answer, comment, direct], [comment, direct], later)).toBe(true);
+    expect(changed([answer, comment, direct], [answer, direct])).toBe(true);
+  });
+
+  test("a read with no window start, or a string with no time, counts a gone item as a change", () => {
+    const words = sessionAnswersWords([answer, direct]);
+    expect(sessionAnswersChanged(words, words.slice(0, 1), undefined)).toBe(true);
+    expect(sessionAnswersChanged(["not a key", ...words], words, SINCE)).toBe(true);
   });
 
   // The key tells what the person wrote from what their agent wrote for them: the same answer
@@ -320,11 +340,13 @@ describe("sessionAnswersWords", () => {
     };
     expect(sessionAnswersWords([answer])).not.toEqual(sessionAnswersWords([throughToken]));
     expect(sessionAnswersWords([throughToken])).not.toEqual(sessionAnswersWords([throughSession]));
-    expect(isNew([answer], [throughToken])).toBe(true);
+    expect(changed([answer], [throughToken])).toBe(true);
   });
 
-  // The words are those of the items the list shows: an item the cap left out was never seen.
-  test("a read's words name only the items its list shows", async () => {
+  // The words are those of every item Dispatch sent inside the read's window: an item the cap
+  // leaves out is shown to nobody, and a host that compared only the items shown would never learn
+  // it was written.
+  test("a read's words name every item Dispatch sent inside its window, the ones its list leaves out included", async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
@@ -339,10 +361,56 @@ describe("sessionAnswersWords", () => {
     const shown = items.filter((item) => read.text?.includes(item.text));
     expect(shown.length).toBeGreaterThan(0);
     expect(shown.length).toBeLessThan(items.length);
-    expect(read.words).toEqual(sessionAnswersWords(shown));
+    expect(read.words).toEqual(sessionAnswersWords(items));
+    expect(read.since).toBe(SINCE);
   });
 
-  test("a cached list's words are those its own text shows, and an edit to an item it leaves out changes none", async () => {
+  test("a newest item longer than the cap is shown to nobody, and is a change", async () => {
+    const older = message("m-older", hoursAgo(2), "Ship it.");
+    const longest = message("m-longest", hoursAgo(1), "w".repeat(9_000));
+    let items = [older];
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(items) });
+    const options = {
+      session: newSession(),
+      dispatch: dispatchAt(),
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    };
+    const first = await readSessionAnswers(options);
+    items = [longest, older];
+    const second = await readSessionAnswers(options);
+    expect(second.text).not.toContain(longest.text);
+    expect(second.text).not.toContain(older.text);
+    expect(sessionAnswersChanged(first.words ?? [], second.words ?? [], second.since)).toBe(true);
+  });
+
+  test("a comment an edit makes too long to fit is shown to nobody, and is a change", async () => {
+    const newer = message("m-newer", hoursAgo(1), "x".repeat(3_000));
+    const edited = {
+      ...comment,
+      edited_at: hoursAgo(0.5),
+      text: `Do not ship. ${"y".repeat(5_500)}`,
+    };
+    let items: SessionAnswer[] = [newer, comment];
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(items) });
+    const options = {
+      session: newSession(),
+      dispatch: dispatchAt(),
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    };
+    const first = await readSessionAnswers(options);
+    expect(first.text).toContain(comment.text);
+    items = [newer, edited];
+    const second = await readSessionAnswers(options);
+    expect(second.text).toContain(newer.text);
+    expect(second.text).not.toContain(edited.text);
+    expect(sessionAnswersChanged(first.words ?? [], second.words ?? [], second.since)).toBe(true);
+  });
+
+  test("a cached list's words name every item Dispatch sent inside its window, and an edit to an item it leaves out changes them", async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
@@ -363,14 +431,14 @@ describe("sessionAnswersWords", () => {
     answer = () => listed(edited);
     const afterEdit = await readSessionAnswers(options);
     expect(afterEdit.text).toBe(fresh.text);
-    expect(afterEdit.words).toEqual(fresh.words);
+    const edits = sessionAnswersChanged(fresh.words ?? [], afterEdit.words ?? [], afterEdit.since);
+    expect(edits).toBe(true);
     // A failed read carries the cache under a longer header.
     answer = () => json({ code: "INTERNAL", error: "database is down" }, 500);
     const cached = await readSessionAnswers(options);
     expect(cached.source).toBe("cache");
-    expect(cached.words).toEqual(
-      sessionAnswersWords(edited.filter((item) => cached.text?.includes(item.text)))
-    );
+    expect(cached.words).toEqual(sessionAnswersWords(edited));
+    expect(cached.since).toBe(SINCE);
   });
 });
 
@@ -481,7 +549,7 @@ const failedReads: readonly {
   {
     kind: "a proxy's 404 page",
     reason:
-      /^HTTP_404: GET \S+\/answers\?max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () =>
       page(404, "<html><body><h1>404 Not Found</h1><hr>nginx</body></html>", "Not Found"),
@@ -489,7 +557,7 @@ const failedReads: readonly {
   {
     kind: "a 404 with an empty body",
     reason:
-      /^HTTP_404: GET \S+\/answers\?max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 404 }),
   },
@@ -553,7 +621,7 @@ function expectFailureLine(read: SessionAnswersRead, reason: string | RegExp): v
 }
 
 describe("readSessionAnswers", () => {
-  test("reads the list with max_chars, renders it, and keeps it in answers.json with its Dispatch URL", async () => {
+  test("reads the list from this host's 72 hours with max_chars, renders it, and keeps it in answers.json with its Dispatch URL", async () => {
     const root = stateDir();
     const session = newSession();
     const dispatch = dispatchAt();
@@ -570,8 +638,12 @@ describe("readSessionAnswers", () => {
       source: "fresh",
       readAt: new Date(NOW).toISOString(),
       words: sessionAnswersWords(recent),
+      since: SINCE,
     });
-    expect(paths).toEqual([`/api/v1/agents/${session}/answers?max_chars=8000`]);
+    // The window starts by this host's clock, which every render filters by too.
+    expect(paths).toEqual([
+      `/api/v1/agents/${session}/answers?since=${encodeURIComponent(SINCE)}&max_chars=8000`,
+    ]);
     expect(JSON.parse(readFileSync(cacheFile(root, session), "utf-8"))).toEqual({
       dispatch_url: dispatch.url,
       read_at: new Date(NOW).toISOString(),
@@ -635,6 +707,7 @@ describe("readSessionAnswers", () => {
         source: "fresh",
         readAt: new Date(NOW).toISOString(),
         words: [],
+        since: SINCE,
       });
       fail = true;
       expectFailureLine(await readSessionAnswers({ ...options, deadlineMs }), reason);
@@ -664,6 +737,7 @@ describe("readSessionAnswers", () => {
         source: "cache",
         readAt,
         words: expect.any(Array),
+        since: new Date(later - 72 * 3_600_000).toISOString(),
         reason: failed,
       });
       expect(read.text?.split("\n")[0]).toBe(SESSION_ANSWERS_MARKER);
@@ -711,6 +785,29 @@ describe("readSessionAnswers", () => {
       notice: noRouteNotice(dispatch.url),
     });
     expect(read.text).toBeUndefined();
+  });
+
+  // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
+  // user and a password without them; the read itself goes to the URL as configured.
+  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
+    const dispatch = {
+      ...dispatchAt(),
+      url: `http://${user}:${secret}@answers-userinfo-${dispatchCount}.test`,
+    };
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(calls.map((call) => call.url.username)).toEqual([user]);
+    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).not.toContain(user);
+    expect(read.notice).not.toContain(secret);
   });
 
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
@@ -856,6 +953,7 @@ describe("readSessionAnswers", () => {
       source: "fresh",
       readAt: new Date(NOW).toISOString(),
       words: sessionAnswersWords([direct]),
+      since: SINCE,
     });
     expect(calls.map((call) => call.url.host)).toEqual([hostOf(a), hostOf(b)]);
     pendingA.resolve(listed(recent));
@@ -1075,6 +1173,7 @@ describe("readSessionAnswers", () => {
       source: "cache",
       readAt,
       words: expect.any(Array),
+      since: SINCE,
       reason: NO_ANSWERS_ROUTE_REASON,
     };
     // The read that meets the 404, with the notice; then a request inside the back-off, which
@@ -1141,6 +1240,7 @@ describe("readSessionAnswers", () => {
       source: "cache",
       readAt,
       words: expect.any(Array),
+      since: expect.any(String),
       reason: notRun,
     };
     const failure: SessionAnswersRead = {

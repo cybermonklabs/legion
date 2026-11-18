@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { Actor, Agent, MessageDeliveryMode } from "../../api/types";
+import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
 import {
   secondaryButtonBorder,
   secondaryButtonText,
@@ -11,7 +11,14 @@ import {
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
-import { duplicateText, failureGuidance, isSafeRetry, MODE_LABELS, withGuidance } from "./delivery";
+import {
+  duplicateText,
+  failureGuidance,
+  isSafeRetry,
+  MODE_LABELS,
+  queuedParts,
+  withGuidance,
+} from "./delivery";
 import { ReplyButton } from "./ReplyButton";
 
 /** The current live capabilities behind a stored delivery target - a bare session, or a role
@@ -54,7 +61,7 @@ export interface TargetedMessageAttempt {
   /** The listener already held this message, so this attempt reached it and changed nothing. */
   readonly duplicate?: boolean;
   readonly error?: string | null;
-  readonly state: "pending" | "sent" | "failed";
+  readonly state: DeliveryAttemptState;
   /** The session this attempt reached (an agent part, so it is drawn by `AgentName`), else the
    *  address it was aimed at; a role address is text. */
   readonly targetName?: AgentPart;
@@ -68,9 +75,10 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
 }
 
 /** The headline one targeted message gets: who answered it, that it reached the session's own
- *  conversation, why it failed, that it is still going out, that it is a BTW waiting on an
- *  answer, or that it was delivered, naming the mode as the composer does (`MODE_LABELS`). It is
- *  `AgentPart`s, so the agents it names keep their identity until `AgentParts` draws them.
+ *  conversation, why it failed, that it is queued for a session that is not running, that it is
+ *  still going out, that it is a BTW waiting on an answer, or that it was delivered, naming the
+ *  mode as the composer does (`MODE_LABELS`). It is `AgentPart`s, so the agents it names keep
+ *  their identity until `AgentParts` draws them.
  *  `asking` is that BTW branch, whose line ends in a separator because it carries a timestamp:
  *  the two belong to one decision, so the caller reads it here rather than restating the
  *  condition.
@@ -101,6 +109,10 @@ function deliveryHeadline(
       asking: false,
     };
   }
+  // A queued attempt is read before a pending one, a BTW's wait and a duplicate: the listener
+  // took the message for a session that is not running, and that is the fact a person acts on,
+  // whatever mode it went in.
+  if (delivery?.state === "queued") return { parts: queuedParts(targetName), asking: false };
   const mode = delivery?.delivery ?? "steer";
   if (delivery?.state === "pending")
     return { parts: ["Sending to ", targetName, ` (${MODE_LABELS[mode]})`], asking: false };
@@ -115,16 +127,19 @@ function deliveryHeadline(
  *  a later role hand-off does not change. An earlier attempt is never what Retry re-sends, so it
  *  never carries the safe-retry promise. */
 function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart): AgentPart[] {
+  const reached = attempt.targetName ?? targetName;
   if (attempt.state === "failed") return [`Failed: ${attempt.error ?? "delivery failed"}`];
+  if (attempt.state === "queued") return queuedParts(reached);
   if (attempt.duplicate === true) return [duplicateText];
   const verb = attempt.state === "pending" ? "Sending" : "Sent";
-  return [`${verb} to `, attempt.targetName ?? targetName, ` (${MODE_LABELS[attempt.delivery]})`];
+  return [`${verb} to `, reached, ` (${MODE_LABELS[attempt.delivery]})`];
 }
 
 /** What became of a targeted message: answered, taken into the session's conversation as the
- *  person's own turn, failed, asking (BTW), or sent - then the earlier attempts, oldest first.
- *  Shared by the card and by a delivered reply in its thread. `retryRow` is whether the surface
- *  shows `DeliveryRetry` beneath it, whose buttons the failure's guidance names. */
+ *  person's own turn, failed, queued for a session that is not running, asking (BTW), or sent -
+ *  then the earlier attempts, oldest first. Shared by the card and by a delivered reply in its
+ *  thread. `retryRow` is whether the surface shows `DeliveryRetry` beneath it, whose buttons the
+ *  failure's guidance names. */
 export function DeliveryStatus({
   answeredBy,
   deliveries,

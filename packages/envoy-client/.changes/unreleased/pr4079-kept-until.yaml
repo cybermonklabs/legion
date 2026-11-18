@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `publish` reads `kept_until` and `last_seen` from a `202` kept answer as `keptUntil` and
+  `lastSeen`. `publishConfirmationText(result, { senderNamed })` now says until when Envoy keeps the
+  message for the role, names a holder that is not live with its state (and, for an unresponsive
+  one, the rule that it is not dead), and says that the sender gets a message if no session takes
+  the copy by then, only when the publish named the sending session, and not when Envoy drops the
+  copy more than an hour late. A `202` with no `kept_until`, from a listener of an earlier release,
+  reads as kept with no time. The `envoy_publish` description states the one-hour keep,
+  `kept_until` and the dead letter.

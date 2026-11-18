@@ -152,7 +152,8 @@ const (
 	keptDenied
 	// keptDeliveryFailed: the listener could not forward the notice at all — the hub down, the
 	// role or session unreadable (notify.ReasonDeliveryFailed) — which is none of the answers the
-	// executor classifies, so the row fails and retries on its backoff without finishing.
+	// executor classifies, so the row fails without finishing: its lane retries it on its backoff,
+	// and the run settles it the same way, due again at once (retryRow).
 	keptDeliveryFailed
 	// keptModes is how many modes the generator chooses among.
 	keptModes
@@ -189,12 +190,16 @@ type keptRace struct {
 	ran     bool
 	err     error
 	outcome string
+	// unrun undoes what preparing the operation took when the publish never came, so the race ran
+	// nothing: the row op's lease, which no run then holds.
+	unrun func() error
 }
 
 // keptPublisher is the listener as a role publish meets it, under one mode the run switches. It
 // counts the answer each catch-up drew, so a run reports which modes its catch-ups actually met,
 // holds one publish open for the interleaving a step armed (keptRace), and records, for each
-// catch-up it takes, the generation that catch-up's root stood at then (atPublish).
+// catch-up it takes, the generation that catch-up's own issue stood at then (atPublish): a root's,
+// or an adopted child's own.
 type keptPublisher struct {
 	mu        sync.Mutex
 	mode      keptPublishMode
@@ -204,9 +209,9 @@ type keptPublisher struct {
 	raceMu sync.Mutex
 	race   *keptRace
 
-	// atPublish is the generation the root whose architect holds a topic stands at, false for a
-	// topic no driven tree's architect holds. genMu guards what it answered: genAt, by the
-	// notice's dedupe key, and genErr, the read that failed, which ends the run.
+	// atPublish is the generation of the issue whose architect holds a topic (a root, or the
+	// adopted child), false for a topic no driven architect holds. genMu guards what it answered:
+	// genAt, by the notice's dedupe key, and genErr, the read that failed, which ends the run.
 	atPublish func(topic string) (uint64, bool, error)
 	genMu     sync.Mutex
 	genAt     map[string]uint64
@@ -219,9 +224,9 @@ func (p *keptPublisher) Publish(_ context.Context, topic, message string, payloa
 	var raced *keptRace
 	if catchUp {
 		// The generation is read before anything else of this publish: it is the one the daemon
-		// decided to send this catch-up at, where its lease-time check read the root, and a
-		// re-admission landing inside the publish is followed by its own catch-up rather than
-		// making this telling wrong.
+		// decided to send this catch-up at, where its lease-time check read the catch-up's own
+		// issue (catchUpSuperseded), and a re-admission landing inside the publish is followed by
+		// its own catch-up rather than making this telling wrong.
 		p.noteGeneration(topic, key)
 		raced = p.disarm()
 	}
@@ -249,9 +254,9 @@ func (p *keptPublisher) Publish(_ context.Context, topic, message string, payloa
 	return nil
 }
 
-// noteGeneration records the generation the publish's root stands at now, under the notice's
-// dedupe key, keeping the first reading of a key: one key is one telling, and that telling is the
-// first delivery under it.
+// noteGeneration records the generation of the issue whose architect holds the publish's topic, as
+// it stands now, under the notice's dedupe key, keeping the first reading of a key: one key is one
+// telling, and that telling is the first delivery under it.
 func (p *keptPublisher) noteGeneration(topic, key string) {
 	if p.atPublish == nil {
 		return
@@ -268,8 +273,8 @@ func (p *keptPublisher) noteGeneration(topic, key string) {
 	}
 }
 
-// generationAtPublish is the generation the root stood at when the listener took the catch-up
-// published under key, and whatever read of one failed, which ends the run.
+// generationAtPublish is the generation the catch-up's own issue stood at when the listener took
+// the catch-up published under key, and whatever read of one failed, which ends the run.
 func (p *keptPublisher) generationAtPublish(key string) (uint64, bool, error) {
 	p.genMu.Lock()
 	defer p.genMu.Unlock()
@@ -650,11 +655,12 @@ func (c keptCounts) String() string {
 		c.publishes[keptReceiptTimeout], c.publishes[keptDenied], c.publishes[keptDeliveryFailed])
 }
 
-// keptTree is one root the run drives and the architect that hears for it: the root every run
-// opens with, the members it leaves the tree with (the child and the grandchild below it), which
-// are roots of their own from then on, and the second root that waits for an admission slot. Each
-// has its claim, its agent's connection and its role topic, and the decisions on the issues of
-// its tree are owed to its architect.
+// keptTree is one issue whose architect the run drives: the root every run opens with, the members
+// it leaves the tree with (the child and the grandchild below it), which are roots of their own
+// from then on, and the second root that waits for an admission slot, which becomes a child with
+// an architect of its own once a live tree adopts it. Each has its claim, its agent's connection
+// and its role topic, and a decision on an issue of a tree is owed to the architect of that tree's
+// root.
 type keptTree struct {
 	key   string
 	issue record.Issue
@@ -767,6 +773,9 @@ type keptRun struct {
 	// seeds that test that window then reach it on every schedule that reaches a held task naming
 	// kept decisions while the root lingers (TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild).
 	seekHeldHandOver bool
+	// crashed is the lease each crash the run simulated left on a row, by row (noteCrash): the one
+	// lease heldNoStaleLease lets stand at the end of a step while no run holds it.
+	crashed map[int64]keptCrashLease
 }
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
@@ -853,8 +862,9 @@ type keptRun struct {
 // terminal hook does (claimFailed), and from there through the start row's relaunch of a failed
 // claim and the catch-up the executor finishes because nobody will hold the architect's role again
 // (architectEnded). The denied forward finishes a catch-up undelivered as a refusal does; the
-// failed forward is none of the answers the executor classifies, so its row retries on its backoff
-// without finishing. Each run reports how often each of these fired (keptCounts).
+// failed forward is none of the answers the executor classifies, so its row fails without
+// finishing and is retried: on its backoff in a lane, at once here (retryRow). Each run reports
+// how often each of these fired (keptCounts).
 //
 // Three the machinery has are left out. A newer decision on a reference already kept replaces its
 // row (Store.AddParkedDecision), so that reference is told twice by design and "told once per
@@ -1124,6 +1134,7 @@ func (r *keptRun) drive() {
 		r.noteMoves()
 		r.observe()
 		r.deliverRowsTheRunDoesNotDrive()
+		r.heldNoStaleLease()
 	}
 }
 
@@ -1841,8 +1852,10 @@ func (r *keptRun) adoptionTarget() *keptTree {
 
 // adoptQueued is a person making the second root a child of a live tree: admission's sweep of its
 // queue moves it into that tree with every record of its own (adoptQueuedRoots, workflow's
-// Engine.Adopt), where it takes no slot and no architect of its own ever again. From then on the
-// decisions a person made on it while it waited for its slot are owed to that tree's architect.
+// Engine.Adopt), where it never takes a tree of its own again. Its own architect starts with its
+// first phase, as every child's does (workflow's Engine.StartFirstPhase), but that architect is
+// told no kept decision (workflow.QueueCatchUp): from then on the decisions a person made on it
+// while it waited for its slot are owed to that tree's architect.
 func (r *keptRun) adoptQueued() {
 	target := r.adoptionTarget()
 	if target == nil {
@@ -1990,8 +2003,10 @@ func (r *keptRun) mirroredBlockers(key string) []string {
 // runRow runs one due supervise or notice row of a driven tree, chosen at random rather than in
 // row order: the supervise rows of one issue do not run in row order (record's outboxInOrder). A
 // row whose run returns nothing is finished as its lane finishes it, unless the generator chose
-// the crash: the finish never commits, so the row runs again later. A row whose run failed is left
-// for its next run, as a lane leaves it.
+// the crash: the finish never commits and the row keeps its lease, as a crashed daemon's row keeps
+// it until it lapses (outboxLease), so the row runs again at a later step under a fresh lease
+// (noteCrash records the lease it left). A row whose run failed is settled as its lane settles it
+// (runOne).
 func (r *keptRun) runRow() {
 	due := r.rows(true)
 	row := due[r.rng.IntN(len(due))]
@@ -2008,14 +2023,29 @@ func (r *keptRun) runRow() {
 	}
 	r.tracef("run-row id=%d issue=%s kind=%s what=%s outcome=%s", row.ID, row.Issue, row.Kind, keptRowWhat(payload),
 		keptRunOutcome(runErr, crashed))
+	if crashed {
+		r.noteCrash(row)
+	}
 }
 
-// runTogether is the daemon's lanes as they really run: several due rows of the driven trees,
-// leased at once, each under a lease token of its own, run on a goroutine each and all waited for.
-// One row at a time is the shape every other step has, and it is not the shape the daemon has: two
-// lanes publish, settle and drop catch-ups beside each other, and only the database serializes
-// them. What a step in this mode did is read once every goroutine is done, so a failure it finds
-// is reported with its seed and its trace, which replay may not reproduce exactly.
+// runTogether is the daemon's lanes running beside each other: several due rows of the driven
+// trees, each under a lease token of its own, run on a goroutine each and all waited for. One row
+// at a time is the shape every other step has, and it is not the shape the daemon has: two lanes
+// publish, settle and drop catch-ups beside each other, and only the database serializes them.
+// Every row of the step holds its lease (leaseOutboxRow) before any row of the step starts to run,
+// as a lane holds its claim (record.Store.ClaimRow) before it starts its row, so a drop of the
+// root's catch-ups (record.Store.DropCatchUps) that one row runs sees the lease of each other row
+// as it sees a lane's claim. A lease written after another row of the step has started can commit
+// inside that row's drop, which then deletes a row it read unleased, a schedule no lane makes while
+// its lease is live (dispatch://INFRA-2836). The model picks its rows by next_at alone, without the
+// lanes' claim rule (record's outboxClaimable), so it still differs from a lane in three cases: a
+// step can run two rows of one issue's lifecycle lane at once, which outboxLaneFree forbids the
+// lanes; a row whose simulated crash left its lease can run again at a later step while that lease
+// is live, where a lane waits for the lease to lapse; and quiesce, which runs any row left, can run
+// a start that outboxInOrder holds behind an older issue_branch row of its issue. A row whose run
+// returned nothing is finished and one whose run failed is settled as its lane settles it
+// (retryRow). What a step in this mode did is read once every goroutine is done, so a failure it
+// finds is reported with its seed and its trace, which replay may not reproduce exactly.
 func (r *keptRun) runTogether() {
 	due := r.rows(true)
 	r.rng.Shuffle(len(due), func(i, j int) { due[i], due[j] = due[j], due[i] })
@@ -2030,6 +2060,8 @@ func (r *keptRun) runTogether() {
 	var wg sync.WaitGroup
 	for i := range rows {
 		rows[i].LeaseToken = leaseOutboxRow(r.t, r.pool, rows[i].ID)
+	}
+	for i := range rows {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -2048,6 +2080,8 @@ func (r *keptRun) runTogether() {
 			if err := r.finishRow(row); err != nil {
 				r.fatalf("finish outbox row %d: %v", row.ID, err)
 			}
+		} else if err := r.retryRow(row, errs[i]); err != nil {
+			r.fatalf("retry outbox row %d: %v", row.ID, err)
 		}
 		what = append(what, fmt.Sprintf("id=%d issue=%s what=%s outcome=%s", row.ID, row.Issue, keptRowWhat(payload),
 			keptRunOutcome(errs[i], false)))
@@ -2088,6 +2122,10 @@ func (r *keptRun) raceRow() {
 	}
 	if race.ran {
 		r.counts.raced++
+	} else if race.unrun != nil {
+		if err := race.unrun(); err != nil {
+			r.fatalf("release what the race on the publish of outbox row %d took and never ran: %v", row.ID, err)
+		}
 	}
 	if race.err != nil {
 		r.fatalf("the operation interleaved with the publish of outbox row %d (%s) failed: %v", row.ID, race.what, race.err)
@@ -2205,9 +2243,16 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 				if err := r.finishRow(row); err != nil {
 					return err
 				}
+			} else if err := r.retryRow(row, runErr); err != nil {
+				return err
 			}
 			race.outcome = keptRunOutcome(runErr, false)
 			return nil
+		}
+		race.unrun = func() error {
+			_, err := r.pool.Exec(r.ctx, "update outbox set lease_token = '', lease_until = null where id = $1 and lease_token = $2",
+				row.ID, row.LeaseToken)
+			return err
 		}
 	default:
 		race.run = func() error {
@@ -2221,14 +2266,20 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 	return race
 }
 
-// runOne leases the row and runs it as its lane would, and records what the run did to the
-// architect's claim and to what the row named (noteRun).
+// runOne leases the row and runs it as its lane would, settles a run that returned an error as the
+// lane settles it (retryRow), and records what the run did to the architect's claim and to what
+// the row named (noteRun). A row that ran without error is the caller's to finish.
 func (r *keptRun) runOne(row *record.OutboxRow, payload record.OutboxPayload) error {
 	tree := r.treeRow(row.Issue)
 	state, answered := r.claimState(tree), r.publisher.answers()
 	row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
 	runErr := r.runner.execute(r.ctx, *row)
 	r.waitMachines()
+	if runErr != nil {
+		if err := r.retryRow(*row, runErr); err != nil {
+			r.fatalf("retry outbox row %d: %v", row.ID, err)
+		}
+	}
 	r.noteRun(tree, state, answered, payload, runErr)
 	return runErr
 }
@@ -2238,6 +2289,94 @@ func (r *keptRun) finishRow(row record.OutboxRow) error {
 	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 	})
+}
+
+// retryRow settles a row whose run returned runErr as its lane settles a failure (outbox.go's
+// settle and retry): the store's RetryOutbox under the run's lease, which clears the lease, due
+// again now rather than after the lane's backoff, since the run's time is compressed.
+func (r *keptRun) retryRow(row record.OutboxRow, runErr error) error {
+	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.RetryOutbox(r.ctx, tx, row.ID, row.LeaseToken, time.Now().UTC(), runErr.Error())
+	})
+}
+
+// keptCrashLease is the lease a crash the run simulated left on a row (runRow): its token and the
+// moment it lapses. A new lease of the row writes a new moment, so it no longer matches.
+type keptCrashLease struct {
+	token string
+	until time.Time
+}
+
+// noteCrash records the lease a simulated crash left on row, which heldNoStaleLease lets stand
+// while it does: a crashed daemon's lease stays until it lapses (outboxLease), and the run
+// leases the row afresh at the later step that runs it again.
+func (r *keptRun) noteCrash(row record.OutboxRow) {
+	var until time.Time
+	if err := r.pool.QueryRow(r.ctx, "select lease_until from outbox where id = $1 and lease_token = $2",
+		row.ID, row.LeaseToken).Scan(&until); err != nil {
+		r.fatalf("read the lease the crash left on outbox row %d: %v", row.ID, err)
+	}
+	if r.crashed == nil {
+		r.crashed = map[int64]keptCrashLease{}
+	}
+	r.crashed[row.ID] = keptCrashLease{token: row.LeaseToken, until: until}
+}
+
+// heldNoStaleLease is a check of the model itself, run at the end of every step of drive, when no
+// goroutine of the model runs a row: no row of a driven tree holds a live lease (a lease token and
+// a lease_until after now) that no run holds. A lane's settle clears or ends the lease of every row
+// it ran — finished, retried — so a lease the run leaves standing is a lane that does not exist,
+// and a drop of the root's catch-ups (record.Store.DropCatchUps) keeps a catch-up for it that a
+// daemon would drop. The one lease let stand is the one a crash the run simulated left (noteCrash),
+// and only while it stands: the row's next lease, its finish or its retry ends it.
+func (r *keptRun) heldNoStaleLease() {
+	type leased struct {
+		id          int64
+		what, token string
+		until       time.Time
+	}
+	rows, err := r.pool.Query(r.ctx, `select id, kind || ' ' || coalesce(payload->>'op', payload->>'kind', ''), lease_token, lease_until
+		from outbox where issue = any($1) and lease_token <> '' and lease_until > now() order by id`, r.rootKeys())
+	if err != nil {
+		r.fatalf("read the leased rows of %s: %v", strings.Join(r.rootKeys(), ", "), err)
+	}
+	var found []leased
+	for rows.Next() {
+		var row leased
+		if err := rows.Scan(&row.id, &row.what, &row.token, &row.until); err != nil {
+			rows.Close()
+			r.fatalf("scan a leased row: %v", err)
+		}
+		found = append(found, row)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		r.fatalf("read the leased rows of %s: %v", strings.Join(r.rootKeys(), ", "), err)
+	}
+	for _, row := range found {
+		if crash, ok := r.crashed[row.id]; ok && crash.token == row.token && crash.until.Equal(row.until) {
+			continue
+		}
+		r.fatalf("outbox row %d (%s) still holds lease %s when step %d has ended and no run holds it: a lane's "+
+			"settle clears the lease of every row it ran, and only a crash leaves one standing; %s",
+			row.id, row.what, row.token, r.step, r.stepNames(row.id))
+	}
+}
+
+// stepNames is what the trace of the step just run says of outbox row id: every entry of the step
+// that names it, or that none does.
+func (r *keptRun) stepNames(id int64) string {
+	prefix := fmt.Sprintf("%3d ", r.step)
+	var named []string
+	for i := len(r.trace) - 1; i >= 0 && strings.HasPrefix(r.trace[i], prefix); i-- {
+		if line := r.trace[i]; strings.Contains(line, fmt.Sprintf("id=%d ", id)) || strings.Contains(line, fmt.Sprintf("row %d ", id)) {
+			named = append([]string{strings.TrimPrefix(line, prefix)}, named...)
+		}
+	}
+	if len(named) == 0 {
+		return "the step's trace names it nowhere"
+	}
+	return "the step's trace says: " + strings.Join(named, " / ")
 }
 
 // noteRun records what one row's run did, read against the claim and the listener as they stood
@@ -2320,7 +2459,8 @@ func (r *keptRun) noteRefusal(tree *keptTree) {
 	r.refused[tree.key] = true
 }
 
-// claimStates is the state of every driven tree's architect claim now, by root key.
+// claimStates is the state of every driven architect claim now, by the key of its issue: a root,
+// or the adopted child.
 func (r *keptRun) claimStates() map[string]supervise.ClaimState {
 	states := make(map[string]supervise.ClaimState, len(r.roots))
 	for _, tree := range r.roots {
@@ -2352,8 +2492,9 @@ func keptClaimState(state supervise.ClaimState) supervise.ClaimState {
 
 // claimFailed tells the workflow that an architect's claim spent its launch budget, as the
 // daemon's terminal hook does (workflowRuntime.applyTerminal), carrying the same cause, counters
-// and limits that hook carries: the engine writes the tree's worker-died notice, which goes to
-// that same architect and waits ahead of its catch-ups.
+// and limits that hook carries: the engine writes a worker-died of that architect. A root's goes
+// to that same architect, with a copy to the controller, and waits ahead of its catch-ups, and the
+// adopted child's goes to the architect above it.
 func (r *keptRun) claimFailed(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -3262,6 +3403,11 @@ func keptRefs(decisions []record.ParkedDecision) string {
 // under an id the machine minted when it took a task back is a telling of its own, and the task
 // of the row that queued it (keptRun.resent): the shim has no record of that id, so the agent is
 // prompted again, which is the one extra telling the invariant accepts (held).
+//
+// One prompt comes from no row at all: the daemon's own delivery of what a relaunch ended, which a
+// claim holding no task is given at its ready (supervise's queueRelaunch, dispatch://INFRA-3276
+// R3). Its text is the relaunch's sentence alone, so it tells no decision, and the invariant holds
+// it to that: a reference in it is a telling no row accounts for.
 func (r *keptRun) observe() {
 	for _, tree := range r.roots {
 		generation := r.storedGeneration(tree.key)
@@ -3272,6 +3418,13 @@ func (r *keptRun) observe() {
 				continue
 			}
 			r.sent[prompt.DeliveryID] = true
+			if strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) {
+				if refs := r.refsIn(prompt.Message); len(refs) != 0 {
+					r.fatalf("the architect of %s was told %v by the daemon's own delivery %q of a relaunch's sentence, which names no decision",
+						tree.key, refs, prompt.DeliveryID)
+				}
+				continue
+			}
 			row, retold := keptRowOfDelivery(prompt.DeliveryID), false
 			if origin, minted := r.resent[prompt.DeliveryID]; minted {
 				row, retold = origin, true
@@ -3387,7 +3540,7 @@ func (r *keptRun) tell(telling keptTelling) {
 			telling.ref, telling.how, telling.tree)
 	case !telling.prompt && telling.named != telling.root:
 		r.fatalf("%s was told by %s, which names generation %d, while %s stood at generation %d when the daemon decided to send it: "+
-			"every catch-up names the generation its root is at when it is sent",
+			"every catch-up names the generation of its own issue when it is sent",
 			telling.ref, telling.how, telling.named, telling.tree, telling.root)
 	}
 	r.told[telling.ref] = append(r.told[telling.ref], telling)
@@ -3627,10 +3780,10 @@ func (r *keptRun) storedGeneration(key string) uint64 {
 	return generation
 }
 
-// rootGeneration is the generation the root whose architect holds topic stands at, false for a
-// topic no driven tree's architect holds. The publisher reads it as it takes a catch-up, on
-// whichever lane is publishing, so it answers the error rather than ending the run from a
-// goroutine of its own.
+// rootGeneration is the generation of the issue whose architect holds topic (a root, or the
+// adopted child), false for a topic no driven architect holds. The publisher reads it as it takes
+// a catch-up, on whichever lane is publishing, so it answers the error rather than ending the run
+// from a goroutine of its own.
 func (r *keptRun) rootGeneration(topic string) (uint64, bool, error) {
 	tree := r.treeTopic(topic)
 	if tree == nil {

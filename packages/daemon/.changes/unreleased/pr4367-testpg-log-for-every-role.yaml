@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  Every role of an issue pod reads the pod's test Postgres log at `/var/run/legion/testpg.log`, the
+  path `LEGION_TEST_PG_LOG` names: `legion launcher role-init` binds that one file read-only, and not
+  its directory, because gVisor lets a nested user namespace remount a read-only bind read-write.
+  The server now logs every connection (`log_connections=all`) and disconnection, and the roles'
+  login holds `pg_monitor`, so a role whose connect failed can tell a failure in the server from a
+  connect that never reached it. The worker image makes the file the log is bound over, and the
+  daemon's image probe proves that bind under the deployment's runtime.
+
+  The loader now refuses an operator mount at `/var/run/legion/testpg.log`
+  (`runtime.kubernetes.pod.volume_mounts[].mount_path`), in every deployment: run this release's
+  `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.

@@ -2,6 +2,7 @@ package ompsessions
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -17,9 +18,11 @@ const (
 	// StorePostgres keeps every session in the database whose whole postgres:// URL, password and
 	// all, one providers Secret key holds.
 	StorePostgres StoreKind = "postgres"
-	// StoreCloudSQLIAM keeps every session in a Cloud SQL database each pod signs in to as itself,
+	// StoreCloudSQLIAM keeps every session in a Cloud SQL database each pod signs in to over IAM,
 	// with no password written anywhere: the pod's launcher binds a unix socket of its own for each
-	// generation and proxies it to the instance over the pod's cloud identity (internal/sessionproxy).
+	// generation and proxies it to the instance (internal/sessionproxy), signing in over the pod's
+	// own cloud identity, or as the Google service account the deployment names, which that
+	// identity impersonates (Database.ImpersonateServiceAccount).
 	StoreCloudSQLIAM StoreKind = "cloudsql-iam"
 )
 
@@ -31,14 +34,22 @@ type Store struct {
 	// DSNSecret is the providers Secret's key that holds the session database's whole postgres://
 	// URL, under StorePostgres alone.
 	DSNSecret string
-	// Database is the Cloud SQL database every pod signs in to as itself, under StoreCloudSQLIAM
-	// alone.
+	// Database is the Cloud SQL database every pod signs in to, as itself or as the service account
+	// it impersonates, under StoreCloudSQLIAM alone.
 	Database Database
 }
 
 // Database is a Cloud SQL session database: the instance's connection name (ValidInstance), the
-// database in it, and the IAM login a pod signs in as.
-type Database struct{ Instance, Name, User string }
+// database in it, the IAM login a pod signs in as, and the service account, if any, whose login
+// that is and which the pod impersonates to sign in as it. It is a struct of strings, so a reader
+// compares two databases, or one with the zero value, with ==.
+type Database struct {
+	Instance, Name, User string
+	// ImpersonateServiceAccount is the email of the Google service account the pod's session proxy
+	// impersonates with the pod's own credentials and signs in as, so User is that account's IAM
+	// login (ServiceAccountLogin). Empty signs in as the pod's own identity.
+	ImpersonateServiceAccount string
+}
 
 // ValidInstance reports whether name is a Cloud SQL instance's connection name the connector
 // uses whole: it holds no Unicode whitespace, the Cloud SQL connector's own parser
@@ -58,6 +69,27 @@ func ValidInstance(name string) bool {
 	return err == nil && c.Project()+":"+c.Region()+":"+c.Name() == name
 }
 
+// serviceAccountEmail is a Google service account's email: a user-managed account's
+// (<name>@<project>.iam.gserviceaccount.com) and the forms Google makes itself, such as
+// <number>-compute@developer.gserviceaccount.com, <project>@appspot.gserviceaccount.com and
+// service-<number>@gcp-sa-<service>.iam.gserviceaccount.com, all in lower case.
+var serviceAccountEmail = regexp.MustCompile(`^[a-z0-9-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.gserviceaccount\.com$`)
+
+// ServiceAccountLogin answers whether email is a Google service account's email and, when it is,
+// the IAM database login Cloud SQL gives that account: the email without its .gserviceaccount.com
+// suffix ("For a service account, this is the service account's email without the
+// .gserviceaccount.com domain suffix", https://cloud.google.com/sql/docs/postgres/iam-logins). It
+// refuses the login form itself (<name>@<project>.iam), a person's email, a bare name, upper case,
+// white space and a blank value. It is the one rule, which both the loader that reads the account
+// from the file and the proxy that impersonates it hold to, as both hold to ValidInstance for the
+// instance, so --check-config accepts no account the proxy would refuse.
+func ServiceAccountLogin(email string) (login string, ok bool) {
+	if !serviceAccountEmail.MatchString(email) {
+		return "", false
+	}
+	return strings.TrimSuffix(email, ".gserviceaccount.com"), true
+}
+
 // InDatabase is whether a session is a row rather than a file, which both database kinds are: then
 // nothing a volume holds says anything about a session. It is the kind's own answer, so a reader
 // that holds the kind alone — the store a kept pod was built under, which is all of a store its
@@ -68,7 +100,8 @@ func (s Store) InDatabase() bool { return s.Kind.InDatabase() }
 
 // DSNSecretKey is the providers Secret's key that holds the session database's URL, "" unless the
 // store is the postgres one: under cloudsql-iam no pod mounts a session key, since each pod signs
-// in to the instance as itself and there is no URL to keep anywhere.
+// in to the instance over IAM, as itself or as the service account it impersonates, and there is no
+// URL to keep anywhere.
 func (s Store) DSNSecretKey() string {
 	if s.Kind != StorePostgres {
 		return ""

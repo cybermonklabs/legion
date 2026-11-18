@@ -26,7 +26,7 @@ func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, aut
 // OpenOperatorTreeLifecycle is the authenticated operator route's open of a root's tree, before
 // its claim is persisted (internal/api's spawn). created runs in the same transaction as the open
 // and only where this call created the tree's row (treelifecycle.Lifecycle.Created): the tree's
-// memory group is drawn there (internal/memorygroup), so no crash between the two can leave a
+// experiments are drawn there (internal/experiment), so no crash between the two can leave a
 // lifecycle whose tree was never drawn for. A failing created fails the open, and the row goes
 // with the transaction.
 func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
@@ -67,21 +67,25 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // launch; runtime work happens after this transaction commits. The project controller's claim
 // (`controller: daemon`) belongs to no tree, so it binds no lifecycle: it is written at epoch zero.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	var queued bool
+	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
 			c.TreeEpoch = 0
-			return putClaim(ctx, tx, c)
+			queued, err = s.putClaim(ctx, tx, c)
+			return err
 		}
 		epoch, err := treelifecycle.BindWork(ctx, tx, c.Project, c.Tree)
 		if err != nil {
 			return err
 		}
 		c.TreeEpoch = epoch
-		return putClaim(ctx, tx, c)
+		queued, err = s.putClaim(ctx, tx, c)
+		return err
 	})
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("admit claim %s: %w", c.Token, err)
 	}
+	s.committedClaim(c, queued)
 	return c, nil
 }
 

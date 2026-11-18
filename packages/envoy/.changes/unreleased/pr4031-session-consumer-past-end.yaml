@@ -1,0 +1,45 @@
+kind: Fixed
+body: |-
+  The listener no longer creates a session consumer at a start past the stream's last sequence + 1.
+  Such a start came from a resume point past the stream's end, for example after a restore that
+  kept the stream's `envoy_stream_id` or after a one-copy stream lost every message, and the
+  consumer then skipped every message stored until the stream reached that start. Now a start
+  past the stream's end, whatever its source (a client's resume point, the repair's start or a
+  pending restart start), is set to the stream's first sequence, as Kafka's `earliest` reset
+  policy does: a client reports only sequences the server handed it, so the messages now at
+  those sequences were never handed to the session, and the consumer hands over every one of
+  them. The client's delivery ledger drops by identity any message it was handed before, within
+  72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`) and the 20,000 frames it holds
+  (`DELIVERY_LEDGER_LIMIT`). The registration answer's `consumer_start` gives that start, and
+  the listener writes one WARN line for each such create:
+  `session consumer start past the stream's end, created at the stream's first sequence`.
+  A start from a client's resume point or from the repair that is above the session's resume
+  record floor + 1 is lowered to that floor + 1 (one INFO line), so a session that comes back
+  with the same resume point after a deregistration gets the messages stored while it was away
+  and is not handed again what it acked. A delete whose floor is past the stream's end records
+  the sequence before the stream's first, with one WARN line:
+  `session resume floor past the stream's end, recorded at the sequence before the stream's first`.
+  That floor is 0 for a stream that has stored nothing or whose first sequence is still 1, and the
+  stream's last sequence for a stream that age or a purge has emptied.
+  So the session's next consumer starts at the stream's first sequence too, through the same
+  reset, and skips none of the messages the stream stored after that consumer's start was fixed.
+  After a one-copy stream lost data, a restart of a consumer starts at the sequence after the
+  ack floor the server reports, so the messages that still wait for an ack are delivered again.
+  A consumer whose ack floor the server reports above the stream's last sequence, because the
+  stream's sequences went back when a one-copy stream lost every message, is restarted at the
+  stream's first sequence at the relay's next restart of the session, through the same reset and
+  its WARN line, so it gets the messages now stored at those sequences. This includes a consumer
+  that an earlier build created past the end.
+
+  Two limits remain, both limits of resuming by stream sequence. First, a consumer the stream
+  catches up with before anything restarts it (one an earlier build created past the end, or one an
+  unreconciled whole loss of a one-copy stream left there) is kept once the stream reaches its
+  floor, and the messages between the old end and that floor are skipped. For an earlier build's
+  consumer, the window closes at the first start of a listener that runs this build and holds that
+  session's consumer. A session it relays is repaired by the relay restart it makes at its start. A
+  session whose record has left the bucket is reached by the sweep's delete instead, whose first
+  pass runs at the listener's start and then every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5
+  minutes by default), at most 256 consumers a pass. A session whose record names another machine
+  is repaired by that machine's relay. Second, after a restore from an older backup that keeps the
+  stream's `envoy_stream_id`, a stream that grows past a client's resume point R before that client
+  returns puts R + 1 inside the stream, so the messages between the restored end and R are skipped.

@@ -32,6 +32,7 @@ import {
   type DispatchToolResult,
   dispatchRefFromUrl,
   executeDispatchTool,
+  formatOpenAsksSummary,
   goBlankPattern,
   positionText,
   resolveIssueDocumentId,
@@ -509,6 +510,106 @@ describe("executeDispatchTool", () => {
     ).rejects.toThrow(
       "If the Dispatch URL changed, restart this agent process so it picks up the new configuration."
     );
+  });
+
+  // A configured Dispatch URL may carry a user and a password. The requests go to it as
+  // configured; what the session reads names it without them, in an error and in ordinary
+  // output alike: the unreachable server, a build without the answers route, an issue's page link
+  // when no public URL is set, and an open-asks summary given the configured URL as its base.
+  test("names a Dispatch URL that carries a user and a password without either, in errors and links", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const withUserinfo = { ...config, url: `https://${user}:${secret}@host.example` };
+    const requested: string[] = [];
+    const issueRead = async (url: RequestInfo | URL): Promise<Response> => {
+      requested.push(String(url));
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Dispatch issue",
+          status: "open",
+          priority: null,
+          assignee: null,
+          claim: null,
+          components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+          route: null,
+          open_asks: [],
+          last_seq: 0,
+          external_links: [],
+          labels: [],
+          advances: [],
+          advances_revision: 0,
+        });
+      }
+      if (pathname === "/api/v1/issues/DSP-42/events") return response([]);
+      return response({ error: "missing", code: "NOT_FOUND" }, 404);
+    };
+    const noAnswersRoute = async (url: RequestInfo | URL): Promise<Response> =>
+      response(
+        { code: "NOT_FOUND", error: `no route for GET ${new URL(String(url)).pathname}` },
+        404
+      );
+    const unreachable = (() => {
+      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+    }) as unknown as typeof fetch;
+    const run = (tool: string, args: Record<string, unknown>, fetchImpl: typeof fetch) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config: withUserinfo,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+        writeRetry,
+        // A route no build answers is asked three more times before the message: no real wait.
+        sleep: async () => {},
+      });
+    const refusal = (call: Promise<unknown>) =>
+      call.then(
+        () => "",
+        (error: Error) => error.message
+      );
+
+    const read = (await run("dispatch_read", { issue: "DSP-42" }, issueRead as typeof fetch)).text;
+    const answers = await refusal(run("dispatch_answers", {}, noAnswersRoute as typeof fetch));
+    const offline = await refusal(
+      run("dispatch_ask", { issue: "DSP-41", question: releaseQuestion }, unreachable)
+    );
+    const summary = formatOpenAsksSummary(
+      {
+        count: 1,
+        asks: [
+          {
+            ref: "/issues/LEGION-1/asks/ask-1",
+            question: releaseQuestion,
+            age_seconds: 65,
+            priority: null,
+            owner: { issue: { key: "LEGION-1", title: "Reminder" } },
+            waiting_on: "human",
+            waiting_on_person: "alice@example.org",
+          },
+        ],
+      } as unknown as Parameters<typeof formatOpenAsksSummary>[0],
+      withUserinfo.url
+    );
+
+    expect(requested[0]).toStartWith(`${withUserinfo.url}/api/v1/`);
+    expect(read).toContain("\nLink: https://host.example/issues/DSP-42\n");
+    expect(answers).toBe(
+      "This Dispatch (https://host.example) has no answers route yet: its build is older than the answers route."
+    );
+    expect(offline).toContain("Dispatch at https://host.example is unreachable: ");
+    expect(summary).toEndWith(
+      " · https://host.example/issues/LEGION-1/asks/ask-1\n\nWaiting on agent (0):"
+    );
+    for (const text of [read, answers, offline, summary]) {
+      expect(text).not.toContain(user);
+      expect(text).not.toContain(secret);
+    }
   });
 
   test("does not duplicate an ask ref already in the question", async () => {
@@ -1257,6 +1358,75 @@ describe("executeDispatchTool", () => {
     );
     expect(onIssue.details).toMatchObject({ issue: "LEGION-3", message: "message-9" });
     expect(byRef.details).toMatchObject({ issue: "LEGION-3", message: "message-9" });
+  });
+
+  /** One `dispatch send-to-agent` call under `env`, against a Dispatch whose first delivery
+   *  attempt settles as `attempt`, with the requests the call sent. */
+  async function sendToAgent(env: Record<string, string>, attempt: Record<string, unknown>) {
+    const session = "01234567-0000-4000-8000-000000000001";
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      calls.push({ path: target.pathname, body: JSON.parse(init?.body as string) });
+      if (target.pathname !== `/api/v1/agents/${session}/messages`) {
+        throw new Error(`unexpected request: ${target.pathname}`);
+      }
+      return response(
+        { id: "message-1", issue_key: null, deliveries: [{ delivery: "aside", ...attempt }] },
+        201
+      );
+    };
+    const result = await executeDispatchTool({
+      tool: "dispatch_send_to_agent",
+      args: { session, body: "DSP-1: please take this.", delivery: "aside" },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "ses_reader",
+      config,
+      env,
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    return { calls, result };
+  }
+
+  // A session's own conversation belongs to no issue, so the call needs none and sends none,
+  // whether LEGION_ISSUE names one or not.
+  test("send-to-agent runs with no issue, and sends none when LEGION_ISSUE names one", async () => {
+    for (const env of [{}, { LEGION_ISSUE: "LEGION-3" }] as Record<string, string>[]) {
+      const { calls, result } = await sendToAgent(env, { state: "sent" });
+
+      expect(calls).toEqual([
+        {
+          path: "/api/v1/agents/01234567-0000-4000-8000-000000000001/messages",
+          body: { body: "DSP-1: please take this.", delivery: "aside" },
+        },
+      ]);
+      expect(result.details).toEqual({
+        session: "01234567-0000-4000-8000-000000000001",
+        message: "message-1",
+        delivery: "sent",
+      });
+    }
+  });
+
+  // A queued attempt is with a session that is not running, so the line says it waits for that
+  // session and never that it reached it.
+  test("send-to-agent says what each state of the first attempt means for the session", async () => {
+    const said = async (attempt: Record<string, unknown>) =>
+      (await sendToAgent({}, attempt)).result.text.replace(
+        /^Sent message message-1 to session \S+; (.*)\. dispatch .*$/,
+        "$1"
+      );
+
+    expect(await said({ state: "queued" })).toBe(
+      "that session is stopped, so its delivery is queued: it gets the message if it runs again within 72 hours"
+    );
+    expect(await said({ state: "sent" })).toBe("it reached that session as aside");
+    expect(await said({ state: "pending" })).toBe("its delivery is still on its way");
+    expect(await said({ state: "failed", error: "no live session" })).toBe(
+      "its delivery failed: no live session"
+    );
   });
 
   // Once the session has answered, other text is its follow-up: Dispatch threads it under the
@@ -8989,6 +9159,379 @@ describe("executeDispatchTool", () => {
     }
   });
 
+  // A plan review's approval names the plan review where a person's approval names the person, and
+  // a stale plan approval names a plan review of the new version, not a person's approval request,
+  // as the way to approve it again. The plan is answered as Dispatch answers one, role `plan` and
+  // slug `plan-md`. A person's stale approval of a plan is the next test's, and of a spec, the one
+  // after it ("dispatch_doc_read tells the agent when the document's approval went stale").
+  test("doc-read names a plan review, not a person, as a plan's approver", async () => {
+    const hash = "cd".repeat(32);
+    const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
+    const cases = [
+      {
+        approval: {
+          kind: "plan_review",
+          state: "approved",
+          latest_version: 2,
+          version: 2,
+          by: { kind: "session", id: session },
+        },
+        line: `Approval: approved v2 by plan review (${session}), content sha256:${hash}`,
+      },
+      {
+        approval: {
+          kind: "plan_review",
+          state: "stale",
+          latest_version: 4,
+          version: 3,
+          by: { kind: "session", id: session },
+        },
+        line: `Approval: approved v3 by plan review (${session}), changed since (now v4) - a plan review of this version records a new approval with dispatch plan-approve, content sha256:${hash}`,
+      },
+      {
+        approval: {
+          kind: "person",
+          state: "approved",
+          latest_version: 2,
+          version: 2,
+          by: { kind: "user", id: "alice" },
+        },
+        line: `Approval: approved v2 by alice, content sha256:${hash}`,
+      },
+    ];
+    for (const { approval, line } of cases) {
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const target = new URL(String(url));
+        if (target.pathname === "/api/v1/issues/DSP-42") {
+          return response({
+            key: "DSP-42",
+            primary_artifact_id: "artifact-42",
+            open_asks: [],
+            artifacts: [
+              { id: "artifact-42", slug: "spec", name: "spec.md", primary: true },
+              {
+                id: "artifact-43",
+                slug: "plan-md",
+                role: "plan",
+                name: "plan.md",
+                approval: { ...approval, content_sha256: hash, content_sha256_source: "insert" },
+              },
+            ],
+          });
+        }
+        if (target.pathname === `/api/v1/artifacts/artifact-43/versions/${approval.version}`) {
+          return response({ markdown: "# Plan", number: approval.version, sha256: hash });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+        throw new Error(`unexpected request: ${target.pathname}`);
+      };
+      const result = await executeDispatchTool({
+        tool: "dispatch_doc_read",
+        args: { issue: "DSP-42", artifact: "plan.md", version: approval.version },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(result.text.split("\n").find((row) => row.startsWith("Approval:"))).toBe(line);
+    }
+  });
+
+  // Dispatch refuses an approval request on every plan (409 PLAN_APPROVED_BY_REVIEW), a plan a
+  // person approved from its document header included: the reviews route has no plan check. So a
+  // stale approval of a plan never tells the agent to request approval again, whoever gave it; it
+  // names `dispatch plan-approve`, in `dispatch read` and in the trailer of `dispatch doc-read`
+  // alike. The document is a plan as Dispatch answers it, role `plan` and slug `plan-md`, which is
+  // what the architect's ruling keys on
+  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75).
+  test("a stale approval a person gave a plan names dispatch plan-approve, not a request", async () => {
+    const hash = "cd".repeat(32);
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Native workspace",
+          status: "in_progress",
+          primary_artifact_id: "artifact-42",
+          open_asks: [],
+          artifacts: [
+            { id: "artifact-42", slug: "spec", name: "spec.md", primary: true, project: "DSP" },
+            {
+              id: "artifact-43",
+              slug: "plan-md",
+              name: "plan.md",
+              role: "plan",
+              primary: false,
+              project: "DSP",
+              versions: [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }],
+              approval: {
+                kind: "person",
+                state: "stale",
+                latest_version: 4,
+                version: 3,
+                by: { kind: "user", id: "alice" },
+                content_sha256: hash,
+                content_sha256_source: "insert",
+              },
+            },
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/versions/4") {
+        return response({ markdown: "# Plan\n\nFour.", number: 4, sha256: hash });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("artifact"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const run = (tool: string, args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    for (const result of [
+      await run("dispatch_read", { issue: "DSP-42", artifact: "plan.md" }),
+      await run("dispatch_doc_read", { issue: "DSP-42", artifact: "plan.md", version: 4 }),
+    ]) {
+      const line = result.text.split("\n").find((row) => row.startsWith("Approval:")) ?? "";
+      expect(line).toStartWith("Approval: approved v3 by alice, changed since (now v4) - ");
+      expect(line).toContain("dispatch plan-approve");
+      expect(line).not.toMatch(/request[ -]approval/);
+    }
+  });
+
+  // The slug fallback that names a role-less `plan-md` a plan holds for an issue's documents alone
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): an issue's plan.md with
+  // no role is still a plan, whose stale approval names `dispatch plan-approve`, and a project
+  // document named plan.md is a plain document, whose stale approval comes back through a
+  // request, as any other document's does. Each document is answered as Dispatch answers it: no
+  // role key on either.
+  test("a stale approval of a plan.md is a plan's on an issue alone, whatever its role column holds", async () => {
+    const hash = "cd".repeat(32);
+    const staleByAlice = {
+      kind: "person",
+      state: "stale",
+      latest_version: 4,
+      version: 3,
+      by: { kind: "user", id: "alice" },
+      content_sha256: hash,
+      content_sha256_source: "insert",
+    };
+    const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+    const issuePlan = {
+      id: "artifact-43",
+      issue_key: "DSP-42",
+      project: "DSP",
+      slug: "plan-md",
+      name: "plan.md",
+      primary: false,
+      kind: "doc",
+      versions,
+      approval: staleByAlice,
+    };
+    const projectPlan = {
+      ...issuePlan,
+      id: "artifact-91",
+      issue_key: null,
+      ref_key: "DSP/plan-md",
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Native workspace",
+          status: "in_progress",
+          primary_artifact_id: "artifact-42",
+          open_asks: [],
+          artifacts: [
+            { id: "artifact-42", slug: "spec", name: "spec.md", primary: true, project: "DSP" },
+            issuePlan,
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/projects/DSP/artifacts") return response([projectPlan]);
+      if (
+        target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
+        target.pathname === "/api/v1/projects/DSP/artifacts/plan.md"
+      ) {
+        return response(projectPlan);
+      }
+      if (
+        target.pathname === "/api/v1/artifacts/artifact-43/versions/4" ||
+        target.pathname === "/api/v1/artifacts/artifact-91/versions/4"
+      ) {
+        return response({ markdown: "# Plan\n\nFour.", number: 4, sha256: hash });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      if (target.pathname === "/api/v1/artifacts/artifact-91/comments") return response([]);
+      if (target.pathname === "/api/v1/artifacts/artifact-91/asks") return response([]);
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("artifact"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const run = (tool: string, args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    const approvalOf = (text: string) =>
+      text.split("\n").find((row) => row.startsWith("Approval:")) ?? "";
+
+    for (const result of [
+      await run("dispatch_read", { issue: "DSP-42", artifact: "plan.md" }),
+      await run("dispatch_doc_read", { issue: "DSP-42", artifact: "plan.md", version: 4 }),
+    ]) {
+      const line = approvalOf(result.text);
+      expect(line).toStartWith("Approval: approved v3 by alice, changed since (now v4) - ");
+      expect(line).toContain("dispatch plan-approve");
+      expect(line).not.toMatch(/request[ -]approval/);
+    }
+    for (const result of [
+      await run("dispatch_read", { project: "DSP", artifact: "plan.md" }),
+      await run("dispatch_doc_read", { project: "DSP", artifact: "plan.md", version: 4 }),
+    ]) {
+      const line = approvalOf(result.text);
+      expect(line).toStartWith("Approval: approved v3 by alice, changed since (now v4) - ");
+      expect(line).toContain("request approval again");
+      expect(line).not.toContain("plan-approve");
+    }
+  });
+
+  // A closed issue takes no approval of any kind: Dispatch refuses an approval request, a plan
+  // review and a review alike on it (409 ISSUE_CLOSED). So a stale approval on a closed issue's
+  // document, which went stale before the close, names no command to restore it, on its plan as
+  // on its spec: `dispatch read`, the trailer of `dispatch doc-read` and the issue read's spec line
+  // each say the issue is closed instead
+  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf).
+  test("a stale approval on a closed issue names no command, since Dispatch takes no approval there", async () => {
+    const hash = "cd".repeat(32);
+    const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
+    const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+    const stale = {
+      state: "stale",
+      latest_version: 4,
+      version: 3,
+      content_sha256: hash,
+      content_sha256_source: "insert",
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Native workspace",
+          status: "done",
+          closed_at: "2026-11-01T00:00:00Z",
+          priority: null,
+          assignee: null,
+          claim: null,
+          components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+          route: null,
+          repo: null,
+          resolved_repo: null,
+          last_seq: 0,
+          external_links: [],
+          labels: [],
+          advances: [],
+          advances_revision: 0,
+          primary_artifact_id: "artifact-42",
+          open_asks: [],
+          artifacts: [
+            {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              project: "DSP",
+              slug: "spec",
+              name: "spec.md",
+              primary: true,
+              kind: "doc",
+              versions,
+              approval: { ...stale, kind: "person", by: { kind: "user", id: "alice" } },
+            },
+            {
+              id: "artifact-43",
+              issue_key: "DSP-42",
+              project: "DSP",
+              slug: "plan-md",
+              name: "plan.md",
+              role: "plan",
+              primary: false,
+              kind: "doc",
+              versions,
+              approval: { ...stale, kind: "plan_review", by: { kind: "session", id: session } },
+            },
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-43/versions/4") {
+        return response({ markdown: "# Plan\n\nFour.", number: 4, sha256: hash });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/events") return response([]);
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      if (target.pathname === "/api/v1/issues/DSP-42/references") {
+        return response({ members: [], truncated: false });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/coverage") {
+        return response({
+          issue: "DSP-42",
+          spec_artifact_id: "artifact-42",
+          has_plan: true,
+          requirements: [],
+          gaps: [],
+        });
+      }
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("artifact"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const run = (tool: string, args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    const closed = ` - its issue is closed, and Dispatch records no approval of a closed issue's document, content sha256:${hash}`;
+
+    for (const [result, head] of [
+      [
+        await run("dispatch_read", { issue: "DSP-42", artifact: "plan.md" }),
+        `Approval: approved v3 by plan review (${session}), changed since (now v4)`,
+      ],
+      [
+        await run("dispatch_doc_read", { issue: "DSP-42", artifact: "plan.md", version: 4 }),
+        `Approval: approved v3 by plan review (${session}), changed since (now v4)`,
+      ],
+      [
+        await run("dispatch_read", { issue: "DSP-42" }),
+        "Spec approval: approved v3 by alice, changed since (now v4)",
+      ],
+    ] as const) {
+      expect(result.text.split("\n")).toContain(`${head}${closed}`);
+      expect(result.text).not.toContain("plan-approve");
+      expect(result.text).not.toMatch(/request[ -]approval/);
+    }
+  });
+
   test("dispatch_doc_read tells the agent when the document's approval went stale", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
@@ -9639,6 +10182,7 @@ describe("executeDispatchTool", () => {
           changed: false,
           unchanged_ops: [0, 1],
           token: "sha256:unchanged",
+          written: "",
         });
       }
       throw new Error(`unexpected request: ${path}`);
@@ -9674,6 +10218,68 @@ describe("executeDispatchTool", () => {
       changed: false,
       token: "sha256:unchanged",
     });
+  });
+
+  // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
+  // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
+  // prints under the decision-block lines: the tool description promises those come after the
+  // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
+  test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        });
+      }
+      if (path === "/api/v1/artifacts/artifact-42/edits") {
+        return response({
+          applied: 1,
+          version: { number: 3 },
+          changed: true,
+          unchanged_ops: [],
+          lost_ops: [],
+          token: "sha256:after-edit",
+          written: "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed",
+          advice: {
+            decision_block_checks: [
+              {
+                block_id: "ask-block-1",
+                question: "Which window?",
+                suggestions: { outcome: "none", related: [] },
+              },
+            ],
+          },
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_doc_edit",
+      args: {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "Plan", with: "## Plan\n\n- first\n- second" }],
+      },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      "Applied 1 ops (version 3)\n" +
+        "Decision block ask-block-1:\n" +
+        "Related-item check searched and found nothing.\n" +
+        "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed\n" +
+        "Document token: sha256:after-edit"
+    );
   });
 
   // A concurrent browser deletion that lands after the version is written is past undoing, so the
@@ -13947,6 +14553,128 @@ describe("executeDispatchTool", () => {
         "- #7 comment.anchor_refreshed · user sami · 2026-09-09T00:07:00Z · Anchor moved after the document edit.",
         `- #8 ask.anchor_refreshed · user sami · 2026-09-09T00:08:00Z · ${reopenQuestion}`,
         "- #9 artifact.human_edited · user person@example.com · 2026-09-09T00:09:00Z · spec.md v4 to v7, edited by person@example.com",
+      ].join("\n"),
+      details: { issue: "DSP-42" },
+    });
+  });
+
+  test("reads each review of a document from a Dispatch log reference, with its version, reviewer and reason", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Dispatch issue",
+          status: "open",
+          route: null,
+          open_asks: [],
+          children: [],
+          last_seq: 6,
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/events") {
+        return response([
+          {
+            seq: 2,
+            type: "artifact.approved",
+            actor: { kind: "session", id: "s2" },
+            created_at: "2026-09-09T00:02:00Z",
+            payload: {
+              artifact_id: "artifact-2",
+              name: "plan.md",
+              version: 2,
+              actor: { kind: "session", id: "s2" },
+              reason: null,
+              ask_id: null,
+              kind: "plan_review",
+            },
+          },
+          {
+            seq: 3,
+            type: "artifact.changes_requested",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:03:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 13,
+              actor: { kind: "user", id: "sami" },
+              reason:
+                "The rollout section names no owner.\nSay who runs the migrations, and who signs off before the second region goes live.\n\nThe load test the summary promises is missing too.",
+              ask_id: "ask-13",
+              kind: "person",
+            },
+          },
+          {
+            // A Dispatch older than review kinds writes no `kind`.
+            seq: 4,
+            type: "artifact.approved",
+            actor: { kind: "user", id: "alice" },
+            created_at: "2026-09-09T00:04:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 11,
+              actor: { kind: "user", id: "alice" },
+              reason: "Reads clean.",
+              ask_id: "ask-11",
+            },
+          },
+          {
+            seq: 5,
+            type: "artifact.changes_requested",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:05:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 8,
+              actor: { kind: "user", id: "sami" },
+              reason: null,
+              ask_id: "ask-8",
+            },
+          },
+          {
+            // A newer Dispatch may write a kind this build does not know.
+            seq: 6,
+            type: "artifact.approved",
+            actor: { kind: "session", id: "s3" },
+            created_at: "2026-09-09T00:06:00Z",
+            payload: {
+              artifact_id: "artifact-1",
+              name: "spec.md",
+              version: 3,
+              actor: { kind: "session", id: "s3" },
+              reason: "",
+              ask_id: null,
+              kind: "robot",
+            },
+          },
+        ]);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://DSP-42/log" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result).toEqual({
+      text: [
+        "Key: DSP-42",
+        "Events:",
+        "- #2 artifact.approved · session s2 · 2026-09-09T00:02:00Z · plan.md v2 approved by plan review",
+        "- #3 artifact.changes_requested · user sami · 2026-09-09T00:03:00Z · spec.md v13 changes requested by a person: The rollout section names no owner. Say who runs the migrations, and who sign…",
+        "- #4 artifact.approved · user alice · 2026-09-09T00:04:00Z · spec.md v11 approved: Reads clean.",
+        "- #5 artifact.changes_requested · user sami · 2026-09-09T00:05:00Z · spec.md v8 changes requested",
+        "- #6 artifact.approved · session s3 · 2026-09-09T00:06:00Z · spec.md v3 approved",
       ].join("\n"),
       details: { issue: "DSP-42" },
     });

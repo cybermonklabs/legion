@@ -542,6 +542,15 @@ func (c *comparisonReader) onNamedBranch(
 	return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 }
 
+// standingCommit is where a result's commit stands while the check's words have not moved
+// and no retraction stands against it. It answers no standing without both comparison fields.
+func standingCommit(result model.CheckResult) string {
+	if result.Retracted != nil || result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
+		return ""
+	}
+	return result.CommitStands.Answer
+}
+
 // passStandsOf is the one line that answers the gate's question for a check: whether a pass of
 // it stands at what it compared with, against the check's words now, and from which roles.
 //
@@ -563,13 +572,10 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	var roles []string
 	unknown := false
 	for _, result := range check.Results {
-		if result.Verdict != "pass" || result.Retracted != nil {
+		if result.Verdict != "pass" {
 			continue
 		}
-		if result.CheckWordsMoved == nil || *result.CheckWordsMoved || result.CommitStands == nil {
-			continue
-		}
-		switch result.CommitStands.Answer {
+		switch standingCommit(result) {
 		case model.CommitAtBasis:
 			if !slices.Contains(roles, result.Role) {
 				roles = append(roles, result.Role)

@@ -1,0 +1,5 @@
+kind: Changed
+body: dispatch doc-edit prints the markdown of the blocks each edit wrote under its Applied line, and its decision-block gate reads a replace's with for the asks it opens, as it reads an insert's markdown.
+time: 2026-11-11T05:35:26.035294906Z
+custom:
+    Issue: pr3516

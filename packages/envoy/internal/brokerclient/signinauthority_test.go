@@ -13,10 +13,13 @@ package brokerclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -53,7 +56,7 @@ func newSignInRig(t *testing.T, answer func(n int, form url.Values) (int, map[st
 			Store:     store,
 			Machine:   &scriptedSource{token: "this-machine's-identity-token", tokenType: oauthwire.SubjectTokenTypeGoogle, describe: "this machine"},
 			Flow:      flow,
-			BrokerURL: broker.URL(),
+			BrokerURL: broker.Address(),
 		},
 	}
 }
@@ -237,7 +240,9 @@ func TestARefusedCredentialIsTradedAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig.authority.Refused(first.CredentialID)
+	if err := rig.authority.Refused(context.Background(), first.CredentialID); err != nil {
+		t.Fatal(err)
+	}
 	second, err := rig.authority.Current(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -250,12 +255,88 @@ func TestARefusedCredentialIsTradedAgain(t *testing.T) {
 	}
 
 	// A credential the authority no longer holds says nothing: the trade above replaced it.
-	rig.authority.Refused(first.CredentialID)
+	if err := rig.authority.Refused(context.Background(), first.CredentialID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := rig.authority.Current(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(rig.broker.Requests()); n != 2 {
 		t.Fatalf("%d trades; want two: a stale credential id must throw nothing away", n)
+	}
+}
+
+// TestAWaitBehindATradeEndsWithTheWaitersContext: a trade holds the authority from its read of
+// the held token to the broker's answer, on whatever context its caller gave, and the helper's
+// own enrolments give one with no deadline. A pass-through call that finds such a trade in
+// progress must still answer inside its own bound (A10), so its wait for the authority ends
+// when its own context does, answering that context's error, and the trade it stood behind goes
+// on to its own answer. Refused, which an enrolment calls on the same context, waits the same
+// way.
+//
+// The named revert: put a sync.Mutex back as mu, and each wait runs until the trade is let go,
+// which this test does only once it has failed.
+func TestAWaitBehindATradeEndsWithTheWaitersContext(t *testing.T) {
+	trading, release := make(chan struct{}), make(chan struct{})
+	rig := newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {
+		if n == 0 {
+			close(trading)
+			<-release
+		}
+		return 200, mintedToken(n + 1)
+	})
+	rig.signIn(t, "ada@example.com")
+	var letGo sync.Once
+	// Registered after the rig's own cleanups, so it runs before the stub broker closes, which
+	// waits for the trade it holds.
+	t.Cleanup(func() { letGo.Do(func() { close(release) }) })
+
+	traded := make(chan error, 1)
+	go func() {
+		_, err := rig.authority.Current(context.Background())
+		traded <- err
+	}()
+	select {
+	case <-trading:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first call never reached the broker with its trade")
+	}
+
+	const bound = 200 * time.Millisecond
+	waiters := []struct {
+		name string
+		wait func(ctx context.Context) error
+	}{
+		{"Current", func(ctx context.Context) error {
+			authority, err := rig.authority.Current(ctx)
+			if authority != nil {
+				return fmt.Errorf("answered %+v while the trade it waited behind had not", authority)
+			}
+			return err
+		}},
+		{"Refused", func(ctx context.Context) error { return rig.authority.Refused(ctx, "credential-1") }},
+	}
+	for _, waiter := range waiters {
+		ctx, cancel := context.WithTimeout(context.Background(), bound)
+		answered := make(chan error, 1)
+		go func() { answered <- waiter.wait(ctx) }()
+		select {
+		case err := <-answered:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s behind a trade, its context ended: %v; want the context's own error", waiter.name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s was still waiting 5 s after its %s context ended, behind a trade that has not answered", waiter.name, bound)
+		}
+		cancel()
+	}
+
+	letGo.Do(func() { close(release) })
+	if err := <-traded; err != nil {
+		t.Fatalf("the trade the waits stood behind: %v", err)
+	}
+	if n := len(rig.broker.Requests()); n != 1 {
+		t.Fatalf("%d trades; want the one the waits stood behind, and none of their own", n)
 	}
 }
 

@@ -50,7 +50,11 @@ type launchers struct {
 	// A launchers built without the pair restores nothing.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
-	log      *slog.Logger
+	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
+	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
+	// no receiver took it, and drops it (memoryKilled).
+	guardKilled runtime.MemoryGuardKilled
+	log         *slog.Logger
 }
 
 type launcherSession struct {
@@ -87,9 +91,10 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored, log *slog.Logger) *launchers {
+func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
+	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, log: log}
+		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated. The newest
@@ -154,6 +159,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherRestored:
 			s.owner.restoreReported(s, value)
+		case shimwire.LauncherMemoryKill:
+			s.owner.memoryKilled(s, value)
 		default:
 			return
 		}
@@ -583,6 +590,57 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "release", report.Release)
 }
 
+// memoryKilled hands the daemon one process of a role that was stopped because the pod was out
+// of memory, by the pod's memory guard or, in a microVM pod, by the pod's own kernel, as the
+// launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). The launcher sends it unasked, and only on a connection whose
+// acknowledgement carried guard settings (a gVisor pod's launcher) or KernelKills (a microVM
+// pod's), which is a daemon that knows the frame and its cause. The report goes on whole, its
+// cause included, which chooses the note the role is told (workflow's memoryGuardKill).
+//
+// The issue, the role and the pod the kill is credited to are the session's own, as the hello's
+// authentication bound them (launcherCredential), and never anything the frame says: a launcher
+// cannot tell another role, issue or pod of a kill. The report's guard and sequence are what
+// apply it once however often it arrives (the event id the daemon applies it under).
+//
+// A report the frame's own rule refuses (LauncherMemoryKill.Validate), and one on a session of no
+// issue, which is the controller's pod, whose role has no issue to hold its note, are logged
+// naming the launcher and dropped. None of the drops closes the connection: closing costs the
+// launcher a redial a second later (ServeLauncher's `default: return`) over a frame the daemon
+// could not have used anyway, and the launcher's other frames would go with it.
+//
+// It runs on the launcher's own frame loop rather than in a goroutine of its own, as
+// restoreReported does and under the same bounded context: two reports of one launcher reach the
+// fact path in the order the guard made them, and the cost is the one that precedent already
+// accepts, the launcher's other frames waiting behind one fact's transaction.
+func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMemoryKill) {
+	if err := report.Validate(); err != nil {
+		d.log.Warn("launcher memory guard: the pod's launcher sent a kill report the daemon cannot apply, which is dropped; the connection stays open",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
+		return
+	}
+	if s.issue == "" {
+		d.log.Warn("launcher memory guard: a launcher of no issue reported a kill, and no issue holds a note for its role, so it is dropped; the connection stays open",
+			"launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+		return
+	}
+	if d.guardKilled == nil {
+		// A runtime built with no receiver drops every report of every pod, and nothing else
+		// shows it: no role is told why its process is gone. So the drop names the line that sets
+		// the receiver.
+		d.log.Warn("launcher memory guard: the pod's launcher reported a kill and this runtime has no receiver for it, which is dropped; "+
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.MemoryGuardKilled)",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	if err := d.guardKilled(ctx, s.issue, s.token, s.podUID, report); err != nil {
+		d.log.Warn("launcher memory guard: the pod's launcher reported a kill the daemon could not record, which is dropped",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
+	}
+}
+
 // bundleFrames are the slices that carry issue's saved bundle. The sequence's id is the issue, the
 // release that saved the bundle and the digest of the body (shimwire.SplitWorkspaceBundle), so it
 // is the same every time the same bundle is sent, which is what a pod whose launcher reconnects
@@ -711,7 +769,12 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
-// launch credentials it writes into its private directory, and the session a resume continues.
+// launch credentials and files it writes into its private directory, and the session a resume
+// continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
+// which the launcher writes before the child starts and whose path the agent's argv names, Oh My
+// Pi's and Claude Code's alike (systemPromptPath says where it is and who can read it;
+// runtime.SystemPromptFile why it is a file).
+//
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
 // which the launcher kills it. A tree role's shim is told --warm-codegraph: once its Oh My Pi has
@@ -727,11 +790,9 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // a Spawn's, a Resume's and a replaced pod's alike. A Claude Code launch is wrapped whatever else
 // it carries, for the `mkdir -p` of its configuration directory (claudeConfigDir) and the install
 // of the pinned Claude Code its agent command names (claudeCodeBlock: the image carries the pin
-// and never the binary), and adds one file to the generation's credentials: the MCP document its
-// agent command reads
-// (claudeMCPFile), which the launcher writes 0600 into the 0700 private directory it makes for
-// the generation and removes with the rest when the generation ends (internal/launcher). It
-// travels in Files and never in spec.Secrets, which would be two wrongs: every secret name also
+// and never the binary), and adds one more file to the generation's: the MCP document its agent
+// command reads (claudeMCPFile), which the launcher writes and removes as it does the prompt. Both
+// travel in Files and never in spec.Secrets, which would be two wrongs: every secret name also
 // gets a `<NAME>_FILE` pointer in the worker's environment (mainEnvironment), and
 // ValidateSpawnSpec refuses a credential-shaped name outright.
 //
@@ -756,7 +817,8 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	// which it does when something needs it (mountsProviders: a provider key, a providers secret, or
 	// a session database URL key); a directory it is told and cannot read refuses its start
 	// (shim.ReadProviderEnv). Under cloudsql-iam no URL key is held — each pod signs in to Cloud SQL
-	// as itself — so a deployment with no provider key and no providers secret has no such directory.
+	// as itself, or as the service account it impersonates — so a deployment with no provider key
+	// and no providers secret has no such directory.
 	if r.mountsProviders() {
 		shim = append(shim, "--provider-env-dir", ProvidersDir)
 	}
@@ -770,6 +832,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		files = map[string]string{}
 	}
 	files[bootTokenKey] = l.spec.BootToken
+	files[runtime.SystemPromptFile] = l.prompt
 	claudeDir := ""
 	if l.runsClaude() {
 		claudeDir = claudeConfigDir(l.spec.Role)
@@ -782,4 +845,22 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
 		ResumeFile: l.spec.ResumeSessionFile,
 	}
+}
+
+// checkStartFrame refuses command, the start l's role would be sent, when the frame that carries
+// it would be longer than a launcher reads (shimwire.FrameLen, shimwire.MaxFrameBytes): the one
+// bound a prompt still meets in a pod (runtime.PromptTooLarge, which supervise charges no launch
+// failure). prepare runs it on the start a pod built now would receive, before anything of the pod
+// is touched, and relaunch again on the start it sends, which carries what the launch learned from
+// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays,
+// enrollment and skills repository that pod was built with.
+func (l launch) checkStartFrame(command shimwire.LauncherStart) error {
+	frame, err := shimwire.FrameLen(command)
+	if err != nil {
+		return err
+	}
+	if frame > shimwire.MaxFrameBytes {
+		return &runtime.PromptTooLarge{Role: l.spec.Role, Bytes: len(l.prompt), Frame: frame}
+	}
+	return nil
 }

@@ -31,6 +31,7 @@ type wireSettings struct {
 	AWSRegion     string `json:"aws_region"`
 	KMSKeyName    string `json:"kms_key_name"`
 	GCPProject    string `json:"gcp_project"`
+	SecretTypeTag bool   `json:"secret_type_tag"`
 }
 
 // wireReread is POST /v1/secrets/{name}/reread's answer.
@@ -38,9 +39,13 @@ type wireReread struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
 	Reason string `json:"reason"`
-	Kind   string `json:"kind"`
+	Type   string `json:"type"`
 }
 
+// TestSettingsAnswersTheNamespaceAndKey pins GET /v1/settings for a broker on AWS Secrets
+// Manager: the store, the prefix, the key ARN with its account and region, and secret_type_tag,
+// which says this broker reads a secret's type from the type tag, so agent-secrets writes a typed
+// secret through it (a broker from before the tag sends no such field).
 func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
@@ -48,7 +53,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 		t.Fatalf("status %d: %s", status, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}
+	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -60,7 +65,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 
 // TestSettingsAnswersTheGCPStore pins GET /v1/settings for a broker on Google Secret Manager: the
 // store's name, the prefix, the Cloud KMS key's name and the project number cut from the prefix,
-// with none of the AWS fields.
+// with none of the AWS fields, and secret_type_tag, as on AWS.
 func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
 	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
@@ -82,7 +87,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000"}
+	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -90,6 +95,58 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 		if strings.Contains(string(body), field) {
 			t.Fatalf("a GCP broker's settings carry %s: %s", field, body)
 		}
+	}
+}
+
+// TestSettingsNameTheGoogleExchangeAudienceOnEitherStore pins the exchange audience GET
+// /v1/settings answers beside the store, on either store: the audience a machine's Google identity
+// token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's `agent-secrets` finds the
+// identity it can trade with no setting of its own, beside that store's own key field. A broker
+// that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
+func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
+	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
+		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
+		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
+	} {
+		t.Run(store.name, func(t *testing.T) {
+			read := func(t *testing.T, google string) (map[string]any, string) {
+				t.Helper()
+				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				api.Register(mux, api.Deps{Policy: cur, SecretsStore: store.kind, SecretsPrefix: store.prefix, SecretsKMSKey: store.key,
+					GoogleExchangeAudience: google})
+				srv := httptest.NewServer(mux)
+				t.Cleanup(srv.Close)
+				resp, err := http.Get(srv.URL + "/v1/settings")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status %d: %s", resp.StatusCode, body)
+				}
+				return decode[map[string]any](t, body), string(body)
+			}
+
+			got, body := read(t, "agent-secrets-vm")
+			if got["google_exchange_audience"] != "agent-secrets-vm" {
+				t.Fatalf("settings = %s; want google_exchange_audience agent-secrets-vm", body)
+			}
+			if got["store"] != store.kind || got[store.keyField] != store.key {
+				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, store.kind, store.keyField)
+			}
+
+			_, body = read(t, "")
+			for _, field := range []string{"google_exchange_audience", "kubernetes_exchange_audience"} {
+				if strings.Contains(body, field) {
+					t.Fatalf("a broker that accepts no machine identity names %s: %s", field, body)
+				}
+			}
+		})
 	}
 }
 
@@ -128,58 +185,94 @@ func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
 	}
 }
 
-// TestARereadNamesTheKindItServes: a reread's answer names the kind the broker serves the secret
-// as, and none for a stored secret, so a person who retags a secret to a kind can tell a reread
+// TestARereadNamesTheTypeItServes: a reread's answer names the type the broker serves the secret
+// as, and none for a stored secret, so a person who retags a secret to a type can tell a reread
 // that read the new tags from one that read them stale. It carries nothing else of the tags.
-func TestARereadNamesTheKindItServes(t *testing.T) {
+func TestARereadNamesTheTypeItServes(t *testing.T) {
 	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
 	_, body := ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)
-	if r := decode[wireReread](t, body); !r.Served || r.Kind != "" || strings.Contains(string(body), `"kind"`) {
-		t.Fatalf("reread of a stored secret = %s, want served with no kind", body)
+	if r := decode[wireReread](t, body); !r.Served || r.Type != "" || strings.Contains(string(body), `"type"`) {
+		t.Fatalf("reread of a stored secret = %s, want served with no type", body)
 	}
-	for _, kind := range policy.Kinds {
-		ts.Secrets.Put(policytest.KindSecret("PLAIN_KEY", testApprover, policy.TierAgent, kind, "v1"))
+	for _, secretType := range policy.Types {
+		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, policy.TierAgent, secretType, policytest.TypeValue(secretType)))
 		_, body = ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)
-		if r := decode[wireReread](t, body); !r.Served || r.Kind != kind {
-			t.Fatalf("reread once the kind is %s = %s, want served as %s", kind, body, kind)
+		if r := decode[wireReread](t, body); !r.Served || r.Type != secretType {
+			t.Fatalf("reread once the type is %s = %s, want served as %s", secretType, body, secretType)
 		}
 		for _, private := range []string{testApprover, policy.TierAgent, "github-owners", "owner"} {
 			if strings.Contains(string(body), private) {
-				t.Fatalf("reread answer %s carries %q; it names only the kind", body, private)
+				t.Fatalf("reread answer %s carries %q; it names only the type", body, private)
 			}
 		}
 	}
 }
 
 // TestARereadWhoseRequestEndedLogsNoError pins that a reread whose request ended before it
-// finished - its caller went away, or its deadline passed - is answered without the ERROR line
-// "broker: reread secret failed" that an operator's alert counts, as the miss path logs nothing for
-// one, while a reread Secrets Manager itself fails for a caller still waiting is still that 500 and
-// that line.
+// finished - its caller went away, or its deadline passed - is answered 503 REQUEST_ENDED without
+// the ERROR line "broker: reread secret failed" that an operator's alert counts, as the miss path
+// logs nothing for one, while a reread Secrets Manager itself fails for a caller still waiting is
+// still that 500 and that line. A request that ends during the value read of a type secret's
+// version the pod has not decoded, once the metadata read has served the secret, ended before the
+// reread finished too: it is that 503, not a 200 answering for a value nobody checked. That
+// reread has merged the tags it read into this pod's policy, though, so the other pods are told
+// to reread the name as on a 200, on a context of the handler's own; one whose request ended
+// during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
+	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
+	// telling the other pods through notifier.
+	route := func(local *secrets.Local, client secrets.SecretsManagerAPI, notifier *recordingNotifier) *http.ServeMux {
+		loader := policytest.Loader(local)
+		loader.Store = policytest.StoreThrough(local, client)
+		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
+		return mux
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	local := secrets.NewLocal()
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel})
-	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	local, notifier := secrets.NewLocal(), &recordingNotifier{}
+	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel}, notifier)
+	valueCtx, cancelValue := context.WithCancel(context.Background())
+	defer cancelValue()
+	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
+	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
+	valueLocal.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	logged := policytest.CaptureLog(t)
 
-	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
-	if strings.Contains(logged.String(), "reread secret failed") {
-		t.Fatalf("a reread whose caller went away logged:\n%s", logged.String())
+	for _, ended := range []struct {
+		during   string
+		mux      *http.ServeMux
+		ctx      context.Context
+		name     string
+		notifier *recordingNotifier
+		// notified is what the other pods were told: nothing for a reread that merged nothing.
+		notified []string
+	}{
+		{"its metadata read", mux, ctx, "NEW_KEY", notifier, nil},
+		{"its value read", valueMux, valueCtx, "APP_KEY", valueNotifier, []string{"APP_KEY"}},
+	} {
+		answer := httptest.NewRecorder()
+		ended.mux.ServeHTTP(answer, httptest.NewRequestWithContext(ended.ctx, http.MethodPost, "/v1/secrets/"+ended.name+"/reread", nil))
+		if answer.Code != http.StatusServiceUnavailable || decode[wireError](t, answer.Body.Bytes()).Code != "REQUEST_ENDED" || strings.Contains(logged.String(), "reread secret failed") {
+			t.Fatalf("a reread whose caller went away during %s: %d %s, logged %q; want 503 REQUEST_ENDED and no line", ended.during, answer.Code, strings.TrimSpace(answer.Body.String()), logged.String())
+		}
+		if got := ended.notifier.recorded(); !slices.Equal(got, ended.notified) {
+			t.Fatalf("a reread whose caller went away during %s notified %q, want %q", ended.during, got, ended.notified)
+		}
 	}
 
 	failed := httptest.NewRecorder()
 	mux.ServeHTTP(failed, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
 	if failed.Code != http.StatusInternalServerError || !strings.Contains(logged.String(), "ERROR broker: reread secret failed") {
 		t.Fatalf("a reread Secrets Manager failed for a live caller: %d, logged %q; want 500 and the ERROR line", failed.Code, logged.String())
+	}
+	if got := notifier.recorded(); len(got) != 0 {
+		t.Fatalf("a reread Secrets Manager failed notified %q, want nobody", got)
 	}
 }
 
@@ -197,6 +290,19 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 		return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)
 	}
 	return nil, errors.New("operation error Secrets Manager: DescribeSecret, ThrottlingException")
+}
+
+// abandoningReader is a caller that goes away while the reread's value read is in flight, its
+// DescribeSecret answered: it ends that caller's context and fails as the AWS SDK does once a
+// context has ended.
+type abandoningReader struct {
+	secrets.SecretsManagerAPI
+	cancel context.CancelFunc
+}
+
+func (r abandoningReader) GetSecretValue(ctx context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	r.cancel()
+	return nil, fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
 }
 
 // postReread sends one reread of name with headers, answering the status, headers and body: the

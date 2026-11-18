@@ -1313,6 +1313,7 @@ func TestStaticHandlerCacheControl(t *testing.T) {
 		"assets/index-abc123.js":  "console.log(1)",
 		"assets/index-abc123.css": "body{}",
 		"assets/agent-abc123.png": "png",
+		"assets/inter-abc.woff2":  "wOF2",
 	} {
 		if err := os.WriteFile(filepath.Join(webDist, name), []byte(body), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
@@ -1337,6 +1338,7 @@ func TestStaticHandlerCacheControl(t *testing.T) {
 		{path: "/favicon.svg", status: http.StatusOK, cacheControl: ""},
 		{path: "/THIRD_PARTY_NOTICES.txt", status: http.StatusOK, cacheControl: "", contentType: "text/plain; charset=utf-8"},
 		{path: "/assets/agent-abc123.png", status: http.StatusOK, cacheControl: assetCacheControl, contentType: "image/png"},
+		{path: "/assets/inter-abc.woff2", status: http.StatusOK, cacheControl: assetCacheControl, contentType: "font/woff2"},
 		{path: "/favicon.ico", status: http.StatusOK, cacheControl: ""},
 	} {
 		t.Run(tc.path, func(t *testing.T) {

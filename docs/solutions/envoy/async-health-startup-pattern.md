@@ -118,11 +118,13 @@ webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1",
 for _, hook := range hooks {
     mux.Handle(hook.path, webhookGate)
 }
-mux.Handle("/v1/", apiAuth(apiToken, apiVerifier, logger, v1Gate))
+v1Handler := apiAuth(apiAuthConfig, v1Gate)
+mux.Handle("/v1", v1Handler)
+mux.Handle("/v1/", v1Handler)
 // ... phase 5, once NATS and the CI store are open:
 openWebhooks(webhookGate, hooks, client, ciStore)
 // ... phase 6, once the interest and session caches are warm:
-openV1Routes(v1Gate, ready, cfg.MachineID, logger, listeningAt)
+openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 bind, err := bindListenerDurable(stopping, client, consumer, handler, logger, durableBindInterval, durableBindDeadline)
 // ... then deps.Store(ready)
 ```

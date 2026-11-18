@@ -14,8 +14,10 @@ import (
 // process.
 type Launcher interface {
 	// Launch is spec's inner command and the -e pairs its pane carries beside every pane's, with
-	// whatever the harness keeps under the state directory for the claim made.
-	Launch(spec runtime.SpawnSpec, host Host) (inner string, pairs []string, err error)
+	// whatever the harness keeps under the state directory for the claim made. promptFile is the
+	// file launch wrote the claim's composed prompt to (runtime.WriteSystemPrompt), which the
+	// command names as the agent's system prompt.
+	Launch(spec runtime.SpawnSpec, host Host, promptFile string) (inner string, pairs []string, err error)
 	// Marker is what the command line of a pane's process holds while the pane runs this harness:
 	// the last tier of verifyPane (runsAgent).
 	Marker() string
@@ -44,9 +46,9 @@ type ompLauncher struct {
 	invocation string
 }
 
-// Launch is innerCommand; an Oh My Pi pane carries no pairs of its own.
-func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host) (string, []string, error) {
-	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, spec.Prompt), nil, nil
+// Launch is innerCommand on promptFile; an Oh My Pi pane carries no pairs of its own.
+func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host, promptFile string) (string, []string, error) {
+	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), nil, nil
 }
 
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.

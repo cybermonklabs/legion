@@ -1815,8 +1815,10 @@ test("a session not answering the live view keeps the empty transcript's explana
 
 // A pick is the person's own Send of what they would type at the session's terminal: always a
 // Send, since a BTW is a side question the session does not run, and the id exactly as the
-// session listed it, even one `/model` could read a role or a level into.
-test("a pick sends /model or /effort as a Send whatever Send as says, the id unchanged", async () => {
+// session listed it, even one `/model` could read a role or a level into. It asks for a session
+// that is running now (`connected_only`): a line stored for one that is not would change its
+// model at an unknown later time (INFRA-626).
+test("a pick sends /model or /effort as a Send for a running session, whatever Send as says, the id unchanged", async () => {
   const user = userEvent.setup();
   const createAgentMessage = spyOnSwitchSends();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
@@ -1826,7 +1828,7 @@ test("a pick sends /model or /effort as a Send whatever Send as says, the id unc
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
-      { body: "/model custom/model@v2:high", delivery: "steer" },
+      { body: "/model custom/model@v2:high", connected_only: true, delivery: "steer" },
       keyedAttempt
     )
   );
@@ -1842,7 +1844,7 @@ test("a pick sends /model or /effort as a Send whatever Send as says, the id unc
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenLastCalledWith(
       SESSION,
-      { body: "/effort high", delivery: "steer" },
+      { body: "/effort high", connected_only: true, delivery: "steer" },
       keyedAttempt
     )
   );
@@ -2371,7 +2373,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
-      { body: "/model anthropic/model-b", delivery: "steer" },
+      { body: "/model anthropic/model-b", connected_only: true, delivery: "steer" },
       keyedAttempt
     )
   );

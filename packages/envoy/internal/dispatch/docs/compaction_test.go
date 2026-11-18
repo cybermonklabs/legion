@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A tail-rule compaction folds the rows older than the tail into the newest of them and leaves
@@ -368,9 +369,7 @@ func TestACompactionReadsTheCursorASettlementMovedInsideIt(t *testing.T) {
 // skips them without folding again or logging, and a compaction after they changed folds again.
 func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	// Each later row leans on an insert no row holds ("x"), so the fold parks more than its
 	// pending queue holds; the writer writes the update that changes the log below.

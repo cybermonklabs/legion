@@ -37,7 +37,7 @@
 #     tagged an administrator's that the rules give the judge 900 seconds of all the same, which
 #     the judge must refuse because the tag says a person approves every release of it.
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
-#     each on two ports of its own (--one-broker starts one).
+#     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
 #     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,
@@ -201,8 +201,8 @@ GOOGLE_SECRET="AIRLOCK_GOOGLE_LOGIN"
 AZURE_SECRET="AIRLOCK_AZURE_LOGIN"
 AWS_SECRET="AIRLOCK_AWS_KEY"
 # The four the model judge is asked about. Each is human tier, so each waits for a person
-# unless the judge decides it first, and each is a plain entry with no kind: what the judge is
-# about is who may approve a request, and a kind's minting is another check's subject.
+# unless the judge decides it first, and each is a plain entry with no type: what the judge is
+# about is who may approve a request, and a type's minting is another check's subject.
 # JUDGED_SECRET is the one the rules give the judge seconds of; UNJUDGED_SECRET the one they
 # give it nothing of, which must still wait for its person; SHARED_SECRET the one nobody owns,
 # which anyone signed in approves and which the judge therefore approves in anyone's place;
@@ -342,6 +342,10 @@ await "dev-broker.sh" 300 "$DEV_BROKER_LOG" '^dev-broker: ready\.$' "$DEV_BROKER
 # `|| true`: under pipefail a grep that finds nothing would end the whole run before the
 # caller's own check could say what was missing.
 first_match() { grep -oEm1 "$1" "$2" 2>/dev/null | head -n1 || true; }
+# logged_addr is the addr field of the first line of a broker's log whose message is the one
+# named. The broker logs one JSON object per line, and a line still being written parses as
+# nothing, so half an address is never read as the whole one.
+logged_addr() { jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" 2>/dev/null || true; }
 
 BASE_DIR="$(first_match 'export DEV_BROKER_DIR=[^[:space:]]+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
@@ -507,15 +511,15 @@ jq -n \
      {name: ($prefix + "airlock-scoped-token"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent"}, value: $scoped},
      {name: ($prefix + "airlock-github-app"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $owner},
+      tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
       value: ({app_id: $appid, private_key: $appkey} | tojson)},
      {name: ($prefix + "airlock-google-login"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", kind: "google-login"},
+      tags: {owner: $service, tier: "agent", type: "google-login"},
       value: ({type: "authorized_user", client_id: "the-stand-in-client",
                client_secret: "the-stand-in-client-secret",
                refresh_token: "the-stand-in-refresh-token"} | tojson)},
      {name: ($prefix + "airlock-azure-login"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", kind: "azure-login"},
+      tags: {owner: $approver, tier: "human", type: "azure-login"},
       value: ({tenant_id: "the-stand-in-tenant", client_id: "the-stand-in-application"} | tojson)},
      {name: ($prefix + "airlock-aws-key"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent"},
@@ -564,9 +568,13 @@ API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
 PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 
 # --- The brokers. Both read one database, one rules file and one fake store, and each binds an
-# API port and a proxy port the system picks (BROKER_*_LISTEN_ADDR of port 0), so two of them
-# never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default exists
-# to outlast a Kubernetes EndpointSlice propagation nothing here has.
+# API port, a proxy port and a metrics port the system picks (BROKER_*_LISTEN_ADDR of port 0), so
+# two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
+# exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
+#
+# BROKER_AIRLOCK_TEST_AZURE_AUTHORITY makes the Microsoft stand-in the token authority the
+# azure exchange is held to, in place of login.microsoftonline.com: the proxy refuses an
+# exchange at any other host, and the stand-in is where this stack's az signs in.
 #
 # Each also gets the model judge: the six BROKER_JUDGE_* settings, which are all-or-none, and
 # GCE_METADATA_HOST. The credential the judge presents to its model endpoint is the broker's
@@ -580,6 +588,7 @@ start_broker() {
   BROKER_DATABASE_URL="$POSTGRES_URL" \
   BROKER_PUBLIC_URL="$API_FRONT_URL" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="http://127.0.0.1/credentials/machine" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
   BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
@@ -609,6 +618,7 @@ start_broker() {
   BROKER_AIRLOCK_TEST_RESOLVE="$RESOLVE" \
   BROKER_AIRLOCK_TEST_KEEP_VALUES="$KEEP_VALUES" \
   BROKER_AIRLOCK_TEST_NO_KIND="$NO_KIND" \
+  BROKER_AIRLOCK_TEST_AZURE_AUTHORITY="$MICROSOFT_HOST" \
   BROKER_JUDGE_MODEL_URL="$MODEL_URL" \
   BROKER_JUDGE_MODEL="$JUDGE_MODEL" \
   BROKER_JUDGE_MODEL_PROTOCOL="$JUDGE_MODEL_PROTOCOL" \
@@ -631,9 +641,9 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   start_broker "$n" "$log"
 done
 for n in $(seq 1 "$BROKER_COUNT"); do
-  await "broker $n" 120 "${BROKER_LOGS[n]}" 'airlock proxy listening addr=' "${BROKER_PIDS[n]}"
-  BROKER_API_ADDRS[n]="$(first_match 'broker listening addr=[^[:space:]]+' "${BROKER_LOGS[n]}" | cut -d= -f2-)"
-  BROKER_PROXY_ADDRS[n]="$(first_match 'airlock proxy listening addr=[^[:space:]]+' "${BROKER_LOGS[n]}" | cut -d= -f2-)"
+  await "broker $n" 120 "${BROKER_LOGS[n]}" '"message":"airlock proxy listening"' "${BROKER_PIDS[n]}"
+  BROKER_API_ADDRS[n]="$(logged_addr 'broker listening' "${BROKER_LOGS[n]}")"
+  BROKER_PROXY_ADDRS[n]="$(logged_addr 'airlock proxy listening' "${BROKER_LOGS[n]}")"
   if [ -z "${BROKER_API_ADDRS[n]}" ] || [ -z "${BROKER_PROXY_ADDRS[n]}" ]; then
     echo "dev-airlock: broker $n logged no API or proxy address" >&2
     exit 1

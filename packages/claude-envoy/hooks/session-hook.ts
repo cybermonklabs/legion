@@ -10,7 +10,7 @@
 //    `CLAUDE_ENV_FILE`, which Claude Code sources into every later Bash command of the session,
 //    each unless an earlier SessionStart already wrote that line there. The `dispatch` command
 //    reads the file ENVOY_CONFIG_FILE names whenever DISPATCH_HOST is set. A subagent's Bash can
-//    lack what that file holds (anthropics/claude-code#46696); the `dispatch` command it runs then
+//    lack what that file holds (Claude Code issue 46696); the `dispatch` command it runs then
 //    takes host `claude` from `CLAUDE_CODE_CHILD_SESSION=1` and reads `CLAUDE_CONFIG_DIR` itself.
 //    The path is single-quoted (`singleQuoted`, whose doc gives what Claude Code's
 //    PowerShell bridge reads of that form). The command reads the session id from `CLAUDE_CODE_SESSION_ID`, which
@@ -96,7 +96,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -451,8 +451,12 @@ async function refreshedAnswers(
       if (outcome.dispatch_url === dispatchUrl) {
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
+      // Compared whole above; the reason reaches the session's context, so it names the URL
+      // without the user and password it may carry.
+      const read =
+        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
       return {
-        reason: `the refresher read ${outcome.dispatch_url ?? "no Dispatch"}, not the Dispatch envoy.json names now`,
+        reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }
     }
     const left = remainingUntil(by)

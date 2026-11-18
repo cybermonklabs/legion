@@ -17,22 +17,24 @@ var testClaude = ClaudeLaunch{Binary: "/opt/claude/bin/claude", PluginDir: "/opt
 // The inner command of a Claude Code role: the bridge around `claude -p` in stream-json both ways
 // (--verbose, which stream-json output requires) re-emitting each user message it takes, its
 // thinking summarized so the pane is shown it, every permission granted, only the configured MCP
-// server, both plugin directories, the session, and the one system prompt word every pane gets.
+// server, both plugin directories, the session, and last `--append-system-prompt-file` on the
+// claim's prompt file, a path, never the prompt's text.
 func TestClaudeInnerCommand(t *testing.T) {
-	parts := runtime.PromptParts{RolePromptPaths: []string{"/roles/implementer.md"}, Addressing: "Legion addressing: x"}
-	got := claudeInnerCommand("/opt/legion/legion", testClaude, "/state/claude/c/mcp.json", "11111111-2222-4333-8444-555555555555", false, parts)
+	const promptFile = "/state/secrets/c-system-prompt.md"
+	got := claudeInnerCommand("/opt/legion/legion", testClaude, "/state/claude/c/mcp.json", "11111111-2222-4333-8444-555555555555", false, promptFile)
 	want := "/opt/legion/legion claude-bridge -- /opt/claude/bin/claude -p --input-format stream-json --output-format stream-json --verbose" +
 		" --replay-user-messages" +
 		" --thinking-display summarized" +
 		" --permission-mode bypassPermissions --strict-mcp-config --mcp-config /state/claude/c/mcp.json" +
 		" --plugin-dir /opt/legion/claude-envoy --plugin-dir /opt/legion/claude-envoy/legion" +
-		" --session-id 11111111-2222-4333-8444-555555555555 " +
-		`--append-system-prompt "$(cat /roles/implementer.md)` + "\n\nLegion addressing: x" + `"`
+		" --session-id 11111111-2222-4333-8444-555555555555" +
+		" --append-system-prompt-file /state/secrets/c-system-prompt.md"
 	if got != want {
 		t.Errorf("fresh:\n%s\nwant\n%s", got, want)
 	}
-	resumed := claudeInnerCommand("/opt/legion/legion", testClaude, "/m.json", "11111111-2222-4333-8444-555555555555", true, parts)
-	if !strings.Contains(resumed, " --resume 11111111-2222-4333-8444-555555555555 ") || strings.Contains(resumed, "--session-id") {
+	resumed := claudeInnerCommand("/opt/legion/legion", testClaude, "/m.json", "11111111-2222-4333-8444-555555555555", true, "/state dir/p.md")
+	if !strings.Contains(resumed, " --resume 11111111-2222-4333-8444-555555555555 ") || strings.Contains(resumed, "--session-id") ||
+		!strings.HasSuffix(resumed, " --append-system-prompt-file '/state dir/p.md'") {
 		t.Errorf("resumed: %s", resumed)
 	}
 }
@@ -115,18 +117,19 @@ func TestClaudeEnvironment(t *testing.T) {
 }
 
 // A Claude Code launch resuming a recorded Oh My Pi session is refused before anything is written;
-// a fresh one writes its claim's directory and runs the bridge.
+// a fresh one writes its claim's directory and runs the bridge, its prompt flag naming the prompt
+// file the launch hands it.
 func TestClaudeLauncherLaunch(t *testing.T) {
 	spec := testSpec()
 	spec.Backend = runtime.BackendClaude
 	host := Host{StateDir: t.TempDir(), Legion: "/opt/legion/legion"}
 	launcher := NewClaudeLauncher(testClaude)
 	spec.ResumeSessionFile = "/state/trees/x/.omp/session.jsonl"
-	if _, _, err := launcher.Launch(spec, host); err == nil || !strings.Contains(err.Error(), "the role's backend changed") {
+	if _, _, err := launcher.Launch(spec, host, "/state/p.md"); err == nil || !strings.Contains(err.Error(), "the role's backend changed") {
 		t.Errorf("an Oh My Pi session: %v", err)
 	}
 	spec.ResumeSessionFile = ""
-	inner, pairs, err := launcher.Launch(spec, host)
+	inner, pairs, err := launcher.Launch(spec, host, "/state/secrets/c-system-prompt.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,5 +140,8 @@ func TestClaudeLauncherLaunch(t *testing.T) {
 	if !strings.Contains(inner, " claude-bridge -- ") || !strings.Contains(inner, "--mcp-config "+filepath.Join(configDir, "mcp.json")) ||
 		!strings.Contains(strings.Join(pairs, " "), "CLAUDE_CONFIG_DIR="+configDir) {
 		t.Errorf("Launch = %s, %q", inner, pairs)
+	}
+	if want := " --append-system-prompt-file /state/secrets/c-system-prompt.md"; !strings.HasSuffix(inner, want) {
+		t.Errorf("Launch = %s, want it to end %s", inner, want)
 	}
 }

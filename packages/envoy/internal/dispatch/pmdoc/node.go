@@ -41,22 +41,24 @@ var ErrUnknownElement = errors.New("element this build does not know")
 
 // unknownElementError is a refusal of an element this build does not know: err, which names it,
 // is also ErrUnknownElement, and keeps its own message. elements names those elements as data, so
-// a caller reads them without parsing the message (UnknownElements).
+// a caller reads them without parsing the message (UnknownElements). It is used by pointer: a
+// struct holding a slice cannot be compared, and a caller that compares two errors with == (as
+// docs.askRefusalInstead's caller does) would panic on two values of it.
 type unknownElementError struct {
 	err      error
 	elements []string
 }
 
-func (e unknownElementError) Error() string { return e.err.Error() }
+func (e *unknownElementError) Error() string { return e.err.Error() }
 
-func (e unknownElementError) Is(target error) bool { return target == ErrUnknownElement }
+func (e *unknownElementError) Is(target error) bool { return target == ErrUnknownElement }
 
-func (e unknownElementError) Unwrap() error { return e.err }
+func (e *unknownElementError) Unwrap() error { return e.err }
 
 // unknownElement marks err as a refusal of an element this build does not know
 // (ErrUnknownElement), carrying names, the names of those elements, as data (UnknownElements).
 func unknownElement(err error, names ...string) error {
-	return unknownElementError{err: err, elements: names}
+	return &unknownElementError{err: err, elements: names}
 }
 
 // UnknownElements names the elements a refusal of an element this build does not know
@@ -68,7 +70,7 @@ func unknownElement(err error, names ...string) error {
 // itself: an error's message carries whatever the chain that answered the request wrapped it in,
 // the caller's own identity among it, and these names carry the document and nothing else.
 func UnknownElements(err error) []string {
-	var unknown unknownElementError
+	var unknown *unknownElementError
 	if errors.As(err, &unknown) {
 		return unknown.elements
 	}

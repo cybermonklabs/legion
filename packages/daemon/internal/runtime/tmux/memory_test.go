@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -21,12 +20,35 @@ func memoryRuntime(t *testing.T, stateDir string, memory []string) *fakeServerRu
 		o.StateDir = stateDir
 		o.PiConfigFiles = []string{"/etc/legion-operator/overlay.yml"}
 		o.RoleConfigFiles = map[claim.Role][]string{claim.RoleTester: {"/etc/legion-operator/tester.yml"}}
-		o.MemoryConfigFiles = memory
+		o.ExperimentVariants = memoryVariants(memory)
 	})
+}
+
+// memoryVariants are the two arms the `memory` block declares
+// (config.Project.ExperimentsDeclared): memory, carrying the block's overlays, and none, carrying
+// nothing. A nil list stands for a project that names neither the block nor `experiments.memory`:
+// every project declares the memory experiment, and such a project declares it at mode off with
+// two arms that name no file, which add nothing to PI_CONFIG_FILES (runtime.VariantOverlays), so
+// the runtime is handed nothing it would read.
+func memoryVariants(memory []string) []runtime.Variant {
+	if memory == nil {
+		return nil
+	}
+	return []runtime.Variant{
+		{Experiment: "memory", Name: "memory", ConfigFiles: memory},
+		{Experiment: "memory", Name: "none"},
+	}
 }
 
 // memoryOverlays are the project's `memory.config_files` in every test here.
 var memoryOverlays = []string{"/etc/legion-memory/memory.yml", "/etc/legion-memory/recall.yml"}
+
+// memoryDraw is the arm a tree the draw put in the memory group runs in, as a launch carries it
+// (runtime.SpawnSpec.Variants). The daemon's copy of the block's instructions is no part of an
+// arm: a launch names it among its prompt's own (runtime.PromptParts.VariantInstructionsPaths).
+func memoryDraw() []runtime.Variant {
+	return []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryOverlays}}
+}
 
 // newWindow is the new-window argv of one launch of spec by f, and the launch's -e pairs.
 func newWindow(t *testing.T, f *fakeServerRuntime, spec runtime.SpawnSpec) ([]string, []string) {
@@ -55,8 +77,8 @@ func TestAMemoryGroupPaneNamesTheMemoryOverlaysLast(t *testing.T) {
 	}
 	f := memoryRuntime(t, stateDir, memoryOverlays)
 	spec := f.spec(t, claim.RoleTester)
-	spec.Memory = true
-	spec.Prompt.MemoryInstructionsPath = instructions
+	spec.Variants = memoryDraw()
+	spec.Prompt.VariantInstructionsPaths = []string{instructions}
 
 	argv, pairs := newWindow(t, f, spec)
 	want := "PI_CONFIG_FILES=/etc/legion-operator/overlay.yml:/etc/legion-operator/tester.yml:" +
@@ -64,25 +86,30 @@ func TestAMemoryGroupPaneNamesTheMemoryOverlaysLast(t *testing.T) {
 	if !slices.Contains(pairs, want) {
 		t.Errorf("the memory pane's pairs = %q, want %q", pairs, want)
 	}
-	command := argv[len(argv)-1]
-	if !strings.Contains(command, "$(cat "+instructions+")") {
-		t.Errorf("the memory pane's command =\n%s\nwant it to `cat` %s", command, instructions)
+	want = "You are the stand-in.\n\n# Memory instructions (omp)\n\nRead the tree's memory."
+	if prompt := panePrompt(t, claim.RoleTester, argv); prompt != want {
+		t.Errorf("the memory pane's system prompt =\n%s\nwant\n%s", prompt, want)
 	}
 }
 
 // A launch for an issue whose tree carries no memory group builds the pane command a deployment
-// with no memory block at all builds, byte for byte: the block reaches only the panes of the trees
-// the draw gave it, so moving a project onto memory changes no other pane. Memory before the
-// block and after it are the same pane.
+// with no memory block at all builds, byte for byte, and writes it the same system prompt: the
+// block reaches only the panes of the trees the draw gave it, so moving a project onto memory
+// changes no other pane. Memory before the block and after it are the same pane.
 func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePane(t *testing.T) {
 	stateDir := t.TempDir()
 	// One spec for both launches, so the two differ by the runtime's memory overlays alone.
 	spec := memoryRuntime(t, stateDir, nil).spec(t, claim.RoleTester)
 
+	// Both launches write the one prompt file of the claim, so each is read before the next.
 	without, withoutPairs := newWindow(t, memoryRuntime(t, stateDir, nil), spec)
+	withoutPrompt := panePrompt(t, claim.RoleTester, without)
 	with, withPairs := newWindow(t, memoryRuntime(t, stateDir, memoryOverlays), spec)
 	if !slices.Equal(with, without) {
 		t.Errorf("a no-memory tree's pane under the block =\n%q\nwant the one a daemon with no block builds:\n%q", with, without)
+	}
+	if withPrompt := panePrompt(t, claim.RoleTester, with); withPrompt != withoutPrompt {
+		t.Errorf("a no-memory tree's system prompt under the block =\n%s\nwant the one a daemon with no block writes:\n%s", withPrompt, withoutPrompt)
 	}
 	want := "PI_CONFIG_FILES=/etc/legion-operator/overlay.yml:/etc/legion-operator/tester.yml"
 	for _, pairs := range [][]string{withoutPairs, withPairs} {
@@ -104,10 +131,10 @@ func TestTheControllersPaneNamesNoMemoryOverlay(t *testing.T) {
 	}
 
 	refused := controllerSpec(t, "omp")
-	refused.Memory = true
-	wantErr := "spawn legion-omp-controller: the controller runs in no tree, so it is in no memory group"
+	refused.Variants = memoryDraw()
+	wantErr := "spawn legion-omp-controller: the controller runs in no tree, so it is in no experiment"
 	if _, err := memoryRuntime(t, t.TempDir(), memoryOverlays).Spawn(context.Background(), refused); err == nil || err.Error() != wantErr {
-		t.Fatalf("Spawn a controller in the memory group = %v, want %q", err, wantErr)
+		t.Fatalf("Spawn a controller in an experiment = %v, want %q", err, wantErr)
 	}
 }
 
@@ -116,7 +143,7 @@ func TestTheControllersPaneNamesNoMemoryOverlay(t *testing.T) {
 func TestNewRefusesAMemoryOverlayPIConfigFilesCannotName(t *testing.T) {
 	for _, file := range []string{"memory.yml", "/etc/a:b.yml"} {
 		opts := paneEnvOptions(t, nil, nil)
-		opts.MemoryConfigFiles = []string{file}
+		opts.ExperimentVariants = memoryVariants([]string{file})
 		want := `tmux runtime: Oh My Pi overlay "` + file + `" is not an absolute path PI_CONFIG_FILES can name`
 		if _, err := New(opts); err == nil || err.Error() != want {
 			t.Errorf("New with the memory overlay %q = %v, want %q", file, err, want)
@@ -126,11 +153,12 @@ func TestNewRefusesAMemoryOverlayPIConfigFilesCannotName(t *testing.T) {
 
 // A launch whose memory instructions file is not there is refused before anything touches tmux, as
 // a missing role prompt or deployment instructions file is.
-func TestAMissingMemoryInstructionsFileRefusesTheLaunch(t *testing.T) {
+func TestAMissingMemoryInstructionsRefusesTheLaunch(t *testing.T) {
 	f := memoryRuntime(t, t.TempDir(), memoryOverlays)
 	spec := f.spec(t, claim.RoleTester)
-	spec.Memory = true
-	spec.Prompt.MemoryInstructionsPath = filepath.Join(t.TempDir(), "absent.md")
+	absent := filepath.Join(t.TempDir(), "absent.md")
+	spec.Variants = memoryDraw()
+	spec.Prompt.VariantInstructionsPaths = []string{absent}
 	if _, err := f.Spawn(context.Background(), spec); err == nil {
 		t.Fatal("a launch over a missing memory instructions file was not refused")
 	}
@@ -145,7 +173,7 @@ func TestAMissingMemoryInstructionsFileRefusesTheLaunch(t *testing.T) {
 func TestPaneVariablesCarryTheMemoryOverlays(t *testing.T) {
 	in := PaneInputs{
 		StateDir: t.TempDir(), PiConfigFiles: []string{"/etc/legion-operator/overlay.yml"},
-		RoleConfigFiles: []string{"/etc/legion-operator/tester.yml"}, MemoryConfigFiles: memoryOverlays,
+		RoleConfigFiles: []string{"/etc/legion-operator/tester.yml"}, Variants: memoryDraw(),
 	}
 	variables, err := PaneVariables(testSpec(), in, nil)
 	if err != nil {

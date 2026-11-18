@@ -43,8 +43,11 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // readHeaderTimeout bounds how long a connection on this port may take to send the head of a
@@ -63,13 +66,15 @@ const (
 	upstreamIdleConns   = 32
 )
 
-// watchInterval is how often a joined connection - a WebSocket the proxy upgraded - reads its
-// grant again (watchJoined). No request is read on such a connection after the upgrade, so this
-// is the whole of how long one may carry bytes once its grant has ended, and fifteen seconds is
-// short beside the shortest grant the broker issues. It costs one connection read per joined
-// connection per interval, the three indexed reads AirlockConnection makes, which a pod holding
-// a handful of sockets pays a few times a minute, and beside it a read of the policy version,
-// which is a pointer: the values a pod holds are read again only once that version has moved.
+// watchInterval is how often a call the proxy is carrying reads its grant again (watchCarried):
+// a WebSocket the proxy joined, a gRPC call whose answers stream, a server-sent event stream, a
+// long poll. No request is read on such a call once it has started, so this is the whole of how
+// long one may carry bytes once its grant has ended, and fifteen seconds is short beside the
+// shortest grant the broker issues. A call that ends within the interval reads nothing more. One
+// that runs longer costs one connection read per interval, the three indexed reads
+// AirlockConnection makes, which a pod holding a handful of long calls pays a few times a
+// minute, and beside it a read of the policy version, which is a pointer: the values a pod holds
+// are read again only once that version has moved.
 const watchInterval = 15 * time.Second
 
 // GrantSource is the reads of requests.Machine the proxy makes: one per connection, one per
@@ -110,17 +115,23 @@ type Options struct {
 	// either direction. Zero or less leaves a connection open for as long as the command holds
 	// it.
 	Idle time.Duration
-	// Watch is how often a joined connection reads its grant again (watchJoined); zero or
-	// less is watchInterval. A test sets a short one and ends a grant under an open
-	// WebSocket, rather than waiting out the real interval.
+	// Watch is how often a carried call reads its grant again (watchCarried); zero or less is
+	// watchInterval. A test sets a short one and ends a grant under an open WebSocket or
+	// stream, rather than waiting out the real interval.
 	Watch time.Duration
 	// HashBudget is how many bytes of body the proxy holds at once across every connection
 	// for the AWS calls it has to hash itself (aws.go); zero or less is hashedBodyBudget. A
 	// test sets a small one and drives two requests at it, rather than sending the hundreds
 	// of megabytes the real budget takes to fill.
 	HashBudget int64
-	// Log is where the line for each call to a bound host goes. Nil is slog.Default().
+	// Log is where the line for each call to a bound host goes, and the line for each refusal of
+	// this port. Nil is slog.Default().
 	Log *slog.Logger
+	// Answers is broker_answers_total (answer.NewAnswers), which each answer a handler of this
+	// port writes is counted on under caller class airlock, beside the API port's answers; an
+	// answer net/http writes itself before any handler runs is counted nowhere. Nil counts
+	// nothing.
+	Answers *metrics.Counter
 	// Dial is how every upstream connection is made; nil is a net.Dialer. It is handed the
 	// address the proxy resolved and checked, never a host name, so a replacement of it
 	// cannot reach a name's second answer (address.go). A test replaces it.
@@ -154,10 +165,20 @@ type Options struct {
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
 	// the check that both halves belong to.
 	KeepValues bool
-	// NoKind turns the azure exchange and the AWS signing off, so an entry whose kind names
-	// one of them takes the plain header swap instead. BROKER_AIRLOCK_TEST_NO_KIND is it, the
-	// negative control of the check the two kinds belong to.
+	// NoKind turns off the azure kind's exchange of a command's token request and the AWS
+	// signing, so an entry whose kind names one of them takes the plain header swap instead, and
+	// a request carrying the federated token's placeholder in a header is still refused
+	// (serveBound). BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two
+	// kinds belong to.
 	NoKind bool
+	// AzureAuthority is the host of the token authority every exchange of the azure kind is
+	// made at (azure.go): a host name in lower case with no port, which the host of a token
+	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
+	// login.microsoftonline.com. A token request to any other host an azure entry binds is
+	// refused, and so is an access slot that names one, since the exchange carries the broker's
+	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
+	// whose token authority is a stand-in.
+	AzureAuthority string
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -172,6 +193,9 @@ type Server struct {
 	dial   func(ctx context.Context, network, addr string) (net.Conn, error)
 	now    func() time.Time
 
+	// answers is Options.Answers, which record counts each answer a handler of the port writes
+	// on.
+	answers *metrics.Counter
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
@@ -185,6 +209,8 @@ type Server struct {
 	dialAllow  []string
 	keepValues bool
 	noKind     bool
+	// azureAuthority is Options.AzureAuthority, and microsoftAuthority for a proxy given none.
+	azureAuthority string
 
 	// outer serves the bound listener: CONNECT and absolute-URL proxy requests. inner serves
 	// what the outer one decrypted, through innerLn.
@@ -232,11 +258,11 @@ type connInfo struct {
 	host   string
 	port   uint16
 	// password is the proxy password this connection was opened with: a placeholder of the
-	// grant. Every request on the connection reads the grant again with it (serveBound), so a
-	// grant that has ended, been revoked or had one of its names withheld since the CONNECT
-	// stops at the next request rather than at the idle limit. A connection joined to a
-	// service reads no request again, so the watcher of that join reads with it instead
-	// (watchJoined).
+	// grant. Every request on the connection - every stream of an HTTP/2 one - reads the grant
+	// again with it (serveBound), so a grant that has ended, been revoked or had one of its
+	// names withheld since the CONNECT stops at the next request rather than at the idle
+	// limit. A call that runs on reads no request again, so its watcher reads with it instead
+	// (watchCarried).
 	password string
 	// grant is what that password proved when the connection was opened. Nothing is decided
 	// from it - each request is decided from the grant it read for itself - and what it is
@@ -255,7 +281,7 @@ type connKey struct{}
 // decryptedKey is the context key the decrypted connection itself travels under. A request that
 // is answered and done needs nothing of it - net/http owns the connection - and an upgrade does:
 // once the two connections are joined, closing this one is the only way the grant behind it
-// still reaches it (watchJoined).
+// still reaches it (watchCarried, cutJoined).
 type decryptedKey struct{}
 
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
@@ -267,6 +293,7 @@ func New(o Options) *Server {
 		idle:       o.Idle,
 		watch:      o.Watch,
 		log:        o.Log,
+		answers:    o.Answers,
 		dial:       o.Dial,
 		now:        o.Now,
 		resolve:    o.Resolve,
@@ -298,6 +325,10 @@ func New(o Options) *Server {
 	if s.watch <= 0 {
 		s.watch = watchInterval
 	}
+	s.azureAuthority = o.AzureAuthority
+	if s.azureAuthority == "" {
+		s.azureAuthority = microsoftAuthority
+	}
 	s.upstream = &http.Transport{
 		// The whole check-and-dial, so that a request to a bound host reaches the address
 		// this proxy resolved and checked for the name and no other: net/http hands this the
@@ -310,25 +341,47 @@ func New(o Options) *Server {
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
 	}
-	// net/http writes a line of its own for a connection that fails before a handler sees it;
+	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
+	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
 	errorLog := log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
-		Handler:           http.HandlerFunc(s.serveProxy),
+		// Every answer a handler of this server writes is recorded (record): a CONNECT the
+		// proxy takes over answers 200 on the connection itself. net/http's own answers, which
+		// it writes before any handler runs (a 400 for a malformed request, a 431, a 417), are
+		// not.
+		Handler:           s.record(http.StatusOK, s.serveProxy),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
 		ErrorLog:          errorLog,
 	}
 	s.inner = &http.Server{
-		Handler:           http.HandlerFunc(s.serveBound),
+		// Every answer a handler of this server writes is recorded (record): an upgrade
+		// ReverseProxy joins to its service answers 101 on the connection itself. net/http's
+		// own answers, which it writes before any handler runs, are not: a 400 for a malformed
+		// request, a 431, a 417, and the 400 "Client sent an HTTP request to an HTTPS server"
+		// to plain HTTP on a connection the proxy decrypts.
+		Handler:           s.record(http.StatusSwitchingProtocols, s.serveBound),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
 		ErrorLog:          errorLog,
+		// The two protocols connectBound's TLS offers, named rather than left to net/http's
+		// default, which a TLSNextProto map set beside it would narrow to HTTP/1 alone. The
+		// one switch that still takes HTTP/2 away is GODEBUG=http2server=0, which net/http
+		// reads whatever this says (onceSetNextProtoDefaults); with it, a client offering h2
+		// alone has its connection closed once its handshake is done.
+		Protocols: innerProtocols(),
+		// How many streams one HTTP/2 connection may have open at once: RFC 9113's floor
+		// (section 6.5.2), where net/http's default is 250. Each stream is a grant read of its
+		// own and a stream to the service, and a gRPC client queues a call past the limit
+		// rather than failing it.
+		HTTP2: &http.HTTP2Config{MaxConcurrentStreams: maxStreams},
 		// The CONNECT target and the grant of the connection this request arrived on, and the
-		// connection itself. The request's own Host header is checked against that target by
-		// airlock.Decide, so a request that names another host is refused rather than carried;
-		// the connection is there for an upgrade, whose handler holds it for as long as the
-		// two ends are joined (watchJoined).
+		// connection itself. The request's own Host header - an HTTP/2 stream's :authority - is
+		// checked against that target by airlock.Decide, so a request that names another host
+		// is refused rather than carried; the connection is there for an upgrade, whose handler
+		// holds it for as long as the two ends are joined (watchCarried). Every stream of an
+		// HTTP/2 connection has this context under its own.
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			info, _ := s.conns.Load(c)
 			ctx = context.WithValue(ctx, connKey{}, info)
@@ -342,6 +395,18 @@ func New(o Options) *Server {
 		},
 	}
 	return s
+}
+
+// maxStreams is the most streams one HTTP/2 connection of a bound host may have open at once.
+const maxStreams = 100
+
+// innerProtocols is what the inner server speaks: HTTP/1.1 and HTTP/2 over the TLS the proxy
+// opened, and HTTP/2 in the clear never.
+func innerProtocols() *http.Protocols {
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	return &protocols
 }
 
 // Serve takes the proxy port's listener, and the inner server with it. It returns what
@@ -377,26 +442,32 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// this port as an ordinary web server. It serves nothing of its own, not even a health
 	// endpoint: the API port is where the broker answers.
 	if r.Method != http.MethodConnect && !r.URL.IsAbs() {
-		http.Error(w, "airlock: not a proxy request: this port takes CONNECT and absolute-URL proxy requests alone", http.StatusBadRequest)
+		s.refuse(w, r, call{host: requestHost(r)}, http.StatusBadRequest, codeNotAProxyRequest, "not a proxy request: this port takes CONNECT and absolute-URL proxy requests alone")
 		return
 	}
 	placeholder, why := proxyPassword(r)
 	if why != "" {
-		s.refuseCredential(w, why)
+		s.refuseCredential(w, r, call{host: requestHost(r)}, codeProxyCredential, why)
 		return
 	}
 	grant, err := s.grants.AirlockConnection(r.Context(), placeholder)
 	if err != nil {
-		status, why := s.grantRefusal("connection", err)
-		if status == http.StatusProxyAuthRequired {
+		status, code, why := s.grantRefusal("connection", err)
+		switch status {
+		case http.StatusProxyAuthRequired:
 			// The broker's own words for why this credential opens nothing - an unknown or
 			// ended grant, an enrollment whose lease lapsed, a grant every one of whose
 			// names is withheld - and never the placeholder itself, which a command's own
 			// proxy error line would otherwise print and keep.
-			s.refuseCredential(w, why)
-			return
+			s.refuseCredential(w, r, call{host: requestHost(r)}, code, why)
+		case http.StatusServiceUnavailable:
+			// A read that did not happen, which grantRefusal has logged: a failure of the
+			// broker's, and no refusal of the caller.
+			fail(w, http.StatusServiceUnavailable, code, why)
+		default:
+			// The broker's own refusal of this grant, in its own words (grantRefusal).
+			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
 		}
-		http.Error(w, "airlock: "+why, status)
 		return
 	}
 	if r.Method == http.MethodConnect {
@@ -427,11 +498,27 @@ func proxyPassword(r *http.Request) (string, string) {
 	return password, ""
 }
 
-// refuseCredential answers 407 and asks for the credential again. Nothing is tunnelled and
-// nothing is dialled: a request that reaches here never left the broker.
-func (s *Server) refuseCredential(w http.ResponseWriter, why string) {
+// refuseCredential answers 407 and asks for the credential again (refuse, with the challenge a
+// client sends its credential again on). Nothing is tunnelled and nothing is dialled: a request
+// that reaches here never left the broker.
+func (s *Server) refuseCredential(w http.ResponseWriter, r *http.Request, c call, code, why string) {
 	w.Header().Set("Proxy-Authenticate", `Basic realm="airlock"`)
-	http.Error(w, "airlock: "+why, http.StatusProxyAuthRequired)
+	s.refuse(w, r, c, http.StatusProxyAuthRequired, code, why)
+}
+
+// requestHost is the host a request of the outer server asks for, as a refusal's line names it
+// before anything has read the request as a call: an absolute URL's host, and otherwise the
+// request's Host, which is a CONNECT's authority, without its port. Both are ASCII lower-cased,
+// as a bound connection's host is.
+func requestHost(r *http.Request) string {
+	if r.URL.IsAbs() {
+		return fold.ASCII(r.URL.Hostname())
+	}
+	host, _, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host = r.Host
+	}
+	return fold.ASCII(host)
 }
 
 // grantUnreadable is what a command is told when a read of its grant did not answer at all. It
@@ -440,8 +527,23 @@ func (s *Server) refuseCredential(w http.ResponseWriter, why string) {
 // failure says the grant has ended.
 const grantUnreadable = "the broker could not read this grant just now; make the call again"
 
-// grantRefusal is the status and the words one failed grant read is answered with, and it is the
-// one rule for every read of a grant this package makes. Three answers, by what the read said:
+// The codes of a grant read's answers (grantRefusal): the API port's own code where it answers
+// the same refusal of a grant's release (api's grantValues), and one of this port's own for a
+// refusal the API port names no code for and for a read that did not happen.
+const (
+	codeGrantNotLive     = "GRANT_NOT_LIVE"
+	codeAirlockNoNames   = "AIRLOCK_NO_NAMES"
+	codeGrantChain       = "GRANT_CHAIN_INVALID"
+	codeSecretNotInStore = "SECRET_NOT_IN_STORE"
+	codeMintFailed       = "MINT_FAILED"
+	codeValueShape       = "AIRLOCK_VALUE_SHAPE"
+	codeGrantRefused     = "GRANT_REFUSED"
+	codeGrantUnreadable  = "GRANT_UNREADABLE"
+)
+
+// grantRefusal is the status, the code and the words one failed grant read is answered with,
+// and it is the one rule for every read of a grant this package makes. Three answers, by what
+// the read said:
 //
 //   - A grant that has ended, and a grant holding no name this session may have, are the read's
 //     own answer about that grant, so they are 407 in the broker's own words, which is what
@@ -459,25 +561,35 @@ const grantUnreadable = "the broker could not read this grant just now; make the
 //     so telling a command to make the call again would be untrue, and none of them carries
 //     anything of the store the read went to. Which errors those are is the read's own package
 //     to say (requests.IsRefusal), since a sentinel added there would be missed by a list kept
-//     here.
+//     here; the four named here have a code of their own, and any other is GRANT_REFUSED.
 //   - Everything left is a read that did not happen - a database that did not answer, most of
 //     them - and is 503 and grantUnreadable, with the error itself in the log, where it is
 //     wanted: a failed read is no proof that a grant ended, and a database failover must not
 //     send every agent in the middle of a call to ask for a grant it already holds, which on
 //     the human tier is a person approving each one. Nor may the answer carry the read's own
 //     words, which for a Postgres connect error are the database's user, name and address.
-func (s *Server) grantRefusal(read string, err error) (int, string) {
+func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	switch {
-	case errors.Is(err, requests.ErrGrantNotLive), errors.Is(err, requests.ErrAirlockNoNames):
-		return http.StatusProxyAuthRequired, err.Error()
+	case errors.Is(err, requests.ErrGrantNotLive):
+		return http.StatusProxyAuthRequired, codeGrantNotLive, err.Error()
+	case errors.Is(err, requests.ErrAirlockNoNames):
+		return http.StatusProxyAuthRequired, codeAirlockNoNames, err.Error()
 	case errors.Is(err, secrets.ErrMintUpstream):
 		// The upstream, not the grant: this one falls through to the 503 below, ahead of the
 		// refusal line, which would otherwise take it for one.
+	case errors.Is(err, requests.ErrGrantChainInvalid):
+		return http.StatusForbidden, codeGrantChain, err.Error()
+	case errors.Is(err, requests.ErrSecretNotInStore):
+		return http.StatusForbidden, codeSecretNotInStore, err.Error()
+	case errors.Is(err, requests.ErrMintFailed):
+		return http.StatusForbidden, codeMintFailed, err.Error()
+	case errors.Is(err, requests.ErrAirlockValueShape):
+		return http.StatusForbidden, codeValueShape, err.Error()
 	case requests.IsRefusal(err):
-		return http.StatusForbidden, err.Error()
+		return http.StatusForbidden, codeGrantRefused, err.Error()
 	}
 	s.log.Error("airlock proxy: a grant could not be read", "read", read, "error", err)
-	return http.StatusServiceUnavailable, grantUnreadable
+	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
 }
 
 // serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted
@@ -493,22 +605,22 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// request's own Host header are compared against.
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		http.Error(w, "airlock: "+r.Host+" is no host and port", http.StatusBadRequest)
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
 		return
 	}
-	host = airlock.ASCIILower(host)
+	host = fold.ASCII(host)
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
 	// same way by the transport they go out on (dialChecked).
 	addrs, err := s.checkedAddresses(r.Context(), host, port)
 	if err != nil {
-		http.Error(w, "airlock: "+err.Error(), http.StatusForbidden)
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		http.Error(w, "airlock: this connection cannot be taken over", http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, codeNotHijackable, "this connection cannot be taken over")
 		return
 	}
 	// Whether this CONNECT may be decrypted and read: the (name, slot) pairs of the grant
@@ -525,7 +637,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// about and another port of one name is another service.
 	connectPort := connectPortOf(port)
 	if len(s.candidates(grant, host, connectPort)) > 0 {
-		s.connectBound(hijacker, placeholder, grant, target, host, connectPort)
+		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
 	}
 	s.connectTunnel(w, r, hijacker, target, addrs, port)
@@ -548,23 +660,31 @@ func connectPortOf(port string) uint16 {
 // the password it was opened with: each request on it reads the grant again with that password
 // and builds its own candidates from what that read answers (serveBound), so a grant that ends
 // or a name that is withheld between two requests stops at the second one.
-func (s *Server) connectBound(hijacker http.Hijacker, placeholder string, grant requests.AirlockConnection, target, host string, port uint16) {
+func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, placeholder string, grant requests.AirlockConnection, target, host string, port uint16) {
 	client, err := hijack(hijacker)
 	if err != nil {
 		return
 	}
-	if _, err := client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+	if _, err := client.Write(established(w)); err != nil {
 		client.Close()
 		return
 	}
 	cut := &cutConn{Conn: newIdleConn(client, s.idle)}
 	decrypted := tls.Server(cut, &tls.Config{
-		// http/1.1 alone, and deliberately: an HTTP/2 request carries its authority in the
-		// :authority pseudo-header, which net/http puts in Host, but it also lets one
-		// connection carry requests for several authorities. Offering only HTTP/1.1 keeps one
-		// connection to one host, so the Host check airlock.Decide makes covers every request
-		// that crosses it.
-		NextProtos: []string{"http/1.1"},
+		// http/1.1 first and h2 after it, and crypto/tls answers the first protocol of this
+		// list the client offers too, so a client that offers both - net/http's own, curl,
+		// git - speaks HTTP/1.1 here, and a client that offers h2 alone - every gRPC client -
+		// speaks HTTP/2. One HTTP/2 connection carries many requests at once, each a stream
+		// with its own :authority, which net/http puts in r.Host; each stream is one request
+		// to serveBound, which reads the grant again for it and has airlock.Decide check its
+		// Host against the CONNECT target, and what it forwards goes to that target whatever
+		// the stream named. So the Host check covers every stream, as it covers every
+		// request of an HTTP/1.1 connection.
+		NextProtos: []string{"http/1.1", "h2"},
+		// HTTP/2 over TLS needs 1.2 at least (RFC 9113, section 9.2). It is crypto/tls's own
+		// default for a server, written here so the HTTP/2 this connection speaks never rests
+		// on a default.
+		MinVersion: tls.VersionTLS12,
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			// The CONNECT target's host, not the ClientHello's name: a client that sends no
 			// SNI still gets the certificate of the host it asked for, and a client whose SNI
@@ -591,7 +711,7 @@ func (s *Server) connectBound(hijacker http.Hijacker, placeholder string, grant 
 func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target string, addrs []netip.Addr, port string) {
 	upstream, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
 	if err != nil {
-		http.Error(w, "airlock: dial "+target+": "+err.Error(), http.StatusBadGateway)
+		fail(w, http.StatusBadGateway, codeUpstream, "dial "+target+": "+err.Error())
 		return
 	}
 	client, err := hijack(hijacker)
@@ -599,7 +719,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 		upstream.Close()
 		return
 	}
-	if _, err := client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+	if _, err := client.Write(established(w)); err != nil {
 		client.Close()
 		upstream.Close()
 		return
@@ -650,7 +770,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := airlock.ASCIILower(r.URL.Hostname())
+	host := fold.ASCII(r.URL.Hostname())
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
@@ -659,7 +779,7 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would
 		// cross the network in the clear, and no rule of the airlock says a secret may. The
 		// command asks again over https, where the proxy's own certificate covers it.
-		http.Error(w, "airlock: refusing plain http to "+host+", a host behind the airlock: a secret of this grant may reach it only inside TLS, so ask for it over https", http.StatusForbidden)
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codePlainHTTP, "refusing plain http to "+host+", a host behind the airlock: a secret of this grant may reach it only inside TLS, so ask for it over https")
 		return
 	}
 	// The name's addresses, checked before anything is forwarded so that the refusal is a 403
@@ -667,7 +787,7 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	// the name again (dialChecked), which is what makes the address it opens a socket to one
 	// it checked itself.
 	if _, err := s.checkedAddresses(r.Context(), host, cmp.Or(r.URL.Port(), "80")); err != nil {
-		http.Error(w, "airlock: "+err.Error(), http.StatusForbidden)
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
 	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
@@ -682,15 +802,24 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		},
 		ErrorHandler: s.badGateway(host, r.URL.Path),
 	}
+	// The service's answer, which the proxy carries and does not write (record).
+	answerOf(w).carry()
 	proxy.ServeHTTP(w, r)
 }
 
-// badGateway answers a service that could not be reached or did not answer. The error is the
-// transport's own and carries no header of the request, so nothing of the grant is in it.
+// upstreamMessage is the message of the line a call the proxy could not carry to its service logs
+// (badGateway).
+const upstreamMessage = "airlock proxy: upstream"
+
+// badGateway answers a service that could not be reached or did not answer: a failure, which it
+// logs and counts, and no refusal. The error is the transport's own and carries no header of the
+// request, so nothing of the grant is in it. The path, and on a plain request the host, are the
+// caller's, and the error may quote the host, so the line passes answer.ClipFields as a call's
+// line does, and stays one Cloud Logging entry whatever the caller sent.
 func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn("airlock proxy: upstream", "host", host, "path", path, "error", err)
-		http.Error(w, "airlock: "+host+": "+err.Error(), http.StatusBadGateway)
+		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", err})...)
+		fail(w, http.StatusBadGateway, codeUpstream, host+": "+err.Error())
 	}
 }
 
@@ -716,11 +845,39 @@ func hijack(hijacker http.Hijacker) (net.Conn, error) {
 	return conn, nil
 }
 
-// slogWriter is net/http's ErrorLog as one slog line each.
+// netHTTPMessage is the message of the line net/http writes through the ErrorLog of either
+// server (slogWriter): for example a connection that failed before a handler saw it, such as a
+// TLS handshake on a bound connection that failed, an accept that failed, and a handler's panic,
+// which net/http recovers and logs with the stack of the goroutine that panicked.
+const netHTTPMessage = "airlock proxy: net/http"
+
+// slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage: the first line
+// of net/http's text as its error, and the rest of the text, where there is any, as its stack.
+//
+// The first line can quote what the client sent: a handshake that failed on a bound connection is
+// logged with crypto/tls's error, which for an ALPN list without http/1.1 quotes the client's
+// whole list, up to about 64 KB of protocol names, each byte of which %q may write as four and
+// the JSON handler then escapes again. So the error passes answer.ClipFields as a call's line
+// does.
+//
+// The rest is the stack net/http writes under a handler's panic it recovered, after any further
+// lines of the panic value's own text, and it is kept whole, with no cut of its own: neither
+// server recovers a panic before net/http does (record), so this line is the one record of where
+// the panic happened, and the handler's own frames come after the runtime's, past the first 256
+// bytes of the text. The stack is the server's own text, not the client's - frames, file paths,
+// tabs and newlines, which the JSON handler writes in one or two bytes each - and net/http bounds
+// it at 64 KiB, so it writes at most 128 KiB, and the line stays one Cloud Logging entry whatever
+// the client sent. No handler of the airlock panics with a value that holds a newline: a panic
+// value that did, and quoted the client, would put that text in this field uncut.
 type slogWriter struct{ log *slog.Logger }
 
 func (w slogWriter) Write(p []byte) (int, error) {
-	w.log.Warn("airlock proxy: " + strings.TrimSuffix(string(p), "\n"))
+	text, stack, stacked := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
+	fields := answer.ClipFields([]any{"error", text})
+	if stacked {
+		fields = append(fields, "stack", stack)
+	}
+	w.log.Warn(netHTTPMessage, fields...)
 	return len(p), nil
 }
 

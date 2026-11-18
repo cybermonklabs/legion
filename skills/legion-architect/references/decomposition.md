@@ -1,11 +1,13 @@
 # Decomposing a tree
 
 Part of `skill://legion-architect`, section 1. Read it before you read a child's handoff, create or
-adopt children, split a change across repositories, or attach architecture components.
+adopt children, review a child's spec, split a change across repositories, or attach architecture
+components.
 
 ## Reading the tree
 
-Read the root issue, its acceptance criteria, its existing children and their current handoffs.
+Read your own issue (the root in a root session, your child in a sub-architect session), its
+acceptance criteria, its existing children and their current handoffs.
 Your issue record is the `legion` tool's `read_record`. A child's handoffs are records on its
 Dispatch issue: read the newest of a phase with
 `dispatch handoff-read --issue <child> --phase <word>` (`plan`, `implement`, `test` or `review`),
@@ -17,15 +19,18 @@ Release every adopted child at once with
 `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`. The daemon runs nothing on
 a child until it is released. Once it is released, the daemon moves it to `todo` and, while the
 root's design gate is open, starts its first phase itself at the child's own admission slot, and
-not while Dispatch shows an open child under that child. It starts no sub-architect, and you start no
-worker. A release is accepted whole whatever the `--blocked-by` links say: its answer names
-`started` and `held` (each held child with the issues it waits on) beside `released`, and a held
-child waits in your tree until Legion starts it.
+not while Dispatch shows an open child under that child. When it starts that first phase, it also
+starts the child's own architect, which owns the child while it holds its role; while that
+architect does not hold its role, the child's notices come to you. You start neither that architect
+nor any worker.
+A release is accepted whole whatever the `--blocked-by` links say: its
+answer names `started` and `held` (each held child with the issues it waits on) beside
+`released`, and a held child waits in your tree until Legion starts it.
 
 ## Creating children
 
 ```bash
-dispatch issue --project <project> --parent <root issue> --title '<child outcome>' --spec-file - <<'EOF'
+dispatch issue --project <project> --parent "$LEGION_ISSUE" --title '<child outcome>' --spec-file - <<'EOF'
 <the child's spec, written as skill://dispatch-writing-specs says, scaled to the child>
 EOF
 ```
@@ -38,27 +43,34 @@ EOF
   does not apply to this child. Write the child's Verification document with it, one `check` block
   per thing that must be proved. The child's workers read only this spec and those checks.
 - Before `dispatch issue` creates any child, dispatch a fresh red-team subagent
-  (`task(agent="oracle")`) with the
-  root spec, the tree's open children with their repositories and pull requests, and the proposed
+  (`task(agent="oracle")`) with your own issue's spec (the root spec in a root session), the
+  tree's open children with their repositories and pull requests, and the proposed
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
-  proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
-  the root's pull request or an open child's."* `wait` for its verdict, since it runs as a job of
-  its own. A child survives it only when it needs a repository or a deploy order of its own: its
-  code is in a repository no open pull request of this tree is in, or it must be applied on its
-  own before other work of the tree can build on it. A repeated change — the same edit per
-  program, directory or instance of this tree's own work — is one child, never one per instance.
-  Work in a repository this tree already has a pull request in, which waits on a sibling's merge,
-  is no child and is not parked in `backlog`: write it into the spec of the issue whose pull
-  request carries it — the parent's, or the sibling's when the parent's pull request is in another
-  repository — so one pull request lands it in order, and a deletion of what this tree replaced
-  rides in the pull request of the last change it waits on the same way.
-  Post the verdict, with the folds you made, as one `dispatch comment` on your own issue (the
-  root, in a root session). Its first line is exactly `Red-team verdict for <root key>:`, with
-  the root's own key in place of the placeholder, so a reader can find it among the issue's
-  comments; the controller's weekly audit matches that line, and counts no child filed before
-  the release that first asked for it. The architect who wrote the list reads every child on it
-  as needed, and the comment stops a later session filing the same children again.
+  proof of the acceptance of the issue it is filed under, or a part of the architect's own work,
+  and say where it folds: that issue's own pull request or an open child's. Weigh each separate
+  pull request against combining
+  its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+  It can also conflict with the default branch.
+  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+  They can conflict with each other, and dependent slices run in sequence."*
+  `wait` for its verdict, since it runs as a job of its own.
+  Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+  It can also conflict with the default branch.
+  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+  They can conflict with each other, and dependent slices run in sequence.
+  A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
+  A repeated change — the same edit per program, directory or instance of this tree's own work — is one child, never one per instance.
+  Include deletion of what this tree replaced in this tree's work, sized by those reasons.
+  Post the verdict, with the folds you made, as one `dispatch comment` on your own issue: the
+  root in a root session, your child in a sub-architect session. Its first line is exactly
+  `Red-team verdict for <your issue key>:`, with your own issue's key in place of the
+  placeholder, so a reader can find it among the issue's comments. The controller's weekly audit
+  matches that line, and counts no child filed before the release that first asked for it. The
+  architect who wrote the list reads every child on it as needed, and the comment stops a later
+  session filing the same children again.
 - A child that duplicates another issue and is not yet released is never released: fold it by the
   duplicate rule of `skill://dispatch-first`. The daemon records a child at its release and
   re-asserts a status only on an issue it has recorded, so that close stands. A released duplicate
@@ -72,19 +84,27 @@ EOF
   with each one's key.
 - Before `release_children`, check that every child you filed is named under a verdict comment,
   because a child filed without one skipped the check. A child a human created is adopted as it is
-  and needs none.
+  and needs none. Check too that the current version of each child you filed has your approving
+  `Spec review of` comment ("Reviewing a child's spec", below).
 - `--project` is the issue key's prefix before `-<n>` (`LEGSMOKE-3` → `LEGSMOKE`).
-- In a root session `$LEGION_ISSUE` is the root (it equals `$LEGION_TREE`): pass it as `--parent`.
-  The daemon makes the sub-issue link from `--parent`.
+- `--parent` is your own issue, `$LEGION_ISSUE`: the root in a root session (it equals
+  `$LEGION_TREE`), your child in a sub-architect session. Never file below a child of yours:
+  that child's own architect files its children. The daemon makes the sub-issue link from
+  `--parent`.
+- In a sub-architect session, your child's planner may already be working when you start,
+  because the daemon starts you both at your child's first phase. Decide first whether your
+  child needs children of its own. When it does, file and release them. Then tell the planner,
+  with `envoy_publish`, that your child's plan covers only your child's own part and the join of
+  its children's work. Your child then runs beside its children, so its sign-off waits for its
+  last round (`skill://legion-architect`, section 3).
 - File every child before you request the root spec's approval, and before `register_gate` under
   `gates.design: off`: the gate's opening starts the root's own first phase unless the root waits
   on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`,
   so a child filed after that leaves the root working beside its children.
-- Give a child `--blocked-by` only for an issue outside this tree's own repositories, or one whose
-  deploy another child builds on, then release every child at once with `release_children`:
+- A child may wait on a sibling's merge in the same repository with `--blocked-by`.
+  Release every child at once with `release_children`:
   Legion holds a released child until its last blocker closes, and a child is inert only until it
-  is released. No child waits on a sibling's merge in a repository this tree already has a pull
-  request in; that work is written into the spec of the issue whose pull request carries it.
+  is released.
   Each child the daemon starts takes an admission slot of its own, so four started children can
   take four of the deployment's cap; when a child holds none, [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says.
 - Never release a child `--blocked-by` its own parent: the parent now merges last, so that child
@@ -102,25 +122,76 @@ A role token's `<project>` is not the `--project` above: it is the daemon's own 
 encodes a token as `legion-<project>-<key>-<role>` with the key lower-cased, so project `acme`,
 issue `LEGION-41`, role `architect` is `legion-acme-legion-41-architect`.
 
+## Reviewing a child's spec
+
+A child's spec is never gated, and no person reads it: its parent's review stands in place of the
+gate. Review every version of a child's spec and of its Verification document against your own
+spec. Review each version whoever wrote it, and before the child's work goes on with it. Review
+the version you file a child with before `release_children`, and a later version when you hear
+of it.
+
+1. Dispatch a fresh reader, `task(agent="plan-reviewer")`, and tell it the documents are a
+   child's spec and its Verification document. Give it your own spec: a root's at the version its
+   gate approved, a child's at the version its own parent's review approved. Give it the child's
+   two documents at the versions you review. Its mandate: *"Does this version serve each
+   requirement of the parent spec that it names? Does it narrow or contradict any of them? Does it
+   add scope the parent spec does not ask for? Does each fact it states hold? Check each fact
+   against the code, the docs or a read-only command."* `wait` for its result, since it runs as a
+   job of its own.
+2. Decide from its result and your own reading: approve the version, or request changes. Give a
+   reason for either.
+3. Post one `dispatch comment` on the child issue. Its first line is exactly one of these two,
+   with the child's key, the spec's version and your own issue's key in place of the
+   placeholders:
+
+   ```text
+   Spec review of <child key> v<n> by <parent key>: approved
+   Spec review of <child key> v<n> by <parent key>: changes requested
+   ```
+
+   Its second line names the version of the Verification document you read:
+   `Verification document v<m>`. Your reasons follow.
+4. Tell the child's architect with `envoy_publish` to its role topic (the token rule above). An
+   architect starts on a child at the child's first phase, so before then the comment is the
+   record that architect reads when it starts.
+
+If you are the child's architect:
+
+- Register no design gate, and call no `dispatch request-approval`.
+- When you write a new version of your spec or of your Verification document, tell the
+  architect above you with `envoy_publish`, naming each document and its version. Its topic is
+  on your `Legion addressing` line.
+- Tell your own workers of that version only after the approving comment. Until then, they keep
+  to the last version the architect above approved. The newest approving `Spec review of`
+  comment on your issue names that version.
+- On `changes requested`, write a new version that answers each reason, and tell the architect
+  above again.
+- A decision only a person can make is never a decision block in your spec. Send it to the
+  architect above you with `envoy_publish`. That architect sends it up the same way, and the
+  root architect asks it on the root (`skill://legion-architect`, "Every turn").
+
 ## Across repositories
 
-A change across repositories gets one child per repository:
-`dispatch issue --project <project> --parent <root> --repo <owner/name> …`. Choose the repository at
-creation, because the daemon fixes it when it records the child.
+Split a change across repositories into children, each in one repository.
+Size their pull requests by the reasons above.
+Create each child with:
+`dispatch issue --project <project> --parent "$LEGION_ISSUE" --repo <owner/name> …`.
+Choose the repository at creation, because the daemon fixes it when it records the child.
 
 Release a child that depends on another repository's change only after that change's pull request
 merges, because the child's work must build on the merged change. Name the merged commit in its
 task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`); for a repository that pins the
 other one by commit (a lock file or dependency pin), the pin is that commit. Do not hold such a
 child with `--blocked-by` instead, because Legion would start it at the blocker's close, before you
-name the merged commit. Read the other repositories with your gh's read-only access
-(`-R owner/repo`).
+name the merged commit. Read another repository with your gh, which reaches every repository your
+role's App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
 
-Set an issue's `blocked_by` list when its work must wait on an issue outside this tree
-(`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which replaces the whole
-list, so read the issue's existing links first).
+Set an issue's `blocked_by` list when its work must wait on an issue outside this tree, of any
+Dispatch project (`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which
+replaces the whole list, so read the issue's existing links first); Dispatch refuses a link to
+another project's issue only to a credential that names one project (`PROJECT_SCOPE`).
 That list is how Legion learns of the wait.
 An issue the daemon has already started returns its admission slot while a blocker of it is not
 `done`, so the deployment's cap goes to work that can move,

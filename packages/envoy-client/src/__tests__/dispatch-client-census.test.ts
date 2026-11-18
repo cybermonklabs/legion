@@ -63,6 +63,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
   planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),
+  reviewArtifact: (client) => client.reviewArtifact("artifact-1", 2, { state: "approved" }),
   recordResult: (client) =>
     client.recordResult("DSP-1", {
       actor,

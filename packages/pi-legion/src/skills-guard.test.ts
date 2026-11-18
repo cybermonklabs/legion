@@ -510,9 +510,10 @@ test("every prompt and agent that may write says to make its own scratch and del
 // pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
 // and the pins below hold what only the prompt carries and the skill points at. The carve-out
 // that names the step's reads as the one sleep the "never sleep in a loop" rule allows is a
-// second wording, held across the pr-body reference and the implementer's prompt part. The three
+// second wording, held across the pr-body reference and the implementer's prompt part. The
 // members the step added to lists elsewhere in these texts are pinned too, since a list no test
-// reads loses its member silently. This shows the text ships, never that a role follows it.
+// reads loses its member silently, and so is the reviewer's rule that it pushes nothing, which
+// keeps the step from falling to it. This shows the text ships, never that a role follows it.
 test("the worker skill tells a role to read the pull request's head after its own push", () => {
   const sharedWithTheWorkerPrompt = [
     "skills/legion-worker/SKILL.md",
@@ -549,7 +550,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     onlyInTheWorkerPrompt
   );
   countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
-  countedOncePerFile("the empty commit that carries it there", [
+  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
@@ -754,6 +755,6 @@ test("the architect shows a person the surface before it asks them to approve th
     "Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody."
   );
   expect(gate).toContain(
-    "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
+    "The surfaces this tree's children build are the root architect's. Their pictures go in the root spec. A sub-architect that finds a surface the root spec never drew tells the architect above it, and each architect above sends it up the tree to the root architect."
   );
 });

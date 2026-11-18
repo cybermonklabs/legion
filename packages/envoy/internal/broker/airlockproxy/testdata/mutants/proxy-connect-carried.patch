@@ -1,0 +1,20 @@
+# proxy-connect-carried: serveBound no longer refuses a CONNECT on a connection the proxy
+# decrypted, so under an entry that allows any method one is decided like any request and handed
+# to the service.
+# must fail: TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn
+# must fail: TestNoProtocolSwitchIsCarriedOnADecryptedConnection
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/broker/airlockproxy/bound.go
++++ b/packages/envoy/internal/broker/airlockproxy/bound.go
+@@ -228,9 +228,7 @@
+ 	// none), so these two are the proxy's, as the upgrade, the AWS signature and the Azure
+ 	// exchange are.
+ 	switch {
+-	case r.Method == http.MethodConnect:
+-		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeProtocolSwitch, "refusing a CONNECT inside a connection the proxy decrypted: it would open a tunnel to the service whose bytes the proxy does not read")
+-		return
++	// MUTANT: a CONNECT on a decrypted connection is decided and carried like any request.
+ 	case httpguts.HeaderValuesContainsToken(r.Header["Upgrade"], "h2c"):
+ 		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeProtocolSwitch, "refusing an upgrade to h2c: it would carry HTTP/2 in the clear past the requests the proxy reads")
+ 		return

@@ -51,6 +51,7 @@ const agent = {
  *  `PendingWritesIndicator`), 0 while it names no upload: the page's own account of the progress
  *  that keeps an attempt's deadline from running out. */
 async function uploadedPercent(page: Page): Promise<number> {
+  // Its one caller reads this inside `expect.poll`, which reads it again until the share holds.
   const shown = /Uploading… (\d+)%/u.exec((await pendingWrites(page).textContent()) ?? "");
   return shown === null ? 0 : Number(shown[1]);
 }

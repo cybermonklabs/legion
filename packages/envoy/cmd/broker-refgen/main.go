@@ -7,8 +7,10 @@
 //
 // docs/site/generators/broker-reference.sh runs it at site build. It refuses to write a page from
 // source it cannot read, a route without a comment saying what it does, or a variable or code
-// without a doc comment, so a page can only be complete, and it builds all three pages before it
-// writes any.
+// without a doc comment, so a page can only be complete; and a refusal of the API port or of the
+// airlock's proxy port written outside the writers that give that port's recorder its code
+// (recorder.go), so every refusal the broker records names one. It builds all three pages before
+// it writes any.
 package main
 
 import (

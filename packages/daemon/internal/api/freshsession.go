@@ -258,7 +258,7 @@ func roleList() string {
 // It is three operator commands in a row, and nothing else: `legion claims suspend` for a claim
 // that runs an agent and for the one no process stands behind, then `legion claims
 // forget-session`, then the start — `legion claims resume` for a suspended claim, and the retry
-// for one that failed or an operator stopped, which a resume is refused for (supervise's table).
+// for one that failed or retired, which a resume is refused for (supervise's table).
 // A phase worker is started through its issue's phase whichever of those two started it, since
 // that is what hands the relaunched role the phase's task (restartWorkedPhase). The new session
 // also puts the claim's run of provider-error turns back to zero
@@ -435,9 +435,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// the agent and nothing more, so without it a tester waiting on CI, or a worker an idle
 	// release suspended, comes back in a new session with nothing to do. A claim that still
 	// owes a task keeps it — the resume sends that one — and an architect is never started
-	// through a phase at all.
+	// through a phase at all. The daemon's own delivery of a relaunch's record is no task it
+	// owes (supervise.HoldsTask), so a claim holding that alone is read as owing nothing, and
+	// the phase's task takes its place (supervise's queue).
 	status = http.StatusOK
-	if m.Claim().Pending == nil {
+	if !supervise.HoldsTask(m.Claim().Pending) {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {

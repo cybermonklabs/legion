@@ -395,13 +395,14 @@ func routeProbePath(pattern string) string {
 }
 
 // routeProbeBody is the JSON body a probe sends. Every mutation that decodes before it
-// authenticates accepts `actor` (a bearer's self-identification). Two routes need more: the
-// review route's input has no actor field and would answer 400 to an unknown key, and the reply
-// route answers REPLY_FORBIDDEN to a malformed reply as well as to the wrong caller, so its probe
-// must be a complete reply to reach the caller check.
+// authenticates accepts `actor` (a bearer's self-identification). Two kinds of route need more:
+// a review route refuses a body without a valid state (400 INVALID_REVIEW) before it reads the
+// document, so its probe is an approval, and a reply route answers REPLY_FORBIDDEN to a malformed
+// reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
+// check.
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
-	case "POST /api/v1/artifacts/{id}/reviews":
+	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":
 		return `{"state":"approved"}`
 	case "POST /api/v1/messages/{id}/reply", "POST /api/v1/comments/{id}/reply":
 		return `{"actor":{"kind":"session","id":"s1"},"attempt":1,"body":"probe"}`
@@ -586,6 +587,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 		"POST /api/v1/artifacts/{id}/rebuild",
 		"POST /api/v1/artifacts/{id}/reviews",
+		// The review that names the version its caller read is this change's own row, and the
+		// person's as the review above it is: it records the same review in the person's name.
+		"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
 		// The title correction is this change's own row: a document's title is what every
 		// reader sees it by, so the person whose credential it is corrects one.
 		"PATCH /api/v1/artifacts/{id}",

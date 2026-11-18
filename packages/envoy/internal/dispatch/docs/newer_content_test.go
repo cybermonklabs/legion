@@ -207,3 +207,23 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 		})
 	}
 }
+
+// A write of a typed block this build does not know - one a newer build's type introduced, or a
+// name nobody declared - is refused naming it, and the refusal is an answer, not a panic: the
+// write's path compares the parse's refusal with the ask rule's (askRefusalInstead) by ==, which a
+// refusal that cannot be compared would panic on, ending the request with no answer at all. A
+// process behind a type migration takes exactly such writes until it reinstalls.
+func TestAWriteOfATypedBlockThisBuildDoesNotKnowIsRefused(t *testing.T) {
+	service, artifactID := newTestService(t)
+	tx, err := service.store.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the write: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	writeCtx, ledger := service.Join(context.Background(), tx)
+	defer ledger.Discard()
+	_, err = service.SeedText(writeCtx, artifactID, "# Notes\n\n:::nosuch{#n1}\nA block of no declared type.\n:::\n", model.Actor{Kind: "user", ID: "writer"})
+	if !errors.Is(err, ErrInvalidMarkdown) || !strings.Contains(err.Error(), `unknown typed block "nosuch"`) {
+		t.Fatalf("a write of the typed block nosuch answered %v, want ErrInvalidMarkdown naming the unknown typed block nosuch", err)
+	}
+}

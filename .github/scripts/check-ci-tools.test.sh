@@ -11,8 +11,12 @@
 #
 # NO CASE REACHES THE NETWORK. The check under test reads the tree alone and has no mode that
 # reads the package, because .github/scripts/mirror-ci-tools.sh reads the package on every run of
-# the ci-images job and is the only judge of a copy's state. The last case runs the check over
-# this repository's own tree, which is the same tree read.
+# the ci-images job and is the only judge of a copy's state.
+#
+# No case runs the gate over this repository's own tree: ci.yaml's lint job does
+# (.github/workflows/ci-job-lint.yaml, "Check every tool asset of .github/ci-tools.yaml agrees
+# with its pin"), on every change, so a case here would only reach that same verdict a second
+# time in the same CI run.
 #
 # Run from anywhere: .github/scripts/check-ci-tools.test.sh
 # CI runs it in ci.yaml's test job.
@@ -25,7 +29,6 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 check_script="$script_dir/check-ci-tools.sh"
 repo_paths_script="$script_dir/repo-paths.sh"
-repository=$(cd "$script_dir/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -1720,21 +1723,5 @@ run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 check "names the file neither rule read" \
   "$(contains "$out" '; 1 file(s) under .github are not valid UTF-8, so neither rule read them: .github/actions/install-tool/binary.dat$')"
-
-echo "case: this repository's own tree"
-# The one case that reads the tree this gate runs over in CI. What it proves is the gate's
-# behaviour on that tree: every rule passes, every row agrees with the pin that installs it,
-# and every tool URL the files under .github fetch is one a row or an entry names.
-# Every count in the assertions is read as digits and not as today's number. A row added to
-# this repository, and a no_second_source entry written for the next install with one
-# publisher — which the manifest and AGENTS.md both say that key is kept for — are the tree
-# moving, not this gate changing, and a case that pinned the tally would redden on the day
-# either happened and say nothing about the gate.
-run_gate "$repository"
-check "exits 0" "$(is "$status" 0)"
-check "reads every row of the tree and each agrees with its pin" \
-  "$(contains "$out" '^.github/ci-tools.yaml holds [0-9]* row(s), each agreeing with the pin that installs it, and [0-9]* no_second_source entr')"
-check "and every tool URL a file under .github fetches is one the manifest names" \
-  "$(contains "$out" '; [0-9]* tool URL(s) fetched by the [0-9]* file(s) under .github that rule 3 reads, this manifest not among them, name one of those;')"
 
 summary "check-ci-tools.sh"

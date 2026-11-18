@@ -13,14 +13,16 @@
 //
 // The previous build is a directory packages/envoy/scripts/build-dispatch-build.sh writes, named by
 // DISPATCH_PREVIOUS_BUILD. The suite skips only when that variable is unset; a directory it names
-// that lacks a part fails the suite, naming the parts it lacks. The current side is this tree: its
-// server from cmdtest.Build, its CLI run as `bun packages/envoy-client/bin/dispatch.ts`, its corpus
-// read from the working tree.
+// that lacks a part fails the suite, naming the parts it lacks. One row of the transition file
+// runs another earlier build instead, the first-rollout build named by
+// DISPATCH_FIRST_ROLLOUT_BUILD, on the same terms, and fails when that build is of another commit
+// than firstRolloutRelease. The current side is this tree: its server from cmdtest.Build, its CLI
+// run as `bun packages/envoy-client/bin/dispatch.ts`, its corpus read from the working tree.
 //
 // Its own build tag and its own CI job, dispatch-two-builds in .github/workflows/ci.yaml, for the
 // reason the multiprocess suite has its own: a row waits for durable hand-overs and settings
-// polls, tens of seconds each. That job builds the previous release with build-dispatch-build.sh,
-// caches the build by its commit, and runs this suite against it.
+// polls, tens of seconds each. That job builds the previous release and the first-rollout release
+// with build-dispatch-build.sh, caches each build by its commit, and runs this suite against them.
 
 package main
 
@@ -39,6 +41,21 @@ import (
 
 // previousBuildVariable names the directory build-dispatch-build.sh wrote for the previous build.
 const previousBuildVariable = "DISPATCH_PREVIOUS_BUILD"
+
+// firstRolloutBuildVariable names the directory build-dispatch-build.sh wrote for the first-rollout
+// build, firstRolloutRelease, which TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet
+// runs as its earlier build.
+const firstRolloutBuildVariable = "DISPATCH_FIRST_ROLLOUT_BUILD"
+
+// firstRolloutRelease is the commit of the first-rollout build, the release tagged
+// legion-envoy-v30.20.2. It is the newest release before the fleet columns (migration
+// 20261101030537_server_processes_schema), which legion-envoy-v30.21.0 is the first to carry and
+// to register its schema numbers in (cybermonklabs/legion#2461): a process of it reads as version
+// 0 in the fleet, which is the first rollout of those numbers. The tag is lightweight, and a
+// lightweight tag can be moved, so the pin is the commit. Two other places hold the same commit:
+// FIRST_ROLLOUT_COMMIT in ci.yaml's dispatch-two-builds job, and DISPATCH_E2E_FIRST_ROLLOUT_COMMIT,
+// which that job gives the browser run against the first-rollout build.
+const firstRolloutRelease = "edb69e0d7588ec037847182e74a04a343a0664c9"
 
 // previousBuildParts is every part of a previous build's directory a row reads, as
 // build-dispatch-build.sh lays it out.
@@ -62,17 +79,38 @@ type previousBuild struct {
 	commit string
 }
 
-// openPreviousBuild reads DISPATCH_PREVIOUS_BUILD. It skips the test when the variable is unset,
-// and fails it when the directory the variable names lacks any part a row reads.
+// openPreviousBuild reads DISPATCH_PREVIOUS_BUILD, and openFirstRolloutBuild
+// DISPATCH_FIRST_ROLLOUT_BUILD (openBuild).
 func openPreviousBuild(t *testing.T) previousBuild {
 	t.Helper()
-	dir, set := os.LookupEnv(previousBuildVariable)
+	return openBuild(t, previousBuildVariable, "--previous-release")
+}
+
+// openFirstRolloutBuild also fails the test when the build's COMMIT is another commit than
+// firstRolloutRelease, before any server starts.
+func openFirstRolloutBuild(t *testing.T) previousBuild {
+	t.Helper()
+	buildArguments := "--commit " + firstRolloutRelease
+	build := openBuild(t, firstRolloutBuildVariable, buildArguments)
+	if build.commit != firstRolloutRelease {
+		t.Fatalf("%s=%s is a build of commit %s, but the first-rollout build is commit %s (firstRolloutRelease). Build it again with packages/envoy/scripts/build-dispatch-build.sh %s --out <dir>.",
+			firstRolloutBuildVariable, build.dir, build.commit, firstRolloutRelease, buildArguments)
+	}
+	return build
+}
+
+// openBuild reads the build the variable names. It skips the test when the variable is unset,
+// naming the build-dispatch-build.sh arguments that build it, and fails it when the directory the
+// variable names lacks any part a row reads.
+func openBuild(t *testing.T, variable, buildArguments string) previousBuild {
+	t.Helper()
+	dir, set := os.LookupEnv(variable)
 	if !set {
-		t.Skipf("%s is unset. Build the previous build with packages/envoy/scripts/build-dispatch-build.sh --previous-release --out <dir>, then set %s=<dir>.",
-			previousBuildVariable, previousBuildVariable)
+		t.Skipf("%s is unset. Build it with packages/envoy/scripts/build-dispatch-build.sh %s --out <dir>, then set %s=<dir>.",
+			variable, buildArguments, variable)
 	}
 	if dir == "" {
-		t.Fatalf("%s is set but empty. Set it to the directory build-dispatch-build.sh wrote.", previousBuildVariable)
+		t.Fatalf("%s is set but empty. Set it to the directory build-dispatch-build.sh wrote.", variable)
 	}
 	var missing []string
 	for _, part := range previousBuildParts {
@@ -89,8 +127,8 @@ func openPreviousBuild(t *testing.T) previousBuild {
 		}
 	}
 	if len(missing) > 0 {
-		t.Fatalf("%s=%s is not a complete previous build. It has no %s. Build it again with packages/envoy/scripts/build-dispatch-build.sh.",
-			previousBuildVariable, dir, strings.Join(missing, ", "))
+		t.Fatalf("%s=%s is not a complete build. It has no %s. Build it again with packages/envoy/scripts/build-dispatch-build.sh %s.",
+			variable, dir, strings.Join(missing, ", "), buildArguments)
 	}
 	commit, err := os.ReadFile(filepath.Join(dir, "COMMIT"))
 	if err != nil {
@@ -115,9 +153,19 @@ type twoBuilds struct {
 }
 
 // newTwoBuilds opens the previous build, the database and the NATS server, and starts nothing.
+// newFirstRolloutBuilds is the same with the first-rollout build as the earlier one.
 func newTwoBuilds(t *testing.T) *twoBuilds {
 	t.Helper()
-	build := openPreviousBuild(t)
+	return newTwoBuildsOf(t, openPreviousBuild(t))
+}
+
+func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
+	t.Helper()
+	return newTwoBuildsOf(t, openFirstRolloutBuild(t))
+}
+
+func newTwoBuildsOf(t *testing.T, build previousBuild) *twoBuilds {
+	t.Helper()
 	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
 }
 
@@ -127,12 +175,14 @@ func (b *twoBuilds) options(env map[string]string) dispatchOptions {
 }
 
 // startPrevious starts a process of the previous build, its own web app served, and returns once it
-// answers /healthz. The previous build may predate DISPATCH_LISTEN_FD, so it binds its port itself.
+// answers /healthz. It serves on the socket the test holds, as the current build does
+// (startDispatchProcessWith): every build this suite runs serves an inherited DISPATCH_LISTEN_FD,
+// the first-rollout build, the oldest, among them. A port the test let go of for the process to
+// bind would be any program's to take first, and the start would fail on `address already in use`.
 func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
 	options := b.options(env)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
-	options.BindsItsPort = true
 	b.a = startDispatchProcessWith(t, b.databaseURL(t), options)
 	b.a.waitHealthy(t)
 	return b.a

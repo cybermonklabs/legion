@@ -171,6 +171,8 @@ func (p imageNesting) Parse(parent ast.Node, block gmtext.Reader, pc parser.Cont
 	bottom, open := delimiters.closeLabel()
 	node := p.goldmarkLinkParser.Parse(parent, block, pc)
 	switch node.(type) {
+	case nil:
+		mergeTrailingText(parent)
 	case *ast.Link, *ast.Image:
 		if open {
 			delimiters.pairLabel(bottom)
@@ -191,6 +193,32 @@ func (p imageNesting) Parse(parent ast.Node, block gmtext.Reader, pc parser.Cont
 	}
 	measured[image] = nesting
 	return node
+}
+
+// mergeTrailingText joins parent's last two children into one when both are text and the second
+// begins where the first ends, as goldmark joins a text to the one before it. A `]` that closes no
+// link turns its label's opener into a text in place (ast.MergeOrReplaceTextSegment), which joins
+// the text before the opener but not the one after it, so a run of `[` that their closers turn back
+// into text one at a time left a text apiece. Goldmark checks the label of each `]` that could
+// still close a link for a link inside it by walking every node after the label's opener
+// (containsLink, parser/link.go:218-231 at v1.8.6), so each of the last thousand closers walked
+// every opener the closers before it had turned into text: a run of 15,000 `[` and as many `]`
+// cost 14 million node visits, and parsed in 17 to 22 times the time of one an eighth as long.
+// Joined as each turns into text, the label after an opener is one text.
+func mergeTrailingText(parent ast.Node) {
+	last, ok := parent.LastChild().(*ast.Text)
+	if !ok {
+		return
+	}
+	before, ok := last.PreviousSibling().(*ast.Text)
+	if !ok || before.Segment.Stop != last.Segment.Start || before.SoftLineBreak() || before.HardLineBreak() ||
+		before.IsRaw() || last.IsRaw() {
+		return
+	}
+	before.Segment = before.Segment.WithStop(last.Segment.Stop)
+	before.SetSoftLineBreak(last.SoftLineBreak())
+	before.SetHardLineBreak(last.HardLineBreak())
+	parent.RemoveChild(parent, last)
 }
 
 // markNesting is how many inline marks root's markdown opens one inside another, root among them,

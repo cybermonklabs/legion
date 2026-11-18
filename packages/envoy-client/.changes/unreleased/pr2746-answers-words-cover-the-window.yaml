@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+    `readSessionAnswers` gives `words` for every item Dispatch sent inside the read's 72-hour
+    window, the items the 8,000-character limit leaves out of the list included, and gives `since`,
+    where that window starts. A read Dispatch answered, whose window holds no item, gives
+    `words: []` with no `text`. Before, `words` covered only the items the list showed, so a host
+    comparing two reads missed a new item longer than the limit and a comment an edit made too long
+    to fit.
+    `sessionAnswersChanged(shown, next, since)` compares two reads' `words`: an item new or changed
+    is a change, and so is an item gone from the read while its time is still inside the window, as
+    an answer a person retracted is; an item gone because the window left it behind is not. Each
+    read now asks Dispatch for the window by the host's own clock (`since`), so an item Dispatch
+    would drop by a clock ahead of the host's is not taken for a retracted one.
+time: 2026-11-15T20:22:06.000000000Z
+custom:
+    Issue: pr2746

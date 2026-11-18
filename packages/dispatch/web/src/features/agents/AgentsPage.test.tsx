@@ -325,6 +325,14 @@ function renderAgents({
   };
 }
 
+/** Reads the agent list again, as the poller's next tick would, inside `act`: the read's answer
+ *  re-renders the page, and the update lands where the test can see it. */
+async function refetchAgents(queryClient: QueryClient): Promise<void> {
+  await act(async () => {
+    await queryClient.refetchQueries({ queryKey: ["agents"] });
+  });
+}
+
 function card(region: HTMLElement, name: string): HTMLElement {
   const result = within(region).getByRole("heading", { name }).closest("article");
   if (result === null) throw new Error(`${name} card missing`);
@@ -865,7 +873,7 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
     expect(groupCount(region, "active")).toBe("(1)");
     expect(groupCount(region, "idle")).toBe("(2)");
     expect(groupCount(region, "quiet")).toBe("(0)");
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
 
     // Collapsing a group hides its rows and no others, and opening it puts them back.
@@ -2671,7 +2679,7 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
 
     // The Reviewer now takes BTW too, so the selection's own mode would be BTW.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
@@ -2714,7 +2722,7 @@ test("a selected agent that went away does not change what Restore draft re-send
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
 
     page.listAgents.mockResolvedValue([planner]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(
         within(region).queryByRole("checkbox", { name: "Select Reviewer for broadcast" })
@@ -2801,7 +2809,7 @@ test("a selected agent that came back is shown as not in the restored send, and 
 
     // The Reviewer now takes BTW: the live plan would reach it, the refused request does not.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await restoreDraft(1);
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
       "Broadcast to 1 of 2 selected"
@@ -2829,8 +2837,10 @@ test("a selected agent that came back is shown as not in the restored send, and 
   }
 });
 
-// The security review's minor: only a session an edit would bring in is "not in the refused send";
-// one the live plan still leaves out keeps the reason the live plan gives.
+// The security review's minor: only a session the live plan would include is "not in the refused
+// send"; one the mode still leaves out keeps the reason the mode gives. A session gone from the
+// live list is one the live plan would include - it may be stopped rather than ended, and the
+// server decides - so an edit brings it back in.
 test("a restored send names a selected session it leaves out by the reason an edit would keep, unless it has come back", () => {
   const [planner, reviewer] = agents;
   const restored = {
@@ -2852,7 +2862,7 @@ test("a restored send names a selected session it leaves out by the reason an ed
     composedBroadcast(composition, currentList(live)).plan.excluded.map((item) => item.reason);
 
   expect(reasons([planner, reviewer])).toEqual(["does not advertise BTW"]);
-  expect(reasons([planner])).toEqual(["no live session"]);
+  expect(reasons([planner])).toEqual(["not in the refused send; edit to include it"]);
   expect(reasons([planner, { ...reviewer, capabilities: ["aside", "btw"] }])).toEqual([
     "not in the refused send; edit to include it",
   ]);
@@ -2871,10 +2881,11 @@ test("a selected session missing from an agent list that is not current is unkno
   const refilling: BroadcastRoster = { agents: [reviewer], current: false, refilling: true };
   const failed: BroadcastRoster = { agents: [reviewer], current: false, refilling: false };
 
-  // A current list that no longer holds the Planner says it has gone.
+  // A current list that no longer holds the Planner still names it a recipient, and nothing to
+  // check: it may be stopped rather than ended, which only the server can tell (INFRA-626).
   expect(broadcastPlan(selected, currentList([reviewer]), "aside")).toEqual({
-    excluded: [{ agent: undefined, reason: "no live session", sessionID: planner.session_id }],
-    recipients: [reviewer.session_id],
+    excluded: [],
+    recipients: [planner.session_id, reviewer.session_id],
     unchecked: [],
   });
   // The same rows from a refilling list say nothing of who is absent.
@@ -2937,9 +2948,17 @@ test("a restored send claims no absence from an agent list that is not current",
       },
     ],
   });
-  // A current list still says the Planner has nothing to check and the Reviewer has gone.
+  // A current list says the Planner has nothing to check, and leaves the unnamed Reviewer out
+  // only because the request does not name it: its absence from the list is no exclusion of its
+  // own, so an edit would include it (INFRA-626).
   expect(composedBroadcast(composition, currentList([planner])).plan).toEqual({
-    excluded: [{ agent: undefined, reason: "no live session", sessionID: reviewer.session_id }],
+    excluded: [
+      {
+        agent: undefined,
+        reason: "not in the refused send; edit to include it",
+        sessionID: reviewer.session_id,
+      },
+    ],
     recipients: [planner.session_id],
     unchecked: [],
   });
@@ -3040,15 +3059,19 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
         .getAllByRole("button")
         .map((chip) => chip.textContent);
 
-    // A current read without the Planner says it has gone.
+    // A current read without the Planner keeps it a recipient, named by its id with no reason:
+    // it may be stopped rather than ended, which the server decides (INFRA-626).
     page.listAgents.mockResolvedValue([reviewer]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
-    await waitFor(() => expect(chips()[0]).toEndWith(" · no live session ✕"));
+    await refetchAgents(page.queryClient);
+    await waitFor(() => expect(chips()[0]).toBe("session:planner-… ✕"));
     expect(chips()[1]).toBe("Reviewer ✕");
+    expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
+      "Broadcast to 2 of 2 selected"
+    );
 
     // A refilling read keeps the Reviewer's row and says nothing of the Planner's absence.
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(chips()[0]).toEndWith(
       ` · couldn't check whether it is running. ${AGENT_LIST_REFILLING} ✕`
@@ -3391,9 +3414,8 @@ test("Send says which of its reasons stops it, where that reason is shown, and t
     );
   const both = [planner.session_id, reviewer.session_id];
   const tail = ". Nothing is sent to them, and no other mode is substituted.";
-  // The line keeps each excluded session as an agent part, for `AgentName` to draw: by its
-  // registry title while it is listed, else by its ID.
-  const gone = (sessionId: string) => ({ sessionId, storedTitle: undefined });
+  // The line keeps each excluded session as an agent part, for `AgentName` to draw, by its
+  // registry title.
   const listed = (agent: Agent) => ({ sessionId: agent.session_id, storedTitle: agent.title });
   // Nobody reached: the label stops counting, and the Excluded line is the notice and the reason.
   const nobody = (line: AgentPart[]) => ({
@@ -3403,32 +3425,21 @@ test("Send says which of its reasons stops it, where that reason is shown, and t
     refusalOnNotice: true,
   });
 
-  // Every selected session has left the registry: the line names each by its ID, and no mode
-  // would help.
-  expect(state(both, [], "btw")).toEqual(
-    nobody([
-      "Excluded: ",
-      gone(planner.session_id),
-      " (no live session)",
-      ", ",
-      gone(reviewer.session_id),
-      " (no live session)",
-      tail,
-    ])
-  );
-  // One gone, one without the mode: each with its own cause, then the mode that reaches the
-  // live one.
-  expect(state(both, [reviewer], "btw")).toEqual(
-    nobody([
-      "Excluded: ",
-      gone(planner.session_id),
-      " (no live session)",
-      ", ",
-      listed(reviewer),
-      " (does not advertise BTW)",
-      `${tail} Sending as Aside would reach 1 of them.`,
-    ])
-  );
+  // A selected session gone from the live list is still a recipient: Envoy may know it and it
+  // may simply be stopped, which the server decides and the sent broadcast names (INFRA-626).
+  expect(state(both, [], "btw")).toEqual({
+    label: "Send to 2",
+    notice: null,
+    refusal: null,
+    refusalOnNotice: false,
+  });
+  // One gone, one without the mode: only the mode excludes, and the gone one is reached.
+  expect(state(both, [reviewer], "btw")).toEqual({
+    label: "Send to 1",
+    notice: ["Excluded: ", listed(reviewer), " (does not advertise BTW)", tail],
+    refusal: null,
+    refusalOnNotice: false,
+  });
   // The hint picks the mode that reaches the most: Aside reaches both, BTW only the Planner.
   expect(state(both, agents, "steer").refusal?.at(-1)).toMatch(
     / Sending as Aside would reach 2 of them\.$/
@@ -3673,7 +3684,9 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
       },
     ]);
     page.getMyAgentState.mockResolvedValue({ "stale-session": { unread_replies: 1 } });
-    await page.queryClient.invalidateQueries();
+    await act(async () => {
+      await page.queryClient.invalidateQueries();
+    });
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
     // task, so the assertion below is not merely early.
@@ -3754,7 +3767,9 @@ test("i on a row collapsed with its picker open goes back into the picker's sele
     await expand(user, planner, "Planner");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
-    planner.focus();
+    act(() => {
+      planner.focus();
+    });
     // The key goes to the focused row; clicking it would collapse the card the key has to reach.
     await user.keyboard("i");
     const select = within(planner).getByRole("combobox", { hidden: true, name: "Issue" });
@@ -3780,7 +3795,7 @@ test("a registry poll that fails keeps every row and what it holds, and says so"
     await type(user, field, "Half a thought");
 
     page.listAgents.mockRejectedValue(new Error("Envoy listener unreachable"));
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Could not refresh agents: Envoy listener unreachable"
     );
@@ -3810,7 +3825,7 @@ test("a refilling registry keeps every row, says it is refilling, and ends no se
     await screen.findByRole("region", { name: "Replied, no longer connected" });
 
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
       AGENT_LIST_REFILLING
     );
@@ -3832,7 +3847,7 @@ test("a refilling registry never says no agents are connected", async () => {
   try {
     await screen.findByText("No agents are connected.");
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(screen.queryByText("No agents are connected.")).toBeNull();
     expect(screen.queryByText(/Could not (load|refresh) agents/)).toBeNull();
@@ -3882,12 +3897,12 @@ test("a row back after its session left mid-send holds the send it left until it
     );
 
     page.listAgents.mockResolvedValue([agents[1]]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(within(region).queryByRole("heading", { name: "Planner" })).not.toBeInTheDocument()
     );
     page.listAgents.mockResolvedValue(agents);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const back = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     expect(back).not.toBe(planner);
     // A new row for the same session, open where the reader left it: the page holds which rows
@@ -4519,7 +4534,9 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
   reloadTab();
   const bob = renderAgents();
   bob.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "bob" });
-  bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  act(() => {
+    bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  });
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");

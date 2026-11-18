@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -43,6 +44,11 @@ type Kubernetes struct {
 	Kubeconfig string
 	Context    string
 	Scheduling Scheduling
+	// Sandbox is `runtime.kubernetes.sandbox`, settled: the sandbox each issue pod runs in (gVisor
+	// unless the file says otherwise), the issues whose pods run in the other one, and where a
+	// microVM pod runs. It places issue pods alone: the controller's pod, the repository cache pods
+	// and the image probe run in gVisor whatever it says.
+	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
 	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
 	// controller's, whose pod a daemon under `controller: daemon` launches
@@ -73,9 +79,11 @@ type Kubernetes struct {
 	// SessionStore is `runtime.kubernetes.session_store`, settled: where every pod's Oh My Pi keeps
 	// its sessions. The database whose whole postgres:// URL the providers Secret key
 	// `session_dsn_secret` holds under `postgres`; the Cloud SQL database `session_database` names,
-	// which each pod signs in to as itself and no password reaches, under `cloudsql-iam`. The key is
-	// required under `runtime: kubernetes` and `pvc` is refused (readSessionStore), so the settled
-	// store always keeps sessions in a database (InDatabase): no issue disk holds a session.
+	// which no password reaches, under `cloudsql-iam`: each pod signs in to it as itself, or, when
+	// the block's optional `impersonate_service_account` names a Google service account, as that
+	// account, which the pod impersonates. The key is required under `runtime: kubernetes` and `pvc`
+	// is refused (readSessionStore), so the settled store always keeps sessions in a database
+	// (InDatabase): no issue disk holds a session.
 	SessionStore ompsessions.Store
 	// Plugins is `runtime.kubernetes.plugins`: the exact pi-legion/pi-envoy pair a stale-plugin
 	// relaunch installs into a kept pod, when the file names one. Nil when the file sets none and
@@ -118,6 +126,12 @@ type Kubernetes struct {
 	// defaults apply when the file sets no block, so release is on for every Kubernetes
 	// deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
+	// MemoryGuard is `runtime.kubernetes.memory_guard`, settled: what the memory guard in each
+	// issue pod's launcher process runs by. Every default applies when the file sets no block, so
+	// the guard is on for every Kubernetes deployment, as idle release is;
+	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
+	// settings at all (sandbox.Options.MemoryGuard nil).
+	MemoryGuard MemoryGuardConfig
 }
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
@@ -179,6 +193,46 @@ var defaultIdleRelease = IdleReleaseConfig{IdleMinutes: 10, BackstopMinutes: 60}
 // DefaultIdleRelease is the idle release's settled configuration when the file sets none.
 func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
 
+// MemoryGuardConfig is `runtime.kubernetes.memory_guard`: the memory guard's settings, by the
+// kind of pod a launcher's guard runs in. IssuePods is every issue pod's; the mapping is keyed by
+// pod kind so the project controller's pod can have a block of its own beside it (INFRA-3531).
+type MemoryGuardConfig struct {
+	IssuePods MemoryGuardPodConfig
+}
+
+// MemoryGuardPodConfig is one kind of pod's memory guard: whether it runs at all, and the four
+// numbers it runs by (shimwire.LauncherMemoryGuard, which a launcher is handed on the answer to
+// its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
+// ActPercent of the container's memory limit it ends the largest process it may end, where those
+// processes hold at least FloorPercent of the limit between them, and after a kill it waits up to
+// WaitSeconds for the reading to fall before it ends another. With Enabled false the daemon hands
+// the launchers no settings: each guard runs at the defaults from its launcher's start, as it does
+// while no daemon has answered, and turns off at its launcher's first acknowledgement, after which
+// it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
+// alone.
+type MemoryGuardPodConfig struct {
+	Enabled              bool
+	ActPercent           int
+	FloorPercent         int
+	WaitSeconds          int
+	IntervalMilliseconds int
+}
+
+// DefaultMemoryGuard is the memory guard's settled configuration when the file sets none: on for
+// issue pods, at the wire's own defaults (shimwire.MemoryGuardActDefault and its three siblings)
+// rather than copies of them. Those are also what a launcher's guard runs by before any
+// acknowledgement reaches it, so the one change a measurement may make to a default moves both
+// the launcher's start and every deployment's setting.
+func DefaultMemoryGuard() MemoryGuardConfig {
+	return MemoryGuardConfig{IssuePods: MemoryGuardPodConfig{
+		Enabled:              true,
+		ActPercent:           shimwire.MemoryGuardActDefault,
+		FloorPercent:         shimwire.MemoryGuardFloorDefault,
+		WaitSeconds:          shimwire.MemoryGuardWaitDefault,
+		IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
+	}}
+}
+
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
 // stale-plugin relaunch installs, each an exact semver version, an absolute tarball path, or an
 // http(s) URL the pod can read — never an npm dist-tag or a range, since the pair must be one
@@ -196,6 +250,59 @@ type Scheduling struct {
 
 // Toleration is one `scheduling.tolerations` entry. Value is "" under operator Exists.
 type Toleration struct{ Key, Operator, Value, Effect string }
+
+// SandboxType is the sandbox an issue pod runs in.
+type SandboxType string
+
+const (
+	// SandboxGVisor is gVisor, the sandbox of every issue pod a file names no other for.
+	SandboxGVisor SandboxType = "gvisor"
+	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVMConfig names.
+	SandboxMicroVM SandboxType = "microvm"
+)
+
+// SandboxConfig is `runtime.kubernetes.sandbox`, settled. One daemon serves one project, so it is
+// that project's.
+type SandboxConfig struct {
+	// Type is the sandbox of the project's issue pods: SandboxGVisor when the file names none.
+	Type SandboxType
+	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name, each once
+	// and in the file's order; nil when the file names none.
+	CanaryIssues []string
+	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the file
+	// names no `microvm` block. The loader requires one, with its ComputeClass, while any issue
+	// pod runs in a microVM (AnyMicroVM). A block while none does is kept and does nothing, so a
+	// revert that empties the canary list may leave the block's lines in place.
+	MicroVM *MicroVMConfig
+}
+
+// MicroVMConfig is `runtime.kubernetes.sandbox.microvm`.
+type MicroVMConfig struct {
+	// ComputeClass is the GKE ComputeClass whose nodes run the microVM pods. It is "" only in a
+	// block no issue pod uses.
+	ComputeClass string
+	// StorageClass is the class of a microVM pod's workspace volume: the file's
+	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in.
+	StorageClass string
+	// Metadata is the metadata endpoint a microVM pod's launcher serves on the pod itself; nil
+	// when the file names none.
+	Metadata *MetadataConfig
+}
+
+// MetadataConfig is `runtime.kubernetes.sandbox.microvm.metadata`: the cluster's Workload Identity
+// pool (`<PROJECT_ID>.svc.id.goog`) and its identity provider
+// (`https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`),
+// which a microVM pod's launcher needs to exchange the pod's own token for a Google one.
+type MetadataConfig struct {
+	WorkloadPool     string
+	IdentityProvider string
+}
+
+// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
+// names an issue, whose pod then runs in a microVM on a gVisor project.
+func (c SandboxConfig) AnyMicroVM() bool {
+	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
+}
 
 // PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
 // issue pod's one container and its two init containers carry Issue — its third too, where the
@@ -297,12 +404,15 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // wins lives only in process memory); the audience of the projected token every pod carries for
 // the broker; and that pod token's lifetime. The audience defaults to the broker's own
 // (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
-// Legion worker token; the API server issues none under 600.
+// Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
+// second projected token every enrolled pod carries, the identity the broker's exchange trades for
+// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
 type AgentSecretsConfig struct {
 	URL                string
 	TokenFile          string
 	Audience           string
 	TokenExpirySeconds int
+	ExchangeAudience   string
 }
 
 const (
@@ -321,7 +431,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", agentSecretsKey)
 	}
-	fields, err := members(value, agentSecretsKey, "url", "token_file", "operator", "audience", "token_expiry_seconds")
+	fields, err := describedMembers(value, agentSecretsKey, agentSecretsKey)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +476,16 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 		}
 		block.TokenExpirySeconds = *expiry
 	}
+	exchange, err := optionalString(fields["exchange_audience"], agentSecretsKey+".exchange_audience")
+	if err != nil {
+		return nil, err
+	}
+	if exchange == block.Audience {
+		// The cluster admits one projected volume per audience, and the broker verifies the
+		// enrollment's token and the exchange's at different routes, each against its own audience.
+		return nil, fmt.Errorf("%s.exchange_audience must differ from %s.audience (both %s)", agentSecretsKey, agentSecretsKey, exchange)
+	}
+	block.ExchangeAudience = exchange
 	return block, nil
 }
 
@@ -387,7 +507,7 @@ func readPlugins(value *yaml.Node) (*PluginsConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", pluginsKey)
 	}
-	fields, err := members(value, pluginsKey, "pi_legion", "pi_envoy")
+	fields, err := describedMembers(value, pluginsKey, pluginsKey)
 	if err != nil {
 		return nil, err
 	}
@@ -494,17 +614,16 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // readKubernetes reads the `runtime.kubernetes` block, refusing any member it does not model and
 // any value a pod could not run with. A key an earlier shape of the block had (tree_volume, the
 // TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
-// it, which is what `legion start --check-config` shows the operator to edit. What depends on keys
-// outside the block is checked once the whole file is read (checkKubernetesKeys), and the
-// reservations the file leaves out are filled when the block is settled (resolveKubernetes).
+// it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
+// that read the block's scheduling, pod and agent_secrets too are checked once all four are read
+// (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the whole
+// file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
+// block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
 	}
-	fields, err := members(value, kubernetesKey, "namespace", "image", "storage_class", "issue_volume", "tree_volume",
-		"kubeconfig", "context", "scheduling", "resources", "gateway", "pod", "session_store", "session_dsn_secret",
-		"session_database", "role_profiles", "agent_secrets", "plugins", "repository_cache", "setup",
-		"skills_repository", "test_postgres", "idle_release")
+	fields, err := describedMembers(value, kubernetesKey, kubernetesKey)
 	if err != nil {
 		return nil, err
 	}
@@ -580,6 +699,15 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.IdleRelease, err = readIdleRelease(fields["idle_release"]); err != nil {
 		return nil, err
 	}
+	if block.MemoryGuard, err = readMemoryGuard(fields["memory_guard"]); err != nil {
+		return nil, err
+	}
+	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
+		return nil, err
+	}
+	if err := checkSandboxAgainstTheBlock(block); err != nil {
+		return nil, err
+	}
 	return block, nil
 }
 
@@ -644,7 +772,7 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return RepositoryCacheConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "volume", "refresh_minutes", "retain_hours", "resources")
+	fields, err := describedMembers(value, key, kubernetesKey+".repository_cache")
 	if err != nil {
 		return RepositoryCacheConfig{}, err
 	}
@@ -670,7 +798,7 @@ func readRepositoryCache(value *yaml.Node) (RepositoryCacheConfig, error) {
 		if resources.Kind != yaml.MappingNode {
 			return RepositoryCacheConfig{}, fmt.Errorf("%s must be a mapping of cpu, memory and ephemeral storage", field)
 		}
-		parts, err := members(resources, field, "cpu", "cpu_request", "memory", "memory_request", "ephemeral_storage", "ephemeral_storage_request")
+		parts, err := describedMembers(resources, field, kubernetesKey+".repository_cache.resources")
 		if err != nil {
 			return RepositoryCacheConfig{}, err
 		}
@@ -706,7 +834,7 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return IdleReleaseConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "idle_minutes", "backstop_minutes")
+	fields, err := describedMembers(value, key, kubernetesKey+".idle_release")
 	if err != nil {
 		return IdleReleaseConfig{}, err
 	}
@@ -733,6 +861,273 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	if settled.BackstopMinutes < settled.IdleMinutes {
 		return IdleReleaseConfig{}, fmt.Errorf("%s.backstop_minutes (%d) is below %s.idle_minutes (%d): a backstop that short would wake a pod the daemon has only just released",
 			key, settled.BackstopMinutes, key, settled.IdleMinutes)
+	}
+	return settled, nil
+}
+
+const (
+	sandboxKey  = kubernetesKey + ".sandbox"
+	microVMKey  = sandboxKey + ".microvm"
+	metadataKey = microVMKey + ".metadata"
+	// sandboxRuntimeLabel is the node label a GKE Sandbox RuntimeClass selects its nodes by, and
+	// the key of the taint on them: the RuntimeClass adds the selector and the toleration to a pod
+	// at admission.
+	sandboxRuntimeLabel = "sandbox.gke.io/runtime"
+	// workloadPoolForm and identityProviderForm are the two metadata members' forms, as the
+	// refusals name them.
+	workloadPoolForm     = "<PROJECT_ID>.svc.id.goog"
+	identityProviderForm = "https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>"
+)
+
+var (
+	// workloadPool is a Workload Identity pool: a non-empty project id, then .svc.id.goog.
+	workloadPool = regexp.MustCompile(`^[^/\s?#]+\.svc\.id\.goog$`)
+	// identityProvider is a GKE cluster's identity provider, each of its three names non-empty
+	// and nothing after the cluster's.
+	identityProvider = regexp.MustCompile(`^https://container\.googleapis\.com/v1/projects/[^/\s?#]+/locations/[^/\s?#]+/clusters/[^/\s?#]+$`)
+	// metadataVariables are the variables Google's clients read the metadata server's address
+	// from, which a microVM pod's launcher sets to the endpoint it serves.
+	metadataVariables = []string{"GCE_METADATA_HOST", "GCE_METADATA_IP"}
+)
+
+// readSandbox reads `runtime.kubernetes.sandbox`, settled: gVisor, no canary and no microvm block
+// when absent. type is one of the two words; each canary_issues entry is an issue key, named once;
+// the microvm block is read whether or not an issue pod uses it, and is required with its
+// compute_class while one does. storageClass is `runtime.kubernetes.storage_class`, a microVM
+// pod's storage class when the block names none.
+func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
+	settled := SandboxConfig{Type: SandboxGVisor}
+	if value == nil {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return SandboxConfig{}, fmt.Errorf("%s must be a mapping", sandboxKey)
+	}
+	fields, err := describedMembers(value, sandboxKey, sandboxKey)
+	if err != nil {
+		return SandboxConfig{}, err
+	}
+	kind, err := readString(fields["type"], sandboxKey+".type")
+	if err != nil {
+		return SandboxConfig{}, err
+	}
+	if kind != nil {
+		switch SandboxType(*kind) {
+		case SandboxGVisor, SandboxMicroVM:
+			settled.Type = SandboxType(*kind)
+		default:
+			return SandboxConfig{}, fmt.Errorf("%s.type must be '%s' or '%s'", sandboxKey, SandboxGVisor, SandboxMicroVM)
+		}
+	}
+	if issues := fields["canary_issues"]; issues != nil {
+		const key = sandboxKey + ".canary_issues"
+		named, err := readStrings(issues, key)
+		if err != nil {
+			return SandboxConfig{}, err
+		}
+		for _, issue := range named {
+			switch {
+			case !claim.IsIssueKey(issue):
+				return SandboxConfig{}, fmt.Errorf("%s entry %q is not an issue key, such as LEGION-208", key, issue)
+			case slices.Contains(settled.CanaryIssues, issue):
+				return SandboxConfig{}, fmt.Errorf("%s names %s twice", key, issue)
+			}
+			settled.CanaryIssues = append(settled.CanaryIssues, issue)
+		}
+	}
+	if block := fields["microvm"]; block != nil {
+		if settled.MicroVM, err = readMicroVM(block, storageClass); err != nil {
+			return SandboxConfig{}, err
+		}
+	}
+	if settled.AnyMicroVM() && (settled.MicroVM == nil || settled.MicroVM.ComputeClass == "") {
+		return SandboxConfig{}, fmt.Errorf("%s.compute_class is required while %s.type is microvm or %s.canary_issues names an issue: the ComputeClass whose nodes run the microVM pods",
+			microVMKey, sandboxKey, sandboxKey)
+	}
+	return settled, nil
+}
+
+// readMicroVM reads `runtime.kubernetes.sandbox.microvm`: its compute_class, which readSandbox
+// requires while an issue pod runs in a microVM; its storage_class, storageClass when the block
+// names none; and its metadata block, nil when absent.
+func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) {
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping", microVMKey)
+	}
+	fields, err := describedMembers(value, microVMKey, microVMKey)
+	if err != nil {
+		return nil, err
+	}
+	block := &MicroVMConfig{}
+	if block.ComputeClass, err = optionalString(fields["compute_class"], microVMKey+".compute_class"); err != nil {
+		return nil, err
+	}
+	if block.StorageClass, err = optionalString(fields["storage_class"], microVMKey+".storage_class"); err != nil {
+		return nil, err
+	}
+	block.StorageClass = cmp.Or(block.StorageClass, storageClass)
+	if block.Metadata, err = readMetadata(fields["metadata"]); err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+
+// readMetadata reads `runtime.kubernetes.sandbox.microvm.metadata`, nil when absent: both members
+// are required, each in the one form GKE gives it.
+func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping", metadataKey)
+	}
+	fields, err := describedMembers(value, metadataKey, metadataKey)
+	if err != nil {
+		return nil, err
+	}
+	block := &MetadataConfig{}
+	for _, member := range []struct {
+		name, what, form string
+		pattern          *regexp.Regexp
+		into             *string
+	}{
+		{"workload_pool", "the cluster's Workload Identity pool", workloadPoolForm, workloadPool, &block.WorkloadPool},
+		{"identity_provider", "the cluster's identity provider", identityProviderForm, identityProvider, &block.IdentityProvider},
+	} {
+		key := metadataKey + "." + member.name
+		if *member.into, err = requiredString(fields[member.name], key, ": "+member.what+", "+member.form); err != nil {
+			return nil, err
+		}
+		if !member.pattern.MatchString(*member.into) {
+			return nil, fmt.Errorf("%s %q must be %s, %s", key, *member.into, member.what, member.form)
+		}
+	}
+	return block, nil
+}
+
+// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM, what the operator's
+// scheduling, pod and broker blocks would set that the microVM pod's own placement and endpoint
+// own: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass
+// adds both at admission; and, while the metadata endpoint is on, a pod.env variable the pod's
+// launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
+// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume per
+// audience and the pool's token is the launcher's alone. Each refusal names the operator's key.
+// With no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
+// nothing.
+func checkSandboxAgainstTheBlock(block *Kubernetes) error {
+	sandbox := block.Sandbox
+	if !sandbox.AnyMicroVM() {
+		return nil
+	}
+	const why = "while an issue pod runs in a microVM (" + sandboxKey + "): the RuntimeClass places the pod"
+	if _, set := block.Scheduling.NodeSelector[sandboxRuntimeLabel]; set {
+		return fmt.Errorf("%s.scheduling.node_selector must not set %s %s", kubernetesKey, sandboxRuntimeLabel, why)
+	}
+	for index, toleration := range block.Scheduling.Tolerations {
+		if toleration.Key == sandboxRuntimeLabel {
+			return fmt.Errorf("%s.scheduling.tolerations[%d].key must not be %s %s", kubernetesKey, index, sandboxRuntimeLabel, why)
+		}
+	}
+	if sandbox.MicroVM == nil || sandbox.MicroVM.Metadata == nil {
+		return nil
+	}
+	for _, name := range metadataVariables {
+		if _, set := block.Pod.Env[name]; set {
+			return fmt.Errorf("%s.env must not set %s while %s is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves",
+				podKey, name, metadataKey)
+		}
+	}
+	pool := sandbox.MicroVM.Metadata.WorkloadPool
+	if secrets := block.AgentSecrets; secrets != nil {
+		for _, member := range []struct{ name, audience string }{
+			{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
+		} {
+			if member.audience == pool {
+				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone",
+					agentSecretsKey, member.name, metadataKey, pool)
+			}
+		}
+	}
+	return nil
+}
+
+// readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which
+// this release knows `issue_pods` alone (readMemoryGuardPod), and the default (DefaultMemoryGuard)
+// for every member the file leaves out, so the guard runs wherever the file says nothing. Any
+// other member is refused by name: `controller_pod` is INFRA-3531's to add, and a loader that
+// accepted it unread would let an operator believe the controller's pod guarded.
+func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
+	const key = kubernetesKey + ".memory_guard"
+	settled := DefaultMemoryGuard()
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return MemoryGuardConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := describedMembers(value, key, kubernetesKey+".memory_guard")
+	if err != nil {
+		return MemoryGuardConfig{}, err
+	}
+	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods); err != nil {
+		return MemoryGuardConfig{}, err
+	}
+	return settled, nil
+}
+
+// readMemoryGuardPod reads one pod kind's block of `runtime.kubernetes.memory_guard` under key:
+// each member the file sets and settled's for each it leaves out, and settled whole for a block
+// the file leaves null (`issue_pods:` with no value), as every other block of the file reads a
+// null. `enabled` is read from the settled default rather than from the key's presence, because
+// the default is on: an operator writing `enabled: true` back must get the guard, and a value that
+// is no YAML boolean — `off` and `yes` among them, which this loader's reader tags as strings — is
+// refused rather than read as a word nobody meant.
+//
+// Each number is held to the wire's own range (shimwire.MemoryGuardActMin and its siblings), which
+// the launcher's guard checks the settings against a second time on its side of the connection: a
+// range widened here alone would load cleanly and then be refused by every pod's guard, which
+// keeps the settings it ran by and logs the refusal instead (memoryguard's Guard.Apply). A refusal
+// names the whole key and both ends of its range, as the loader's other range refusals do
+// (agent_secrets' token_expiry_seconds).
+func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig) (MemoryGuardPodConfig, error) {
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return MemoryGuardPodConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := describedMembers(value, key, kubernetesKey+".memory_guard.issue_pods")
+	if err != nil {
+		return MemoryGuardPodConfig{}, err
+	}
+	if enabled := fields["enabled"]; enabled != nil {
+		var on bool
+		if enabled.Tag != "!!bool" || enabled.Decode(&on) != nil {
+			return MemoryGuardPodConfig{}, fmt.Errorf("%s.enabled must be true or false", key)
+		}
+		settled.Enabled = on
+	}
+	for _, number := range []struct {
+		field    string
+		min, max int
+		into     *int
+	}{
+		{"act_percent", shimwire.MemoryGuardActMin, shimwire.MemoryGuardActMax, &settled.ActPercent},
+		{"floor_percent", shimwire.MemoryGuardFloorMin, shimwire.MemoryGuardFloorMax, &settled.FloorPercent},
+		{"wait_seconds", shimwire.MemoryGuardWaitMin, shimwire.MemoryGuardWaitMax, &settled.WaitSeconds},
+		{"interval_milliseconds", shimwire.MemoryGuardIntervalMin, shimwire.MemoryGuardIntervalMax, &settled.IntervalMilliseconds},
+	} {
+		read, err := readInt(fields[number.field], key+"."+number.field)
+		if err != nil {
+			return MemoryGuardPodConfig{}, err
+		}
+		if read == nil {
+			continue
+		}
+		if *read < number.min || *read > number.max {
+			return MemoryGuardPodConfig{}, fmt.Errorf("%s.%s must be between %d and %d", key, number.field, number.min, number.max)
+		}
+		*number.into = *read
 	}
 	return settled, nil
 }
@@ -769,7 +1164,7 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return PodConfig{}, fmt.Errorf("%s must be a mapping", podKey)
 	}
-	fields, err := members(value, podKey, "env", "volumes", "volume_mounts", "service_account")
+	fields, err := describedMembers(value, podKey, podKey)
 	if err != nil {
 		return PodConfig{}, err
 	}
@@ -889,7 +1284,7 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, append([]string{"name"}, volumeSources...)...)
+		fields, err := describedMembers(entry, field, podKey+".volumes[]")
 		if err != nil {
 			return nil, err
 		}
@@ -907,11 +1302,11 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 		var source objectSource
 		switch {
 		case fields["secret"] != nil:
-			if source, err = readObjectSource(fields["secret"], field+".secret", true); err == nil {
+			if source, err = readObjectSource(fields["secret"], field+".secret", volumeSecretMembers); err == nil {
 				volume.Secret = &corev1.SecretVolumeSource{SecretName: source.name, Items: source.items, DefaultMode: source.mode}
 			}
 		case fields["config_map"] != nil:
-			if source, err = readObjectSource(fields["config_map"], field+".config_map", true); err == nil {
+			if source, err = readObjectSource(fields["config_map"], field+".config_map", volumeConfigMapMembers); err == nil {
 				volume.ConfigMap = &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: source.name}, Items: source.items, DefaultMode: source.mode,
 				}
@@ -942,7 +1337,10 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 
 // volumeSources are the sources a `pod.volumes` entry may name, exactly one each: an object of the
 // daemon's namespace (secret, config_map, projected), or an existing share — a
-// PersistentVolumeClaim of the namespace, or an NFS export the nodes reach.
+// PersistentVolumeClaim of the namespace, or an NFS export the nodes reach. The entry's own
+// mapping is the key table's `runtime.kubernetes.pod.volumes[]` group, which carries these five
+// names beside `name` and is what readPodVolumes accepts, so a source added here is a line added
+// there.
 var volumeSources = []string{"secret", "config_map", "projected", "persistent_volume_claim", "nfs"}
 
 // readClaimSource is a PersistentVolumeClaim source: the name of a claim the operator made in the
@@ -953,7 +1351,7 @@ func readClaimSource(value *yaml.Node, key string) (*corev1.PersistentVolumeClai
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "name")
+	fields, err := describedMembers(value, key, podKey+".volumes[].persistent_volume_claim")
 	if err != nil {
 		return nil, err
 	}
@@ -976,7 +1374,7 @@ func readNFSSource(value *yaml.Node, key string) (*corev1.NFSVolumeSource, error
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "server", "path")
+	fields, err := describedMembers(value, key, podKey+".volumes[].nfs")
 	if err != nil {
 		return nil, err
 	}
@@ -1039,18 +1437,19 @@ type objectSource struct {
 	mode  *int32
 }
 
-// readObjectSource is a Secret or ConfigMap source. A volume's own source (withMode) also takes
-// default_mode; a projected volume's source does not, since Kubernetes sets the mode of a projected
-// volume's files for the whole volume, never per source.
-func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource, error) {
+// readObjectSource is a Secret or ConfigMap source, read under the mapping its place in the block
+// makes it: described is that place's own key-table group, read by the call site's own reader
+// below, since the four places a source stands in are four groups — a volume's `secret` and its
+// `config_map`, which take default_mode, and a projected source's two, which do not, Kubernetes
+// setting the mode of a projected volume's files for the whole volume and never per source. The
+// group decides which names the mapping may carry, so deriving it from one of the four, as this
+// read did, left the other three's keys out of `legion config-reference` and the page generated
+// from it.
+func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (objectSource, error) {
 	if value.Kind != yaml.MappingNode {
 		return objectSource{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	known := []string{"name", "items"}
-	if withMode {
-		known = append(known, "default_mode")
-	}
-	fields, err := members(value, key, known...)
+	fields, err := described(value, key)
 	if err != nil {
 		return objectSource{}, err
 	}
@@ -1075,7 +1474,7 @@ func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource
 		if entry.Kind != yaml.MappingNode {
 			return objectSource{}, fmt.Errorf("%s must be a mapping", field)
 		}
-		item, err := members(entry, field, "key", "path")
+		item, err := describedMembers(entry, field, podKey+".volumes[].secret.items[]")
 		if err != nil {
 			return objectSource{}, err
 		}
@@ -1089,6 +1488,28 @@ func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource
 		source.items = append(source.items, one)
 	}
 	return source, nil
+}
+
+// The four members readers a source's place names (readObjectSource): a volume's own `secret` and
+// `config_map`, which take default_mode, and a projected source's `secret` and `config_map`,
+// which do not. Each names its group as a constant of its own, which is what carries every one of
+// those keys into `legion config-reference` and holds the four to the key table
+// (TestNoKeyBypassesTheKeyTable).
+
+func volumeSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].secret")
+}
+
+func volumeConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].config_map")
+}
+
+func projectedSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].projected.sources[].secret")
+}
+
+func projectedConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].projected.sources[].config_map")
 }
 
 // readFileMode is a volume's default_mode: octal digits after YAML 1.1's leading 0 (kubectl's
@@ -1124,7 +1545,7 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "sources")
+	fields, err := describedMembers(value, key, podKey+".volumes[].projected")
 	if err != nil {
 		return nil, err
 	}
@@ -1141,7 +1562,7 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		kinds, err := members(entry, field, "service_account_token", "secret", "config_map")
+		kinds, err := describedMembers(entry, field, podKey+".volumes[].projected.sources[]")
 		if err != nil {
 			return nil, err
 		}
@@ -1154,11 +1575,11 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 		case kinds["service_account_token"] != nil:
 			source.ServiceAccountToken, err = readTokenProjection(kinds["service_account_token"], field+".service_account_token")
 		case kinds["secret"] != nil:
-			if object, err = readObjectSource(kinds["secret"], field+".secret", false); err == nil {
+			if object, err = readObjectSource(kinds["secret"], field+".secret", projectedSecretMembers); err == nil {
 				source.Secret = &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: object.name}, Items: object.items}
 			}
 		default:
-			if object, err = readObjectSource(kinds["config_map"], field+".config_map", false); err == nil {
+			if object, err = readObjectSource(kinds["config_map"], field+".config_map", projectedConfigMapMembers); err == nil {
 				source.ConfigMap = &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: object.name}, Items: object.items}
 			}
 		}
@@ -1183,7 +1604,7 @@ func readTokenProjection(value *yaml.Node, key string) (*corev1.ServiceAccountTo
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "audience", "expiration_seconds", "path")
+	fields, err := describedMembers(value, key, podKey+".volumes[].projected.sources[].service_account_token")
 	if err != nil {
 		return nil, err
 	}
@@ -1233,7 +1654,7 @@ func readPodMounts(value *yaml.Node, volumes []corev1.Volume) ([]corev1.VolumeMo
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, "volume", "mount_path", "sub_path", "read_only")
+		fields, err := describedMembers(entry, field, podKey+".volume_mounts[]")
 		if err != nil {
 			return nil, err
 		}
@@ -1348,10 +1769,11 @@ const (
 
 // readSessionStore reads `session_store` with the one key its kind carries: `session_dsn_secret`,
 // the providers Secret's key holding the session database's whole URL, under `postgres`;
-// `session_database`, the Cloud SQL instance, database and IAM login each pod signs in as, under
-// `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is refused,
-// never ignored. The store is required, and must keep sessions in a database: `pvc`, which an
-// omitted `session_store` also settles to, is refused rather than taken as a silent default
+// `session_database`, the Cloud SQL instance, database and IAM login each pod signs in as, and
+// the Google service account, if the block names one, that the pod impersonates to sign in as that
+// login, under `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is
+// refused, never ignored. The store is required, and must keep sessions in a database: `pvc`,
+// which an omitted `session_store` also settles to, is refused rather than taken as a silent default
 // (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
 // own generic ephemeral volume, deleted with it: the file would die with the pod, the next
 // launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
@@ -1409,8 +1831,13 @@ func inertSessionKey(key string, kind ompsessions.StoreKind) error {
 // readSessionDatabase reads `session_database` under `cloudsql-iam`: the instance's connection
 // name, project:region:instance or domain:project:region:instance, which the pod's proxy dials
 // (internal/sessionproxy) and which must pass ompsessions.ValidInstance, the connector's own rule;
-// the database in it; and the IAM login the pod signs in as. All three are required, since no pod
-// can reach the database without them.
+// the database in it; the IAM login the pod signs in as; and `impersonate_service_account`, the
+// Google service account the pod's proxy impersonates with the pod's own credentials and signs in
+// as. The first three are required, since no pod can reach the database without them; the fourth
+// is optional, and without it each pod signs in as itself. A named account must be a service
+// account's email by ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and
+// `user` must then be that account's login: the proxy signs in as the account it impersonates, so
+// any other login, let through here, would fail every generation's first dial instead.
 func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value == nil {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey +
@@ -1419,7 +1846,7 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value.Kind != yaml.MappingNode {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey + " must be a mapping")
 	}
-	fields, err := members(value, sessionDatabaseKey, "instance", "name", "user")
+	fields, err := describedMembers(value, sessionDatabaseKey, sessionDatabaseKey)
 	if err != nil {
 		return ompsessions.Database{}, err
 	}
@@ -1436,8 +1863,22 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		": the IAM login each pod signs in as"); err != nil {
 		return ompsessions.Database{}, err
 	}
+	if database.ImpersonateServiceAccount, err = optionalString(fields["impersonate_service_account"],
+		sessionDatabaseKey+".impersonate_service_account"); err != nil {
+		return ompsessions.Database{}, err
+	}
 	if !ompsessions.ValidInstance(database.Instance) {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)
+	}
+	if database.ImpersonateServiceAccount == "" {
+		return database, nil
+	}
+	login, ok := ompsessions.ServiceAccountLogin(database.ImpersonateServiceAccount)
+	if !ok {
+		return ompsessions.Database{}, fmt.Errorf("%s.impersonate_service_account %q must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com", sessionDatabaseKey, database.ImpersonateServiceAccount)
+	}
+	if database.User != login {
+		return ompsessions.Database{}, fmt.Errorf("%s.user %q must be %q: Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com", sessionDatabaseKey, database.User, login)
 	}
 	return database, nil
 }
@@ -1465,7 +1906,7 @@ func readScheduling(value *yaml.Node) (Scheduling, error) {
 	if value.Kind != yaml.MappingNode {
 		return Scheduling{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "node_selector", "tolerations", "priority_class")
+	fields, err := describedMembers(value, key, kubernetesKey+".scheduling")
 	if err != nil {
 		return Scheduling{}, err
 	}
@@ -1528,7 +1969,7 @@ func readTolerations(value *yaml.Node, key string) ([]Toleration, error) {
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, "key", "operator", "value", "effect")
+		fields, err := describedMembers(entry, field, kubernetesKey+".scheduling.tolerations[]")
 		if err != nil {
 			return nil, err
 		}
@@ -1605,7 +2046,7 @@ func readResources(value *yaml.Node) (PodResources, bool, error) {
 		if entry.Kind != yaml.MappingNode {
 			return resources, false, fmt.Errorf("%s must be a mapping of cpu and memory", field)
 		}
-		fields, err := members(entry, field, "cpu", "cpu_request", "memory", "memory_request", "ephemeral_storage", "ephemeral_storage_request", "requests", "limits")
+		fields, err := describedMembers(entry, field, kubernetesKey+".resources.<POD>")
 		if err != nil {
 			return resources, false, err
 		}

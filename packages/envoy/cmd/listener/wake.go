@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -19,9 +20,13 @@ import (
 // (packages/daemon/internal/intake/decode.go, decodeListenerWake).
 const (
 	// wakeKindRole is a message published to a role topic with no live holder. The Legion daemon
-	// resumes the released claim of that role token, if one of its own is released: a message
-	// sent with keep: false keeps nothing and is answered 404 all the same, and the wake is what
-	// makes the sender's next attempt reach a live session.
+	// resumes the released claim of that role token, if one of its own is released. The publish
+	// route raises it once, beside the 202 kept or the 404 it answers (reportRoleWake): a kept
+	// copy reaches the session the wake brings back inside the copy's hour, and a message sent
+	// with keep: false keeps nothing and reaches that session on its sender's next attempt. The
+	// sweep raises it again while a copy the listener kept on the role's lane has at least twenty
+	// minutes of its hour left and no live session holds the role, at most once for each role in
+	// each roleWakeInterval across every listener (publishSweptRoleWake).
 	wakeKindRole = "role_message"
 	// wakeKindAgent is a message sent to the agent subject of a session nothing can place: an
 	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
@@ -52,6 +57,10 @@ const listenerReadyInterval = 5 * time.Minute
 // says, and holding the goroutine longer buys nothing. No caller waits any of it out — a role
 // report is published off the path of the 404 or the 202 kept answer it is raised beside, and an
 // agent report off its undeliverable message's (reportRoleWake, reportAgentWake).
+//
+// The sweep's repeated role report is the one report not retried: it is one attempt, bounded by
+// wakeReportAttempt, because the next sweep raises it again (publishSweptRoleWake), and it holds
+// none of wakeReporter's slots, which the reports raised beside a keep need during a bus outage.
 const (
 	wakeReportAttempt  = 2 * time.Second
 	wakeReportRetry    = 250 * time.Millisecond
@@ -69,27 +78,23 @@ type wakeReport struct {
 	At      int64  `json:"at"`
 }
 
-// publishWakeReport publishes one report on bus.LegionWakeTopic, retrying until the stream
-// acknowledges it, the whole report's budget runs out, or ctx ends with the listener. Nothing
-// waits for it: the 404 or the 202 kept answer it was raised beside is answered whatever the bus
-// does, and is answered without waiting for it (reportRoleWake).
-//
-// Every attempt publishes the one envelope built below, under the one event id and dedupe key,
-// as the stream keeps no duplicate window for these: an attempt the stream stored and failed to
-// acknowledge is reported twice, and a wake the daemon has taken already is taken no second time
-// (its mark's key is the report's event id, which every attempt of one report carries, and the
-// role and agent reports of one message carry the same name whichever attempt the daemon reads).
-func publishWakeReport(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport) {
-	if client == nil {
-		return
-	}
-	report.At = contracts.NowMillis()
+// roleWakeInterval is the interval the sweep's repeated wake report of a role is named by
+// (sweptRoleWakeID): every listener that sweeps a role's lane inside one interval publishes the
+// same report, and the stream, which keeps a message id for 72 hours, stores the first of them,
+// so a role is woken at most once an interval however many listeners sweep it. It is the sweep's
+// own cadence (main.go), so each pass of one listener's sweep falls in an interval of its own.
+const roleWakeInterval = 5 * time.Minute
+
+// wakeReportEnvelope builds the envelope report crosses the bus in, under eventID and dedupeKey,
+// and reports false, having logged why, for a report that cannot be encoded or whose envelope
+// contracts.Envelope.Validate refuses. It is the one envelope every wake report is published as,
+// the retried ones (publishWakeReport) and the sweep's (publishSweptRoleWake).
+func wakeReportEnvelope(logger *logging.Logger, report wakeReport, eventID, dedupeKey string) (contracts.Envelope, bool) {
 	payload, err := json.Marshal(report)
 	if err != nil {
 		logger.Warn("legion wake report not encoded", slog.String("kind", report.Kind), slog.String("error", err.Error()))
-		return
+		return contracts.Envelope{}, false
 	}
-	eventID := id.New()
 	summary := "legion wake: " + report.Kind
 	if report.Role != "" {
 		summary += " " + report.Role
@@ -105,7 +110,7 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 		Source:         "envoy",
 		SourceEventID:  eventID,
 		Topic:          bus.LegionWakeTopic,
-		DedupeKey:      "legion.wake." + eventID,
+		DedupeKey:      dedupeKey,
 		IssuedAt:       report.At,
 		PayloadSummary: summary,
 		Payload:        string(payload),
@@ -113,6 +118,30 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 	}
 	if err := item.Validate(); err != nil {
 		logger.Warn("legion wake report not valid", slog.String("kind", report.Kind), slog.String("error", err.Error()))
+		return contracts.Envelope{}, false
+	}
+	return item, true
+}
+
+// publishWakeReport publishes one report on bus.LegionWakeTopic, retrying until the stream
+// acknowledges it, the whole report's budget runs out, or ctx ends with the listener. Nothing
+// waits for it: the 404 or the 202 kept answer it was raised beside is answered whatever the bus
+// does, and is answered without waiting for it (reportRoleWake).
+//
+// Every attempt publishes the one envelope built below (wakeReportEnvelope), under the one event
+// id and dedupe key, as the stream keeps no duplicate window for these: an attempt the stream
+// stored and failed to acknowledge is reported twice, and a wake the daemon has taken already is
+// taken no second time (its mark's key is the report's event id, which every attempt of one report
+// carries, and the role and agent reports of one message carry the same name whichever attempt the
+// daemon reads).
+func publishWakeReport(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport) {
+	if client == nil {
+		return
+	}
+	report.At = contracts.NowMillis()
+	eventID := id.New()
+	item, ok := wakeReportEnvelope(logger, report, eventID, "legion.wake."+eventID)
+	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(lifetime, wakeReportBudget)
@@ -149,6 +178,48 @@ func publishWithinBudget(budget context.Context, client *bus.Client, item contra
 	ctx, cancel := context.WithTimeout(budget, wakeReportAttempt)
 	defer cancel()
 	return client.PublishWithin(ctx, item)
+}
+
+// sweptRoleWakeID is the message id and the dedupe key of the sweep's wake report of role at now:
+// legion.wake.role.<role>.<the start of the roleWakeInterval now falls in, in Unix seconds>. Every
+// listener names one role's report in one interval the same way, whichever of them sweeps.
+func sweptRoleWakeID(role string, now time.Time) string {
+	return "legion.wake.role." + role + "." + strconv.FormatInt(now.Truncate(roleWakeInterval).Unix(), 10)
+}
+
+// publishSweptRoleWake publishes role's wake report from the sweep (raiseKeptRoleWake), dated now,
+// the listener's clock: one attempt, bounded by wakeReportAttempt and by lifetime, under the
+// message id and the dedupe key of the interval now falls in (sweptRoleWakeID), and an event id
+// made from that key (keyedEventID), so the stream stores one report for a role in each interval
+// across every listener. A listener whose report the stream already held logs it as already
+// stored and not as published, so a count of published lines is a count of stored reports. A
+// report that did not reach the stream is logged and not retried: the next sweep raises it again.
+func publishSweptRoleWake(lifetime context.Context, client *bus.Client, logger *logging.Logger, role string, now time.Time) {
+	if client == nil {
+		return
+	}
+	key := sweptRoleWakeID(role, now)
+	report := wakeReport{Kind: wakeKindRole, Role: role, At: now.UnixMilli()}
+	item, ok := wakeReportEnvelope(logger, report, keyedEventID(key), key)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(lifetime, wakeReportAttempt)
+	defer cancel()
+	ack, err := client.PublishStoredAck(ctx, bus.LegionWakeTopic, item, key)
+	switch {
+	case err != nil:
+		logger.Warn("legion wake report not published", slog.String("kind", report.Kind),
+			slog.String("role", role), slog.String("session", report.Session), slog.Int("attempts", 1),
+			slog.String("dedupe_key", key), slog.String("error", err.Error()))
+	case ack.Duplicate:
+		logger.Info("legion wake report was already stored", slog.String("kind", report.Kind),
+			slog.String("role", role), slog.String("dedupe_key", key))
+	default:
+		logger.Info("legion wake report published", slog.String("kind", report.Kind),
+			slog.String("role", role), slog.String("session", report.Session), slog.Int("attempts", 1),
+			slog.String("dedupe_key", key))
+	}
 }
 
 // wakeReportsInFlight is how many wake reports may be retrying at once. One report holds its

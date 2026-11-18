@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4021
+body: |-
+  The shared redaction fixture (`capability-redaction.json`) expects the word after a `Bearer` or
+  an API-key label masked up to the next whitespace or quote, a URL included, except a trailing
+  run of backslashes, closing brackets and `,;:.!?`, which stays outside the word where only
+  whitespace, a quote or the line's end follows it; such a run that any other character follows is
+  masked with the word, and its `note` says that the fixture is the fixed list of shapes the rules
+  cover: a secret that no named pattern marks, such as a positional argument, is not masked.

@@ -9,14 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Hook is one hook of the deployment as the engine runs it: its words are the text, never a
@@ -84,9 +88,17 @@ type Config struct {
 	RepositoryRenames ghrepo.Renames
 	// NoteUnread is told, inside the fact's transaction, of each issue the workflow did not record
 	// because its repository resolved Unread (left out for now, GitHub not answering its
-	// installation read): the daemon takes it into that repository's recovery whatever it resolves
+	// installation read, or its default-branch read past GitHub's rate limit): the daemon takes it
+	// into that repository's recovery whatever it resolves
 	// to by then. It keeps no state of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
+	// HearRepository is told, inside the transaction that writes a new issue record, of the
+	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
+	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
+	// work in a repository no project maps gets the same event and cache service as work in a
+	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
+	// repository already heard, which costs the daemon one comparison. Nil tells none.
+	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
 	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
 	// a reviewing round is owed from outside the record, and what moves an approved issue to
@@ -111,6 +123,15 @@ type Config struct {
 	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
 	// a path.
 	Hooks []Hook
+	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// of which every issue-unit one is drawn for each issue this engine records for the first
+	// time, against that issue's own key (recordChild). Every project the loader reads declares
+	// the memory experiment, whose unit is the tree and which is therefore drawn where a tree is
+	// opened and never here, so a project that declares no experiment of its own has this engine
+	// draw nothing. ExperimentSource is the random source a `random` mode is drawn with: nil is
+	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
+	Experiments      []config.Experiment
+	ExperimentSource func(uint64) (uint64, error)
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -133,6 +154,9 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
+	}
+	if cfg.ExperimentSource == nil {
+		cfg.ExperimentSource = experiment.CryptoSource
 	}
 	if log == nil {
 		log = slog.Default()
@@ -235,6 +259,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionLost(ctx, tx, fact)
 	case intake.SessionStoreFault:
 		return e.sessionStoreFault(ctx, tx, fact)
+	case intake.MemoryGuardKill:
+		return e.memoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
 	case intake.RestartPhase:
@@ -602,17 +628,41 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 }
 
 // recordChild records an unrecorded todo child under root's live tree on the repository its event
-// resolves to, or, when that is none or one Legion does not serve, records nothing and says why on
-// the child and to the tree's architect.
+// resolves to, or, when that is none or one GitHub does not answer for as a repository a role App
+// reaches, records nothing and says why on the child and to the architect that owns its parent
+// (refuseChild). A child recorded on a repository nothing named before has that repository heard
+// and cached from here (Config.HearRepository).
+//
+// The daemon holds no record of this child, so this entry is the one moment the issue-unit
+// experiments the project declares are drawn for it (drawExperiments), in the transaction that
+// records it: a draw covers a unit from the moment the daemon records that unit, so a re-entry, a
+// rerun and an adoption, each of a record the daemon already holds, draw nothing, and an
+// experiment declared after a child was recorded never reaches it.
 func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue) error {
-	resolution, err := e.ResolveRepository(fact.ResolvedRepo)
+	resolution, err := e.ResolveIssueRepository(fact)
 	if err != nil {
 		return err
 	}
 	if resolution.Refusal != "" {
-		return e.refuseChild(ctx, tx, root, fact.Key, fact.ResolvedRepo, resolution)
+		return e.refuseChild(ctx, tx, root, fact.Key, fact.Parent, fact.ResolvedRepo, resolution)
 	}
-	return e.enterChild(ctx, tx, root, fact, root.Generation, resolution)
+	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
+		return err
+	}
+	e.HearRepository(ctx, resolution.GitHubRepo)
+	return e.drawExperiments(ctx, tx, fact.Key)
+}
+
+// HearRepository QUEUES the repository an issue has just been recorded on, inside the transaction
+// that writes the record (Config.HearRepository). It makes no stream call under the lock and
+// cannot fail the transaction: hearRecorded publishes once the transaction has returned, and only
+// then does GitHub intake hear the repository and the runtime keep a repository cache of it.
+// Admission calls it for the roots and orphans it records; a deployment that configures none is
+// told nothing.
+func (e *Engine) HearRepository(ctx context.Context, repo string) {
+	if hear := e.cfg.HearRepository; hear != nil {
+		hear(ctx, repo)
+	}
 }
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event
@@ -637,12 +687,12 @@ func recordedResolution(issue record.Issue) Resolution {
 
 // ReenterChild takes a recorded child set back to todo into a new run under its live tree, the way
 // recordChildUnderLiveTree enters an unrecorded one: the run is the child's next generation, so no
-// row its previous run queued acts on it; the previous run's facts are cleared, and the tree's
-// architect is told. A child whose tree is not live is an orphan, which admission, running after
-// this handler, admits as a root of its own. fact carries the values the new generation takes — a
-// live todo event's for a reopened child, or the child's own already-recorded ones for admission's
-// promotion of a stranded child no live event ever reopened, so the run is exported for that caller
-// too: one re-entry, not two.
+// row its previous run queued acts on it; the previous run's facts are cleared, and the architect
+// above the child is told. A child whose tree is not live is an orphan, which admission, running
+// after this handler, admits as a root of its own. fact carries the values the new generation
+// takes — a live todo event's for a reopened child, or the child's own already-recorded ones for
+// admission's promotion of a stranded child no live event ever reopened, so the run is exported
+// for that caller too: one re-entry, not two.
 //
 // A done child's open production check closes as not run before the new run starts
 // (markCheckClosed). The run's generation fences a completion left by an interrupted phase, and
@@ -659,8 +709,12 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	next := child.Generation + 1
 	// The worker of the phase the child was taken out of may still finish its old turn, but its
 	// completion serves the generation it took and the API refuses it once this generation begins.
-	// Roles that finished earlier phases of the run stay live, as they do between phases, and the
-	// new run's starts hand them their tasks.
+	// Roles that finished earlier phases of the run stay in whatever state they stood in: this
+	// re-entry starts and stops none of them, so for a child that had left the workflow each is as
+	// workflow's leave and what came after it left it. The new run's starts hand each its task;
+	// whether a start brings a stopped claim back is supervise's table to decide, and a start
+	// resumes the recorded session, or a new one once supervise's Machine.forgetSession has dropped
+	// it. These starts ask for no new session themselves.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
@@ -695,11 +749,16 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 //
 // A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
 // to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
-// and the tree's architect is told so here. The two doors an agent uses refuse such a child
-// outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move to
-// todo, which the daemon records rather than undoes: the record is the honest one, and the
+// and the architect above the child is told so here. The two doors an agent uses refuse such a
+// child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
+// to todo, which the daemon records rather than undoes: the record is the honest one, and the
 // notice says what the daemon will and will not do with it.
-func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue, generation uint64, at Resolution) error {
+//
+// It draws nothing: the one entry the daemon holds no record of the child before is
+// recordChild's, which draws that child's issue-unit experiments in this same transaction once
+// this has recorded it.
+func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue, generation uint64,
+	at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
 		Generation: generation, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
@@ -714,18 +773,31 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
 }
 
+// drawExperiments draws every issue-unit experiment the project declares (Config.Experiments)
+// for issue and records the answers against its own key, in the caller's transaction
+// (experiment.DrawAndRecord): one answer per experiment, under the mode the project declares it
+// at and at this engine's clock. The tree-unit experiments of the tree the issue stands in are
+// no part of this: they are drawn once for the whole tree, when the tree is opened (admit's
+// promoteHolds).
+func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) error {
+	return experiment.DrawAndRecord(ctx, tx, e.store, issue, e.cfg.Experiments, config.ExperimentIssue, e.cfg.ExperimentSource, e.now())
+}
+
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
 // rather than refused: the daemon started role on this issue, which is what gives it the claim the
 // completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
 // (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
 // on without it - the review event taking reviewing on, or a conflicting head taking a later phase
-// back - and its handoff is the findings the next phase reads, which a refusal would lose. Three
+// back - and its handoff is the findings the next phase reads, which a refusal would lose. Four
 // completions are not: one from a role whose handoff already stands, which is reporting a phase it
 // finished a second time; one from a role the daemon never started on this issue, which has held
-// no phase of it to report; and any while the issue stands where no role works - parked, closed or
-// held - which is past recording work at all.
+// no phase of it to report; any while the issue stands where no role works - parked, closed or
+// held - which is past recording work at all; and any while it stands at admitted. Admitted is the
+// architect's own phase (phase.RoleFor), which completes nothing (handoff), and it comes before
+// every phase a worker works, so no worker's phase there is one the issue moved on from: the guard
+// keeps the refusal a completion at admitted had while no role was named for that phase.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if token == "" || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+	if token == "" || issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
@@ -855,10 +927,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // architect and the controller of the hold; the worker-died that comes with it is the architect's
 // alone. The tree's architect failing holds nothing, since a phase is its worker's; it is told as a
 // worker-died of the architect, lingering or not, and the controller hears it from a row of its
-// own, because every other notice of the tree reaches that architect and nobody inside the tree is
-// left to act on its own. That is why the architect's branch comes before the lingering tree's
-// guard. The row sent to the architect's own role finishes undelivered once its claim has failed
-// (the daemon's notice executor).
+// own, because every notice of the tree that no child's own architect takes reaches that
+// architect and nobody inside the tree is left to act on its own. That is why the architect's
+// branch comes before the lingering tree's guard. The row sent to the architect's own role
+// finishes undelivered once its claim has failed (the daemon's notice executor).
 //
 // The hold, the copy of it the controller reads and the worker-died beside them name the failure
 // the fact carries: the one word for what failed the claim, the sentence written beside it and
@@ -868,18 +940,27 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // worker-died names none: nobody inside the tree is left to read it, and the operator who
 // relaunches that architect reads the claim's own record (api.ClaimFailureView).
 //
-// A child's sub-architect works no phase and holds none: the operator starts it, and no transition
-// or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
-// tells nobody, and the child's notices go to the architect above it, since the failed claim no
-// longer runs (the daemon's owningArchitect); whoever started it relaunches it.
+// A child's own architect works no phase but its child's acceptance (accepting), where no worker
+// runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
+// holds nothing, even at accepting, since its branch below comes before any read of the phase, and
+// is told as a worker-died of the architect on the child, which reaches the architect above it,
+// since the owner walk starts at the child's parent for an architect's own worker-died
+// (record.OwningArchitect). That architect takes the child's notices from then on, because the
+// failed claim no longer holds its role, until the child's architect runs again: the daemon starts
+// it again at the child's next phase start (start), and so do a re-admission of the tree while the
+// child stands in a phase (admit's startMidPhaseMembers) and an operator's retry. The worker-died
+// names the failure, as a finished role's does, so the architect above it reads why the child's
+// architect stopped; no controller copy goes with it, since an architect inside the tree is left
+// to act on it. A child that left the workflow or a member of a lingering tree tells nobody,
+// as below.
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect
 // is told in a worker-died of that role, its reason saying the role does not work the issue's phase,
 // and nothing is held, since the phase is not that role's. A later start of the role relaunches its
-// session (the outbox executor's retry of a failed claim). An issue that left the workflow (done)
-// suspended every claim it held, and a lingering tree holds its members where they stood, so
-// neither tells anyone.
+// session (the outbox executor's retry of a failed claim). An issue that left the workflow
+// suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
+// tree holds its members where they stood, so neither tells anyone.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look
 // as a report of pending would (endLook): a done issue has no phase to hold, and the look's next
@@ -893,7 +974,14 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
 	}
 	if fact.Role == claim.RoleArchitect {
-		return intake.Result{}, nil
+		if !record.InWorkflow(*issue) {
+			return intake.Result{}, nil
+		}
+		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
+			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
@@ -1001,6 +1089,175 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
+}
+
+// memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM
+// pod's own kernel stopped, why that process is gone (intake.MemoryGuardKill): one role message on
+// that role's own topic, enqueued in the fact's transaction as every role message is (tellChecks,
+// tellGateMoved), so a fact that rolls back tells nobody and the outbox carries the telling across
+// a restart. The topic is the session's claim token, the role the launcher's connection
+// authenticated for, and never one the report named. A role whose session holds no topic when the
+// row runs is told nothing, and the outbox finishes the row (roleMessage); the kill's line in the
+// pod's own log stays.
+//
+// The report's cause chooses the note: the kernel's (kernelKillNote) for
+// shimwire.MemoryKillCauseKernel, a command of the role's; the kernel's for one of the processes
+// that run the role's session (kernelProtectedKillNote) for
+// shimwire.MemoryKillCauseKernelProtected; and the guard's (memoryGuardNote) for
+// shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
+// (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
+//
+// An issue the daemon does not record has no role of the workflow's to tell, so the fact is
+// logged and dropped.
+func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.MemoryGuardKill) (intake.Result, error) {
+	report := fact.Report
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if issue == nil {
+		e.logOnCommit(ctx, "workflow: a memory guard kill names an issue the daemon does not record, so no role is told",
+			"issue", fact.Issue, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
+		return intake.Result{}, nil
+	}
+	var note, told string
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
+		note, told = kernelKillNote(report), "workflow: the role whose process the pod's kernel stopped is told why"
+	case shimwire.MemoryKillCauseKernelProtected:
+		note, told = kernelProtectedKillNote(report), "workflow: the role whose session's own process the pod's kernel stopped is told why"
+	default:
+		note, told = memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: note}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, told,
+		"issue", issue.Key, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "counterBytes", report.CounterBytes,
+		"limitBytes", report.LimitBytes)
+	return intake.Result{}, nil
+}
+
+// The ends of the notes of a role's process stopped for memory. memoryKillGoesOn says what goes
+// on after a command of the role's is stopped, in the guard's note and the kernel's note of a
+// command; it is not true of a process that runs the role's session, whose note says what happens
+// instead (kernelProtectedKillEnd). memoryKillHeavyWork, where heavy work runs instead, ends every
+// note.
+const (
+	memoryKillGoesOn    = "The pod's other processes and your session go on. "
+	memoryKillHeavyWork = "Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
+		"read skill://legion-worker/references/tools.md before you run it again."
+)
+
+// kernelProtectedKillEnd is what a role reads of one of the processes that run its session
+// stopped by the pod's kernel (shimwire.MemoryKillCauseKernelProtected): the role-init, the shim,
+// the agent and the helpers the launcher's classifier protects. The agent's end ends the shim's
+// (the shim returns the agent's exit), the shim's ends the role-init's, which ends every process
+// of the role with it, and the launcher reports that generation's exit. The daemon reads that as
+// the role's process gone, as it reads every exit a role's process makes on its own: it takes
+// back the task the turn was running, charges one launch failure, and relaunches the same
+// session, which is sent that task again, or fails the claim where the launch failures have
+// reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
+// agent's may end alone, which is why the note says what follows only of the agent.
+const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
+	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
+	"The daemon then starts the same session again and sends again any task that the turn was running. " +
+	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
+
+// memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
+// process, how much it held, how near the limit the pod was, that nothing else of the role
+// stopped, and where heavy work runs instead. The sizes are binary units a reader can compare at
+// a glance (binarySize); the process is named by its executable as the launcher sent it, the base
+// name escaped and cut to shimwire.MemoryKillExecutableBytes there, with none of its arguments,
+// which the role that started it already has, set as a code span nothing in it can end
+// (codeSpan).
+func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: "+
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+memoryKillGoesOn+memoryKillHeavyWork,
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// kernelKillNote is what a role reads when a microVM pod's own kernel stopped one of its commands
+// because the pod ran out of memory (shimwire.MemoryKillCauseKernel): which process, how much it
+// held, the pod's memory counter against its limit (kernelKillLead), that nothing else of the role
+// stopped, and where heavy work runs instead.
+func kernelKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + memoryKillGoesOn + memoryKillHeavyWork
+}
+
+// kernelProtectedKillNote is what a role reads when a microVM pod's own kernel stopped one of the
+// processes that run its session (shimwire.MemoryKillCauseKernelProtected): which process, how
+// much it held, the pod's memory counter against its limit (kernelKillLead), what that process's
+// end does to the role (kernelProtectedKillEnd), and where heavy work runs instead. It never says
+// the session goes on, which the end of the agent's own process makes false.
+func kernelProtectedKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + kernelProtectedKillEnd + memoryKillHeavyWork
+}
+
+// kernelKillLead opens each note of a process the pod's kernel stopped: which process, how much it
+// held, and the pod's memory counter against its limit, the process and the sizes written as
+// memoryGuardNote writes them.
+func kernelKillLead(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The pod's kernel stopped one of your processes because the pod ran out of memory: "+
+		"%s (pid %d) held %s when the pod's memory read %s of its %s limit. ",
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.CounterBytes), binarySize(report.LimitBytes))
+}
+
+// codeSpan is text as one Markdown code span that nothing in text ends early or spreads over
+// lines. The fence is one backtick longer than the longest run of backticks text holds, so a
+// backtick in a file name is text inside the span; text that begins or ends with a backtick, or
+// that begins and ends with a space, is padded with one space on each side, which a Markdown
+// reader strips, and empty text is one space, since two backticks alone are no span. Every
+// character that does not print is written as its Go escape (`\n`, `\x1b`, `\u202e`): the
+// launcher sends none (it escapes each), but the note is read into an agent's prompt, so its
+// shape rests on this daemon and not on the sender being Legion's own launcher, as the session
+// facts' quoted details do (sessionLost).
+func codeSpan(text string) string {
+	var inner strings.Builder
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+		if !unicode.IsPrint(r) {
+			quoted := strconv.QuoteRune(r)
+			inner.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		inner.WriteRune(r)
+	}
+	body := inner.String()
+	switch {
+	case body == "":
+		body = " "
+	case strings.HasPrefix(body, "`") || strings.HasSuffix(body, "`") ||
+		(strings.HasPrefix(body, " ") && strings.HasSuffix(body, " ")):
+		body = " " + body + " "
+	}
+	fence := strings.Repeat("`", longest+1)
+	return fence + body + fence
+}
+
+// binaryUnits are the units binarySize writes a size of a KiB or more in, smallest first.
+var binaryUnits = []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+
+// binarySize is a size in bytes as a person reads one: in the largest binary unit it reaches, with
+// two decimals (3.13 GiB, 812.40 MiB), and in whole bytes below a KiB. A value that two decimals
+// would round up to 1024.00 is written in the next unit, as 1.00.
+func binarySize(bytes uint64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	value, unit := float64(bytes)/1024, 0
+	for value >= 1023.995 && unit < len(binaryUnits)-1 {
+		value /= 1024
+		unit++
+	}
+	return fmt.Sprintf("%.2f %s", value, binaryUnits[unit])
 }
 
 // noticeFailure is the failure record the notices of fact carry: the cause the site that failed
@@ -1208,6 +1465,11 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
+	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
+	// here, before anything moves (backwardReasonRefusal).
+	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Reason); code != "" {
+		return refused(code, why), nil
+	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
@@ -1313,7 +1575,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status); err != nil {
+	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
 		return err
 	}
 	from := issue.Phase
@@ -1362,9 +1624,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	starting := phase.RoleFor(row.To)
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
-	// closeMergedTelling's rather than a second transition's because a root's close waits for the
-	// rest of its tree, and an issue that arrives there and waits must be told why: the notice its
-	// architect got at the merge could not say it, since the issue was elsewhere then.
+	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
+	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
+	// issue that arrives there and waits must be told why: the notice its architect got at the
+	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
@@ -1391,8 +1654,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // (TriggerConflict), why, under the checks-red kind the architect's prompt reads, since that is
 // the daemon stopping the phase on something it read of the head. Two moves tell it nothing (a
 // notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
-// architect that just acted, and the merge that closes the issue, whose close tells a child's
-// architect child-closed itself (leave) and suspends a root's with the rest of its tree.
+// architect that just acted, and the merge that closes the issue, whose close tells the architect
+// above a child child-closed itself (leave) and closes the child's own architect with its other
+// claims, and suspends a root's architect with the rest of its tree. A third move names no role:
+// the gate's opening, the one move out of admitted (Table), whose role is the architect. A
+// phase-finished names the worker whose phase ended, and admitted has none: its role is an
+// architect, the role that reads this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
@@ -1403,6 +1670,8 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	switch trigger {
 	case TriggerConflict:
 		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
+	case TriggerGateOpened:
+		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
@@ -1444,10 +1713,23 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 	return Row{}, false
 }
 
-// StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to,
-// and tells its tree's architect that a child of it started (ChildStartedNotice). It is the
+// StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to.
+// For a child it also starts the child's own architect, which owns the child while it holds its
+// role, and tells the architect above the child that it started (ChildStartedNotice). It is the
 // half of the old gate-opening behaviour that needs a slot, and it is deliberately the only half
 // here.
+//
+// It is the one place a child's first phase starts the child's architect (a later phase start
+// starts a failed one again, reviveArchitect), because every door into a child's run — an
+// architect's release_children or rerun_child, a person's todo under a live tree, the close of the
+// last issue a child waited on — reaches the child's first phase only here. A start in each door
+// would start an architect for a child that then waits at admitted for a slot, and build a pod
+// for it. The start is the plain one (gateOpened's), with no task: the architect's catch-up at
+// its launch's ready tells it the child and every issue under it (claimReady). Starting a claim
+// that already exists resumes its session, so a child that comes back — a rerun, a person's move
+// back to todo — gets the architect that worked it before (in a new session once supervise's
+// Machine.forgetSession has dropped the old one). A root's architect is admission's, started
+// when its tree was admitted, so a root's first phase starts no architect.
 //
 // It replaces the two doors that used to start a first phase themselves, the gate's opening
 // (advanceAdmittedTree) and a child's release (enterChild), which are gone. Neither could stay:
@@ -1464,16 +1746,18 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // and costs nothing, so a pass that stops at a held candidate still makes it, and the state's
 // `blocked` still reports exactly what the deciders decided.
 //
-// The start itself, its log line and the architect's notice all say that the issue starts
-// planning, so all of them wait for the slot and travel together: told for an issue that got no
-// slot, the notice would tell the tree's architect that a child began work it has not begun. A
-// pass that stops at a held candidate therefore withholds the start and the notice of it alike,
-// which is the honest pair.
+// The start itself, the child's architect's start, its log line and the notice all say that the
+// issue starts planning, so all of them wait for the slot and travel together: told for an issue
+// that got no slot, the notice would tell the architect above the child that a child began work
+// it has not begun, and the architect would run for a child that does none. A pass that stops at
+// a held candidate therefore withholds the starts and the notice of them alike, which is the
+// honest set.
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
 // waited, which the notice's reason says instead. A tree's own root gets no notice: the
-// architect this would tell is the worker being started, and its own task says it is starting.
+// architect this would tell is the root's own, which the phase-finished of the move out of
+// admitted already tells (noticeFor).
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
 	if err := e.gateOpened(ctx, tx, issue); err != nil {
 		return err
@@ -1497,19 +1781,32 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // member, waits for that row, so no planner's push is the one that creates the branch. A member
 // whose earlier row a linger dropped, or one admitted before the daemon queued such rows, gets its
 // row here.
+//
+// A child's own architect starts between the two (StartFirstPhase says why here): the plain start
+// (childArchitectStart), with no phase, task, entry or slot mark, so it waits for the branch row
+// as every start of the issue does and for no slot. It is queued before the planner's start
+// because the outbox runs an issue's starts one at a time, oldest first, so the architect's claim
+// exists by the planner's launch. That is the order the outbox tries, not one it holds to: a start
+// that fails and backs off holds back none of the rows behind it.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err
+	}
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
+			return err
+		}
 	}
 	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which
-// admission or the tree's architect started, and each phase worker, whether or not it ever
-// reported a handoff. The phase rows record only handoffs, so they cannot list the claims; the
-// executor treats a request for a claim that does not exist as done. except is the one role left
-// out, "" for none: a merged child's close leaves out the role that works its production check
-// (Engine.checkRole), whose claim the check's own close retires (closeCheck).
+// admission starts with a root's tree and a child's first phase start starts for a child
+// (StartFirstPhase), and each phase worker, whether or not it ever reported a handoff. The phase
+// rows record only handoffs, so they cannot list the claims; the executor treats a request for a
+// claim that does not exist as done. except is the one role left out, "" for none: a merged
+// child's close leaves out the role that works its production check (Engine.checkRole), whose
+// claim the check's own close retires (closeCheck).
 func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except claim.Role) error {
 	for _, role := range claim.Roles {
 		if role == except {

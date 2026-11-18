@@ -255,6 +255,26 @@ function planReviewBody() {
   };
 }
 
+/** `POST /api/v1/artifacts/{id}/versions/{number}/reviews`: the person's approval of the issue's
+ *  spec at the version `dispatch review`'s example names. The person is the one the token names,
+ *  and the act names the session the token proved; no request was open, so the review answers no
+ *  ask. */
+function reviewBody() {
+  return {
+    id: UUID,
+    artifact_id: ARTIFACT_ID,
+    version: 2,
+    state: "approved",
+    actor: { kind: "user", id: "person@example.com", act: { session: SESSION } },
+    reason: null,
+    ask_id: null,
+    kind: "person",
+    created_at: AT,
+    content_sha256: null,
+    content_sha256_source: null,
+  };
+}
+
 /** What a check compares its results with: the head of the issue's pull request, at the commit
  *  the one recorded result stands at, as Dispatch read it. */
 function checkBasisBody() {
@@ -518,6 +538,13 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "answers") {
       return response({ session_id: SESSION, since: AT, total: 0, items: [] });
     }
+    // `dispatch send-to-agent`: answered once the first delivery attempt settled, here as sent.
+    if (rest === "messages" && method === "POST") {
+      return response(
+        { ...messageBody(), issue_key: null, deliveries: [{ delivery: "aside", state: "sent" }] },
+        201
+      );
+    }
   }
   if (segments[2] === "issues" && segments.length >= 4) {
     if (rest === "" && (method === "GET" || method === "PATCH")) {
@@ -554,6 +581,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "blocks") return response([]);
     if (rest === "edits") return response({ applied: 1, version: versionBody(), changed: true });
     if (rest === "plan-reviews") return response(planReviewBody(), 201);
+    if (rest === "versions/2/reviews" && method === "POST") return response(reviewBody(), 201);
     if (rest === "suggestions") {
       return response({ ...commentBody(), artifact_id: ARTIFACT_ID }, 201);
     }

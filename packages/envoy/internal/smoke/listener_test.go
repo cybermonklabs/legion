@@ -50,7 +50,7 @@ func TestSmoke(t *testing.T) {
 			"`-q` prints the image id, and go's test cache keys on the value of this variable, " +
 			"so rebuilding re-runs the test. A fixed tag would replay a cached PASS against an " +
 			"image that had since changed. In CI the build is a step of its own; see the " +
-			"envoy-smoke job of .github/workflows/ci.yaml.")
+			"envoy-smoke job's steps in .github/workflows/ci-job-envoy-smoke.yaml.")
 	}
 
 	ctx := context.Background()
@@ -62,8 +62,9 @@ func TestSmoke(t *testing.T) {
 	}
 	t.Cleanup(func() { net.Remove(ctx) })
 
-	// Start NATS using the same module the rest of the project uses.
-	natsC, err := tcnats.Run(ctx, testnats.Image,
+	// Start NATS using the same module the rest of the project uses, on the server the hub runs:
+	// the listener refuses to start on nats:2.10 (natsversion.Refusal).
+	natsC, err := tcnats.Run(ctx, testnats.HubImage,
 		network.WithNetwork([]string{"nats"}, net),
 		capped(1, 512),
 	)

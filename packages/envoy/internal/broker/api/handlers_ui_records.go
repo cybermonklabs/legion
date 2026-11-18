@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -89,8 +90,9 @@ func (s *server) denyRecord(w http.ResponseWriter, r *http.Request, needs power)
 // than in authenticate. It then reads the record's kind, before anything else about the caller:
 // a secret request answers 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, whether or
 // not the caller holds a ServiceAccount token, since no token makes one decidable here and a
-// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do. Nothing
-// is written and no body is read for that refusal. Every other record is then authenticated
+// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do; on a
+// broker with BROKER_SIGNIN=off, which serves no page, the refusal names the setting and no page.
+// Nothing is written and no body is read for that refusal. Every other record is then authenticated
 // exactly as the other account routes are (accountCaller: the ServiceAccount token and
 // BROKER_API_ACCOUNTS), and the caller's name must carry needs, the power its row declares, as
 // authenticate requires of every other route a listed caller's token authenticates
@@ -110,7 +112,14 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	}
 	kind, kindErr := s.deps.Machine.RecordKind(r.Context(), recordID)
 	if kindErr == nil && kind != record.KindLauncherCredential {
+		// A broker with BROKER_SIGNIN=off serves no page, so approveURL names none, since every
+		// /approve path is a 404 there, and the refusal says why nobody can decide it.
 		page := s.approveURL(recordID)
+		if page == "" {
+			writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
+				"a secret request is decided only on the secrets broker's own page, and this broker serves none: it signs nobody in (BROKER_SIGNIN=off), so this request cannot be decided here", "")
+			return
+		}
 		writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
 			"a secret request is decided only on the secrets broker's own page, by a person signed in to the broker: "+page, page)
 		return
@@ -119,9 +128,14 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !ok {
 		return
 	}
+	// The route's adapter (accountAuthAfterRecordKind) noted this route's caller unauthenticated,
+	// since it is this handler that reads the credential, and a caller without the route's power
+	// is refused as unauthenticated, as authenticate's refusal of every other account route
+	// records it; from here on the refusals are the listed caller's.
 	if refuseWithoutPower(w, who.account, needs, r.Pattern) {
 		return
 	}
+	answer.FromContext(r.Context()).NoteCaller(answer.CallerAccount, who.account.Name)
 	switch {
 	case errors.Is(kindErr, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such credential request")
@@ -137,7 +151,9 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("decision relayed", "caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("decision relayed", answer.ClipFields([]any{"caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve})...)
 	s.decideMachineLogin(w, r, recordID, approve, body)
 }
 

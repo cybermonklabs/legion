@@ -7,6 +7,9 @@ every Legion role (each phase worker, each architect, the controller) and for ea
 subagents, and it replaces the filing step of `skill://dispatch-first` and `skill://dispatch`. The
 controller fixes nothing itself: it hands a finding to the tree that owns the code, as
 `skill://legion-controller`, "Findings, and the issues you file", says.
+A child's own architect opens no ask itself: where this page says to open a `dispatch ask`, it
+sends the finding to the architect above it with `envoy_publish`, and the root's architect opens
+the ask (`skill://legion-architect`, "Every turn").
 
 ## Fix it where you are, else hand it over, and ask only for a decision
 
@@ -29,10 +32,11 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
 - A problem inside your issue is not such a finding: fix it in your change, since nothing needed
   for correctness is deferred.
 - A problem inside your tree is work its root spec's acceptance needs. A phase worker's such
-  problem outside its own issue goes to the tree's architect (`skill://legion-worker`, *Stop
-  rules*), which adds it to an open pull request of the tree, or files a child when it is a
-  separately deliverable change. Anything else, in the same
-  repository or not, is a finding.
+  problem outside its own issue goes to the architect that owns its issue, the one its
+  `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). That architect adds it
+  to an open pull request of an issue it owns, or files a child under its own issue when it is a
+  separately deliverable change. It sends a problem in an issue it does not own to the architect
+  above it. Anything else, in the same repository or not, is a finding.
 - Search first (`skill://dispatch-first`): when an open issue already tracks the problem, comment
   the evidence on that issue and send or ask nothing. When an open ask on the report issue already
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
@@ -41,7 +45,7 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
 
 These issues are filed:
 
-- an architect's children of its own tree (`dispatch issue --parent`, `skill://legion-architect`)
+- an architect's children of its own issue (`dispatch issue --parent`, `skill://legion-architect`)
 - a Legion root the controller files for a clear defect no running tree owns
 - an issue a person asked the controller to file, in a direct message, in a Slack request, or in
   their answer to an ask
@@ -76,17 +80,18 @@ next look of its own.
 
 The controller topic is a live wake: a message published while no controller runs reaches nobody
 at the time. `envoy_publish`'s own answer tells you whether one took it. A publish to a role
-answers with its live `holder`. With no claim on `legion-<project>-controller` at all, the answer
-says Envoy kept the message instead (`packages/envoy/cmd/listener`, the test "unheld role is kept
-and answered 202 without publishing on the role topic"): the next session that claims the role is
-handed each kept message once, within one hour of the keep. A keep is not a delivery: a
-controller can stay away for the whole hour, and a message kept longer than an hour is dropped
-unread, so a kept finding can reach nobody. It fails with `role legion-<project>-controller
-holder <session> lapsed; claim retained`, naming the holder, its `holder_state` and its
-`last_seen`, when a controller holds the role and its session has not registered within the live
-window: an `unresponsive` controller is not a stopped one, so release nothing, take nothing from
-it, and publish no second copy.
-Treat a kept answer as a controller not taking it. Either way the finding has not been taken yet,
+answers with its live `holder`, and with no count of recipients: the listener forwards a role
+message to its holder alone. When no live session holds `legion-<project>-controller`, because
+nobody claims it or its holder has not registered within the live window, the answer says Envoy
+kept the message for one hour, and its `kept_until` is the time that hour ends. The next session
+to hold the role live in that hour is handed it once. A keep is not a delivery: a controller can
+stay away for the whole hour, and Envoy then drops the message unread, so a kept finding can
+reach nobody. When your publish named your session, Envoy also sends your session a message that
+names the dropped one, unless it dropped it more than an hour late. For a holder that is not
+live, the answer also names that holder, its `holder_state` and its `last_seen`: an
+`unresponsive` controller is not a stopped one, so release nothing, take nothing from it, and
+publish no second copy.
+Treat a kept answer as a controller not taking it. The finding has not been taken yet,
 so make it an ask, as
 [What the ask says](#what-the-ask-says) spells it, on the first
 of these that holds, so a person sees it and the controller finds it when it returns:
@@ -96,12 +101,13 @@ of these that holds, so a person sees it and the controller finds it when it ret
    KEY>/ask/<id>` under that comment, so the controller takes the ask and not the comment. The
    report issue's assignee sees the ask, and the controller's catch-up takes it.
 2. **The report issue is missing or closed:** ask on your own issue, the evidence posted there as
-   a comment first. Then publish the ask's reference to your tree's architect (`skill://legion-worker`,
-   *Stop rules*). An architect holds its own. The architect holds your issue's
-   acceptance until a controller has taken the ask (`skill://legion-architect`, "Acceptance and the
-   merge"). That hold is what keeps the ask readable: an open ask on a closed issue drops out of
-   the controller's own listing (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an
-   issue that closed over one hides it for good.
+   a comment first. Then publish the ask's reference to the architect that owns your issue, the
+   one your `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). A root's
+   architect holds its own ask. The architect holds your issue's acceptance until a controller has
+   taken the ask (`skill://legion-architect`, "Acceptance and the merge"). That hold is what keeps
+   the ask readable: an open ask on a closed issue drops out of the controller's own listing
+   (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an issue that closed over one hides
+   it for good.
 3. **Your own issue is closed too** (Dispatch refuses the ask `409 ISSUE_CLOSED`, as on a
    production check): put the report issue back in reach yourself, with the `dispatch` commands
    below, and ask there. Never `legion({op: "set_status"})`, which the controller's report steps

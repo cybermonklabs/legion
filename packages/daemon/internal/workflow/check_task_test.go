@@ -25,8 +25,8 @@ var checkTaskWakes = []struct {
 		"woken by the wake named at the last look — production runs yesterday's build; the release train runs at 09:00."},
 	{"the retry of a look nobody reported", wakeNamed, "the retry of a look nobody reported: look bound",
 		"woken by the wake named at the last look — the retry of a look nobody reported: look bound."},
-	{"the bound", wakeBound, "production did not carry the merge within " + boundText(14*24*time.Hour),
-		"woken by the bound: production did not carry the merge within 14 days."},
+	{"the bound", wakeBound, boundText(14*24*time.Hour) + " since the issue closed",
+		"woken by the bound: 14 days since the issue closed."},
 }
 
 // checkTaskFor is the task of a look woken by cause with detail, last marking the bound's look.
@@ -100,7 +100,7 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 			t.Errorf("the task of a look that is not the last = %q, want it to say %q", task, want)
 		}
 	}
-	last := checkTaskFor(wakeBound, "production did not carry the merge within "+boundText(14*24*time.Hour), true)
+	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
 	if strings.Contains(last, asks) {
 		t.Errorf("the last look's task asks for a wake: %q", last)
 	}
@@ -111,5 +111,74 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 		if !strings.Contains(last, want) {
 			t.Errorf("the last look's task = %q, want it to say %q", last, want)
 		}
+	}
+}
+
+// A merge production carries is no pass until each requirement of the issue that only the deploy
+// can show is observed as that requirement names it, and observing something else is never that
+// requirement observed: pending then, and fail when production carries the merge and it is still
+// unobserved at the last look (the implementer's and the tester's role text). So on every look the
+// task's pass asks for each such requirement, and its pending covers a merge production carries
+// whose requirement is still unobserved, not only a merge production does not carry yet: a check
+// told that pending is for the merge alone has no verdict for that case but the pass it is not
+// (dispatch://INFRA-492 reported pass at its last look with its requirement's own condition never
+// met).
+func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *testing.T) {
+	for _, last := range []bool{false, true} {
+		task := checkTaskFor(wakeMerge, "merge-43", last)
+		for _, want := range []string{
+			"observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed.",
+			"pass only once you drove the changed path in production and observed every one of those requirements,",
+			"pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow,",
+		} {
+			if !strings.Contains(task, want) {
+				t.Errorf("the check task (last %t) = %q, want it to say %q", last, task, want)
+			}
+		}
+	}
+}
+
+// The bound's look ends the check, so a requirement still unobserved there, where production
+// carries the merge, is a fail, never a pending: that look's pending closes the check as not run,
+// the pull request told that production did not carry the merge within the bound, so it is left
+// to production not carrying the merge alone, the one case that sentence is true of. The fail
+// clause says so once, the same on every look, in terms of the look that follows, and the last
+// look's task adds that no look follows.
+func TestTheLastLookFailsARequirementStillUnobservedAndPendsOnlyAMergeNotCarried(t *testing.T) {
+	const fails = "fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved where production carries the merge and no look follows this one, is a defect:"
+	const lastPending = "This last look's pending carries no wake_at and closes the check as not run, so it is for production not carrying the merge alone: " +
+		"before reporting it, write on the pull request that the check did not run because production did not carry the merge within the bound."
+	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
+	for _, want := range []string{"This is the last look: no look follows.", fails, lastPending} {
+		if !strings.Contains(last, want) {
+			t.Errorf("the last look's task = %q, want it to say %q", last, want)
+		}
+	}
+	task := checkTaskFor(wakeMerge, "merge-43", false)
+	if !strings.Contains(task, fails) {
+		t.Errorf("the task of a look that is not the last = %q, want it to say %q", task, fails)
+	}
+}
+
+// A last look whose production never carried the merge could observe none of the requirements only
+// the deploy can show, and its pending, which closes the check as not run, is the verdict for it.
+// So the task makes a requirement still unobserved a fail only where production carries the merge,
+// as its pending is limited: a rule making every unobserved requirement a fail gives that look two
+// verdicts, and the fail is false for it. The rules are read clause by clause, and the fail's own
+// clause must still be among them, so the test cannot pass on a task that dropped it.
+func TestTheLastLookFailsNoRequirementOfAMergeProductionNeverCarried(t *testing.T) {
+	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
+	fails := 0
+	for _, rule := range strings.Split(strings.ReplaceAll(last, "; ", ". "), ". ") {
+		if !strings.Contains(rule, "unobserved") || !(strings.Contains(rule, "fail") || strings.Contains(rule, "defect")) {
+			continue
+		}
+		fails++
+		if !strings.Contains(rule, "production carries the merge") {
+			t.Errorf("the last look's task makes a requirement still unobserved a fail where production never carried the merge: %q", rule)
+		}
+	}
+	if fails == 0 {
+		t.Errorf("the last look's task = %q, want a rule making a requirement still unobserved where production carries the merge a fail", last)
 	}
 }

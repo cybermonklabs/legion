@@ -2,18 +2,104 @@
 // The one release loop of a grant, which both of its releases run: the session's own (Values,
 // machine_read.go) and the proxy's (AirlockValues, airlock.go). It reads or mints each granted
 // name, splits the names the airlock holds back into their slots, and writes the one grant.used
-// row the release writes, with the detail of whichever caller wrote it. One loop rather than
-// two, because a fix to the split, to that row, or to what a narrowing may reach must not land
-// in one release and not in the other.
+// row and the one log line the release writes, with the detail of whichever caller wrote it. One
+// loop rather than two, because a fix to the split, to that row, or to what a narrowing may reach
+// must not land in one release and not in the other.
 package requests
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
+
+// ReleasedMessage is logged, at INFO, once for each release of a grant, once its grant.used row
+// is written, followed by grant=, request=, enrollment= and the fields grantUse.recorded answers,
+// which the row's detail holds too: names=<the names it released>, reason=<the reason the grant's
+// request gave> and then, for the session's release (Values), call_reason=<the reason the
+// session's own call gave, as record.Sanitize leaves it> where that says something the grant's
+// reason does not, command=<the argument vector the session said the release starts, as
+// loggedCommand records it: empty from a client from before the field> and github_app=<the
+// narrowing it applied>, where it applied one; or, for the proxy's (AirlockValues), airlock=true,
+// since that release starts no command. It is the operator's line for what each grant was spent
+// on and why.
+//
+// What the command does not hold is what loggedCommand redacts (redact.go): each value this
+// release handed out of eight bytes or more, each string of eight bytes or more inside a stored
+// JSON value, each token inside a minted document, each airlock placeholder, and every credential
+// of a shape knownCredential matches, whatever its source. A secret that is none of these — a
+// value from another store, a password typed in, a token of a shape not listed — is logged as
+// the session typed it. A session passes its secrets in the command's environment, as the exec
+// form does, and never on its command line.
+const ReleasedMessage = "broker: released a grant"
+
+// ReleaseCall is what a session says of one release of its grant (Values): the command the
+// release starts, nil for none, and the reason its own call gave, "" for none. That reason can
+// differ from the reason of the request the grant came of, since a session that asks again for
+// names it holds a live grant of gets that grant back (reuseLiveGrant) and its new reason goes
+// into no request row. A client from before either field sends neither.
+type ReleaseCall struct {
+	Command []string
+	Reason  string
+}
+
+// grantUse is one release as its grant.used row and its ReleasedMessage line record it, beside
+// the reason of the grant's request, which checkRelease read: the names it released and what its
+// caller adds.
+type grantUse struct {
+	names []string
+	// airlock marks the proxy's release (AirlockValues), which starts no command and narrows
+	// nothing; command, callReason and narrowing are the session's release's (Values) alone.
+	airlock bool
+	// command is the argument vector the session's release starts, as loggedCommand records it.
+	command []string
+	// callReason is the reason the session's own call gave, as callReasonOf records it: "" when
+	// it gave none or gave the grant's own.
+	callReason string
+	// narrowing is the GitHub App narrowing the session's release applied, nil for none.
+	narrowing *secrets.GitHubNarrowing
+}
+
+// recordedField is one key and value a release records, in its grant.used row's detail and in
+// its ReleasedMessage line alike.
+type recordedField struct {
+	key   string
+	value any
+}
+
+// recorded is every field this release of a grant whose request gave reason records, in the
+// order the line writes them. The row and the line both write exactly these, so a field added
+// here reaches both.
+func (u grantUse) recorded(reason string) []recordedField {
+	fields := []recordedField{{"names", u.names}, {"reason", reason}}
+	if u.airlock {
+		return append(fields, recordedField{"airlock", true})
+	}
+	if u.callReason != "" {
+		fields = append(fields, recordedField{"call_reason", u.callReason})
+	}
+	fields = append(fields, recordedField{"command", u.command})
+	if u.narrowing != nil {
+		fields = append(fields, recordedField{"github_app", auditDetail{"owner": u.narrowing.Owner, "repositories": u.narrowing.Repositories, "read_only": u.narrowing.ReadOnly}})
+	}
+	return fields
+}
+
+// callReasonOf is the reason a session's call gave (said) as its release records it, beside
+// granted, the reason of the request the grant came of: held to a request's own rules by
+// record.Sanitize, since nothing refused it before the release and a field of the log must not
+// stop one. It answers "" when that leaves nothing or leaves granted itself, so the row and the
+// line name a call's reason only where it says something the grant's does not.
+func callReasonOf(said, granted string) string {
+	if cleaned := record.Sanitize(said, record.MaxReasonRunes); cleaned != granted {
+		return cleaned
+	}
+	return ""
+}
 
 // releaseRead is what one caller wants of the shared read. The session's release asks for every
 // granted name and may narrow; the proxy's asks for the names behind the airlock alone, since
@@ -39,11 +125,11 @@ type releasedName struct {
 	// session holds is filled with those slots' placeholders. airlockSplitOf always answers a
 	// map, so a nil one is what says the airlock does not hold this name back (behindAirlock).
 	split airlockSplit
-	// expires is when a minted value stops working, zero for a stored one, and kind the policy
-	// kind that says what the slots are. The proxy holds both beside the values: the first is
+	// expires is when a minted value stops working, zero for a stored one, and type the policy
+	// type that says what the slots are. The proxy holds both beside the values: the first is
 	// what it mints again before, the second what says how to spend them.
-	expires time.Time
-	kind    string
+	expires    time.Time
+	secretType string
 }
 
 // behindAirlock reports whether the airlock's rules hold this name back, which is what says
@@ -54,7 +140,7 @@ func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 // airlock alone — in the grant's own name order, and takes the split of each name the airlock
 // holds back. Once every value is read, each stored one is checked against the policy as it
 // stands then (recheckStoredSources), so a retag that lands during the reads never releases
-// what the secret stores once it is a kind.
+// what the secret stores once it is a type.
 func (m *Machine) readRelease(ctx context.Context, grantID string, checked grantRelease, want releaseRead) ([]releasedName, error) {
 	read := make([]releasedName, 0, len(checked.granted))
 	for _, g := range checked.granted {
@@ -67,9 +153,9 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		if err != nil {
 			return nil, err
 		}
-		released := releasedName{name: g.name, value: minted.Value, expires: minted.Expires, kind: served.Kind()}
+		released := releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type()}
 		if entry != nil {
-			if released.split, err = airlockSplitOf(entry, released.kind, minted.Value); err != nil {
+			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}
@@ -91,12 +177,24 @@ func releasedNames(read []releasedName) []string {
 	return names
 }
 
-// auditGrantUsed writes the one grant.used row a release writes. detail is the caller's own: the
-// names it released and, for the session's release, the narrowing it applied; for the proxy's,
-// that the values went behind the airlock. The row says the values did leave the broker, so each
-// caller writes it last, once everything that release hands over is minted and recorded.
-func (m *Machine) auditGrantUsed(ctx context.Context, grantID string, checked grantRelease, detail auditDetail) error {
-	_, err := m.Store.Pool.Exec(ctx, `insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail) values ('grant.used',$1,$2,$3,$4,$5)`,
-		checked.enrollmentID, checked.requestID, grantID, "session:"+checked.enrollmentID, detail)
-	return err
+// auditGrantUsed writes the one grant.used row a release writes and then its ReleasedMessage
+// line, both holding the fields use records beside the reason of the grant's request
+// (grantUse.recorded). The row says the values did leave the broker, so each caller writes it
+// last, once everything that release hands over is minted and recorded; the line follows the
+// row, so a release whose row failed logs nothing.
+func (m *Machine) auditGrantUsed(ctx context.Context, grantID string, checked grantRelease, use grantUse) error {
+	fields := use.recorded(checked.reason)
+	detail := make(auditDetail, len(fields))
+	attrs := make([]any, 0, 6+2*len(fields))
+	attrs = append(attrs, "grant", grantID, "request", checked.requestID, "enrollment", checked.enrollmentID)
+	for _, field := range fields {
+		detail[field.key] = field.value
+		attrs = append(attrs, field.key, field.value)
+	}
+	if _, err := m.Store.Pool.Exec(ctx, `insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail) values ('grant.used',$1,$2,$3,$4,$5)`,
+		checked.enrollmentID, checked.requestID, grantID, "session:"+checked.enrollmentID, detail); err != nil {
+		return err
+	}
+	slog.Info(ReleasedMessage, attrs...)
+	return nil
 }

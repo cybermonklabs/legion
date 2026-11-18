@@ -30,7 +30,7 @@ legion start --config legion.yaml --check-config
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
-| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the project's repositories are Dispatch's mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
+| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
@@ -45,6 +45,21 @@ legion start --config legion.yaml --check-config
 | `projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
 | `projects.<KEY>.memory.config_files …` or `projects.<KEY>.memory.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, or a path named twice. |
 | `memory instructions file <path> could not be read: …` or `memory instructions file <path> is empty` | Boot reads that file from the daemon's own disk and puts its text in every memory-group role's prompt, so give it a readable file with text in it, or take `instructions` out, which appends nothing. Boot reads it whatever the mode is, since a tree already drawn into the memory group is given it. |
+| `projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both` | The `memory` block **is** the experiment named `memory`, so the file declares it twice. Keep one spelling: the block, or `experiments.memory`. The block is accepted and refused in no other new way. |
+| `projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse` | Name that experiment's two arms `memory` and `none`, or declare your own experiment under another name, which may name whatever arms it likes. |
+| `projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it` | The experiment named `memory` is drawn once for a whole tree, as the `memory` block always has been: take `unit` out, or set `unit: tree`. To draw something for each issue on its own, declare it under another name. |
+| `projects.<KEY>.experiments must be a mapping of an experiment's name to its block` (or `projects.<KEY>.experiments.<NAME> must be a mapping`, `projects.<KEY>.experiments.<NAME>.variants must be a sequence of variant blocks`, or `projects.<KEY>.experiments.<NAME>.variants[<n>] names no name: a draw records the variant it drew by name`) | The shape: `experiments` is a mapping of a name to a block, a block is a mapping, its `variants` is a sequence of mappings, and each arm names a `name`. |
+| `projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes` (or `projects.<KEY>.experiments.<NAME>.variants[<n>] name "…" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`, or `projects.<KEY>.experiments.<NAME>.variants names <name> twice`) | An experiment's name and an arm's name are 1 to 32 characters of `a-z`, `0-9` and `-`, and each is named once, because every draw records both. |
+| `projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a block that names no mode gets), `on`, or `random`. |
+| `projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")` | The unit is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue on its own. |
+| `projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)` (or `projects.<KEY>.experiments.<NAME>.roles names no role: …`, `projects.<KEY>.experiments.<NAME>.roles names <role> twice`, or `projects.<KEY>.experiments.<NAME>.roles must be a sequence of Legion issue roles, …`) | `roles` lists the issue roles whose launches load the experiment's arms, each once: `architect`, `planner`, `implementer`, `tester`, `reviewer` or `merger`. The controller runs in no experiment. For every issue role, leave the key out. |
+| `projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists` (or `projects.<KEY>.experiments.<NAME>.variants lists no variant: …`, or `projects.<KEY>.experiments.<NAME> is <mode> and lists one variant: …`) | List the arms the experiment compares. A mode other than `off` needs at least two of them: a draw among one arm measures nothing, so list the arm it is compared against, or set `mode: off`. |
+| `projects.<KEY>.experiments.<NAME> is on and names no on_variant: …` (or `projects.<KEY>.experiments.<NAME>.on_variant names "…", which is no variant of the experiment (…)`) | `mode: on` gives every new unit one arm, so name that arm in `on_variant`, and name one this experiment lists. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.weight must be a whole number above zero (got <n>): …` | A weight is the arm's share of a random draw against its siblings'. An arm of no weight is never drawn, so take it out of the list instead. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM> names config_files, and worker_backends.<role> is claude, which reads no PI_CONFIG_FILES: …` | An arm that names overlays hands them to every role its experiment reaches (`roles`, every issue role where it names none) of a unit drawn into it, whatever the mode is, and Claude Code reads no `PI_CONFIG_FILES`: put each role the experiment reaches on Oh My Pi, leave the role out of the experiment's `roles`, or take the overlays out of the arm. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
+| `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
@@ -67,10 +82,10 @@ cluster and the image:
   recovers it from Dispatch's listing once GitHub answers, with nothing to move. A
   `child-release-stalled` notice that names such a repository says which parent to release first:
   the recovery records no child under a parent that is not `todo`.
-- **A stamped repository the project does not serve.** `workflow: commit_issue_trailer_repos names
-  a repository this project does not serve, so no pane stamps a commit with the issue key for it`,
-  with the repository and the project: `projects.<KEY>.commit_issue_trailer_repos` only selects
-  among the repositories Dispatch maps to the project, so this name selects nothing. It is a
+- **A stamped repository the mapping does not hold.** The boot says once, naming the repository
+  and the project, that `projects.<KEY>.commit_issue_trailer_repos` names a repository Dispatch
+  does not map to the project. A pane still stamps a commit for that repository when it works it,
+  so the line catches a typo and nothing else. It is a
   warning, not a refusal — the boot's check reads no Dispatch, and a repository mapped the day
   after the file is written is no fault of the file. Map the repository to the project in
   Dispatch, or take the name out.
@@ -276,13 +291,14 @@ Check, in order:
    root the daemon recorded that a person moved back to `triage` is never queued again: it runs
    again only from `todo`. In `backlog` or `icebox` it does not run.
 3. **The project and its repository.** The issue's project must be the daemon's, under `projects`
-   in `legion.yaml`, and its repository one the daemon serves. An issue whose repository resolves to
-   none, or to one not mapped to the project, or left out for a missing App, is not admitted: the
+   in `legion.yaml`. The issue may name any `owner/name`, whether or not Dispatch maps it to the project. An issue
+   whose repository resolves to none, or to one a role App is not installed on, is not admitted: the
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
    changes. Set the issue's repository (the issue header's Repository picker, or
    `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
-   `todo` again. A child of a tree is told the same way, and its tree's architect gets a
-   `child-not-recorded` notice.
+   `todo` again. A child of a tree is told the same way, and the architect that owns its parent
+   (the tree's architect when its parent is not recorded in the tree) gets a `child-not-recorded`
+   notice.
 4. **The slots.** When every slot is taken the issue waits its turn:
 
    ```sh
@@ -322,9 +338,10 @@ Check, in order:
 
    Fix what GitHub names, such as the implement App's permissions or a ruleset on `legion/*`
    branches. The next attempt then creates the branch, and the tree starts.
-6. **Someone else holds it.** The architect's first act is to claim the issue in Dispatch. When a
-   person or another session already holds the claim, the architect starts nothing and asks the
-   holder, on the issue, to release it or take the issue back; the tree keeps its slot meanwhile.
+6. **Someone else holds it.** A root's architect's first act is to claim the root in Dispatch.
+   When a person or another session already holds that claim, the root's architect starts nothing
+   and asks the holder, on the root, to release it or take the issue back; the tree keeps its slot
+   meanwhile. A child's own architect claims nothing in Dispatch.
 
 ## A tree waits on a person
 
@@ -580,6 +597,19 @@ listing alone. What follows the colon says where to look:
   verify or move the check into place on the pod's disk. The sentence on the claim is the whole
   record, because the launcher writes no log line for a refusal.
 
+**A pod launch whose system prompt is too large for one start frame** is refused before anything
+starts, and its claim fails at once, charged no launch failure, since every try would compose the
+same text from the same files. The prompt reaches the pod's launcher in one frame, which holds at
+most 1048576 bytes. The daemon logs the error `supervise: the role's system prompt is too large
+to launch; failing the claim, charging no launch failure`; the claim's `failure` carries the cause
+word `launch_refused` (`died` where the refused launch was the relaunch of a process that died)
+and a `detail` reading `launch refused, charged no launch failure: …: the <role>'s system prompt is
+<N> bytes, and the start frame that carries it to its pod's launcher would be <F> bytes, larger
+than the 1048576 bytes a launcher reads in one frame`, the part before the sentence naming the
+claim and the launch step that measured the frame, and its `lastStartFailure` carries the same
+sentence, both read with `read_state`. Cut the prompt: the deployment's instructions, the role's
+prompt, or an experiment arm's instructions.
+
 Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The
 daemon launches a claim that has not failed yet again on its own, after the backoff below.
 
@@ -599,17 +629,20 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 
 `phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
-to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
-architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
-finds no cause or the cause is gone, and asks a person whether to park it when the cause stays.
-What brings the architect back depends on where its tree stands:
+to retry or escalate, and `holdReason: "escalated"` means it went to the controller. A root's
+architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
+notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
+restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
+it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
+the architect above it is told with a `worker-died` and takes the child's notices, and the child's
+next phase start starts it again. What brings a root's architect back depends on where its tree
+stands:
 
-- **Its tree runs and does not linger:** `legion state`'s `claims nothing will
-  wake` line names the architect under `failed, retry`. Retry it, as
-  [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
-  relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
-  generation and phase it stands at.
+- **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
+  names the architect under `failed, retry`. Retry it, as [A tree does not move after a
+  restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
+  it kept, or on a new one once supervise's `forgetSession` has dropped that, with fresh budgets,
+  and the tree carries on at the generation and phase it stands at.
 - **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation; a retry by hand would run it outside the admission cap, and it would be sent no
@@ -621,13 +654,16 @@ What brings the architect back depends on where its tree stands:
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
-budgets, and retries a failed phase worker whose issue is held for that worker's own role by
-applying the held phase's retry, as its architect's `retry_or_escalate` would. It reaches a claim an
-operator stopped as well as a failed one, since `legion claims stop` retires the claim it stops: a
-stopped phase worker is started again on the task of the phase its issue stands in now. Every other
-state is refused and named: a queued claim is spawned rather than retried, a suspended claim is
-resumed, and the daemon's own controller is its keeper's to retry, which the refusal says. A retry
-that leaves the issue held, as a lingering tree's does, is refused naming the issue.
+budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
+phase worker whose issue is held for that worker's own role by applying the held phase's retry,
+as its architect's `retry_or_escalate` would. It reaches a retired claim as well as a failed one,
+whatever retired it (`legion claims stop` retires the claim it stops), and how it starts a stopped
+phase worker is api's `retryStart` to decide (through the issue's phase by `restartWorkedPhase`
+where that phase is the worker's). Every other state is refused and named: a queued claim is
+spawned rather than
+retried, a suspended claim is resumed, and the daemon's own controller is its keeper's to retry,
+which the refusal says. A retry that leaves the issue held, as a lingering tree's does, is refused
+naming the issue.
 `legion claims retry --failed` asks the same of every failed claim the daemon holds, in turn,
 prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
@@ -811,17 +847,23 @@ idle, and, in the log, either the boot's one line per claim for the degraded dae
 `supervise: an event failed` naming the claim whose relaunch keeps being refused.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
-something starts it. A worker is started by the workflow when its phase begins, and a tree's
-architect by its admission; a notice to an architect with no process waits for it rather than
-starting it. A suspended worker of its issue's current phase that the daemon suspended is resumed
-by the daemon at boot. One an operator suspended (`legion claims suspend`, one claim at a time or a
-whole fleet before a restart), or whose suspension predates the release that records who suspended
-it (`suspendedBy: unknown`), is not; neither is an operator-suspended or failed tree architect, nor
-a claim whose launches ran out, nor a claim a close or a stop retired while its tree runs, whatever
-its role. Each of those is woken by nothing: the daemon looks healthy and the
-state shows the tree active, but the tree stops for good at the worker's phase, or at the first
-decision that needs its architect. Once a boot has re-adopted its claims, the daemon names every
-such claim in one error line, under the move that brings it back:
+something starts it. A worker is started by the workflow when its phase begins, a tree's architect
+by its admission, and a child's own architect by the child's first phase start, and again after a
+failure by the child's next phase start. A notice starts no architect, except one whose idle pod
+the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
+undelivered once that claim has failed or retired, and a notice for a child whose own architect
+does not hold its role goes to the architect above. A suspended worker of its issue's current
+phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
+(`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
+suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
+neither is an operator-suspended or failed tree architect, nor a claim whose launches ran out, nor
+a claim a close or a stop retired while its tree runs, whatever its role. Each of those but a
+child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
+shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
+that needs its architect. A child's own architect stops no tree, since its child's notices go to
+the architect above, and the list below never names it: the paragraph under the list says what
+brings one back. Once a boot has re-adopted its claims, the daemon names every such claim in one
+error line, under the move that brings it back:
 
 ```text
 {"level":"ERROR","msg":"legion daemon started with claims nothing will wake","project":"WIDGETS","count":4,"resume":["WIDGETS-12 architect"],"suspendedWorkers":["WIDGETS-12 implementer"],"retry":["WIDGETS-14 architect"],"needsWorkflowStart":["WIDGETS-15 reviewer"]}
@@ -882,12 +924,13 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept,
-  with fresh budgets, and sends it a catch-up of its tree once it is ready, so the tree carries on
-  at the generation and phase it stands at. The daemon drops every notice it could not deliver to
-  the failed architect, the reviewer's approval that moved an issue into `accepting` among them,
-  so the catch-up's reason names each issue of the tree waiting in `accepting` for the architect's
-  acceptance; no worker runs there, and nothing else would wake the architect for it:
+- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
+  a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
+  catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
+  stands at. The daemon drops every notice it could
+  not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
+  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
+  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -896,16 +939,18 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   When a tree's architect and its workers failed together, retry the architect first: the held
   workers are its to retry once it runs.
 
-- **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
-  tree runs, whatever its role): a failed worker's issue is held
-  ([An issue is held](#an-issue-is-held)), and its tree's architect retries the phase or escalates
+- **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired
+  while its tree runs, whatever its role): a failed worker's issue is held ([An issue is
+  held](#an-issue-is-held)), and the architect that owns the issue retries the phase or escalates
   it to the controller; `legion claims retry` applies the same retry when the architect cannot, and
-  a `todo` on a held root releases the hold without either of them. A
-  failed claim ignores `legion claims resume` and `legion claims deliver`.
-  A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
-  not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
-  architect's `retry_or_escalate` of a held phase, a transition into that phase, or a tree close
-  and re-admission — and, for a retired tree architect, its tree's admission.
+  a `todo` on a held root releases the hold without either of them. A failed claim ignores `legion
+  claims resume` and `legion claims deliver`. A retired claim ignores those two as well. `legion
+  claims retry --claim <token>` reaches it as it reaches a failed one, and `legion claims retry
+  --failed` passes over it. A workflow start also relaunches it, for example a start of the phase
+  it owns — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or a
+  tree close and re-admission — or, for an architect, a start of its issue's run: its tree's
+  admission for a root's, its child's first phase start for a child's own. Each relaunches the
+  session it kept, or a new one once supervise's `forgetSession` has dropped that.
 
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
@@ -916,15 +961,21 @@ slot has that start queued already. A root in
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
-A claim an operator suspended is listed even when a workflow start is queued for it: that start
-waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no start
-is queued for it, since the next phase start or re-admission resumes it as before.
+The list never names a child's own architect: while that architect does not hold its role, the
+architect above it takes the child's notices, and a later start of the role brings it back, as the
+daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
+it, an operator's retry and the controller's `fresh_session` are among such starts. A child's own
+architect that an operator suspended waits for the operator's resume (`legion claims list` shows
+it).
+Any other claim an operator suspended is listed even when a workflow start is queued for it: that
+start waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no
+start is queued for it, since the next phase start or re-admission resumes it as before.
 
 ## A worker that stopped taking turns
 
 The issue stands in its phase, its worker does nothing, and the daemon's record of it reads like a healthy one.
 The claim is up and the state shows the tree at work.
-The daemon finds such a worker by itself and writes one `worker-silent` notice to the issue's architect.
+The daemon finds such a worker by itself and writes one `worker-silent` notice to the architect that owns the issue.
 The project's controller reads the same issue in the `silent` list of its periodic tick.
 
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
@@ -945,7 +996,7 @@ The merge ends the merger's work, but the root stands in `merging` until the res
 
 A worker whose own session — the process the claim runs now — reports background work of its own running, an async job, a subagent or a background task, is left alone, however long it has been quiet.
 No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
-When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the issue's architect, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
+When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the architect that owns the issue, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
 The architect reads what the session says it is waiting on and decides.
 The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
@@ -977,7 +1028,7 @@ Nothing adds the two lines to these commits:
 - A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
   A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
-- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (anthropics/claude-code#46696).
+- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (Claude Code issue 46696).
   That subagent's `git commit` still gets the `Legion-Role` line.
 
 **The git author and committer name no role.**
@@ -1047,7 +1098,7 @@ If the commit is older than that line, read the daemon's lines from the log stor
 A search that finds no line for a time before the first line does not show that no adoption occurred.
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
-  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and, as `took` in nanoseconds, how long the daemon's call to adopt took: the daemon's own check of where the claim's process runs, then the round trip to the shim and back, with the shim's own work inside it.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
@@ -1057,8 +1108,9 @@ A search that finds no line for a time before the first line does not show that 
   The task stays queued, and the refusal counts against the prompt budget of the claim.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
-  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
-  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
+  That does not show that the adoption reached the shim: the frame can fail its own check, the write can fail, or the connection can close before the frame goes out, and the shim can also answer with a frame of another type.
+  When the frame went out and its answer did not come back, because the connection closed or the daemon stopped its wait, the shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
   The task stays queued.
 
 Compare the time of the commit with these lines.
@@ -1173,6 +1225,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
   the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
   that write and the reports it carried, as a stop between a decision and its write always has.
+  A write the daemon's own stop cut short writes the same line at Info, with `owed=true` and a
+  `context canceled` error: the database refused nothing, and the next boot takes the claim up
+  from its row, as it does every decision the stop ends. A write that ran out its own deadline
+  while the daemon stopped did wait on the database, and stays at Warn.
   The line comes again with `owed=true` at each decision whose repair fails again. With
   `owed=false` a repair's write reached the server, which judged the statement and would judge it
   the same way again, so the owed write and the reports it carried are dropped and the row stays
@@ -1209,8 +1265,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   decision whose write landed, except one of a generation the claim has left (`supervise: an owed
   report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
   and `generation=`). A claim whose last `owed=true` line has no such line after it is still
-  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
-  the write, and nothing tries it again.
+  behind: while that daemon runs, the claim's next decision tries the write again, and a daemon
+  that stopped since lost the mark, so its next boot takes the claim up from its row. One whose
+  last line is `owed=false` has dropped the write, and nothing tries it again.
 - **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
   and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
   turn that started from one the daemon never saw, and a turn that ended from one still running.
@@ -1219,6 +1276,78 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
+- **`supervise: the agent's busy answer records the claim working; its task waits for the end of
+  the turn the agent is in`** at Info, with the `delivery` and the prompts still `outstanding`, is
+  Oh My Pi answering a prompt with `Agent is already processing`: at the send, after its
+  acknowledgement, or in the prompt's result. That answer means the session is in a prompt, so a
+  ready or idle claim is recorded `working`, with a `supervise: a turn started` line that names no
+  delivery, and its task is held for that turn's end rather than sent again at every sweep and
+  hello. When the turn's own start comes, **`supervise: the turn a busy answer recorded has
+  begun`** says so, with the delivery it confirms, and writes no second start line. When no start
+  or end of the turn is ever read, the next sweep asks the agent: **`supervise: the agent is in no
+  prompt; the turn its busy answer recorded is over`** ends the turn and sends the task, and
+  `supervise: the agent did not say whether the turn its busy answer recorded is over; the claim
+  stays working and the next sweep asks again` is an ask nobody answered. Nothing to do.
+- **`supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of
+  this task, whose result settles the task`** (and the same line for an acknowledged prompt, and
+  for `Oh My Pi ran no turn for the prompt`) is a re-send of a task whose first prompt Oh My Pi
+  acknowledged and is still preparing: its pre-turn work, such as a memory recall, outlasted the
+  daemon's five-second wait for the turn. The first prompt stays outstanding, its late turn
+  confirms the task, and its result retires it, so a completion made in that turn is accepted and
+  the task is not sent again after it. Nothing to do.
+- **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
+  whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
+  `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
+  a relaunch, a suspension, a failure or a stop that ended the process while work of its agent
+  ran. A stop is `legion claims stop`, the operator's close of a tree stopping its other claims,
+  or the daemon stopping a controller it launched, and its cause is `its claim was stopped`:
+  every retry that keeps the session resumes the stopped claim's session, which is told what the
+  stop ended. That is `legion claims retry` without `--fresh-session`, the daemon's own retry of
+  a retired controller it keeps, the daemon's start of a retired worker's phase, and a child's next
+  first phase start, which starts that child's own architect when an operator stopped it.
+  A suspension that lands over a process the daemon had already found gone, as a fresh session
+  over a dead role does, records the death in the runtime's words, not the suspension. The claim
+  records it (the `ended_work` column of its row), and the first prompt the next process is sent
+  carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
+  none, alone
+  in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
+  daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
+  newer task replaces while no prompt of it is outstanding). That delivery is also given when the
+  claim's held task is dropped at its send: the issue left the task's phase, the task is an ask
+  an older daemon queued for an update round, or a root architect's held task names nothing any
+  more. A root
+  architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
+  in front of its start message. Every turn cut off is told that its subagents and background
+  jobs are gone. A process whose newest activity report is older than the start of its last
+  turn is told the background work that report named, and that the daemon has no report of what
+  that turn started. A process in no turn that has no report of its last turn (it left no report,
+  or only one older than that turn) is told that the daemon has no report of the background work
+  of its last turn, and so that every subagent and background job it started is gone. Nothing to
+  do; the agent checks what that work did before it repeats it.
+- **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
+  **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
+  at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
+  confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
+  prompt, since it can acknowledge and then answer busy. Nothing to do.
+- **`supervise: the confirmation of the prompt that told the agent what became of its earlier
+  work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
+  turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
+  another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
+  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
+  or the process ended in a turn that confirmed the task before the prompt's result came (while
+  its send was in flight or it waited on its result), since only that result says the turn was
+  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
+  do.
+- **`supervise: the claim abandons its session, so the record of what the old session's process
+  ended is not told to the fresh agent; the abandoned session's sentence says that work is
+  gone`** at Info is a fresh session: the claim's first task names the session it left behind,
+  and the record of the old process's end is marked told with no prompt. A record written later,
+  of the fresh session's own process, is told after the abandoned session's sentence, in the
+  same prompt. Nothing to do.
+- **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
+  record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
+  that the claim still held when its record was told by other means, as a fresh session's
+  start tells it. Nothing to do.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -1251,10 +1380,10 @@ These arrive as messages on the Dispatch issue:
   started its worker, and each role answers in its own turn. No hook writes to an architect: the
   daemon's own wake to an architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
-  conclusion GitHub gave it, in one message each to the tree's architect, the worker of the
-  issue's current phase and the implementer, and judges none of them. Re-run a check that failed
-  on itself, have the implementer fix code that is at fault, or leave it to GitHub, which holds
-  the merge under the base branch's own required checks.
+  conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
+  of the issue's current phase and the implementer, and judges none of them. Re-run a check that
+  failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
+  holds the merge under the base branch's own required checks.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a

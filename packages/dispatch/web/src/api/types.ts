@@ -96,6 +96,7 @@ export type {
   DecisionKeep,
   DecisionLink,
   DecisionResponse,
+  DeliveryAttemptState,
   DeliveryCapability,
   DeliveryColorFacet,
   DeliveryComponent,

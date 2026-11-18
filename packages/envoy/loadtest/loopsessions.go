@@ -780,10 +780,16 @@ func (lp *loopSessions) unsubscribe(ctx context.Context, s *loopSession) ([]stri
 
 // frames takes the session's relay frames: it answers received at once, counts the first frame of
 // each stream sequence as the session's receipt, with the stream's store time, answers done and
-// moves its resume point, as the pi plugin does (relay.go).
+// moves its resume point, as the pi plugin does (relay.go). The send route's connection probe
+// (bus.ConnectionProbeHeader) is answered done and taken for nothing else, as relay.go's handler
+// answers it.
 func (lp *loopSessions) frames(s *loopSession) func(busMsg) {
-	agentSubject := contracts.AgentSubject(s.id)
+	agentSubject := contracts.LegacyAgentSubject(s.id)
 	return func(m busMsg) {
+		if m.header(bus.ConnectionProbeHeader) == "1" {
+			_ = m.respond(relayReplyDone)
+			return
+		}
 		now := time.Now().UnixNano()
 		_ = m.respond(relayReplyReceived)
 		seq, _ := strconv.ParseUint(m.header(relayHeaderStreamSeq), 10, 64)

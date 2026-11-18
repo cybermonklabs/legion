@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testTokensPerMinute is a quota far past anything one test's prompts cost, so every test but the
@@ -458,28 +461,84 @@ func TestRunTellsTheModelACallFailedInTheResultsOwnText(t *testing.T) {
 
 // TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers: a model that holds its response open past
 // the caller's deadline ends the run with the issue's one deadline code, and the run takes the
-// time the caller gave it rather than ending early.
+// time its caller gave it: the model's call is sent under the caller's own deadline, with no
+// shorter bound of the run's or of the client's put on it, and the run is still waiting once the
+// model holds the call. The caller's deadline lies inside the run's own window
+// (contracts.GoingRunWindow), which the run and the client each put on the context
+// (runLoop, HTTPClient.Chat), so a run that keeps it sends the call with exactly that deadline.
+// The test ends the context itself once the model holds the call, so no clock decides the verdict.
 func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
-	const window = 250 * time.Millisecond
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
-	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	transport := &deadlineTransport{}
+	answerer, err := going.NewAnswerer(going.AnswererConfig{
+		Model:           testClient(t, model, going.HTTPConfig{HTTPClient: &http.Client{Transport: transport}}),
+		TokensPerMinute: testTokensPerMinute,
+	})
+	if err != nil {
+		t.Fatalf("NewAnswerer: %v", err)
+	}
 	stream := &answerStream{}
-	ctx, cancel := context.WithTimeout(t.Context(), window)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
+	callerDeadline, _ := ctx.Deadline()
 
-	start := time.Now()
-	err := answerer.Run(ctx, testReads().request("who owns the broadcast order"), stream.emit)
-	elapsed := time.Since(start)
+	ran := make(chan error, 1)
+	go func() { ran <- answerer.Run(ctx, testReads().request("who owns the broadcast order"), stream.emit) }()
+	// The model counts the call as it arrives and then holds its response, so the run is waiting
+	// on it here, and the transport has recorded the call's deadline before sending it.
+	testwait.Eventually(t, "the model to take the run's call", func() bool { return model.Calls() == 1 })
+	select {
+	case err := <-ran:
+		t.Fatalf("Run returned %v while the model still held its response, before its caller ended the context", err)
+	default:
+	}
+	if deadlines, unbounded := transport.sent(); unbounded != 0 || len(deadlines) != 1 || !deadlines[0].Equal(callerDeadline) {
+		t.Fatalf("the model's call went out under deadlines %v (and %d with none), want one under its caller's own deadline %v: the run put a shorter bound of its own on the time its caller gave it",
+			deadlines, unbounded, callerDeadline)
+	}
 
+	cancel()
+	testwait.Eventually(t, "the run to end once its caller's context has", func() bool {
+		select {
+		case err = <-ran:
+			return true
+		default:
+			return false
+		}
+	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
 	}
-	if elapsed < window {
-		t.Errorf("the run ended %s in, before its %s deadline", elapsed, window)
+}
+
+// deadlineTransport records the deadline each model call's request is sent under, read where the
+// HTTP client sends it, after every bound the run and the client put on their caller's context.
+type deadlineTransport struct {
+	mu        sync.Mutex
+	deadlines []time.Time
+	unbounded int
+}
+
+func (d *deadlineTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	at, bounded := request.Context().Deadline()
+	d.mu.Lock()
+	if bounded {
+		d.deadlines = append(d.deadlines, at)
+	} else {
+		d.unbounded++
 	}
+	d.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(request)
+}
+
+// sent answers the deadlines recorded so far, and how many requests carried none.
+func (d *deadlineTransport) sent() ([]time.Time, int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.deadlines), d.unbounded
 }
 
 // TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall: a quota too small to pace the next

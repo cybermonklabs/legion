@@ -136,6 +136,7 @@ func TestResponseShapes(t *testing.T) {
 				Token:        "tok-1",
 				UnchangedOps: []int{3},
 				Version:      &version,
+				Written:      "The paragraph the edit wrote.",
 			},
 			before: map[string]any{
 				"applied":       2,
@@ -144,6 +145,7 @@ func TestResponseShapes(t *testing.T) {
 				"unchanged_ops": []int{3},
 				"lost_ops":      lost,
 				"token":         "tok-1",
+				"written":       "The paragraph the edit wrote.",
 			},
 		},
 		{

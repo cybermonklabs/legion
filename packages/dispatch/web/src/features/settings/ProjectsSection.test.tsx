@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -25,9 +25,9 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
-  const createProject = spyOn(api, "createProject").mockRejectedValue(
-    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
-  );
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const lostCreate = Promise.withResolvers<never>();
+  const createProject = spyOn(api, "createProject").mockReturnValue(lostCreate.promise);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
@@ -44,6 +44,9 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
     await user.click(screen.getByLabelText("Name"));
     await user.paste("Quality");
     await user.click(screen.getByRole("button", { name: "New project" }));
+    await act(async () => {
+      lostCreate.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }));
+    });
 
     const made = await screen.findByTestId("landed-without-answer");
     expect(made.textContent).toBe(

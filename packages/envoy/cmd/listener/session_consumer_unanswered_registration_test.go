@@ -22,6 +22,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -72,6 +73,11 @@ func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRo
 	const added = "notifications.dispatch.issue.ENTRYFAILADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 
+	// swapSessionBucket swaps the handle of a stopped watcher. A live one goes on applying the
+	// bucket to the cache, and that apply reads the field the swap writes: the race detector
+	// reported it (CI run 43724869797).
+	rig.harness.sessions.StopWatch()
+
 	// The entry write of the registration below fails, and a writer that sets no consumer filter
 	// stores the session's row in the window between that registration's row and its entry,
 	// which is the window the repair after the entry covers for a registration that is answered.
@@ -120,6 +126,8 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite
 	// The entry write of the registration below fails, which is the exit that answers no
 	// registration and settles the filter on its way out. Nothing is stored in the window before
 	// that write here: the row this settle is outrun by lands under the settle itself.
+	// The watcher stops before the swap, as in the row above.
+	rig.harness.sessions.StopWatch()
 	swapSessionBucket(t, rig.harness.sessions, func(kv nats.KeyValue) nats.KeyValue {
 		return refusingEntryKV{KeyValue: kv, before: func() {}}
 	})
@@ -172,6 +180,8 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 	// The registration on the other listener, answered 200 for a topic of its own, stored in the
 	// window between this registration's row and the session entry whose write fails: the settle
 	// that follows that failure reads the bucket after it.
+	// The session cache's watcher stops before the swap too, as in the first row of this file.
+	rig.harness.sessions.StopWatch()
 	var stored sync.Once
 	swapSessionBucket(t, rig.harness.sessions, func(kv nats.KeyValue) nats.KeyValue {
 		return refusingEntryKV{KeyValue: kv, before: func() {
@@ -218,14 +228,15 @@ func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
 }
 
 // requireFilteredOnStoredRow fails the test unless sessionID's consumer filters on exactly what
-// the row the bucket holds builds (sessionConsumerFilter).
+// the row the bucket holds builds (sessionConsumerFilter, every form of which the consumer
+// carries: bus.SessionConsumerFilters).
 func requireFilteredOnStoredRow(t *testing.T, rig *sessionConsumerRig, sessionID string) {
 	t.Helper()
 	stored, _, err := rig.harness.registry.RefreshAt(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the stored interest row of %s: %v", sessionID, err)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
+	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v, the topics of the row the bucket holds", sessionID, got, want)
 	}

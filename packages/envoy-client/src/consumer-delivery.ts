@@ -1,4 +1,4 @@
-import { agentSubject } from "@legion/contracts";
+import { legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -27,7 +27,7 @@ export function deliverSubject(sessionID: string): string {
   return `${DELIVER_SUBJECT_PREFIX}${sessionID}`;
 }
 
-/** The headers of a relay frame. */
+/** The headers of a relay frame, and of the listener's connection probe. */
 export const RelayHeader = {
   /** The subject the stream stored the message on. */
   subject: "Envoy-Subject",
@@ -41,6 +41,14 @@ export const RelayHeader = {
   storedAt: "Envoy-Stored-At",
   /** `true` only on the first frame after the relay restarted below the stream's first sequence. */
   gap: "Envoy-Gap",
+  /**
+   * `1` on the listener's connection probe, which is no frame: a core request on this session's
+   * relay subject with this header alone and no body, sent when someone sends to the session. Any
+   * answer, or none within the listener's second, reads connected; NATS no-responders reads
+   * stopped. It never carries a frame header, so it can never decode as a frame and move the
+   * resume point (`receive` answers it before the decode).
+   */
+  probe: "Envoy-Probe",
 } as const;
 
 /**
@@ -332,11 +340,21 @@ function parseIdentity(data: string) {
 }
 
 /**
- * Whether a followed topic, expanded as the subscription it stands for, reaches `subject`: the
- * one "does this topic reach this frame" check the follow filter asks.
+ * Whether a followed topic, expanded as the subscription it stands for, reaches a frame whose
+ * subject reads as `forms`: the one "does this topic reach this frame" check the follow filter
+ * asks. The caller passes the frame's forms, which it reads once per frame rather than once per
+ * followed topic.
+ *
+ * Both sides are read in every form of their name while the rename that put a project into an
+ * issue's, an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the
+ * listener's consumer filters carry both forms, so a frame arrives in a form the session did not
+ * follow in, and this client is the last reader of it. Comparing the spellings as they stand
+ * would drop every such frame, and drop it in silence (`receive` answers `done` and the resume
+ * point passes it). Until the old form is refused only.
  */
-function reaches(topic: string, subject: string): boolean {
-  return expandSubscriptionTopics([topic]).some((pattern) => subjectsOverlap(pattern, subject));
+function reaches(topic: string, forms: readonly string[]): boolean {
+  const patterns = topicForms(topic).flatMap((form) => expandSubscriptionTopics([form]));
+  return forms.some((form) => patterns.some((pattern) => subjectsOverlap(pattern, form)));
 }
 
 function every(ms: number, callback: () => void): () => void {
@@ -360,7 +378,12 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
-  const ownSubject = agentSubject(sessionID);
+  // The session's own inbox, in the old form and under any project: every form of such a subject
+  // holds the old form (`topicForms`), which no other session's does, so a frame on any of them
+  // is its own, whenever the stream stored it. Named because the follow filter and the persisted
+  // follow times must read it the same way.
+  const ownSubject = legacyAgentSubject(sessionID);
+  const ownsSubject = (subject: string): boolean => topicForms(subject).includes(ownSubject);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.
@@ -435,10 +458,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   };
 
   const followedAt = (subject: string): number | undefined => {
-    if (subject === ownSubject) return Number.NEGATIVE_INFINITY;
+    if (ownsSubject(subject)) return Number.NEGATIVE_INFINITY;
+    const forms = topicForms(subject);
     let earliest: number | undefined;
     for (const [topic, at] of follows) {
-      if (!reaches(topic, subject)) continue;
+      if (!reaches(topic, forms)) continue;
       if (earliest === undefined || at < earliest) earliest = at;
     }
     return earliest;
@@ -602,6 +626,13 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   }
 
   const receive = (message: RelayMessage) => {
+    // The listener's connection probe asks only whether this subscription is here, and the
+    // answer says so. It reaches no host, ledger, dedupe cache or resume point, and is logged by
+    // nobody: a session that is sent to often would otherwise log every send to it.
+    if (message.headers?.get(RelayHeader.probe) === "1") {
+      if (message.reply !== undefined && message.reply !== "") send(message.reply, "done");
+      return;
+    }
     const decoded = decodeRelayFrame(message);
     if ("error" in decoded) {
       // Redelivery cannot fix a frame that does not decode, so it is acked away.
@@ -751,7 +782,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       for (const topic of topics) {
         // The session's own agent subject is always followed (`followedAt`), so it is never one of
         // the follow times a host persists.
-        if (topic === ownSubject) continue;
+        if (ownsSubject(topic)) continue;
         next.set(topic, follows.get(topic) ?? at);
       }
       follows = next;

@@ -1,0 +1,5 @@
+{"Time":"2026-11-16T17:37:17.912795574Z","Action":"start","Package":"example.com/acme/gotest/exitkill"}
+{"Time":"2026-11-16T17:37:17.929195665Z","Action":"run","Package":"example.com/acme/gotest/exitkill","Test":"TestPrintsTheKillLineThenExits"}
+{"Time":"2026-11-16T17:37:17.929256578Z","Action":"output","Package":"example.com/acme/gotest/exitkill","Test":"TestPrintsTheKillLineThenExits","Output":"=== RUN   TestPrintsTheKillLineThenExits\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:17.929291984Z","Action":"output","Package":"example.com/acme/gotest/exitkill","Test":"TestPrintsTheKillLineThenExits","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T17:37:17.936470935Z","Action":"fail","Package":"example.com/acme/gotest/exitkill","Test":"TestPrintsTheKillLineThenExits","Elapsed":0.024}

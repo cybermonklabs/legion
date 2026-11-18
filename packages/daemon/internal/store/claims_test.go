@@ -71,6 +71,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	gotFailed, wantFailed := got.FailedAt, want.FailedAt
 	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
+	// The handshake's two moments are timestamptz columns too, compared the same way.
+	gotHandshake, wantHandshake := got.Handshake, want.Handshake
+	got.Handshake.QueuedAt, got.Handshake.ConfirmedAt = time.Time{}, time.Time{}
+	want.Handshake.QueuedAt, want.Handshake.ConfirmedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
@@ -79,6 +83,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	}
 	if !gotFailed.Equal(wantFailed) {
 		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
+	}
+	if !gotHandshake.QueuedAt.Equal(wantHandshake.QueuedAt) || !gotHandshake.ConfirmedAt.Equal(wantHandshake.ConfirmedAt) {
+		t.Errorf("the claim's handshake was queued at %v and confirmed at %v, want %v and %v",
+			gotHandshake.QueuedAt, gotHandshake.ConfirmedAt, wantHandshake.QueuedAt, wantHandshake.ConfirmedAt)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -810,10 +818,7 @@ func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *test
 			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
 		}
 	}
-	all := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended,
-		supervise.StateFailed, supervise.StateRetired}
-	for _, state := range all {
+	for _, state := range supervise.States() {
 		put(state, false)
 		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
 		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
@@ -867,9 +872,7 @@ func TestClaimUnretiredIsEveryStoredStateButRetired(t *testing.T) {
 	if unretired() {
 		t.Fatalf("ClaimUnretired(%s) with no claim stored = true, want false", controller.Token)
 	}
-	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
-		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
-		supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired} {
+	for _, state := range supervise.States() {
 		controller.State = state
 		if err := store.PutClaim(ctx, controller); err != nil {
 			t.Fatalf("put %s %s: %v", controller.Token, state, err)

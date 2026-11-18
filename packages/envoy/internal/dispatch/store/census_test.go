@@ -1084,6 +1084,84 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
+// queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
+// connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
+// and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
+// version before them, with the limit at one byte: every table they touch is over it, so a
+// migration of the three the census does not refuse on a table's size is one the limit never
+// applies to, at any size. Only each entry is read, never the verdict of the whole set, for the
+// reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers
+// version's entry, and fails the test when that migration is not pending, refuses, or touches a
+// table the limit would not have refused anyway.
+func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
+	t.Helper()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261111212235)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		entry := &report.Pending[i]
+		if entry.Migration.Version != version {
+			continue
+		}
+		if len(entry.Refusals) != 0 {
+			t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
+		}
+		if len(entry.Tables) == 0 {
+			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
+		}
+		for _, table := range entry.Tables {
+			if !table.Exists || table.Bytes <= 1 {
+				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+			}
+		}
+		return entry
+	}
+	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+	return nil
+}
+
+// 20261114081434 drops both delivery state checks without cascade, adds each back with queued as
+// a check not valid, and adds message_deliveries.connected_only as a nullable text column with no
+// default and its own check not valid: every statement a catalog-only alter table, so the census
+// exempts it from the table limit on both tables.
+func TestCensusExemptsTheQueuedStateMigrationAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081434)
+	if entry.TableSizeExemption != "alter table" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
+	}
+	touched := map[string]bool{}
+	for _, table := range entry.Tables {
+		touched[table.Name] = true
+	}
+	if !touched["comment_deliveries"] || !touched["message_deliveries"] {
+		t.Errorf("tables = %+v, want comment_deliveries and message_deliveries", entry.Tables)
+	}
+}
+
+// 20261114081435 is one marked, non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS, which the
+// census admits over message_deliveries at any size: its scans hold off no ordinary write.
+func TestCensusAdmitsTheTakenDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081435)
+	if !entry.ConcurrentIndex {
+		t.Errorf("ConcurrentIndex = false, want the marked concurrent build admitted: %+v", entry)
+	}
+}
+
+// 20261114081436 is a plain drop index, RESTRICT by default, which the census exempts from the
+// table limit on message_deliveries, the table behind the index it drops.
+func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081436)
+	if entry.TableSizeExemption != "drop index" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "drop index")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "message_deliveries" {
+		t.Errorf("tables = %+v, want message_deliveries alone", entry.Tables)
+	}
+}
+
 // An enabled event trigger on create trigger runs code of its own when the migration runs, so a
 // migration of only a trigger is not exempt while one exists, and the size refusal names it. A
 // disabled one changes nothing. A drop fires sql_drop as well as ddl_command_start and

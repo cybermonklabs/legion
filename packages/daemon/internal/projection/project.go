@@ -2,6 +2,7 @@
 package projection
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -24,7 +26,10 @@ import (
 // caller owns the repeatable-read transaction, so its record reads and claims share one snapshot.
 // project is the Dispatch project whose pending status writes and held lifecycle rows the state
 // lists. steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-// root's view answers its own state of; the empty list gates none. stranded is the claims the
+// root's view answers its own state of; the empty list gates none. experiments are the project's
+// declared experiments (config.Project.ExperimentsDeclared), whose order each issue's
+// `assignments` ride in (assignmentViews); the empty list declares none, and every answer a
+// record still holds then rides in the experiments' names. stranded is the claims the
 // daemon judges nothing will wake (workflow.Stranded), handed in because that judgement reads
 // the gated steps and the released wakes over the store and this package may not read
 // internal/workflow: it is what says an issue's work has stopped on its worker rather than on
@@ -33,10 +38,11 @@ import (
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
 // claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
-// entry each issue's view carries is the role that works its current phase (phase.RoleFor). now
-// is the instant the held rows are read at (record.Store.HeldRows) and their waits are measured
-// from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+// entry each issue's view carries is the role that works its current phase (phase.RoleFor), and
+// the two handshake times beside them are that role's claim's, but for a tree's own root, whose
+// times are its architect's claim's in every phase (supervise.Claim.Handshake). now is the instant
+// the held rows are read at (record.Store.HeldRows) and their waits are measured from.
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -45,19 +51,25 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
-	// memoryByTree is every tree's memory draw, by the tree's key: only a root's record carries
-	// one, and a root's key is its own tree (record.Issue.MemoryGroup). Every issue of the tree is
-	// shown its root's, so an issue's view answers what its own roles run with.
-	memoryByTree := make(map[string]memoryDraw)
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
-		if issue.MemoryGroup != "" {
-			memoryByTree[issue.Key] = memoryDraw{group: issue.MemoryGroup, mode: issue.MemoryDrawMode, at: issue.MemoryDrawnAt}
-		}
 	}
+	// Every experiment answer the record holds for this project's issues, by issue key, in one
+	// statement (record.Store.Assignments). The database is shared by every project's daemon, so
+	// the read is joined to the issue records of project rather than taking the table whole,
+	// exactly as the issue read above is filtered to it; it is not listed by the keys in hand,
+	// since that list would select the same rows at the cost of a parameter the size of the
+	// table. A row says which unit it covers: a `tree` row is its tree root's and every issue of
+	// the tree is shown it, an `issue` row is the issue's own. So an issue's answers are its
+	// root's tree rows and its own issue rows, which assignmentViews joins.
+	assignments, err := s.Assignments(ctx, tx, project)
+	if err != nil {
+		return api.State{}, err
+	}
+	place := declaredPlaces(experiments)
 	slots, err := s.Slots(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -82,14 +94,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
-	// (supervise.Claim.GivenEntry): the number an issue's view shows beside the entry its phases
-	// row names. It is keyed by issue and role rather than by claim token because the token on
-	// the phases row can be empty, for a role no claim was ever created for, or stale, from a
-	// claim an earlier run retired, where the claim of this issue and this role is the one the
-	// admission pass weighs (admit's resumeSlottedWorkers).
-	givenEntries := make(map[issueRole]int64, len(claims))
+	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
+	// queued a task of (supervise.Claim.Handshake): the numbers and the two times an issue's view
+	// shows beside the entry its phases row names. They are keyed by issue and role rather than by
+	// claim token because the token on the phases row can be empty, for a role no claim was ever
+	// created for, or stale, from a claim an earlier run retired, where the claim of this issue and
+	// this role is the one the admission pass weighs (admit's resumeSlottedWorkers). One claim
+	// stands per issue and role (claim.NewToken), so one entry holds both readings of it.
+	entries := make(map[issueRole]roleEntry, len(claims))
 	for _, current := range claims {
-		givenEntries[issueRole{issue: current.Issue, role: current.Role}] = current.GivenEntry
+		entries[issueRole{issue: current.Issue, role: current.Role}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
@@ -137,11 +151,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
-		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
-		// is what the issue's roles ran with, and nothing redraws it.
-		if draw, drawn := memoryByTree[issue.Tree]; drawn {
-			view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt = draw.group, draw.mode, draw.at
-		}
+		// Every experiment answer the issue runs under, a done issue's included: it is what its
+		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
+		// experiment named `memory` spelled out for the readers that knew it before any
+		// experiment was declared (contract 49).
+		view.Assignments = assignmentViews(assignments, issue.Key, issue.Tree, place)
+		view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt = memoryOf(view.Assignments)
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
 		// re-admitted, which leaves the issue held.
@@ -179,6 +194,10 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			if !live {
 				continue
 			}
+			// The architect is the issue's architect and no worker of its `workers` map, so no
+			// phase view is built for it. Its row is read all the same: the entry below is
+			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
+			// is the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -198,21 +217,37 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			}
 			view.Workers[item.Role] = worker
 		}
-		// The entry the role of this issue's current phase stands on, and the entry that role was
-		// given: the pair a reader tells a role holding the work its row names from one the daemon
-		// has still to send that work to (api.Issue.PhaseEntry). A phase that names no phase worker
-		// role carries neither number — a root at admitted whose design gate has never opened is at
-		// work (record.AtWork) and phase.RoleFor names no role for that phase, so the admission
-		// pass passes it over and a difference written for it would stand for ever — and no row of
-		// a role the issue has moved past is read, since that role keeps its entry and is sent
-		// nothing.
+		// The entry the role of this issue's current phase stands on and the entry that role was
+		// given: what a reader tells a role holding the work its row names from one the daemon has
+		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
+		// a child does, since phase.RoleFor answers the architect for admitted and accepting and a
+		// phase role for each phase after; a phase no role works carries neither, where no row
+		// would be read and a difference written for one would never close. No row of a role the
+		// issue has moved past is read either, since that role keeps its entry and is sent nothing.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
-		// transition has ever handed work on, and it is read with the same call admit's
-		// owedEntryRoles reads for the same role from the same rows, so the state shows what the
-		// admission pass weighs a claim against.
-		if role := phase.RoleFor(issue.Phase); role != "" {
-			view.PhaseEntry = record.PhaseRowOf(phases, role).Entry
-			view.GivenEntry = givenEntries[issueRole{issue: issue.Key, role: role}]
+		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
+		// the same role's claim against, so the state shows what the admission pass weighs.
+		role := phase.RoleFor(issue.Phase)
+		if role != "" {
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
+		}
+		// Beside them the two times of a handshake: when a task of an entry was first queued to a
+		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
+		// EntryConfirmedAt), read from the claim's own record of it (supervise.Claim.Handshake),
+		// which outlasts the turn that confirmed the task. A tree's own root carries its
+		// architect's whatever phase it stands in: in awaiting_person, where no role works, and in
+		// each phase a phase role works, where the two numbers are that role's and the times are
+		// still the architect's. Any other issue carries the handshake of the role of its current
+		// phase, and none in a phase no role works. Either is shown for the issue's current
+		// generation alone (handshakeTimes), so a re-admitted root carries neither until its new
+		// architect entry is queued.
+		handshakeRole := role
+		if claim.IsTreeRoot(issue.Key, issue.Tree) {
+			handshakeRole = claim.RoleArchitect
+		}
+		if handshakeRole != "" {
+			view.EntryQueuedAt, view.EntryConfirmedAt =
+				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
@@ -469,6 +504,101 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	return projected, nil
 }
 
+// assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
+// tree, in the order the project's file declares the experiments: its tree's tree-unit rows,
+// which every issue of the tree runs under, and its own issue-unit rows. An issue no answer
+// applies to gets nil, which leaves the key off the wire.
+//
+// place is one experiment's place in that declared order, and the length of it for an
+// experiment the file no longer names (declaredPlaces): such a row stays in the record and
+// rides after every declared one, among its like in the experiments' names, which is the order
+// the record keys its rows by. The order is put on here rather than on the whole body at the
+// route, because here the rows are built once and sorted once; the record cannot put it on at
+// all, since the file's order is the project's rather than the store's.
+func assignmentViews(assignments map[string][]record.Assignment, key, tree string, place func(string) int) []api.AssignmentView {
+	rows := assignments[key]
+	if key != tree {
+		rows = make([]record.Assignment, 0, len(assignments[tree])+len(rows))
+		for _, row := range assignments[tree] {
+			if row.Unit == string(config.ExperimentTree) {
+				rows = append(rows, row)
+			}
+		}
+		for _, row := range assignments[key] {
+			if row.Unit == string(config.ExperimentIssue) {
+				rows = append(rows, row)
+			}
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	views := make([]api.AssignmentView, len(rows))
+	for i, row := range rows {
+		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
+	}
+	slices.SortStableFunc(views, func(a, b api.AssignmentView) int {
+		return cmp.Or(cmp.Compare(place(a.Experiment), place(b.Experiment)), cmp.Compare(a.Experiment, b.Experiment))
+	})
+	return views
+}
+
+// declaredPlaces is the place each experiment of declared holds in the order the project's file
+// declares them (config.Project.ExperimentsDeclared: the `memory` block's experiment first, then
+// the `experiments` key's own in the file's order), and the length of that list for every other
+// name, so an experiment the file no longer names sorts after every declared one whatever the
+// counts are.
+func declaredPlaces(declared []config.Experiment) func(string) int {
+	places := make(map[string]int, len(declared))
+	for i, experiment := range declared {
+		places[experiment.Name] = i
+	}
+	return func(name string) int {
+		if i, found := places[name]; found {
+			return i
+		}
+		return len(places)
+	}
+}
+
+// memoryOf is the three memory fields of an issue's view, read off the answer of the experiment
+// named `memory` among the issue's own (contract 49). They answer exactly what the four
+// issues.memory_* columns answered before this release, so the measurement job that reads them
+// needs no change, and the two classes the old columns told apart are told apart here by the
+// instant:
+//
+//   - a row that records a draw (DrawnAt is set) fills all three, whatever arm it drew: the arm
+//     `memory` is the group `memory`, and every other arm — the control `none` and the empty arm
+//     an experiment at mode off draws, which the memory draw before this release wrote as the
+//     word `none` — is the group `none`, with the row's own mode and instant beside it. A
+//     deployment at mode off has answered `none` for every tree it opened, and goes on doing so;
+//   - a row with no instant fills none of the three. That row is a hand-over settling a unit at
+//     no arm for an experiment the tree it left held no row for, which is the one shape the old
+//     column left empty (an empty memory_group with memory_drawn_at null, which the projection
+//     before this release skipped): a tree that answered nothing must go on answering nothing,
+//     or every reader counting exposed trees counts it anew.
+//
+// An issue no `memory` answer applies to carries none of the three either, which is what a tree
+// first opened before the experiment existed carries. The assignment itself is untouched by
+// this: `assignments` carries the settled row with its empty arm, which is how a reader tells a
+// unit settled at no arm from a unit never drawn.
+func memoryOf(views []api.AssignmentView) (string, string, *time.Time) {
+	for _, view := range views {
+		if view.Experiment != config.MemoryExperimentName || view.DrawnAt == nil {
+			continue
+		}
+		// Every arm but the one named `memory` is the group `none` on the wire, the empty arm
+		// a mode-off draw and a hand-over leave included: the wire enum has those two words
+		// alone (packages/contracts/src/legion-api.ts, legionIssue).
+		group := config.MemoryVariantNone
+		if view.Variant == config.MemoryVariantMemory {
+			group = view.Variant
+		}
+		return group, view.Mode, view.DrawnAt
+	}
+	return "", "", nil
+}
+
 // quietTrees is the state's measure of its trees: how long each tree the state's own records
 // name has been still and whether any claim of it is at work (record.QuietTrees). It makes no
 // query of its own. own is the project's records, the same list the waiting line and the live
@@ -497,20 +627,43 @@ func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map
 	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }
 
-// memoryDraw is one tree's memory draw as its root's record holds it (record.Issue.MemoryGroup,
-// MemoryDrawMode, MemoryDrawnAt): the group the draw gave the tree, the project's mode it was
-// drawn under, and when.
-type memoryDraw struct {
-	group string
-	mode  string
-	at    *time.Time
-}
-
 // issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's
 // Issue and Role): the key of the lookup that answers what each role was last given.
 type issueRole struct {
 	issue string
 	role  claim.Role
+}
+
+// roleEntry is what the claim of one issue and role says of its entry: the entry it was last
+// queued a task of (supervise.Claim.GivenEntry), and its handshake of the last entry it was
+// queued a task of (supervise.Claim.Handshake), the zero handshake where it was queued none.
+type roleEntry struct {
+	given     int64
+	handshake supervise.EntryHandshake
+}
+
+// handshakeTimes is the two times of the handshake h as the view of an issue at generation
+// carries them (api.Issue.EntryQueuedAt and EntryConfirmedAt). Both are nil where h names no
+// entry, a claim that has been queued no task carrying one since the handshake was recorded,
+// which a root of the release before this one is, and where h is of another run than the
+// issue's, which a re-admitted root is until its new architect entry is queued: the handshake of
+// an earlier run is no part of this one. The confirmed time alone is nil where no turn has
+// confirmed a task of the entry, the architect that took nothing, which the view leaves absent
+// rather than writing an instant that never happened.
+func handshakeTimes(h supervise.EntryHandshake, generation uint64) (*time.Time, *time.Time) {
+	if h.Entry == 0 || h.Generation != generation {
+		return nil, nil
+	}
+	var queued, confirmed *time.Time
+	if !h.QueuedAt.IsZero() {
+		at := h.QueuedAt.UTC()
+		queued = &at
+	}
+	if !h.ConfirmedAt.IsZero() {
+		at := h.ConfirmedAt.UTC()
+		confirmed = &at
+	}
+	return queued, confirmed
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check
@@ -536,9 +689,9 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 // mergeWaitView is what an issue's review round waits on from GitHub (api.MergeWaitView), and nil
 // for a round that waits on nothing there. The rule is classify.RoundWaitsOnMergeState, the one
 // the engine reads to decide whether to read GitHub for this round (workflow's reviewRound), so
-// the view carries the object for exactly the rounds the daemon is reading for; the open pull
-// request is this caller's own test, since that rule makes none (the engine's read has one of its
-// own) and a record of a closed or merged pull request says nothing about a wait.
+// the view carries the object for exactly the rounds the daemon is reading for. The rule holds
+// only for an open pull request, so a record of a closed or merged one carries no wait here. It
+// never holds for a nil one, so the reads below always have a pull request.
 //
 // It reads the record alone: the head the round waits on, the state the record holds for it, when
 // that state was last read and when GitHub last moved the pull request, the fence's runs stamped
@@ -553,7 +706,7 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 // that carried no clock are each a fact of their own, which a zero instant on the wire would read
 // as a moment in 1 CE.
 func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) *api.MergeWaitView {
-	if pr == nil || pr.State != record.PullRequestOpen || !classify.RoundWaitsOnMergeState(issue, reviewer, pr) {
+	if !classify.RoundWaitsOnMergeState(issue, reviewer, pr) {
 		return nil
 	}
 	view := &api.MergeWaitView{WaitsOn: pr.HeadSHA, MergeState: string(pr.MergeState)}

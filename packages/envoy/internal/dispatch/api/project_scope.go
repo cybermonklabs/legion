@@ -24,13 +24,20 @@ package api
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     the two access tokens the broker scopes to a person rather than to one project, each of
-//     which reaches brokerTokenActor with no Project. One is a dev box session's, unscoped here
-//     with no second mechanism of its own; the other is a machine's that names a service and no
-//     person, whose every write writeNeedsASignedInPerson refuses below. Both carry
-//     `project_scope` `person`. That is the rule and not a transitional measure: every caller
-//     that exists today writes exactly what it wrote before, which is what lets this deploy
-//     before anything presents a broker token.
+//     four access tokens the broker issues, each of which reaches brokerTokenActor with no
+//     Project. Two of them the broker scopes to a person rather than to one project, and both
+//     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
+//     of its own, and a machine's that names a service and no person, whose every write
+//     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
+//     entry that names no project (`<service account>==<person>`, the shared public-session
+//     account's), which names its person and writes wherever Dispatch's own rules let it
+//     (brokerTokenActor). The fourth is a read-only token, which carries `project_scope` `none`
+//     and the scope `read` alone, names a service and no person, and never reaches this check:
+//     the read-only gate register puts outside it answers that token
+//     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
+//     (refuseReadOnlyToken, readScopeRoutes). That is the rule and not a transitional measure:
+//     every caller that exists today writes exactly what it wrote before, which is what lets
+//     this deploy before anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
@@ -84,7 +91,8 @@ const (
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes
 // service-account token and the shared token each name no project and prove no session, so a
 // request presenting no DPoP-bound token is outside both checks. A credential that does not
-// resolve is outside them too: its own refusal is the handler's to write.
+// resolve is outside them too: its refusal is written further in, by the keyed layer for a keyed
+// write and by the handler for any other.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	if _, presented := brokertoken.Presented(r); !presented {
 		return model.Actor{}, false
@@ -398,6 +406,11 @@ func addressesOneSession(route apiRoute) bool {
 // session that accepted a delivery or answered an ask under it would write as nobody. The
 // refusal's message names `agent-secrets login`, the command that signs a person in on that
 // machine, since running it is the whole remedy.
+//
+// A read-only token names a service and no person too, but it is no such caller: it reads only
+// what the read list names, and signing a person in is no remedy for it. It never reaches this
+// check, since the read-only gate register puts outside it has already answered it 403
+// READ_ONLY_TOKEN (refuseReadOnlyToken).
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at

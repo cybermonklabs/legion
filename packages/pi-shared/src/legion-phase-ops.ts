@@ -150,9 +150,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
       wake_at: nextLook.optional(),
     }),
     operation("request_backward_move", {
-      // The issue the move names: the tree architect's move names the issue it returns from
-      // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
-      // own. Which is the executor's to hold, by the claim's role.
+      // The issue the move names: an architect's move names the issue it returns from accepting
+      // (its grant serves its whole tree, and the daemon takes the move only on an issue that
+      // architect owns); a phase worker's leaves it out, or names its own. Which is the
+      // executor's to hold, by the claim's role.
       issue: z
         .string({ error: "request_backward_move's issue is an issue key, as LEGION-208 is" })
         .optional(),
@@ -226,8 +227,8 @@ export const PHASE_OP_SENTENCES = {
     "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
-    "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
-    "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
+    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
 } as const;
 
 /**
@@ -259,12 +260,14 @@ export function legionToolDescription(host: {
   return (
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
-    "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
+    "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-    "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
+    "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow). " +
+    "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +

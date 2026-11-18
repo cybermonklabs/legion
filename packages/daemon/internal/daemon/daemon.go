@@ -36,9 +36,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -179,7 +179,7 @@ type overrides struct {
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
 	// workflowTokens replaces the GitHub App token manager in a workflow integration test. The
 	// production daemon always mints through appauth.New.
-	workflowTokens appauth.Tokens
+	workflowTokens appauth.Source
 	// githubAPI is the GitHub REST root a workflow integration test points the workflow at (its
 	// required-checks reads and its issue branches' creates) and the Kubernetes runtime's read of
 	// the shared public leak check at (sandboxRuntime); empty, in production, is
@@ -344,8 +344,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The mapping read waits out an unreachable Dispatch without limit, and the App mint waits out
 	// GitHub's transient failures within appMintRetry; a repository whose installation read fails
-	// is left out and read again, never a refused boot. The boot budget bounds none of them, as it
-	// does not bound the plugin gate or the image probe: the work after them has a budget of its own.
+	// is left out and read again, and one whose default-branch read GitHub's rate limit refuses is
+	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
+	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
+	// probe: the work after them has a budget of its own.
 	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
@@ -365,17 +367,30 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
-		// The memory group is read from the daemon's own store (treeMemoryGroup), not from here:
-		// the operator's spawn draws one with no workflow configured, and the launch that follows
-		// it must honour the draw it made.
+		plan.owner = workflow.owningArchitect
+		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
+		// from here: the operator's spawn draws a tree's experiments with no workflow
+		// configured, and the launch that follows it must honour the draw it made.
 		// Only a daemon with the workflow configured has issue records to read a phase or a tree
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		// From here on, a claim write that changes a role holder queues its issue's publication in
+		// its own transaction, and the store tells the issue once that commits, so its lane is woken
+		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
+		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
+		// on before supervision restores a claim, so no claim write of this boot is left out.
+		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		// The memory guards' kill holder is filled here, once the workflow is open
+		// (memoryGuardKills).
+		if plan.memoryGuardKills != nil {
+			plan.memoryGuardKills.bind(workflow.pool, workflow.handlers)
+		}
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -413,9 +428,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		return fmt.Errorf("listen on %s: %w", address, err)
 	}
 
-	var apps appauth.Tokens
+	var apps appauth.Source
 	if workflow != nil {
-		apps = workflow.tokens
+		apps = workflow.apps
 	}
 	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate)
 	if err != nil {
@@ -691,12 +706,34 @@ type plan struct {
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
+	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
+	// launch's addressing names; nil without a workflow.
+	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
 	// repositories is the project's repository mapping as the workflow serves it, empty until the
-	// workflow reads it at boot: the set every role's gh bundle is built over, a directory per
-	// owner of it and one per repository the pod's own owner serves beside the one it writes to
-	// (appauth.GitHubCredential), and, under the Kubernetes runtime, the mapping a provisioning
-	// mint reads the rename rule from (sandboxRuntime, repositories.serving).
+	// workflow reads it at boot: the rename rule every gh bundle resolves a configured pair
+	// against (appauth.GitHubCredential), the owners the boot mints each App's token on, and,
+	// under the Kubernetes runtime, the mapping a provisioning mint reads the rename rule from
+	// (sandboxRuntime, repositories.serving).
 	repositories *repositories
+	// installed is the record of the owner accounts each App's last gh bundle read from GitHub,
+	// made here rather than inside a runtime factory because two readers share it: the
+	// credentials the factory builds write it (appauth.GitHubCredential, with the LeftOut record
+	// beside it), and every launch's addressing reads its own App's owners out of it
+	// (appOwners, daemon.RepositoriesClause). Never nil: a daemon with no GitHub Apps builds no
+	// bundle, so nothing is ever recorded in it and every addressing falls back to the mapping's
+	// owners.
+	installed *appauth.Installed
+	// left is the record of the gh bundle directories a mint could not fill (appauth.LeftOut),
+	// made here beside installed, and not inside a runtime factory, for the same reason: more
+	// than one reader shares it. The credentials the factory builds write it, and what a bundle
+	// of an App really holds is the installed owners less what this record names
+	// (appauth.GitHubDirs): the Kubernetes runtime's drift check reads that, and a launch's
+	// addressing can read it here (appOwners), so that it names no owner the role's bundle
+	// holds no directory for. A record each factory made for itself would be one the plan
+	// could not reach. The configured renames that rule also reads are the mapping's own
+	// (repositories.renames, which is cfg.RepositoryRenames). Never nil, as installed is not.
+	left *appauth.LeftOut
 	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
 	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
@@ -704,6 +741,13 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// cacheRepositories is the repositories the runtime keeps a repository cache of: the
+	// mapping's and those of the project's live issue records (workflowRuntime.cacheRepositories).
+	// A daemon with no workflow keeps the mapping's alone, which is what it serves.
+	cacheRepositories func() []ghrepo.Repository
+	// memoryGuardKills is the memory guards' kill holder (memoryGuardKills); nil under tmux, and
+	// for a replaced runtime, where no launcher reports.
+	memoryGuardKills *memoryGuardKills
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no
@@ -724,10 +768,6 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
-	// memoryInstructions is the daemon's copy of the project's memory instructions
-	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
-	// prompt; "" when the project names no memory block or its block names no instructions file.
-	memoryInstructions string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -771,6 +811,9 @@ type plan struct {
 	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
 	// (newSecretsLogin); nil when the deployment enrolls no pod.
 	secretsEnroller supervise.Enroller
+	// secretsRegistrar is the same login as the machines' Registrar (newRegistrar); nil when the
+	// deployment names no exchange_audience, and then no pod session is ever registered.
+	secretsRegistrar supervise.Registrar
 	// pluginRelaunchable is supervise.Deps.PluginRelaunchable: whether this daemon can relaunch a
 	// stale-plugin claim onto a plugin at all. True under tmux always; under Kubernetes, true iff
 	// a plugin pair to install is known — plugins below, resolved by ResolvedPlugins from the
@@ -796,16 +839,71 @@ type plan struct {
 	checkLaunch func(context.Context, supervise.Claim) error
 }
 
+// appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
+// of a role names as the ones its own GitHub App is installed on and its token reaches
+// (specs.appOwners, daemon.RepositoriesClause): the owners the last gh bundle of that App read
+// from GitHub (appauth.Installed), which costs the launch no read of its own, less every one
+// the role's container holds no directory for, and the owners of the repositories Dispatch maps
+// to the project while no bundle has been read for the Apps that container's directories come
+// from.
+//
+// An installed owner is not always one the role's container holds a directory for. A mint GitHub
+// answers definitively about the owner's installation — not installed there after all,
+// suspended, granted none of the role's permissions, the permissions refused — leaves that
+// owner's directory out of the bundle (appauth's mintBundle, recorded in left), and so does a
+// login that is no directory's name (appauth's bundleDirs). Under the Kubernetes runtime there
+// is a third way: an issue pod projects only the directories every one of its roles' bundles
+// holds (sandbox's gitHubBundles), and its roles run as two Apps, so an owner the other App is
+// not installed on, or whose directory the other App's mint left out, is in no container of
+// the pod, the implementer's included (sandbox.PodAppRoles). A tmux pane holds its own role's
+// bundle and no other, so there the role's own App is the whole answer. The clause says the
+// role's token reaches every repository of each owner it names, which is false of any such
+// owner, so it is not named. The rule is asked of the one place that holds it and not written
+// a second time: appauth.GitHubDirs is the directories a bundle of those Apps built now would
+// hold, which is what the Kubernetes drift check reads a pod against, and the owners kept are
+// the installed ones it names. It names one more directory for each owner a configured rename
+// moved a repository away from, which is no installed owner and so is never one of these.
+//
+// The fallback is the honest answer there rather than a silence: a bundle is built by the
+// runtime, after the specs the launch is composed from, so the first launch of a daemon that
+// has built none has no read to report; and the mapping's owners are accounts both role Apps
+// are installed on (checkMapping), so the clause names a true part of the App's reach and
+// never more than it. Every launch after a bundle of each of those Apps names the App's own
+// owners, which is what an agent is owed: the Kubernetes runtime builds one of each App for
+// every live issue pod at its minute tick (sandbox's refreshGitHubCredentials), and the tmux
+// runtime one for every tracked pane.
+func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
+	return func(role claim.Role) []string {
+		app := appauth.AppRoleFor(role)
+		apps := []appauth.AppRole{app}
+		if runtimeName == "kubernetes" {
+			apps = sandbox.PodAppRoles(role)
+		}
+		owners, read := p.installed.Owners(app)
+		for _, other := range apps {
+			if _, otherRead := p.installed.Owners(other); !otherRead {
+				read = false
+			}
+		}
+		if !read {
+			return p.repositories.Owners()
+		}
+		held := appauth.GitHubDirs(p.repositories.Accepted, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
+	}
+}
+
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
 // listener the stream listener, address the one every agent's shim dials (shimAddress), tokens the
 // workflow's App tokens and repository the workflow's repository of an issue (issueRepository;
-// both nil without a workflow), st the store the runtime reads, and mapped the repositories
-// Dispatch's mapping names now (plan.repositories, which the workflow fills; none without a
-// workflow): the set every role's gh bundle is built over, and the set a configured rename is
-// resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
-// runtime's repository caches follow too. openSupervision hands it the
+// both nil without a workflow), st the store the runtime reads, and mapped the repositories the
+// Sandbox runtime keeps a repository cache of: the repositories Dispatch's mapping names and the
+// repositories of the project's live issue records (workflowRuntime.cacheRepositories; the
+// mapping alone without a workflow). The set every role's gh bundle is built over, and the set a
+// configured rename is resolved against one repository at a time (appauth.GitHubCredential), is
+// the mapping's own and is given to the factory where it is built. openSupervision hands it the
 // plan the workflow completed, so no factory reads a field the workflow sets after prepare.
-type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
+type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
@@ -837,9 +935,13 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		}
 	}
 
-	memoryInstructions := ""
-	if reads.memoryInstructions != nil {
-		if memoryInstructions, err = config.WriteMemoryInstructions(reads.memoryInstructions, cfg.StateDir, cfg.Project); err != nil {
+	// One copy per declared variant that names an instructions file, each under its experiment's
+	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
+	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
+	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
+	// them before the first pane opens.
+	for _, read := range reads.variantInstructions {
+		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
 			return plan{}, err
 		}
 	}
@@ -860,19 +962,18 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if stop == 0 {
 		stop = stopBudget
 	}
-	secretsEnroller, secretsLogin := newSecretsLogin(cfg, log)
+	secretsEnroller, secretsRegistrar, secretsLogin := newSecretsLogin(cfg, log)
 	plugins, pluginsSource := ResolvedPlugins(cfg)
 	pluginRelaunchable := cfg.Runtime.Name == "tmux" || plugins != nil
 	if o.pluginRelaunchable != nil {
 		pluginRelaunchable = *o.pluginRelaunchable
 	}
 	p := plan{
-		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
-		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
-		memoryInstructions: memoryInstructions,
-		dispatchToken:      reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
+		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
-		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
+		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 	}
@@ -954,7 +1055,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			}
 			return state
 		}
-		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, log)
+		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, p.installed, p.left, log)
 	}
 	return nil
 }
@@ -962,84 +1063,83 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
 // operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
-// role of a project whose block names memory overlays, those after them, each file
-// read and the role's own each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a
-// file a pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than
-// every launch that names it. Legion names no overlay of its own, so those lists are the whole of
-// a pane's PI_CONFIG_FILES. The controller is in no memory group, so it is never probed with
-// them; the mode is not read here, since a tree already drawn into the memory group names those
-// overlays whatever the mode is now. A run that never reached an exit
-// of its own is logged, not refused, as the model-fallback read is.
+// role of a project that declares an arm naming overlays, that arm's files after them
+// (runtime.RoleOverlayValues, which the image probe's manifest builds its values with too), each
+// file read and each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a file a
+// pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than every
+// launch that names it. Legion names no overlay of its own, so those lists are the whole of a
+// pane's PI_CONFIG_FILES.
+//
+// Each distinct file is read alone once and each distinct whole value is read once, over every
+// role and every arm (capabilities.OverlayReads, which the image probe's own read holds too).
+// The refusal still names the first role and the first value that holds what Oh My Pi refuses,
+// since the loops reach them before any other.
+//
+// No mode is read here, since a unit already drawn into an arm names that arm's overlays
+// whatever the mode is now. A run that never reached an exit of its own is logged, not refused,
+// as the model-fallback read is.
 func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabilities.Image, log *slog.Logger) error {
 	var every []string
 	if block := cfg.Runtime.Tmux; block != nil {
 		every = block.PiConfigFiles
 	}
-	memory := cfg.Projects[cfg.Project].Memory
-	memoryField := "projects." + cfg.Project + ".memory.config_files"
-	// probed is each PI_CONFIG_FILES value already read, so one value shared by six roles costs
-	// one read of each of its files rather than six.
-	probed := make(map[string]struct{}, len(config.RoleConfigRoles))
+	declared := experiment.DeclaredVariants(cfg.ExperimentsDeclared())
+	reads := capabilities.OverlayReads{}
 	for _, role := range config.RoleConfigRoles {
 		own := cfg.RoleConfigFiles[role]
-		field := "role_config_files." + string(role)
-		// A memory-group pane of this role names the memory overlays last, so the gate reads the
-		// value that pane would start on rather than the role's half of it.
-		if len(memory.ConfigFiles) > 0 && role != claim.RoleController {
-			own = slices.Concat(own, memory.ConfigFiles)
-			if len(cfg.RoleConfigFiles[role]) == 0 {
-				field = memoryField
-			} else {
-				field += " with " + memoryField
+		ownField := "role_config_files." + string(role)
+		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
+			unread, first := reads.Unread(value.Files)
+			if !first {
+				continue
 			}
-		}
-		if len(own) == 0 {
-			continue
-		}
-		// Every workflow role of a memory-group project that names no overlays of its own is
-		// given one and the same value, so each distinct value is read once rather than once per
-		// role: the runs Oh My Pi is asked for are identical, and so is their verdict. The first
-		// role holding a value Oh My Pi refuses is still the role the refusal names, since the
-		// loop reaches it before any other role of that value.
-		value := strings.Join(own, ":")
-		if _, read := probed[value]; read {
-			continue
-		}
-		probed[value] = struct{}{}
-		why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, own), own)
-		if err != nil {
-			log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
-		}
-		if why != "" {
-			return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", field, role, why)
+			field := ownField
+			if value.Variant != nil {
+				field = value.Variant.ConfigFilesField
+				if len(own) > 0 {
+					field = ownField + " with " + field
+				}
+			}
+			why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, value.Files), unread)
+			if err != nil {
+				log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
+			}
+			if why != "" {
+				return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", field, role, why)
+			}
 		}
 	}
 	return nil
 }
 
-// treeMemoryGroup answers whether tree's root record carries the memory group, the word the draw
-// stored on it once and every later launch of the tree reads (record.Issue.MemoryGroup,
-// memorygroup.GroupMemory). An issue's memory group is its tree root's, and the root key is the
-// claim's own tree, so there is no ancestor walk; a tree with no record, and a root first opened
-// before the setting existed, carry no group and run without memory.
+// launchVariants is the one reader a launch's arms come from: the experiments the project
+// declares, resolved against the answers the daemon's own store recorded for the launch's unit
+// and against the launch's role (experiment.Launch, which decides which keys to read and which
+// arms the rows put the launch in). Everything here is the transaction that reads those rows.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
-// supervisor's predicates read a record: the operator's spawn draws a tree's group through the
-// same store with no workflow configured (api's drawMemory), and a launch that could not read
-// that draw back would run the tree against a group the daemon had already recorded for it.
-func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bool, error) {
+// supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
+// the same store with no workflow configured (api's drawExperiments), and a launch that could not
+// read that draw back would run the unit against an arm the daemon had already recorded for it.
+// A declaration no launch could use names no key to read, so such a deployment opens no
+// transaction per worker spawn at all (experiment.Launch.Keys).
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
+	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	return func(ctx context.Context, tree string) (bool, error) {
-		var issue *record.Issue
-		err := st.Tx(ctx, func(tx pgx.Tx) error {
-			var err error
-			issue, err = records.Issue(ctx, tx, tree)
-			return err
-		})
-		if err != nil {
-			return false, err
+	return func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
+		keys := launch.Keys(tree, issue)
+		if len(keys) == 0 {
+			return experiment.Arms{}, nil
 		}
-		return issue != nil && issue.MemoryGroup == string(memorygroup.GroupMemory), nil
+		var recorded map[string][]record.Assignment
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			var err error
+			recorded, err = records.AssignmentsFor(ctx, tx, keys)
+			return err
+		}); err != nil {
+			return experiment.Arms{}, err
+		}
+		return launch.Arms(recorded, tree, issue, role), nil
 	}
 }
 
@@ -1048,27 +1148,29 @@ func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bo
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
 // the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
 // controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
-// owner its launch recorded, both built over
-// repos (the project's mapping's served repositories), with gh, the real gh boot resolved
+// owner its launch recorded, both built over the
+// owner accounts each App is installed on, which the bundle reads from GitHub at every build and
+// no repository list bounds, with gh, the real gh boot resolved
 // (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
 // hold no gh files. The private server's environment is scrubbed before anything is launched on
 // it.
-func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Tokens,
+func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, installed *appauth.Installed, left *appauth.LeftOut, log *slog.Logger) runtimeFactory {
+	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Source,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
-			// The one record of what the mints found GitHub refuses, shared by both credentials
-			// as the Kubernetes runtime's three share one (appauth.LeftOut, kubernetes.go's
-			// sandboxRuntime): a pane projects nothing, so nothing reads it here, and a
-			// directory left out of one pane's bundle is left out of the next pane's by the
-			// mint, not by this record.
-			left := appauth.NewLeftOut()
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, log), gh
-			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, left, log)
+			// The two records the credentials write, shared by both as the Kubernetes runtime's
+			// three share them (appauth.Installed and appauth.LeftOut, kubernetes.go's
+			// sandboxRuntime). Both are the daemon's own (plan.installed, plan.left), since
+			// every launch's addressing reads the owners its App reaches out of them. A pane
+			// projects nothing and nothing compares one against left — a directory left out
+			// of one pane's bundle is left out of the next pane's by the mint, not by a
+			// record — so the addressing is this runtime's one reader of it.
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, installed, left, log), gh
+			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 		}
 		rt, err := tmux.New(opts)
@@ -1110,10 +1212,7 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), and the project's memory overlays (`memory.config_files`), handed over
-// whatever the mode is: the mode decides which new trees are drawn into the memory group, and a
-// tree already drawn into it names those overlays under any mode. A project with no block hands
-// over none, which is the pane every deployment built before the block existed.
+// (role_config_files), and every declared experiment's arms (experiment.DeclaredVariants).
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
 		Project:           project,
@@ -1134,7 +1233,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 	if block := cfg.Runtime.Tmux; block != nil {
 		opts.PaneEnv, opts.PiConfigFiles, opts.TakeOver = block.PaneEnv, block.PiConfigFiles, block.TakeOver
 	}
-	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts
 }
 
@@ -1353,10 +1452,10 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // releaseWaiting reads the same set through the same WaitingNotices and leaves behind exactly the
 // rows whose reserved moment is still ahead of now): a row whose moment has come is a wake that
 // is running or about to, or one whose attempt failed and is waiting on a backoff of its own, and
-// neither is a wake the pacing holds. Each goes to the root architect of its issue, whose token
-// it is composed for exactly as the line that wake writes composes it (the outbox's wakeRan),
-// since the row names the issue and the kind alone. A project whose outbox holds no such row
-// allocates nothing.
+// neither is a wake the pacing holds. Each goes to the architect of its own issue, a root's or a
+// child's, whose token it is composed for exactly as the line that wake writes composes it (the
+// outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
+// holds no such row allocates nothing.
 func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time) ([]api.WakeWaiting, error) {
 	waiting, err := records.WaitingNotices(ctx, tx, dispatchProject, now)
 	if err != nil {
@@ -1399,7 +1498,7 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // every machine of this daemon asks the same gate, and the supervision keeps the same reference,
 // because the refresh pass corrects it from the wakes those machines publish and asks it for
 // each claim it posts (refreshStalePlugins, waitingWakes).
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1427,7 +1526,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted)
+	cached := p.cacheRepositories
+	if cached == nil {
+		// A daemon with no workflow has no records to read, so the mapping is the whole set.
+		cached = p.repositories.Accepted
+	}
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, cached)
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1439,21 +1543,23 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.repository,
-			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
-			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			identity: p.identity, repository: p.repository, owner: p.owner,
+			appOwners:   p.appOwners(cfg.Runtime.Name),
+			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
+		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		TreeClosable:            p.treeClosable,
+		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
@@ -2268,21 +2374,25 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	records := record.Store(record.NewStore())
 	var handlers []intake.Handler
 	var client dispatch.Client
-	var tokens appauth.Tokens
+	var tokens appauth.Source
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
+	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
-	var await func(repo, tree, child, parent string)
+	var await func(repo, tree, child, parent string) bool
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
+	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 	if workflow != nil {
-		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
+		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
+		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
+		architectStalls = workflow.admission.ArchitectStallArms
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2310,11 +2420,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
 			gatedSteps:   cfg.Gates.Steps(),
+			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+			architectStalls: architectStalls,
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2352,11 +2464,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Grants:             grants,
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
-		Memory:             cfg.Projects[cfg.Project].Memory,
+		Experiments:        cfg.ExperimentsDeclared(),
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
+		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 	})
@@ -2481,6 +2594,10 @@ type source struct {
 	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
 	// root of the state answers its own state of; the empty list gates none.
 	gatedSteps []record.DesignStep
+	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
+	// once at boot for the reason settings is.
+	experiments []config.Experiment
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
@@ -2491,6 +2608,11 @@ type source struct {
 	// a source a test builds by hand reads as: serve sets this field over the daemon's own
 	// configuration, whatever the runtime.
 	noPluginInstall func(supervise.Claim) bool
+	// architectStalls is, by root key, every arm of the architect-stalled reading that holds for
+	// that root's architect (admit.Admission.ArchitectStallArms over the workflow's own admission),
+	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
+	// which weighs no architect and serves no arm.
+	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -2665,11 +2787,28 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, stranded, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
+	// Which arms of the architect-stalled reading hold for each root, read in the same snapshot
+	// by the reading the admission pass wakes the controller from (admit's ArchitectStallArms),
+	// and served on each root's own view whether or not the controller was told. It is the
+	// daemon's judgement as strandedClaims is, over records internal/projection may not read, so
+	// it is put on the views here, beside that report, rather than judged a second time anywhere.
+	if s.architectStalls != nil {
+		stalls, err := s.architectStalls(ctx, tx)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		for key, arms := range stalls {
+			if view, shown := state.Issues[key]; shown {
+				view.ArchitectStalls = arms
+				state.Issues[key] = view
+			}
+		}
+	}
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
 	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
 	// restart raises the wave again through its own paths; a paced catch-up waits on its

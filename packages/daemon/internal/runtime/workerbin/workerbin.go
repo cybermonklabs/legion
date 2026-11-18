@@ -25,9 +25,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
-// imageGit is the image's git wrapper, packages/daemon/docker/git, the first git on a pod's PATH.
-// A test may point it at a stand-in.
-var imageGit = "/opt/legion/bin/git"
+// ImageGit is the image's git wrapper, packages/daemon/docker/git, the first git on a pod's PATH.
+const ImageGit = "/opt/legion/bin/git"
+
+// imageGit is ImageGit, or the stand-in a test points it at.
+var imageGit = ImageGit
 
 // LauncherDir is root's bin: the directory of the legion launcher, the gh wrapper and the git
 // wrapper that Install writes.

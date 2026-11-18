@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
-import { agentSubject } from "@legion/contracts"
+import { legacyAgentSubject } from "@legion/contracts"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -15,7 +15,7 @@ import {
   startChannelSession,
 } from "../src/envoy-channel-server"
 import { createInboxNotifier, INBOX_CAPABILITIES } from "../src/legion-inbox"
-import { SessionIdentity } from "../src/session-identity"
+import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   FakeNats,
   noInterest,
@@ -32,7 +32,7 @@ isolatePaneEnvironment()
 const scratchState = useScratchState()
 
 const SESSION = "ses_claude"
-const DIRECT = agentSubject(SESSION)
+const DIRECT = legacyAgentSubject(SESSION)
 const STREAM = "stream-1"
 
 const CONSUMER = consumerDelivery(SESSION, { streamID: STREAM })
@@ -430,6 +430,60 @@ test("holds exactly its relay subject after registration, and no other subscript
     // Nothing was published either: a session answers no receipt, and the only bodies on the bus
     // are a relay frame's own replies, of which there have been none.
     expect(nats.published).toEqual([])
+    expect(notifier.written).toEqual([])
+  } finally {
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+  }
+})
+
+// The listener's connection check (INFRA-626) is a core request on the session's own relay
+// subject that carries `Envoy-Probe: 1` and nothing else: an answer, or a second of silence,
+// reads connected, and the no-responders a server gives a subject nothing subscribes reads
+// stopped. The probe is no frame, so it reaches no conversation and moves no resume point, and
+// the session holds no subscription for it beyond the relay subject the set above pins.
+test("a connection probe on the relay subject is answered, follows a session-id change, and meets no subscriber once the session closes its connection", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  const identity = new SessionIdentity(SESSION, "/tmp")
+  const next = "ses_claude_next"
+  const handoff = sessionHandoffFile(directory, 778)
+  await writeSessionHandoff(handoff, SESSION)
+  const { client, registrations } = listener((input) => noInterest(input.sessionID))
+  const session = await startChannelSession(
+    sessionOptions(identity, directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      heartbeatMs: 25,
+      handoffPid: 778,
+    }),
+  )
+  try {
+    expect(nats.emitProbe(SESSION, "_INBOX.probe.1")).toBe(true)
+    await waitFor(async () => nats.repliesOn("_INBOX.probe.1").length > 0, "the probe's answer")
+    expect(nats.repliesOn("_INBOX.probe.1")).toEqual(["done"])
+    // A registration after the probe still resumes from nothing: the probe moved no point.
+    const before = registrations.length
+    await waitFor(async () => registrations.length > before, "a heartbeat after the probe")
+    expect(delivery(registrations.at(-1))?.resume).toBeUndefined()
+
+    // A `/clear` hands the session a new id, and the relay subject moves to it: a probe of the
+    // id left behind meets no subscriber, and the new id is answered.
+    await writeSessionHandoff(handoff, next)
+    await waitFor(
+      async () => identity.id === next && registrations.some((input) => input.sessionID === next),
+      "the registration under the new id",
+    )
+    expect(nats.emitProbe(SESSION, "_INBOX.probe.2")).toBe(false)
+    expect(nats.emitProbe(next, "_INBOX.probe.3")).toBe(true)
+    await waitFor(async () => nats.repliesOn("_INBOX.probe.3").length > 0, "the new id's answer")
+    expect(nats.repliesOn("_INBOX.probe.3")).toEqual(["done"])
+
+    // The session shuts down: its relay subject closes before its connection does.
+    await session.shutdown()
+    expect(nats.emitProbe(next, "_INBOX.probe.4")).toBe(false)
     expect(notifier.written).toEqual([])
   } finally {
     for (const write of notifier.pending) write.resolve()

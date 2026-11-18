@@ -4,9 +4,11 @@ import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/con
 import {
   broadcastDelivery,
   type DeliveryOutcome,
+  deliveryOutcomeState,
   duplicateText,
   isSafeRetry,
   plainDelivery,
+  queuedParts,
   rowAnsweredWithError,
   safeRetryGuidance,
   strandedRetryGuidance,
@@ -47,6 +49,32 @@ test("the boundary itself is outside the promise", () => {
 test("a delivered attempt has no failure to retry", () => {
   expect(isSafeRetry(attempt({ state: "sent" }), now)).toBe(false);
   expect(isSafeRetry(attempt({ state: "pending" }), now)).toBe(false);
+});
+
+// INFRA-626. The listener took a queued attempt and stored it for a session that is not running,
+// so there is nothing to retry: a repeat would store a second copy for the same session to read
+// when it comes back.
+test("a queued attempt is never offered a retry, and reads as stored for a stopped session", () => {
+  expect(isSafeRetry(attempt({ state: "queued" }), now)).toBe(false);
+  expect(queuedParts({ sessionId: "s1", storedTitle: undefined })).toEqual([
+    "Queued: ",
+    { sessionId: "s1", storedTitle: undefined },
+    " is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+// The route table carries a message attempt's state as a plain string, and the Agents card
+// (`attempts.ts`), the conversation model, the Sends strip and the search bar's send read it
+// through this one narrowing: a queued attempt must come through it queued, or they draw it as
+// sent. A word this build does not know still reads as sent.
+test("an attempt's state is read as one of the four, a queued one as queued", () => {
+  expect(["pending", "sent", "queued", "failed"].map(deliveryOutcomeState)).toEqual([
+    "pending",
+    "sent",
+    "queued",
+    "failed",
+  ]);
+  expect(deliveryOutcomeState("held")).toBe("sent");
 });
 
 test("an attempt the stream already had is not a safe retry either", () => {

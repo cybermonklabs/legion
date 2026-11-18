@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // deliveryModeConsumer is the one mode a registration is answered (deliveryAnswer.Mode): the
@@ -120,8 +121,10 @@ type sessionDeliveryOutcome struct {
 	// epoch is the plugin's epoch, recorded on the entry when the session is relayed.
 	epoch string
 	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
-	// beside the epoch: the durable path still delivers a stored message below it, which is in no
-	// consumer (session.SessionEntry.ConsumerStart).
+	// beside the epoch: a stored message below it is in no consumer, and the durable path does not
+	// deliver it; which message it NAKs, defers or skips, and what it logs, is decided by
+	// agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go
+	// (session.SessionEntry.ConsumerStart).
 	consumerStart uint64
 	// ackFloor is the stream sequence the session's consumer had everything acked through when
 	// this registration's consumer call read it (bus.SessionConsumerStart.AckFloor). It is where
@@ -272,14 +275,17 @@ type sessionDelivery struct {
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
 // here, at the connection, because the threshold must be in hand before the first consumer is
 // created, and this is the one place every one of them comes from. main derives it from the
-// deployment's own windows (inactiveThresholdFor). stream is the listener's own client, whose
-// read of the deployed stream's subjects both a registration's stored topics and every consumer
-// filter are judged on (sessionDelivery.stream).
+// deployment's own windows (inactiveThresholdFor). The connection is handed logger's own
+// slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
+// start they lowered to a resume record or clamped from past the stream's end to its first
+// sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
+// whose read of the deployed stream's subjects both a registration's stored topics and every
+// consumer filter are judged on (sessionDelivery.stream).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold)
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +516,12 @@ const (
 // has acked is offered again. A caller that read no floor passes 0 - the stream held no such
 // consumer when it looked, or the read failed - and the start is the record's own. A record
 // naming no start leaves the start to the consumer call, which then creates the consumer at the
-// first message the stream holds for the session (bus.SessionConsumers.Ensure).
+// first message the stream holds for the session (bus.SessionConsumers.Ensure). The start this
+// passes is a caller's start to that call, so a create lowers it to the floor the session's
+// resume record holds plus one when that is lower and that resume record names the stream's
+// identity, and clamps a start past the sequence after the stream's last to the stream's first
+// sequence, so a start an earlier build or a restored stream left on the session's entry past
+// the stream's end creates no consumer past it.
 //
 // A read that failed is logged rather than returned: the caller's answer does not change, and
 // the session's next registration confirms the consumer again. The line names the session, which
@@ -539,7 +550,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -670,13 +681,21 @@ func versionPart(version string, i int) (int, bool) {
 // to the current filter, before the registration answers; it refuses a registration that asks for
 // none, or that this listener can give none. The consumer is created at the sequence after its
 // resume point's seq when that point carries a seq, 0 included (which gives sequence 1), and names
-// the stream's current identity. A registration with no resume point, or one with no seq or naming
-// another identity, creates it at the first message the stream holds on the session's own agent
-// subject, and at the stream's end only when it holds none (bus.SessionConsumers.Ensure). The
-// filter is the topics the registration is about to store, so a message published on a newly
-// followed topic once the registration is answered is the consumer's to deliver. It is a plan
-// and not a row the bucket holds, so something judges it against the bucket afterwards every
-// time: the repair that follows the session entry of a registration that is answered
+// the stream's current identity. The consumer call lowers that start to the floor the session's
+// resume record holds plus one when that is lower and the record names the same identity, and
+// clamps a start past the sequence after the stream's last to the stream's first sequence: a
+// resume point above what the session's last delete recorded creates the consumer at that record,
+// which hands the session everything stored since, and one past the stream's end, with no record
+// to lower it, creates it at the stream's first sequence, which hands it every message the stream
+// holds on its filters (bus.SessionConsumers.Ensure). The answer's consumer_start and the session
+// entry's start are the start the consumer was created at (bus.SessionConsumerStart.StartSeq),
+// the lowered or clamped one included. A registration with no resume point, or one with no seq or
+// naming another identity, creates it at the first message the stream holds on the session's own
+// agent subject, and at the stream's end only when it holds none (bus.SessionConsumers.Ensure).
+// The filter is the topics the registration is about to store, so a message published on a newly
+// followed topic once the registration is answered is the consumer's to deliver. It is a plan and
+// not a row the bucket holds, so something judges it against the bucket afterwards every time:
+// the repair that follows the session entry of a registration that is answered
 // (confirmRegistered), and the settle of one that is not (registerSession).
 //
 // It returns the session's lock held over that filter, which the caller releases (register); a
@@ -886,12 +905,51 @@ func (m *sessionDelivery) granted() {
 // the row it was built from; that fence, the session's lock, the call budget and the listener
 // that holds no session consumers at all are storedFilterWrite's, since each of its callers
 // needs the same four.
+//
+// The session's known-session record is not this function's: it names the topics the session
+// follows, which an unsubscribe changes whatever the session's entry records, while this filter
+// names the ones its consumer carries. Each call site writes the record itself
+// (recordFollowedTopics).
 func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) {
 	entry, err := d.sessions.Get(sessionID)
 	if err != nil || entry.Delivery != session.DeliveryConsumer {
 		return
 	}
 	m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe)
+}
+
+// recordFollowedTopics brings sessionID's known-session record up to date with the topics its
+// interest row now holds in the bucket (storedTopics), which is what a publish counts its
+// recipients against (session.KnownSessions): every route that changes a session's interests
+// calls it, so a topic a session has left stops being counted. The record is about the topics the
+// session follows, not about the consumer's filter, so nothing here reads the entry's delivery
+// mode, and a listener with no session-consumer connection writes it too; the filter is
+// refollow's, beside this.
+//
+// The rest of the record is the session's entry, as the registration wrote it. A session the
+// registry holds no entry for writes nothing: it is stopped or gone, and a stop keeps the record
+// it had (deleteSessionHandler). A listener whose known-session bucket is not open writes nothing
+// either. A failed write is this WARN and nothing else: the route answers whatever the write did.
+func recordFollowedTopics(ctx context.Context, d *listenerDeps, sessionID string, logger *logging.Logger) {
+	entry, err := d.sessions.Get(sessionID)
+	if err != nil {
+		return
+	}
+	topics, _, err := storedTopics(ctx, d.registry, sessionID)
+	if err != nil {
+		logger.Warn("known-session record left unchanged: the session's interests could not be read",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return
+	}
+	if err := d.known.RecordWithin(ctx, session.KnownSession{
+		SessionID:    sessionID,
+		Title:        entry.Title,
+		Capabilities: entry.Capabilities,
+		Topics:       topics,
+	}); err != nil {
+		logger.Warn("known-session record not written after an interest change",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
 }
 
 // sessionLocks holds one lock per session id, kept only while somebody holds or waits for it.
@@ -954,11 +1012,23 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // the session gets no consumer at all, and no message can reach such a subject anyway.
 func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
-	filter = append(filter, contracts.AgentSubject(sessionID))
+	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
 		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
 			filter = append(filter, topic)
 		}
 	}
+	return filter
+}
+
+// storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
+// registry, and counts each topic of the filter that is in the old form of its name
+// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
+// form for as long as the row holds one. Every read of a stored row into a filter comes through
+// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
+// does not, since the subscribe route counted its old forms as it took them.
+func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+	filter := m.sessionConsumerFilter(sessionID, topics)
+	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter
 }

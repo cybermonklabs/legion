@@ -98,13 +98,14 @@ func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
 		t.Fatalf("the second row holds %d bytes; with a store it should hold none", len(row))
 	}
 
-	// The version route answers from the store with the headers it always sent.
+	// The version route answers from the store with the headers a row's bytes get, the name of
+	// version 1 of 2 carrying its number.
 	served := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")
 	if served.Code != http.StatusOK || !bytes.Equal(served.Body.Bytes(), image) {
 		t.Fatalf("serve version: status=%d, %d body bytes, want 200 with the image", served.Code, served.Body.Len())
 	}
 	headers := served.Header()
-	if headers.Get("Content-Type") != "image/png" || headers.Get("ETag") != sha || headers.Get("Content-Disposition") != "attachment" || headers.Get("X-Content-Type-Options") != "nosniff" {
+	if headers.Get("Content-Type") != "image/png" || headers.Get("ETag") != sha || headers.Get("Content-Disposition") != `attachment; filename="shot-v1.png"; filename*=UTF-8''shot-v1.png` || headers.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("serve version headers = %v", headers)
 	}
 	bySlug := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/shot-png/versions/2", nil, "alice")

@@ -244,6 +244,32 @@ func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake
 	}
 }
 
+// takesRelaunchSentence is role's replacement, relaunched holding nothing, reading the daemon's
+// own delivery of the sentence of what its pod's end took (dispatch://INFRA-3276 R3), which its
+// ready sent it at once, and saying says: Oh My Pi's acknowledgement, the turn it starts, its end,
+// and the prompt's result behind it. That turn is all the delivery asks of it, and its result
+// retires the delivery, so the worker holds nothing again and is the one nothing will prompt.
+func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
+	r.t.Helper()
+	token, conn := r.tokens[role], r.workers[role]
+	testwait.Eventually(r.t, "the relaunched "+string(role)+" to be sent the relaunch's sentence", func() bool {
+		return len(conn.Prompts()) > 0
+	})
+	prompts := conn.Prompts()
+	sent := prompts[len(prompts)-1]
+	if held := r.claimOf(role).Pending; held == nil || !held.Relaunch() || held.ID != sent.DeliveryID || !strings.Contains(sent.Message, says) {
+		r.t.Fatalf("the relaunched %s holds %+v and was sent %+v, want the relaunch's sentence saying %q", role, held, sent, says)
+	}
+	r.awaitClaim(role, "the relaunch's sentence to be acknowledged", func(c supervise.Claim) bool {
+		return c.Pending != nil && !c.Pending.DeliveredAt.IsZero()
+	})
+	r.handle(role, supervise.StreamTurnStart{Claim: token})
+	r.endTurn(role, sent.DeliveryID)
+	r.awaitClaim(role, "the sentence's turn to retire its delivery", func(c supervise.Claim) bool {
+		return c.Pending == nil && c.State == supervise.StateIdle && c.EndedWork.Told
+	})
+}
+
 // A phase worker whose pod was replaced comes back with its session and nothing to do: the round
 // that replaced the pod retired every task it held, the pod round is over, and no timer of the
 // daemon's and none of the worker's own process will prompt it again. The sweep is what finds
@@ -283,6 +309,9 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	}
 	rig.awaitReplacement(1, "once both its workers had answered")
 	rig.awaitSwept(worker, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	// Its session said at that turn's end that nothing of its own runs, so the replacement is
+	// told of nothing its pod's end took.
+	rig.reportsNothingRunning(worker)
 	// The pod that replaced it brings the worker back on its own session, which is what the
 	// daemon's displaced path does, and the replacement registers and readies.
 	rig.displacedInto(worker, podUpdateReplacementPod)
@@ -345,6 +374,7 @@ func TestSilentPhaseWorkerGetsItsTaskAgainWithNoUpdateRound(t *testing.T) {
 	rig := aSilentPhaseWorker(t)
 	worker := claim.RoleImplementer
 	rig.goesQuiet(worker)
+	rig.reportsNothingRunning(worker)
 	rig.displacedInto(worker, podUpdateReplacementPod)
 	conn := rig.workers[worker]
 	before := len(conn.Prompts())
@@ -774,8 +804,9 @@ func aBackgroundStalledWorker(t *testing.T, beside ...podUpdateRole) *podUpdateR
 // reportsBackgroundWork is role's own session reporting, at the clock's moment, that background
 // work of its own is running, straight through the store's narrow call, which is where the
 // route's own write lands (api's claims activity route, store's PutClaimActivity), onto the
-// claim's current launch as the route writes it. A session sends such a report only when its
-// reading changes, so one report stands until the work it names ends.
+// claim's current launch as the route writes it. A session sends a report when its reading
+// changes and at each turn's end, so a worker that takes no turn leaves one report standing until
+// the work it names ends.
 func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) time.Time {
 	r.t.Helper()
 	at := r.clock.Now().UTC()
@@ -789,6 +820,20 @@ func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) t
 	return at
 }
 
+// reportsNothingRunning is role's own session reporting, at its turn's end as Oh My Pi's and a
+// Claude Code worker's Stop hook do, that nothing of its own is running, onto the claim's current
+// launch through the store's narrow call. A process that reported so and was in no turn ends no
+// work when it is let go, so its relaunch records nothing and tells nothing (supervise's
+// recordEnd).
+func (r *podUpdateRig) reportsNothingRunning(role claim.Role) {
+	r.t.Helper()
+	known, err := r.st.PutClaimActivity(r.ctx, r.tokens[role], r.claimOf(role).Generation, claim.SessionActivity{
+		At: r.clock.Now().UTC()})
+	if err != nil || !known {
+		r.t.Fatalf("report that nothing of the %s runs: known %v, %v", role, known, err)
+	}
+}
+
 // A worker waiting on background work of its own that has stood past the longer bound is named
 // to its architect once and sent nothing at all. It is the worker the silence repair must leave
 // alone — its session says work of its own is running, which no bound can tell from a job that
@@ -797,8 +842,9 @@ func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) t
 // half would write is exactly what an architect must never get for a worker that is busy.
 //
 // A second sweep adds neither notice nor row: the fact's identity is the claim token, its launch
-// and the moment of the report (workerBackgroundEventID), a session reports only when its reading
-// changes, and a duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
+// and the moment of the report (workerBackgroundEventID), a session whose report reached the
+// daemon sends none of a later moment until it takes a turn or its reading changes, and a
+// duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
 func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
@@ -991,8 +1037,9 @@ func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing
 // A worker whose process reported background work of its own and then died with its pod comes
 // back in a replacement process that reports nothing until its first turn ends: a Claude Code
 // worker reports its activity at the Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts,
-// sendActivity), and nothing prompts it to a first turn. The report the dead process left is
-// then the claim's only activity record, and it describes a job the pod replacement killed. The
+// sendActivity). Here the replacement's one turn is the relaunch's own sentence, at whose end
+// this rig reports nothing, and nothing else prompts it. The report the dead process left is then
+// the claim's only activity record, and it describes a job the pod replacement killed. The
 // worker is the one this issue is about — up, between turns, holding no task, quiet past the
 // bound — so the sweep sends it its phase's task again, well inside the background bound: a
 // rule that read the stale report as work still running would leave it for the four hours of
@@ -1010,6 +1057,9 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 	// The pod goes with that task in it, and the replacement registers and readies. It reports
 	// nothing: the first report a Claude Code session makes is at the end of its first turn.
 	rig.displacedInto(worker, podUpdateReplacementPod)
+	// The replacement is told first that the task its dead process reported died with the pod
+	// (dispatch://INFRA-3276 R3), and reads it in a turn; then nothing prompts it.
+	rig.takesRelaunchSentence(worker, "Each Claude Code background task that you started stopped with that process.")
 	conn := rig.workers[worker]
 	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
@@ -1052,6 +1102,7 @@ func TestSilentPhaseWorkerReadAsBusyBeforeItsPodWentGetsItsTaskAgain(t *testing.
 	}
 
 	rig.displacedInto(worker, podUpdateReplacementPod)
+	rig.takesRelaunchSentence(worker, "Each Claude Code background task that you started stopped with that process.")
 	conn := rig.workers[worker]
 	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
@@ -1126,11 +1177,11 @@ func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceIt
 // A dead process's report of background work can reach the store after the relaunch that
 // replaced it: the route authenticated it just before the launch and writes it just after the
 // launch's clear. Written, it would stand on the new launch as the replacement's own report, and
-// a Claude Code replacement, which reports only at its Stop hook and is prompted to no first
-// turn, would never be repaired, its architect told instead, at the background bound, of a job
-// the pod replacement killed. The store writes a report only onto the launch it belongs to
-// (store's PutClaimActivity), so the sweep reads the replacement as a session that has reported
-// nothing and sends it its phase's task at the silence bound.
+// a Claude Code replacement, which reports only at its Stop hook, and whose one turn here is the
+// relaunch's own sentence, would never be repaired, its architect told instead, at the background
+// bound, of a job the pod replacement killed. The store writes a report only onto the launch it
+// belongs to (store's PutClaimActivity), so the sweep reads the replacement as a session that has
+// reported nothing and sends it its phase's task at the silence bound.
 func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTaskAgain(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
@@ -1140,6 +1191,9 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 	rig.awaitClaim(worker, "its turn to end", func(c supervise.Claim) bool { return c.State != supervise.StateWorking })
 	old := rig.claimOf(worker).Generation
 	rig.displacedInto(worker, podUpdateReplacementPod)
+	// No report of the dead launch had landed when its pod went, so the replacement is told that
+	// the daemon has none (dispatch://INFRA-3276 R3), and reads it in a turn.
+	rig.takesRelaunchSentence(worker, "The daemon has no report of the background work of your last turn.")
 	// The dead process's Stop-hook report, authenticated under its own launch, lands after the
 	// launch's clear.
 	if _, err := rig.st.PutClaimActivity(rig.ctx, token, old, claim.SessionActivity{

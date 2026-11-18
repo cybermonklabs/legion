@@ -3,6 +3,8 @@ package store
 import (
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // subjectIndex indexes the cached interests' topic patterns by subject token, one tree per machine
@@ -11,6 +13,11 @@ import (
 // routing.Match's: a "*" token matches any one token, a ">" token matches one or more remaining
 // tokens (and ends the pattern, whatever follows it), and tokens split on every ".", an empty token
 // included. Registry holds it under its mu and keeps it in step with its cache.
+//
+// Each topic is indexed under every form a reader takes it in (contracts.TopicForms), so an
+// interest stored in the old form of an issue's or an agent's name matches a publish in the new
+// form, and one stored in the new form matches a publish in the old, while every reader takes
+// both; a topic of a family the rename leaves alone is its one pattern.
 type subjectIndex struct {
 	roots map[string]*subjectNode
 	// entries is what each cache key is indexed under, so a change replaces it and an eviction
@@ -37,9 +44,13 @@ func newSubjectIndex() *subjectIndex {
 	return &subjectIndex{roots: map[string]*subjectNode{}, entries: map[string]indexedInterest{}}
 }
 
-// set indexes key under item's machine id and topics, replacing what key was indexed under.
+// set indexes key under item's machine id and every form of its topics, replacing what key was
+// indexed under.
 func (x *subjectIndex) set(key string, item Interest) {
-	patterns := slices.Clone(item.Topics)
+	patterns := make([]string, 0, len(item.Topics))
+	for _, topic := range item.Topics {
+		patterns = append(patterns, contracts.TopicForms(topic)...)
+	}
 	slices.Sort(patterns)
 	patterns = slices.Compact(patterns)
 	if current, ok := x.entries[key]; ok {
@@ -83,6 +94,32 @@ func (x *subjectIndex) remove(key string) {
 func (x *subjectIndex) match(machineID, subject string, visit func(key string)) {
 	if root := x.roots[machineID]; root != nil {
 		root.match(subject, false, visit)
+	}
+}
+
+// matchAllMachines calls visit with each key, on whatever machine, whose patterns match subject;
+// a key with several matching patterns is visited once per pattern. A key belongs to one machine's
+// tree, so no key is visited from two of them.
+func (x *subjectIndex) matchAllMachines(subject string, visit func(key string)) {
+	for _, root := range x.roots {
+		root.match(subject, false, visit)
+	}
+}
+
+// oncePerKey wraps visit so that each key reaches it once, however many times the index visits
+// that key: match and matchAllMachines visit a key once per matching pattern. The set of keys
+// seen is made on the first visit, so a walk that matches nothing allocates nothing.
+func oncePerKey(visit func(key string)) func(key string) {
+	var seen map[string]struct{}
+	return func(key string) {
+		if _, dup := seen[key]; dup {
+			return
+		}
+		if seen == nil {
+			seen = map[string]struct{}{}
+		}
+		seen[key] = struct{}{}
+		visit(key)
 	}
 }
 

@@ -178,6 +178,29 @@ func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) 
 	}
 }
 
+// A state home the process names, as a Legion pod names one for each role, reaches no command run
+// under Isolated: Isolated and Home each hold one XDG_STATE_HOME, under the test's home. The leak
+// guard caches the repositories it found public there and reads that cache before it asks GitHub,
+// so on the runner's state home a test's invented repository can be answered public from what an
+// earlier test cached, and a test of a visibility that cannot be read gets no refusal
+// (internal/leakguard's TestAVisibilityThatCannotBeReadRefuses failed that way in a pod).
+func TestIsolatedAndHomeGiveAStateHomeOfTheTestsOwn(t *testing.T) {
+	runner := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", runner)
+	home := t.TempDir()
+	for name, env := range map[string][]string{"Isolated": fixtureenv.Isolated(home), "Home": fixtureenv.Home(home)} {
+		var states []string
+		for _, entry := range env {
+			if key, value, _ := strings.Cut(entry, "="); key == "XDG_STATE_HOME" {
+				states = append(states, value)
+			}
+		}
+		if len(states) != 1 || !strings.HasPrefix(states[0], home+string(filepath.Separator)) {
+			t.Errorf("%s holds XDG_STATE_HOME %q, want one value under the test's home %s, not the process's %s", name, states, home, runner)
+		}
+	}
+}
+
 // A repository whose own configuration allows http (protocol.http.allow=always, which outranks
 // protocol.allow) still reaches no network remote under Isolated: jj git push to a loopback HTTP
 // server fails and the server receives no request. Without GIT_ALLOW_PROTOCOL the same push

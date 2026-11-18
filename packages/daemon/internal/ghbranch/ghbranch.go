@@ -86,7 +86,9 @@ type Repository struct {
 
 // Read is repo as GitHub names it (`full_name` and `default_branch` of `GET /repos/{owner}/{repo}`),
 // read through github, the repository's REST API. An answer naming no default branch, or a
-// full_name that is not owner/name, is refused by name, as is every answer other than 2xx.
+// full_name that is not owner/name, is refused by name, as is every answer other than 2xx, whose
+// refusal wraps GitHub's *githubrest.Answer so a caller can tell GitHub's rate limit (RateLimited,
+// with how long GitHub asks it to wait) from GitHub's verdict on the repository.
 func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository) (Repository, error) {
 	var info struct {
 		FullName      string `json:"full_name"`

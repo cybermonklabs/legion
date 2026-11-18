@@ -83,8 +83,8 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 			BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
-			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
+			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
 			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
 		})
@@ -190,13 +190,13 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 }
 
 // A child closed as done gives its Sandbox back at once while its parent keeps running: the
-// close's issue_close rows retire the child's claims with their sessions dropped, and its
+// close's issue_close rows retire the child's claims, keeping their sessions, and its
 // issue_suspend row foreground-deletes the child's Sandbox — taking what it owns with it, with no
 // PVC request from the restricted daemon; the root's Sandbox stays Running. A child parked in
 // backlog keeps its claims suspended with their sessions, and its Sandbox goes the same way,
 // since the pod it ran in, and the disk with it, go either way. The done child set back to todo
-// launches fresh because its resume path was cleared, while its session id stays as reaping
-// evidence until the volume is gone.
+// starts again on a new Sandbox and resumes the sessions its claims kept: the close cleared
+// neither the session id nor the resume path.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	// Two children under the running root: the one closed as done, whose planner is stopped with
 	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
@@ -428,8 +428,8 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 		BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
 		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
 	})
@@ -622,8 +622,8 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 	})
 
 	// A park is the same departure by another op: the child moved to backlog has stopped rather
-	// than finished, so its roles keep their sessions and the departure suspends them where a
-	// close retires them. Its Sandbox goes either way, and so does the start.
+	// than finished, so the departure suspends its roles where a close retires them, and both keep
+	// their sessions. Its Sandbox goes either way, and so does the start.
 	t.Run("a start queued before the park runs after it", func(t *testing.T) {
 		rig := newFenceRig(t, oneFenceChild("in_progress", phase.Planning, claim.RolePlanner))
 		child := rig.children[0]
@@ -735,18 +735,23 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
-		// Nothing of the old run is wanted back: the one start the re-entry queued is the
-		// planner's, of the new generation and the new run's first phase, carrying that phase's
-		// own task at the entry the transition raised on the planner's phases row, which is no
-		// resume of anything (workflow.StartOrOwe).
+		// Nothing of the old run's phase work is wanted back: the re-entry queued two starts, the
+		// plain start of the child's own architect, which every child's first phase start queues
+		// ahead of its planner's (workflow's Engine.StartFirstPhase) and which resumes an architect
+		// claim the park suspended (none is seeded here), and the planner's, of the new generation
+		// and the new run's first phase, carrying that phase's own task at the entry the transition
+		// raised on the planner's phases row, which is no resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
-		if len(queued) != 1 {
-			t.Fatalf("the re-entry queued %d starts, want the one of the planner's first phase: %+v", len(queued), queued)
+		if len(queued) != 2 {
+			t.Fatalf("the re-entry queued %d starts, want the child's architect's and the one of the planner's first phase: %+v", len(queued), queued)
 		}
-		if row := queued[0]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
+		if row := queued[0]; row != (record.SuperviseRequest{Op: "start", Tree: rig.root.Key, Role: claim.RoleArchitect, Generation: back.Generation}) {
+			t.Fatalf("the re-entry's first start = %+v, want the plain start of the child's own architect at generation %d", row, back.Generation)
+		}
+		if row := queued[1]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
 			t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
 		}
-		if row := queued[0]; row.Task == "" || row.Entry == 0 {
+		if row := queued[1]; row.Task == "" || row.Entry == 0 {
 			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task at the entry the transition raised", row)
 		}
 
@@ -764,8 +769,10 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		if got := rig.storedClaim("legion-legion-legion-209-planner"); got.LastStartRow == 0 || got.SessionFile != "" {
 			t.Fatalf("the re-entered child's planner = %+v, want a fresh launch of the new run's first phase", got)
 		}
-		// No role of the old run is resumed: the implementer whose start the fence declined is left
-		// exactly as the park left it, and the run that came back never asked for it.
+		// The old run's implementer is not resumed: the implementer whose start the fence declined
+		// is left exactly as the park left it, and the run that came back never asked for it. A
+		// planner claim of the old run (none is seeded here) would be resumed by the new run's
+		// planner start.
 		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != child.suspended.Session {
 			t.Fatalf("the re-entered child's implementer = %+v, want the old run's role left suspended with its session and no start recorded against it", got)
 		}
@@ -805,7 +812,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		run := func(what string) {
 			t.Helper()
 			// The engine here takes this clock, but admission does not: admit.New always reads
-			// time.Now (admit.go:107) and writes its rows with it, so the promotion's rows carry
+			// time.Now (admit.New's `now: time.Now`) and writes its rows with it, so the promotion's rows carry
 			// the real clock whatever the engine's is. A row is due only when the runner's clock
 			// is at or past its next_at, so this clock may not simply advance: left behind the
 			// real one on a slow runner, it leaves those rows undue and the drain acts on nothing.

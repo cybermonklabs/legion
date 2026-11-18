@@ -1,0 +1,42 @@
+kind: Changed
+body: |-
+  A broker token carries a list of projects. Introspection answers `projects`, a list, in place of
+  `project`: a `named` token's one project, its operator entry's, and a `person` token's projects,
+  the ones its trade named in the new `projects` form parameter (keys separated by spaces, at most
+  16). Before it mints, the exchange asks Dispatch, with `BROKER_PROJECT_ACCESS_URL` set, whether
+  the token's person may see each project, and refuses one they may not see in the same words
+  whether Dispatch holds it or not. A restricted member's trade must name at least one project. A
+  request under an operator's entry may name only that entry's project, and a token naming no
+  person may name none. A `BROKER_EXCHANGE_ACCOUNTS` entry may name no project
+  (`<account>==<person>`), for the shared public-session account: its tokens are `named`, act for
+  that person, name no project, and are refused when Dispatch calls that person a restricted
+  member. With no project access configured, a trade naming no project and an entry's token mint
+  as before, and a person's trade naming a project is refused. While Dispatch cannot be asked, a
+  trade naming no project mints as before and the broker logs one line naming each, and every
+  trade naming a project, an entry's token naming its project included, is refused
+  `temporarily_unavailable`. When Dispatch answers 401 or 403 to the broker's own account token,
+  when the broker cannot read that token from `BROKER_PROJECT_ACCESS_TOKEN_FILE`, and when
+  Dispatch answers a member kind the broker does not know, every trade that asks is refused
+  `server_error`, never minted unchecked. A 404 from Dispatch is "no such project" only with the
+  code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
+  `brokertoken.Caller.Projects` replaces `Caller.Project`; Dispatch still holds only a `named`
+  token's writes to its project. The TypeScript sign-in client sends the projects
+  `AGENT_SECRETS_PROJECTS` lists. The Go client declares that variable and `Config.Projects`, and
+  no Go trade of this release sets them.
+  **Upgrade order:** a `named` token naming a project fails until every broker replica, Dispatch
+  and listener run this release, and trading again does not help while any of them is older. A
+  Dispatch or listener of this release refuses an older broker's answer that names `project`
+  (`401 BROKER_TOKEN_NOT_A_SESSION`); the broker of this release also stores a named token's one
+  project under `project`, so an older replica answers it that way rather than as a token naming
+  no project, which this release would hold to none; and it answers a `named` token stored before
+  the list as not live. An older Dispatch or listener refuses this release's named answers. No such
+  token is minted where no exchange entry is configured. Person and service tokens are unaffected.
+  An entry of `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or
+  `BROKER_VM_EXCHANGE_ACCOUNTS` whose project is not a project key (such as `priv`) now refuses the
+  broker's start, naming the entry; before, it started and minted tokens naming that string.
+  Introspecting a token whose stored projects claim is malformed answers 500
+  `STORED_CLAIM_MALFORMED`, naming its session and launcher credential, not 503
+  `DATABASE_UNAVAILABLE`.
+time: 2026-11-16T02:16:07Z
+custom:
+    Issue: pr4119

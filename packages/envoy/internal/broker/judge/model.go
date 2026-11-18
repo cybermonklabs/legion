@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
@@ -152,9 +151,9 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 	})
 	switch {
 	case err != nil:
-		return Verdict{Word: Refer}, result.Usage, sanitize(result.Text, maxRawAnswer), err
+		return Verdict{Word: Refer}, result.Usage, record.Sanitize(result.Text, maxRawAnswer), err
 	case result.Fault != "":
-		return Verdict{Word: Refer}, result.Usage, sanitize(result.Text, maxRawAnswer),
+		return Verdict{Word: Refer}, result.Usage, record.Sanitize(result.Text, maxRawAnswer),
 			fmt.Errorf("the model run ended in %s: %s", result.Fault, result.Detail)
 	}
 	var answer struct {
@@ -162,29 +161,12 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 		Reason  string `json:"reason"`
 	}
 	if err := json.Unmarshal(result.Value, &answer); err != nil {
-		return Verdict{Word: Refer}, result.Usage, sanitize(string(result.Value), maxRawAnswer),
+		return Verdict{Word: Refer}, result.Usage, record.Sanitize(string(result.Value), maxRawAnswer),
 			fmt.Errorf("the model's answer could not be read: %w", err)
 	}
 	if answer.Verdict != Approve && answer.Verdict != Refer {
-		return Verdict{Word: Refer}, result.Usage, sanitize(string(result.Value), maxRawAnswer),
-			fmt.Errorf("the model answered the verdict %q, which is neither approve nor refer", clampRunes(answer.Verdict, 20))
+		return Verdict{Word: Refer}, result.Usage, record.Sanitize(string(result.Value), maxRawAnswer),
+			fmt.Errorf("the model answered the verdict %q, which is neither approve nor refer", record.ClampRunes(answer.Verdict, 20))
 	}
-	return Verdict{Word: answer.Verdict, Reason: sanitize(answer.Reason, maxReasonRunes)}, result.Usage, "", nil
-}
-
-// sanitize is a string the model wrote as this package stores it (D12): the runes a request's
-// own reason may not carry are dropped — record.ReasonRefuses is the one list of them, every
-// control character, every format character, the bidi overrides and the zero-width ones among
-// them, surrogates, private use, and the line and paragraph separators — and what is left is
-// cut to limit runes. record.validateReason (record/record.go) refuses such a reason outright;
-// the judge has nobody to refuse to, since the string is already in hand and the row's whole
-// point is to say what the model answered, so it drops them and keeps the rest.
-func sanitize(s string, limit int) string {
-	cleaned := strings.Map(func(r rune) rune {
-		if record.ReasonRefuses(r) {
-			return -1
-		}
-		return r
-	}, s)
-	return clampRunes(cleaned, limit)
+	return Verdict{Word: answer.Verdict, Reason: record.Sanitize(answer.Reason, maxReasonRunes)}, result.Usage, "", nil
 }

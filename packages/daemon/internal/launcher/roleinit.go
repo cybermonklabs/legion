@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -58,6 +59,20 @@ type RoleInitConfig struct {
 // extra file, so the first descriptor after the standard three.
 const roleStatusFD = 3
 
+// roleNamespaceDrain bounds the wait role-init gives a role whose shim exited on its own: the
+// span between the SIGTERM it sends over the role's namespace and the SIGKILL that ends the
+// namespace, which is the only time anything the role left running has to finish what it was
+// doing. Two seconds, because what the wait is there for is a git or a jj whose index or
+// operation lock is held across a write of a few files, which it finishes in milliseconds, and
+// the wait ends the moment the namespace is empty, so the bound is paid only by a process that
+// ignores SIGTERM or hangs on it. It is a constant and no flag of role-init and no setting of the
+// pod, so no deployment can set it to a span that holds the launcher's next generation up.
+//
+// It costs the role's next generation nothing the daemon waits on: the launcher reads the status
+// pipe and only then waits on role-init (manager.wait), so the daemon learns the role's exit
+// before this wait begins, and only the generation's own teardown spends it.
+const roleNamespaceDrain = 2 * time.Second
+
 // RoleInitSetupFailedExit is the exit status `legion launcher role-init` uses for one thing alone:
 // it failed before it started the shim, setting up the role's namespaces or starting the shim
 // itself. Every other end of role-init is told apart from it: once the shim started, role-init
@@ -91,14 +106,15 @@ func (c RoleInitConfig) validate() error {
 // RoleInit is `legion launcher role-init`: the init of one role generation's user, mount, PID and
 // IPC namespaces, which the launcher clones into them and nothing else ever runs. It hides every
 // other role's credentials and its own launcher token, binds the role's own directories back at
-// the fixed paths, gives the role a private home overlay, its own config home, private temporary
-// directories and its own pseudo-terminals and message queues, starts the shim as its child in a
-// nested user namespace as the image's unprivileged user, forwards the launcher's stop to it,
-// reaps the orphans the role leaves, and reports the shim's own wait status. Every failure it can
-// hit is this role's exit and never the launcher's. stop ends at the launcher's stop: the context
-// `legion`'s main ends on SIGTERM or SIGINT, the signals it registers for in its first statement.
-// Every error it returns is a failure before the shim started, which `legion launcher role-init`
-// exits RoleInitSetupFailedExit for.
+// the fixed paths and the log of the pod's test database read-only beside them, gives the role a
+// private home overlay, its own config home, private temporary directories and its own
+// pseudo-terminals and message queues, starts the shim as its child in a nested user namespace as
+// the image's unprivileged user, forwards the launcher's stop to it, reaps the orphans the role
+// leaves, and reports the shim's own wait status. Every failure it can hit is this role's exit
+// and never the launcher's. stop ends at the launcher's stop: the context `legion`'s main ends on
+// SIGTERM or SIGINT, the signals it registers for in its first statement. Every error it returns
+// is a failure before the shim started, which `legion launcher role-init` exits
+// RoleInitSetupFailedExit for.
 func RoleInit(stop context.Context, cfg RoleInitConfig) error {
 	if err := cfg.validate(); err != nil {
 		return err
@@ -115,13 +131,15 @@ func RoleInit(stop context.Context, cfg RoleInitConfig) error {
 // own `legion version` as the shim, so a runtime or node that refuses a role's namespaces or one
 // of the mounts role-init makes in them fails the daemon's boot rather than every role's start.
 // The layout is the roles directory, fixed root, home and home mounts directory role-init's flags
-// name, with the one role's gh, private and state directories and nothing else: the home is an
-// empty directory on dir's volume and the home mounts directory carries no mount. So the check
-// makes an overlay over a home on that volume, the role's binds, its own /tmp and /var/tmp, its
-// memory filesystems, devpts and mqueue, the covers and its /proc; it does not make the overlay
-// over the image's own home, whose lower layer is on the container's root filesystem, bind a
-// home's volume back, or copy a config home (ownConfigHome). Those first run at a role's start in
-// an issue pod.
+// name, with the one role's gh, private and state directories, the log of a test database under
+// the roles directory with its empty mount point under the fixed root, and nothing else: the home
+// is an empty directory on dir's volume and the home mounts directory carries no mount. So the
+// check makes an overlay over a home on that volume, the role's binds, the read-only bind of one
+// file that gives every role the test database's log (bindReadOnly's remount, which a runtime
+// may refuse where it allows the bind), its own /tmp and /var/tmp, its memory filesystems, devpts
+// and mqueue, the covers and its /proc; it does not make the overlay over the image's own home,
+// whose lower layer is on the container's root filesystem, bind a home's volume back, or copy a
+// config home (ownConfigHome). Those first run at a role's start in an issue pod.
 func CheckRoleNamespaces(dir string, shim ...string) error {
 	if len(shim) == 0 {
 		return errors.New("role namespaces: no shim argv")
@@ -131,12 +149,20 @@ func CheckRoleNamespaces(dir string, shim ...string) error {
 		RolesDir: filepath.Join(dir, "roles"), Role: role, Generation: 1, Home: filepath.Join(dir, "home"),
 		HomeMounts: filepath.Join(dir, "home-mounts"), FixedRoot: filepath.Join(dir, "fixed"), Argv: shim,
 	}
-	dirs := []string{cfg.Home, cfg.HomeMounts}
+	dirs := []string{cfg.Home, cfg.HomeMounts, testPGDir(cfg.RolesDir)}
 	for _, name := range []string{RoleGHDir, RolePrivateDir, RoleStateDir} {
 		dirs = append(dirs, filepath.Join(cfg.RolesDir, role, name), filepath.Join(cfg.FixedRoot, name))
 	}
 	for _, path := range dirs {
 		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("role namespaces: make the probe's layout: %w", err)
+		}
+	}
+	// The test database's log and its mount point under the fixed root, an empty file as the
+	// image's is: the check runs whether or not the deployment serves a test database, so the
+	// bind every role of a pod that serves one makes is proven before that key is turned on.
+	for _, path := range []string{testPGLog(cfg.RolesDir), filepath.Join(cfg.FixedRoot, RoleTestPGLog)} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
 			return fmt.Errorf("role namespaces: make the probe's layout: %w", err)
 		}
 	}

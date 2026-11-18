@@ -59,7 +59,7 @@ func readTmux(value *yaml.Node) (*Tmux, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.tmux must be a mapping")
 	}
-	fields, err := members(value, "runtime.tmux", "pane_env", "pi_config_files", "take_over")
+	fields, err := describedMembers(value, "runtime.tmux", "runtime.tmux")
 	if err != nil {
 		return nil, err
 	}

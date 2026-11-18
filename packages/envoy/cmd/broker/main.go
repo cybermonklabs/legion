@@ -4,9 +4,10 @@
 // record, and releases granted values. Its HTTP API is documented at
 // https://cybermonklabs.github.io/legion/broker/reference/api/. The broker opens no Dispatch ask
 // and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
-// broker's page, and relays a machine login's decision with its typed code. The one thing the
-// broker reads in Dispatch is its model judge's, whether an issue is open
-// (BROKER_JUDGE_DISPATCH_URL), with the broker's own projected ServiceAccount token.
+// broker's page, and relays a machine login's decision with its typed code. The broker reads
+// Dispatch in two places, each with its own projected ServiceAccount token: its model judge,
+// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its token exchange, whether a
+// person may see the projects a token names (BROKER_PROJECT_ACCESS_URL).
 package main
 
 import (
@@ -40,6 +41,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlockproxy"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/config"
@@ -51,6 +53,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -59,6 +62,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -118,6 +123,11 @@ const oauthSecretTimeout = 10 * time.Second
 const clientCheckInterval = time.Hour
 
 func main() {
+	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
+	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
+	// first thing main does, so a subcommand that opens the store logs the same shape, and the
+	// log package, which slog.SetDefault points at the same handler, writes no line of another.
+	slog.SetDefault(slog.New(logging.NewCloudHandler(os.Stderr)))
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a
@@ -286,9 +296,14 @@ func main() {
 		signIn = "rds-iam"
 	}
 	slog.Info("database sign-in", "method", signIn)
-	// Who a person signs in to the approval page as, logged once at boot. Its client secret is
-	// never logged.
-	slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+	// Who a person signs in to the approval page as, logged once at boot, or that nobody does
+	// (BROKER_SIGNIN=off), so an operator reads from the log which of the two brokers this is.
+	// The client's secret is never logged.
+	if cfg.SignInOff {
+		slog.Info("approval sign-in off", "detail", "BROKER_SIGNIN=off: no approval page is served, and a request a person would approve is denied at once")
+	} else {
+		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+	}
 	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
 	// Secrets Manager and KMS clients of the AWS store, unless the fake secrets file stands in.
@@ -321,9 +336,16 @@ func main() {
 		secretStore, credentials = secrets.AWS{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
 	}
 	slog.Info("secret store", "store", cfg.SecretsStore, "credentials", credentials)
+	// The one registry every metric this process serves is built on, and the one the metrics
+	// port serves (BROKER_METRICS_LISTEN_ADDR). The policy's store-read counter is built on it
+	// here, before the loader that counts through it takes the first load, so the boot's own
+	// reads are counted with every read after them; broker_unservable_secrets, which reads the
+	// live policy, is registered on it once that first load has answered (LoadPolicy).
+	registry := metrics.New()
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
-	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest}
+	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
+		StoreReads: policy.NewStoreReads(registry)}
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
 	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
@@ -350,8 +372,8 @@ func main() {
 		// signalled mid-boot finishes that load and then returns without draining at all, there
 		// being nothing bound to drain. NewCurrent's own contract is untouched — its
 		// loop logs no failed-load line once its context has ended, which is now the end of the
-		// shutdown rather than the signal, so the line a deployment alarms on still counts only
-		// loads that failed while the broker was meant to be serving.
+		// shutdown rather than the signal, so the failed-load line still reports only loads that
+		// failed while the broker was meant to be serving.
 		//
 		// Written down so nobody rediscovers it as a hang: one signal does not interrupt this
 		// call. A store that never answers the first load leaves it running - it runs on serving,
@@ -363,7 +385,12 @@ func main() {
 		// from `again` and answers with os.Exit(1) (measured: gone within 30 ms of that signal),
 		// or the kubelet's SIGKILL at the end of the grace period.
 		LoadPolicy: func(serving context.Context) (*policy.Current, error) {
-			return policy.NewCurrent(serving, loader, policyRefresh)
+			current, err := policy.NewCurrent(serving, loader, policyRefresh)
+			if err != nil {
+				return nil, err
+			}
+			policy.NewUnservableSecrets(registry, current)
+			return current, nil
 		},
 		// The receiving half of the reread fan-out, started after the first policy load (it
 		// rereads into that policy) and before the bind, so a pod that cannot hold a LISTEN
@@ -380,14 +407,7 @@ func main() {
 				Sender:      senderID,
 				Dial:        st.Listener,
 				OnConnected: onConnected,
-				Refresh: func(ctx context.Context, name string) error {
-					_, err := current.RefreshOne(ctx, name)
-					// A peer served the reread, so this pod's airlock proxy may be holding
-					// the old value of that name: dropped whatever the reread answered,
-					// since the reread of the name is the signal (dropAirlockName).
-					dropAirlockName(name)
-					return err
-				},
+				Refresh:     peerReread(current, dropAirlockName),
 			}).Run(serving)
 		},
 		Listen: listenTCP(cfg.ListenAddr),
@@ -395,6 +415,8 @@ func main() {
 		// airlock: without a rules file no name is ever held back, so there is nothing for a
 		// proxy to carry and no port to bind.
 		ListenAirlock: airlockListen(cfg),
+		// The metrics port, bound by the same boot after the other two, on every deployment.
+		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
 		Catchup:       func(serving context.Context, current *policy.Current) error { return current.Refresh(serving) },
 		Log:           slog.Default(),
@@ -423,6 +445,9 @@ func main() {
 	if started.AirlockListener != nil {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
+	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
+	// on port 0 reads each one's own metrics address from its own log.
+	slog.Info("broker metrics listening", "addr", started.MetricsListener.Addr().String())
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
@@ -430,7 +455,7 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -459,7 +484,7 @@ func main() {
 	// token. Both halves are optional and the grant is composed either way: a broker told about
 	// no issuer accepts no subject token at all, which the line below says once at boot rather
 	// than leaving an operator to read it out of a refusal.
-	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
 	fatal(err)
 	exchangeConfig := oauth.ExchangeConfig{Policy: exchangePolicy}
 	if cfg.ExchangeK8sAudience != "" {
@@ -490,11 +515,21 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
+	if cfg.ProjectAccessURL != "" {
+		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
+		// time through the reader every projected token here goes through, so a rotation needs no
+		// restart. config.Load holds the two settings to both or neither.
+		exchangeConfig.Projects = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
+	} else {
+		slog.Info("project access check", "state", "off",
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused")
+	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
-			"accounts", len(cfg.ExchangeAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
 	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:
@@ -522,12 +557,17 @@ func main() {
 		OAuth: provider, Replay: enr.Replay,
 	}
 	// The approval page signs a person in with the broker's own client and returns them to
-	// BROKER_PUBLIC_URL as resolved above.
-	page, err := approval.New(approval.Config{
-		SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-		Store: st, Machine: reqMachine,
-	})
-	fatal(err)
+	// BROKER_PUBLIC_URL as resolved above. A broker that signs nobody in (BROKER_SIGNIN=off)
+	// builds none, so api.Register mounts no route of it and every one is a 404, and the
+	// request machine denies at once what the page would have put to a person.
+	var page *approval.Page
+	if !cfg.SignInOff {
+		page, err = approval.New(approval.Config{
+			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
+			Store: st, Machine: reqMachine,
+		})
+		fatal(err)
+	}
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
@@ -553,8 +593,11 @@ func main() {
 	// boot and never stops the process - a provider that is down stops nobody signing in later,
 	// since a sign-in reads the discovery document on its own path - so it is a goroutine with
 	// no error to return. It stops at the signal, as the sweeper does: a draining pod is
-	// answering its last requests, not reporting on a provider.
-	go runClientChecks(ctx, cfg.SignIn, st)
+	// answering its last requests, not reporting on a provider. A broker that signs nobody in
+	// has no client to check.
+	if page != nil {
+		go runClientChecks(ctx, cfg.SignIn, st)
+	}
 
 	mux := http.NewServeMux()
 	// Under the GCP store a reread spends Secret Manager's shared metadata quota, so the fleet
@@ -573,7 +616,7 @@ func main() {
 	// logging it, because what a failed fan-out means is this program's decision, and the decision
 	// is one WARN and nothing else: the reread this pod was asked for has already happened and the
 	// answer it gives its caller stands, and the peers that did not hear reread this secret at
-	// their own next five-minute reload (policyRefresh) anyway. Neither the caller's 200 nor the
+	// their own next five-minute reload (policyRefresh) anyway. Neither the caller's answer nor the
 	// process is worth failing over a notification Postgres would not take.
 	notify := reread.Notifier(st.Pool, senderID)
 	// A Google caller's verifier is built only where the broker was told about Google, and it
@@ -591,22 +634,31 @@ func main() {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
-		SecretsKMSKey:      cfg.SecretsKMSKey,
-		TrustedProxyHeader: cfg.TrustedProxyHeader,
-		Approval:           page,
-		Draining:           draining.Load,
+		SecretsKMSKey:          cfg.SecretsKMSKey,
+		GoogleExchangeAudience: googleExchangeAudience(cfg),
+		TrustedProxyHeader:     cfg.TrustedProxyHeader,
+		Approval:               page,
+		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
-			// This pod served the reread itself, on the 200 path alone, so the value behind
-			// the name may be a new version: dropped from the airlock proxy's own cache
-			// before the peers are told, since the reread of the name is the signal
-			// (dropAirlockName).
+			// This pod reread the name itself and merged what it read (the reread route's
+			// notifyPeers), so the value behind the name may be a new version: dropped from
+			// the airlock proxy's own cache before the peers are told, since the reread of the
+			// name is the signal (dropAirlockName).
 			dropAirlockName(name)
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
 		}})
+	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
+	// answer, so it sees every answer a handler of this port writes, whichever writer wrote it:
+	// the API's routes, the OAuth provider's library, the approval page and the mux's own 404
+	// and 405 (answer.Middleware), and reads each one's route from the request it hands the mux.
+	// It sees none of the answers net/http writes itself before any handler runs, such as its
+	// 400 for a malformed request, 431 and 417. Its counter is built on the registry the metrics
+	// port serves, and the airlock's proxy port counts its answers on it too.
+	answers := answer.NewAnswers(registry)
 	srv := &http.Server{
-		Handler:           withRequestDeadline(mux, requestDeadline),
+		Handler:           withRequestDeadline(answer.Middleware(mux, answers), requestDeadline),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      writeTimeout,
@@ -623,17 +675,31 @@ func main() {
 			CA:     airlockCA,
 			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
 			Log:    slog.Default(),
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// broker_answers_total, which counts the proxy's answers under caller class
+			// airlock beside the API port's.
+			Answers: answers,
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
+	}
+	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
+	// every metric above is built on, and nothing else (metricsHandler). Its timeouts are the
+	// API's, since a scraper is a caller like any other to the server.
+	metricsServer := &http.Server{
+		Handler:           metricsHandler(registry),
+		ReadHeaderTimeout: srv.ReadHeaderTimeout,
+		ReadTimeout:       srv.ReadTimeout,
+		WriteTimeout:      srv.WriteTimeout,
+		IdleTimeout:       srv.IdleTimeout,
 	}
 	// From here a second signal belongs to the drain below rather than to the watchdog's exit:
 	// the socket is bound and srv.Serve is about to take it, so there are requests to finish and
@@ -664,6 +730,12 @@ func main() {
 			}
 		}()
 	}
+	go func() {
+		if err := metricsServer.Serve(started.MetricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("broker: metrics serve", "error", err)
+			stopNotify()
+		}
+	}()
 
 	<-ctx.Done()
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
@@ -674,7 +746,7 @@ func main() {
 	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown,
+		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -754,6 +826,8 @@ const shutdownTimeout = writeTimeout
 // is given is a whole number of them.
 func wholeSeconds(d time.Duration) string { return strconv.Itoa(int(d/time.Second)) + "s" }
 
+// withRequestDeadline hands next the request with deadline on its context. It writes no answer,
+// so it sits outside the answer recorder, which wraps the mux itself.
 func withRequestDeadline(next http.Handler, deadline time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
@@ -815,7 +889,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -838,6 +912,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -962,6 +1037,35 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 	return listenTCP(cfg.AirlockListenAddr)
 }
 
+// peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
+// told this one to make, current's RefreshOne. A peer served the reread, so this pod's airlock
+// proxy may be holding the old value of that name: dropAirlockName drops it whatever the reread
+// answered, since the reread of the name is the signal. A reread whose context ended during its
+// value read alone (policy.ErrValueUnchecked) has merged the tags it read, which this pod now
+// serves, so it is a reread that ran: it answers nil, and the next load reads the value again.
+// Any other error is a reread that did not run, which the listener logs.
+func peerReread(current *policy.Current, dropAirlockName func(string)) func(context.Context, string) error {
+	return func(ctx context.Context, name string) error {
+		_, err := current.RefreshOne(ctx, name)
+		dropAirlockName(name)
+		if errors.Is(err, policy.ErrValueUnchecked) {
+			return nil
+		}
+		return err
+	}
+}
+
+// metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
+// Prometheus text format (the pattern takes HEAD too, as every GET pattern of a ServeMux does),
+// and nothing else - every other path is 404 and every method there but GET and HEAD is 405 - so
+// a scraper reaches no route of the API through it, and no caller of the API reaches the scrape
+// (the API's mux registers no /metrics).
+func metricsHandler(registry *metrics.Registry) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", registry.Handler())
+	return mux
+}
+
 // airlockCACertificatePEM is the certificate every airlock release hands a command: the
 // authority's own certificate, encoded here from the certificate this process signs with. A
 // deployment with no airlock has no authority and answers "".
@@ -986,19 +1090,23 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // secret, the one account the deployment binds it to and so the only one its release mints a
 // token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
 // caCertificate are the airlock's, read at boot: a name the rules name is released as
-// placeholders, and every such release carries the proxy's URL and this certificate.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string) *requests.Machine {
+// placeholders, and every such release carries the proxy's URL and this certificate. retry is the
+// one retry policy and process-wide retry budget of the three minters that call an upstream over
+// HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
+// counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
+// unretried too: each holds the one pointer, which typeMinters' copies keep.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
-		// The two kinds whose minter calls an endpoint of its own carry the local stack's
+		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
-		Minters: kindMinters(
-			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase},
-			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL},
+		Minters: typeMinters(
+			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
+			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
 			// The google-service-account minter takes the deployment's binding of each such
 			// secret to the one account it may mint for (BROKER_SERVICE_ACCOUNT_SECRETS): the
@@ -1008,10 +1116,13 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// Workload Identity credentials, which it finds on its first mint and keeps, and
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
-			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets}),
+			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
+		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
+		// person is denied at once.
+		SignInOff: cfg.SignInOff,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	return m
@@ -1042,8 +1153,13 @@ const judgeDispatchTimeout = 10 * time.Second
 // drain, while a half-finished run would approve a credential as the pod goes away.
 func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
 	if cfg.JudgeModelURL == "" {
-		slog.Info("model judge", "state", "off",
-			"detail", "none of "+strings.Join(config.JudgeSettings, ", ")+" is set, so every human-tier request waits for the person who decides it today")
+		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
+		// and its line says what such a broker does with a request a person would decide.
+		detail := "none of " + strings.Join(config.JudgeSettings, ", ") + " is set, so every human-tier request waits for the person who decides it today"
+		if cfg.SignInOff {
+			detail = "BROKER_SIGNIN=off: no request waits for a person, since every one a person would decide is denied at once, so there is nothing for a judge to decide"
+		}
+		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
 	runner := judge.New(ctx, judge.Options{
@@ -1063,6 +1179,18 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	m.Judge = runner.Consider
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+}
+
+// googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
+// where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
+// where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
+// exchange refuses every machine then, and a client that read the audience would mint a token, be
+// refused and stop on every command, where with none published it skips the machine source.
+func googleExchangeAudience(cfg config.Config) string {
+	if len(cfg.ExchangeGoogleAccounts) == 0 {
+		return ""
+	}
+	return cfg.GoogleOIDCAudience
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and
@@ -1205,26 +1333,61 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	return oidc.NewKeys(discovery, issuer)
 }
 
-// kindMinters is the broker's minter for each kind. Its arguments are the production minters in
+// typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that kind. The google-service-account minter is a pointer: its method value would
-// otherwise copy the credentials it caches away from the minter every later mint reads.
-func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+// no secret of that type. The google-service-account minter is a pointer: its method value would
+// otherwise copy the credentials it caches away from the minter every later mint reads. The other
+// two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
+// from its one budget.
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
 	return map[string]requests.Minter{
-		policy.KindGitHubApp:            githubApp.Mint,
-		policy.KindGoogleLogin:          googleLogin.Mint,
-		policy.KindAzureLogin:           azureLogin.Mint,
-		policy.KindGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGoogleLogin:          googleLogin.Mint,
+		policy.TypeAzureLogin:           azureLogin.Mint,
+		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
 	}
 }
 
+// The sign-in client check's lines (checkSignInClient). Each says that a pass found other than
+// what the line before it said, keyed on the check's state and on whether its write failed, never
+// on an error's text, as enroll.ServingClock.Run logs its beats: a provider that stays away for a
+// day writes one line, not one each clientCheckInterval.
+const (
+	// clientCheckFailedMessage is logged, at WARN, by a pass that finds a state other than ready
+	// and other than the state this message last named since the client was last ready, followed
+	// by state=, issuer= and error=.
+	clientCheckFailedMessage = "broker: the sign-in client check"
+	// clientCheckReadyMessage is logged, at INFO, by a pass that finds the client ready after a
+	// clientCheckFailedMessage line, followed by issuer= and was=<the state that line named>.
+	clientCheckReadyMessage = "broker: the sign-in client check finds the client ready again"
+	// clientCheckUnwrittenMessage is logged, at WARN, by a pass whose write fails when the pass
+	// before it wrote, followed by state= and error=.
+	clientCheckUnwrittenMessage = "broker: the sign-in client check was not written"
+	// clientCheckWrittenMessage is logged, at INFO, by a pass that writes after a pass that logged
+	// clientCheckUnwrittenMessage, followed by state=.
+	clientCheckWrittenMessage = "broker: the sign-in client check is written again"
+)
+
+// clientCheckLog is what the client check last logged, which runClientChecks holds from one pass
+// to the next so that a pass logs a change and nothing while nothing changes. Its zero value is a
+// check that has logged nothing, which is the same as one that last found the client ready and
+// wrote it: a pass that finds that logs nothing.
+type clientCheckLog struct {
+	// notReady is the state clientCheckFailedMessage last named, and empty when it has named none
+	// since the client was last ready.
+	notReady oidc.ClientCheck
+	// unwritten is whether the last pass's write failed.
+	unwritten bool
+}
+
 // runClientChecks checks the sign-in client at once and every clientCheckInterval after, until
-// ctx ends.
+// ctx ends, holding what the passes logged.
 func runClientChecks(ctx context.Context, signIn approval.SignIn, st *store.Store) {
+	var logged clientCheckLog
 	for {
-		checkSignInClient(ctx, signIn, st)
+		checkSignInClient(ctx, signIn, st, &logged)
 		select {
 		case <-ctx.Done():
 			return
@@ -1242,17 +1405,36 @@ func runClientChecks(ctx context.Context, signIn approval.SignIn, st *store.Stor
 // path that reads the discovery document again on its own, so a check that fails says nothing
 // about whether the next sign-in works. A write that fails loses this pass's answer and the
 // next pass writes again.
-func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.Store) {
+//
+// Each half logs only a change from what logged holds, which it then updates: the check
+// logs clientCheckFailedMessage when it finds a state that is not ready and not the one logged
+// last, and clientCheckReadyMessage when it finds ready after one that was not; the write logs
+// clientCheckUnwrittenMessage when it fails after one that did not, and clientCheckWrittenMessage
+// when it succeeds after one that failed.
+func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.Store, logged *clientCheckLog) {
 	check, err := oidc.CheckClient(ctx, signIn.Issuer, signIn.ClientID, signIn.ClientSecret)
-	if err != nil {
-		slog.Warn("broker: the sign-in client check", "state", check, "issuer", signIn.Issuer, "error", err)
-	}
 	if ctx.Err() != nil {
-		// The process is stopping: this answer is the end of the context, not the provider's.
+		// The process is stopping: this answer is the end of the context, not the provider's,
+		// so it is neither logged nor written, and what logged holds stands.
 		return
 	}
-	if err := st.RecordClientCheck(ctx, string(check), time.Now()); err != nil {
-		slog.Warn("broker: the sign-in client check was not written", "state", check, "error", err)
+	switch {
+	case check == oidc.ClientCheckReady && logged.notReady != "":
+		slog.Info(clientCheckReadyMessage, "issuer", signIn.Issuer, "was", logged.notReady)
+		logged.notReady = ""
+	case check != oidc.ClientCheckReady && check != logged.notReady:
+		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", signIn.Issuer, "error", err)
+		logged.notReady = check
+	}
+	err = st.RecordClientCheck(ctx, string(check), time.Now())
+	switch {
+	case ctx.Err() != nil:
+	case err != nil && !logged.unwritten:
+		slog.Warn(clientCheckUnwrittenMessage, "state", check, "error", err)
+		logged.unwritten = true
+	case err == nil && logged.unwritten:
+		slog.Info(clientCheckWrittenMessage, "state", check)
+		logged.unwritten = false
 	}
 }
 

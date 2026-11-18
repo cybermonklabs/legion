@@ -21,9 +21,19 @@
 # applying every migration it does not find in its own table, and production gives them separate
 # databases for the same reason.
 #
+# It builds the Go binaries it runs into this run's own directory with one go build, unless
+# --binaries <dir> names a directory that already holds them, built elsewhere: a Legion pod sends
+# a Go build out to the builds farm rather than running it itself. Then it runs those in place of
+# its go build, and needs no go on PATH. It requires each of them in that directory, broker,
+# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper and natsd, each an
+# executable file, and refuses before it creates or starts anything -- no database, no port, no
+# process -- when one is missing or is not, naming each such file. It copies them into this run's
+# own bin directory, where a build would have put them, so everything after that step is the
+# same either way.
+#
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
-# "issuer listening url=", the broker's "broker listening addr=", natsd's "Listening for client
-# connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
+# "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
+# client connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
 # "dispatch: listening" addr. So a URL this script prints can only ever name this run's own
 # process, never one left over from another. Two of the five are the exceptions to "bind, then
 # report", and both serve on a socket scripts/e2e/lib/held-port.py opened on a port the kernel
@@ -95,12 +105,15 @@
 # server for someone to drop by hand, as does any other signal this script does not trap.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
+#   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
+#     --binaries "$TMPDIR/dev-stack-bin"                # the builds farm made
 #   bash scripts/dev-postgres.sh                        # a box with Docker: start the shared
 #   bash scripts/dev-stack.sh \                         # dispatch-pg, then name it here
 #     --database-url 'postgres://postgres:dispatch@127.0.0.1:55432/postgres?sslmode=disable'
 #
-# Both from packages/envoy. It needs go, psql, curl, jq and python3, and nothing else from the
-# machine: no credential, no private hostname, no production service.
+# Both from packages/envoy. It needs go (unless --binaries names the binaries), psql, curl, jq and
+# python3, and nothing else from the machine: no credential, no private hostname, no production
+# service.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -110,16 +123,22 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 
 usage() {
   cat <<'EOF'
-Usage: dev-stack.sh [--database-url <postgres url>] [--help]
+Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
 drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, else
 DATABASE_URL; this run creates and drops two databases of its own on that server.
+
+With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
+agent-secrets-helper and natsd in <dir> in place of building them; a directory short of any of
+them, or holding one that is not an executable file, is refused, naming each, before anything is
+created or started.
 EOF
 }
 
 DATABASE_URL_OPTION=""
+BINARIES_OPTION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -132,6 +151,22 @@ while [ "$#" -gt 0 ]; do
       ;;
     --database-url=*)
       DATABASE_URL_OPTION="${1#--database-url=}"
+      shift
+      ;;
+    --binaries)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
+        exit 2
+      fi
+      BINARIES_OPTION="$2"
+      shift 2
+      ;;
+    --binaries=*)
+      BINARIES_OPTION="${1#--binaries=}"
+      if [ -z "$BINARIES_OPTION" ]; then
+        echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
+        exit 2
+      fi
       shift
       ;;
     --help | -h)
@@ -166,7 +201,43 @@ fi
 POSTGRES_SERVER="${BASH_REMATCH[1]}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
-for tool in go psql curl jq python3; do
+# --- The packages of the binaries this stack runs, the one list of them: go build names each
+# binary for its package's last path element, so the build's arguments and the names --binaries
+# checks and copies all come from here. The header and the usage name them for a reader. ---
+STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+STACK_BINARIES=()
+for stack_package in "${STACK_PACKAGES[@]}"; do
+  STACK_BINARIES+=("${stack_package##*/}")
+done
+
+# --- The prebuilt binaries --binaries names, checked here for the reason the URL is: a directory
+# short of one leaves nothing behind, since nothing is created or started before this. Every one
+# of them is required, each an executable file, and the refusal names every file that is not,
+# rather than the first, so one look at it says what the build left out. ---
+if [ -n "$BINARIES_OPTION" ]; then
+  unusable=()
+  for binary in "${STACK_BINARIES[@]}"; do
+    file="$BINARIES_OPTION/$binary"
+    if [ ! -e "$file" ]; then
+      unusable+=("  $file: missing")
+    elif [ ! -f "$file" ] || [ ! -x "$file" ]; then
+      unusable+=("  $file: not an executable file")
+    fi
+  done
+  if [ "${#unusable[@]}" -gt 0 ]; then
+    echo "dev-stack: refused: --binaries $BINARIES_OPTION does not hold the ${#STACK_BINARIES[@]} binaries this stack runs (${STACK_BINARIES[*]}), each an executable file:" >&2
+    printf '%s\n' "${unusable[@]}" >&2
+    exit 2
+  fi
+fi
+
+# go builds the binaries, so a run given them needs none.
+required_tools=(psql curl jq python3)
+if [ -z "$BINARIES_OPTION" ]; then
+  required_tools=(go "${required_tools[@]}")
+fi
+for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null || {
     echo "dev-stack: $tool is required on PATH" >&2
     exit 1
@@ -366,15 +437,22 @@ done
 # The banner names the databases without any password their URL carries.
 DISPLAY_SERVER="$(printf '%s' "$POSTGRES_SERVER" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
 
-# --- Every binary this stack runs, built into this run's own directory. One go build: the
-# packages share most of their closure, so building them together is one compile of it. ---
-echo "dev-stack: building broker, dev-oidc-issuer, dispatch, listener, natsd, agent-secrets and agent-secrets-helper..." >&2
-(
-  cd "$ENVOY_DIR"
-  GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" \
-    ./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener \
-    ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd
-)
+# --- Every binary this stack runs, in this run's own directory. One go build: the packages share
+# most of their closure, so building them together is one compile of it. With --binaries, a copy
+# of each one checked above instead, into the directory the build writes, so nothing below can
+# tell the two apart. ---
+if [ -n "$BINARIES_OPTION" ]; then
+  echo "dev-stack: copying ${STACK_BINARIES[*]} from $BINARIES_OPTION..." >&2
+  for binary in "${STACK_BINARIES[@]}"; do
+    cp "$BINARIES_OPTION/$binary" "$BIN_DIR/$binary"
+  done
+else
+  echo "dev-stack: building ${STACK_BINARIES[*]}..." >&2
+  (
+    cd "$ENVOY_DIR"
+    GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
+  )
+fi
 
 # --- Each process's readiness is read from its own log, never from a port this script chose:
 # await runs one reader until it prints a value, and fails the moment the process it watches is
@@ -420,7 +498,7 @@ until_true() {
 }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
-broker_addr_in() { grep -o 'broker listening addr=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
+broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
 nats_port_in() {
   grep -q 'Server is ready' "$1" || return 1
   sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1
@@ -475,8 +553,10 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # signs in — and one the fleet's service owns, which this stack's machine reads and no person's
 # session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/broker reads a public URL
 # whose port is 0 as "derive it from whatever address I bind", and the real one is read from its
-# own listening line below. BROKER_DRAIN_SECONDS=0 turns off the five-second drain that exists to
-# outlast a Kubernetes EndpointSlice propagation nothing here has. BROKER_ACCESS_TOKEN_SECONDS is
+# own listening line below. BROKER_METRICS_LISTEN_ADDR is port 0 too, so two stacks on one machine
+# never contend for the metrics port's fixed default. BROKER_DRAIN_SECONDS=0 turns off the
+# five-second drain that exists to outlast a Kubernetes EndpointSlice propagation nothing here
+# has. BROKER_ACCESS_TOKEN_SECONDS is
 # the caller's when it names one, else the broker's own default: a walk that must see a client
 # renew an access token sets it to a few seconds rather than waiting out the quarter hour (the
 # broker's floor is 1, and at 1 an answer's expires_in truncates to 0, which every client
@@ -500,6 +580,7 @@ env -i PATH="$PATH" \
   BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
   BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
@@ -531,11 +612,15 @@ echo "dev-stack: broker $BROKER_URL" >&2
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. ---
+# Without it the exchange is refused invalid_grant, naming the session. Both tokens stay out of
+# every command line: the body reaches curl on standard input from a here-string, which the shell
+# writes before curl starts, so no pipeline's status can hide curl's, and the header from a file
+# curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
   -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

@@ -536,9 +536,10 @@ func loadDocumentSessionAuthors(ctx context.Context, db queryer, ids []string) (
 
 // mentionDeliveryQuery groups every comment's mention attempts by the session each counts under
 // (model.MentionSessionSQL) and by its target, and reports of each group the mode the comment
-// recorded on that mention, whether an attempt was sent, is past the lease a send is waited out
-// for (model.MentionResumedSQL), is live (model.MentionLiveSQL), is abandoned
-// (model.MentionAbandonedSQL), whether any attempt of it failed or is abandoned
+// recorded on that mention, whether the listener took an attempt (sent, or queued for a session
+// that is not running, which reaches it when it runs again: model.DeliveryTakenStatesSQL), is past
+// the lease a send is waited out for (model.MentionResumedSQL), is live (model.MentionLiveSQL), is
+// abandoned (model.MentionAbandonedSQL), whether any attempt of it failed or is abandoned
 // (mentionDeliveries.fallbackKeys; that flag and the sent one together say whether the group has
 // settled at all, which is what mentionDeliveries.settledKeys holds a key for), and whether an
 // attempt of it still owed a send was created more than the bound a role route's forward waits
@@ -561,7 +562,7 @@ var mentionDeliveryQuery = `
 	       ` + model.MentionSessionSQL("d") + `,
 	       d.target,
 	       coalesce(min(m.delivery), min(d.delivery)),
-	       bool_or(d.state = 'sent'),
+	       bool_or(d.state in ` + model.DeliveryTakenStatesSQL + `),
 	       bool_or(d.state = 'pending' and ` + model.MentionResumedSQL("d") + `),
 	       bool_or(d.state = 'pending' and ` + model.MentionLiveSQL("d") + `),
 	       bool_or(d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `),

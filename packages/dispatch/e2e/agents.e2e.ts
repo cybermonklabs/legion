@@ -153,7 +153,11 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     const shownTitles = shownAgentRows(page).locator("h2");
     await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent", "Archivist"]);
     // Each heading owns its own row: a group's heading starts below the row above it.
+    await expect(idleToggle).toBeVisible();
+    await expect(quietToggle).toBeVisible();
+    // The waits above drew both headings, and a drawn element has a box, so each has one.
     const idleBox = await idleToggle.boundingBox();
+    // The Quiet heading was waited for above too, so its box is there as the Idle one's is.
     const quietBox = await quietToggle.boundingBox();
     if (idleBox === null || quietBox === null) throw new Error("group headings not laid out");
     expect(quietBox.y).toBeGreaterThanOrEqual(idleBox.y + idleBox.height);
@@ -846,6 +850,7 @@ function planners(count: number, capable: number): FakeSession[] {
 async function fillUntilStable(textarea: Locator): Promise<void> {
   const height = async (lines: number) => {
     await textarea.fill(Array.from({ length: lines }, (_, line) => `Line ${line + 1}`).join("\n"));
+    // The fill above waited for the box to be visible and editable, so the box is drawn.
     const box = await textarea.boundingBox();
     if (box === null) throw new Error("the message box is not on screen to measure");
     return box.height;
@@ -935,9 +940,12 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     // one, the row clauses record intent. A third whole card is bounded by the 166 px card, not
     // by the composer. The list is windowed, so the cards on the page are the ones it drew, of
     // the forty the heading above counts and the select-all ticked.
-    const drawn = await shownAgentRows(page).count();
-    expect(drawn).toBeGreaterThan(2);
-    expect(drawn).toBeLessThanOrEqual(40);
+    // The floor is polled: the window draws its cards after the scroll above, so a count read at
+    // once can be of a window still drawing. Once that poll has seen the window draw, one read of
+    // the ceiling catches a moment with more than 40 cards, which a poll would wait out.
+    const drawn = shownAgentRows(page);
+    await expect.poll(() => drawn.count()).toBeGreaterThan(2);
+    expect(await drawn.count()).toBeLessThanOrEqual(40);
 
     // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
     // message empty. Two whole cards and the third card's checkbox are above the composer.
@@ -1521,6 +1529,8 @@ test("a human-paced double click on one Retry sends that message once, and never
     // into the pointer and the second click lands on that row again.
     await expect(sends.getByRole("listitem").first()).toContainText("Never retried.");
     const retry = row("Retried once.").getByRole("button", { name: "Retry" });
+    await expect(retry).toBeVisible();
+    // The wait above drew Retry, and a drawn element has a box, so the box is there.
     const box = await retry.boundingBox();
     if (box === null) throw new Error("Retry has no box to click");
     const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -1664,7 +1674,12 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
   }
 });
 
-test("with one of two selected agents gone from the registry, Send reaches the live one and names the one left out", async ({
+// INFRA-626. A selected session that leaves the listener's live list is still a recipient: Envoy
+// may know it and it may simply be stopped, in which case the send is stored for it and reaches
+// it when it runs again. Only the listener can tell that session from one it has never heard of,
+// so the composer leaves the judgment to the server, which names on the broadcast whatever it
+// excluded.
+test("a selected agent gone from the registry stays in the send, with no reason on its chip", async ({
   browser,
 }) => {
   // The page learns of a departure only on its 15 s agent poll, which the page clock fires: the
@@ -1685,19 +1700,18 @@ test("with one of two selected agents gone from the registry, Send reaches the l
     await expect(composer.getByRole("button", { name: "Send to 2" })).toBeEnabled();
 
     // Bravo leaves; the page learns of it on its next agent poll, and names it by its ID since
-    // the registry no longer holds its title, with its state - not running - before the name.
+    // the registry no longer holds its title.
     await setSessionLive(bravo.session_id, false);
     await page.clock.fastForward(15_000);
     // TanStack's notifyManager batches its delivery on a zero-delay page timer.
     await page.clock.runFor(1);
-    const send = composer.getByRole("button", { name: "Send to 1" });
-    await expect(send).toBeEnabled();
-    await expect(send).toHaveAccessibleDescription(
-      "Excluded: Not running session:bravo-se… (no live session). Nothing is sent to them, and no other mode is substituted."
-    );
     await expect(
-      composer.getByRole("button", { name: /^session:bravo-se… · no live session/ })
+      composer.getByRole("button", { exact: true, name: "session:bravo-se… ✕" })
     ).toBeVisible();
+    const send = composer.getByRole("button", { name: "Send to 2" });
+    await expect(send).toBeEnabled();
+    await expect(send).not.toHaveAccessibleDescription(/Excluded/);
+    await expect(composer.getByText(/^Excluded:/)).toHaveCount(0);
   } finally {
     await alice.close();
   }

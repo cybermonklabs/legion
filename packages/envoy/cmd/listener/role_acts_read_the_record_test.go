@@ -1,15 +1,14 @@
 // The acts of the role lane and its kept lane that turn on who holds a role - the role message's
-// resolution, the kept-role sweep, the drain hold before each kept copy and the handover's retry -
-// each read the role's claim record from the role bucket, and none decides from the registry's
-// watched copy of that bucket. The tests here make the copy drift from the bucket in the
-// listener's own registry, in each direction a copy can drift, and require what the record says;
-// and they fail every read of the record and require each act to hold rather than forward.
+// resolution, the kept-role sweep's handover, the drain hold before each kept copy and the
+// handover's retry - each read the role's claim record from the role bucket, and none decides from
+// the registry's watched copy of that bucket. The tests here make the copy drift from the bucket
+// in the listener's own registry, in each direction a copy can drift, and require what the record
+// says; and they fail every read of the record and require each act to hold rather than forward.
 
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -121,9 +120,9 @@ func failRoleClaimReads(t *testing.T, registry *store.Registry) *atomic.Int64 {
 }
 
 // keptLaneHeadReads counts, from here on, the stored-message reads of role's kept lane made over
-// client's connection: the read of the lane each pass of a handover opens with
-// (readKeptLaneHead), which the sweep never makes itself, so a count above zero is a handover
-// that started.
+// client's connection: the read of the lane each pass of a handover opens with, and the one the
+// sweep makes before it starts a handover (readKeptLaneHead), so a count above zero is a lane
+// that a handover or the sweep read.
 func keptLaneHeadReads(t *testing.T, client *bus.Client, role string) func() int64 {
 	t.Helper()
 	var reads atomic.Int64
@@ -163,14 +162,7 @@ func unreadableLaneHead(t *testing.T, client *bus.Client, role string) {
 
 // logRecordsNamed is every JSON record in logs whose msg is name and whose role is role.
 func logRecordsNamed(logs, name, role string) []map[string]any {
-	var found []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(logs), "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == name && record["role"] == role {
-			found = append(found, record)
-		}
-	}
-	return found
+	return linesIn(logs, name, map[string]any{"role": role})
 }
 
 // liveRoleActEntry is the record every session here registers with: live and self-subscribed, so a
@@ -228,7 +220,7 @@ func (r *roleActRig) deliver(t *testing.T, role, key string) contracts.Envelope 
 func (r *roleActRig) keep(t *testing.T, role, key string) contracts.Envelope {
 	t.Helper()
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, key)
-	if !keepRoleMessage(r.harness.client, r.cfg.logger, role, item) {
+	if _, kept := keepRoleMessage(r.cfg, role, item); !kept {
 		t.Fatalf("keep a copy on role %s's lane; the listener log says why:\n%s", role, r.harness.logs.String())
 	}
 	return item
@@ -358,7 +350,10 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 
 	t.Run("kept-role sweep", func(t *testing.T) {
 		// The copy names a live session for a role whose lane holds a copy and which no record
-		// claims: the sweep starts no handover, so nothing reads the lane.
+		// claims: the sweep hands the lane over, as it hands over every lane, and the handover's
+		// resolution reads the record, finds no claim, and forwards nothing. The role's wake
+		// report, which the sweep raises again only after a handover that resolved no live
+		// holder, says which the resolution read.
 		t.Run("surplus", func(t *testing.T) {
 			leaf(t)
 			const role = "act-sweep-surplus"
@@ -371,12 +366,15 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			sweepKeptRoleLanes(ctx, rig.cfg)
+			sweepOnce(ctx, rig.cfg)
 
-			rig.requireNoForward(t, time.Second)
-			if got := reads(); got != 0 {
-				t.Fatalf("the sweep started a handover of role %s, which read its kept lane %d times; want none: no claim record names a holder",
-					role, got)
+			rig.requireNoForward(t, 0)
+			if got := reads(); got == 0 {
+				t.Fatalf("the sweep read role %s's kept lane %d times; want it read and handed over, as every lane is", role, got)
+			}
+			if wakes := sweptRoleWakes(t, rig.harness.client, role); len(wakes) != 1 {
+				t.Fatalf("the sweep raised %d wake reports for role %s, want one: its handover resolved the role as no claim record names it, unheld:\n%s",
+					len(wakes), role, rig.harness.logs.String())
 			}
 		})
 		// The record gives a live session the role and the copy lost it: the sweep hands the
@@ -393,7 +391,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			sweepKeptRoleLanes(ctx, rig.cfg)
+			sweepOnce(ctx, rig.cfg)
 
 			rig.awaitForward(t, holder, item, 30*time.Second)
 			// The same counter the surplus case reads none on counts this handover's read, so
@@ -612,16 +610,19 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 					defer cancel()
 
-					sweepKeptRoleLanes(ctx, rig.cfg)
+					sweepOnce(ctx, rig.cfg)
 
 					if !reads.fail {
 						rig.awaitForward(t, holder, item, 30*time.Second)
 						return
 					}
-					rig.requireNoForward(t, time.Second)
-					if got := laneReads(); got != 0 || failed.Load() == 0 {
-						t.Fatalf("the sweep made %d claim reads and started a handover that read role %s's kept lane %d times; want the lane passed over on the claim read that failed",
-							failed.Load(), role, got)
+					rig.requireNoForward(t, 0)
+					if got := laneReads(); got == 0 || failed.Load() == 0 {
+						t.Fatalf("the sweep read role %s's kept lane %d times and its handover made %d claim reads; want the lane handed over and held on the claim read that failed",
+							role, got, failed.Load())
+					}
+					if wakes := sweptRoleWakes(t, rig.harness.client, role); len(wakes) != 0 {
+						t.Fatalf("the sweep raised %d wake reports for role %s, want none: a resolution that did not answer says nothing of whether the role has a live holder", len(wakes), role)
 					}
 				})
 			})

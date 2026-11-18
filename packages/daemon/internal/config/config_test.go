@@ -514,13 +514,14 @@ func slackChannelsFile(channels string, daemon, enrolled bool) string {
 	return body
 }
 
-// Only the controller the daemon launches, enrolled with the secrets broker, is granted the Slack
-// bot token (LEGION_SLACK_BOT_TOKEN, owned by the Legion daemon's service): the broker grants a
-// service's secret to that service's own pods and no one else. So a project names Slack channels
-// only where both hold, and anywhere else the loader refuses them, naming why, rather than start a
-// controller that hears mentions it can never answer. An empty list names no channel.
+// The controller the daemon launches answers a project's Slack mentions once it is enrolled with
+// the secrets broker: its enrollment gives it a broker identity, and the broker grants the Slack
+// bot token (LEGION_SLACK_BOT_TOKEN, a shared agent secret) to a session with one. So a project
+// names Slack channels only where both hold, and anywhere else the loader refuses them, naming
+// why, rather than start a controller that hears mentions it can never answer. An empty list
+// names no channel.
 func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T) {
-	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants the Slack bot token (LEGION_SLACK_BOT_TOKEN) only to the Legion daemon service's own pods"
+	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
 	for _, tc := range []struct {
 		name, body, want string
 	}{
@@ -823,11 +824,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// The project's repositories are Dispatch's mapping, so a file that still names one is
-			// refused, naming where they are set.
+			// Dispatch holds the project's repository mapping, so a file that still names a
+			// repository is refused, naming where the mapping is set.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1775,7 +1776,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "max_recursion_depth", line: "max_recursion_depth: 8", class: tossed,
-			want: "unknown key max_recursion_depth: an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+			want: "unknown key max_recursion_depth: no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 		},
 
 		{key: "dispatch_mcp_url", line: "dispatch_mcp_url: https://dispatch.example/mcp", class: migration, want: wantDispatchMcpURLMessage},

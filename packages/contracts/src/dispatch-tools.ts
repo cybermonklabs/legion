@@ -511,6 +511,24 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
 
+/** What a request for changes must carry. Dispatch requires it too (`recordArtifactReview` in
+ *  packages/envoy/internal/dispatch/api/reviews.go, which both review routes share, answers 400
+ *  REASON_REQUIRED without one), and `dispatch review` refuses such a call before it sends
+ *  anything. */
+const REVIEW_REASON_RULE =
+  "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.";
+
+const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
+    return (
+      input.verdict !== "changes_requested" ||
+      (typeof input.reason === "string" && input.reason.trim() !== "")
+    );
+  },
+  message: REVIEW_REASON_RULE,
+};
+
 /** The five arguments a record of a result must carry. They are named here rather than taken as
  *  the head of the list below, because reading them by position makes a field inserted in the
  *  wrong place change what a record requires, with nothing to say so. */
@@ -601,8 +619,10 @@ export const PROJECT_KEY_RULE =
 /** A GitHub repository as `owner/name`, as `dispatch architecture-sync --repo` sends it in the
  *  path of `/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`. A name of `.` or
  *  `..` would resolve away as a path segment, so it is refused here rather than sent; the server
- *  holds the rest of GitHub's rule (`parseSourceRepo`). */
-const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
+ *  holds the rest of GitHub's rule (`parseSourceRepo`). The owner takes an underscore, since a
+ *  managed user's login ends in `_<shortcode>` (`mona-cat_octo`): the server saves a source in
+ *  such an account, and a refusal here would leave it saved and never synced. */
+const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [
@@ -659,7 +679,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_issue",
     example: { project: "DSP", title: "Native workspace" },
     description:
-      "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them. " +
+      "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
       "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
       `${CI_CHECK_RULE} ` +
@@ -713,7 +733,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name, mapped to the issue's project in Settings; a child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
+          "The repository the issue targets, owner/name. A child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
         )
         .optional(),
     }),
@@ -833,7 +853,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name, mapped to the issue's project in Settings; an empty string clears it, so the issue inherits its parent's or the project's default again."
+          "The repository the issue targets, owner/name. An empty string clears it, so the issue inherits its parent's or the project's default again."
         )
         .optional(),
       before: z
@@ -1312,8 +1332,8 @@ export const dispatchToolSpecs = [
     description:
       "Apply deterministic document edits: replace or delete quoted text, insert markdown at an anchor, retype an identified paragraph or typed block into a schema-declared typed block, delete or move a whole block by its id, or delete a table row or column in place. " +
       "Do not use it for review feedback or for reading; use dispatch comment, dispatch suggest, or dispatch doc-read instead. " +
-      "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace is inline: with is the new text of the matched span, so a marker of a different kind from the block's own stays literal text ('4. Design' written into a heading). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - a line indented four spaces or a tab, which markdown reads as a code block, or whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
-      "with cannot open a new block: after a hard line break inside with (two trailing spaces, or a backslash, before the newline) a heading, bullet, '1.'/'1)' ordered, or '>' blockquote marker is INVALID_OP too, since that line would stay escaped text inside the matched block - use insert, plus delete for what it replaces, to add the block. A hard break in with is itself INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
+      "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
+      "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
       "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
@@ -1321,7 +1341,7 @@ export const dispatchToolSpecs = [
       "The result carries the document token this edit produced, so a chain of guarded edits passes each result's token as the next edit's precondition with no dispatch doc-read between them. " +
       "A batch that leaves the document exactly as it was mints no version, named or not, and the result says nothing changed and names each operation that did nothing. " +
       "A change a browser removes while the edit is in flight is never reported as applied: EDIT_LOST_TO_CONCURRENT_CHANGE means the write was refused and nothing was written, so re-read the document and decide again, as with PRECONDITION_FAILED; lost_ops on a successful result names operations whose text the live document no longer has, because the deletion landed after the version was written. " +
-      "One replace per paragraph: more new paragraphs go in one insert after the last one you rewrote, since two inserts at one anchor come out reversed; read the passage back with dispatch doc-read afterwards. " +
+      "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
       "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
       `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
@@ -1352,7 +1372,7 @@ export const dispatchToolSpecs = [
               with: z
                 .string()
                 .describe(
-                  "Replacement text for replace: inside a code block, the code's literal text as sent (line breaks at its end do not survive a read); text that would read as block syntax at a line start, such as '---' over a paragraph, is stored escaped and reads back as those characters, so a rule is added with insert beside the paragraph; elsewhere parsed as inline markdown within the matched block; a marker of a different kind from the block's own is literal text, one of the same kind is refused unless it is a heading rename (where a level named by find is what lets with change it), a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, a block marker after a hard line break is refused because replace cannot open a new block, and any non-empty value that renders to no text is refused - only an empty value deletes the match. A CR LF or a lone carriage return in it is written as a line feed."
+                  "Replacement text for replace: inside a code block, the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
                 )
                 .optional(),
               occurrence: z
@@ -1558,6 +1578,53 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 1 })
         .describe("The plan version the review read and approved."),
     }),
+  },
+  {
+    name: "dispatch_review",
+    example: { issue: "DSP-1", version: 2, verdict: "approved" },
+    description:
+      "Approve one version of an issue's document, or request changes on it, as the person your " +
+      "token names: what the document header's Approve and Request changes record. A review " +
+      "records an approval or a changes request in the person's name at that version, so it " +
+      "works only with a token that names a person who holds approve; Dispatch refuses it to " +
+      "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. --version is the " +
+      "version you read, sent in the review route's path, and it must be the version the review " +
+      "would record: the document's latest settled version, or, while an approval request is " +
+      "open on it, the version that request names for it. Any other is refused 409 " +
+      "REVIEW_VERSION_MOVED, which names the version to read, and nothing is recorded. A " +
+      "Dispatch build without the versioned review route answers no route and records nothing; " +
+      "the command then says so and names /healthz, which names the commit of the build that " +
+      "answers it when that build was stamped with one. With a request open the review answers " +
+      "it, and records the same verdict on every document the " +
+      "request names, each at the version the request names. A later version makes an approval " +
+      "stale. A review is the one browser action this command takes for a person; every other " +
+      "browser action is dispatch://INFRA-910's. " +
+      ISSUE_REFERENCE,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      artifact: z
+        .string()
+        .describe("Document artifact id, slug, or filename; the issue's spec by default.")
+        .optional(),
+      version: z
+        .number({ int: true, min: 1 })
+        .describe(
+          "The document version you read and review, sent as a segment of the review route's path: the version the review would record, or Dispatch refuses it 409 REVIEW_VERSION_MOVED naming the version to read."
+        ),
+      verdict: z
+        .enum(["approved", "changes_requested"])
+        .describe(
+          "approved records an approval; changes_requested records a request for changes and requires reason."
+        ),
+      reason: z
+        .string()
+        .describe(
+          "What must change before the document can be approved. changes_requested requires it; an approval may carry one."
+        )
+        .optional(),
+    }),
+    validation: reviewValidation,
+    strict: true,
   },
   {
     name: "dispatch_result",

@@ -98,9 +98,10 @@ type Deps struct {
 	// cursor, to tell whether the copy just kept is the one that lane's drain would hand over
 	// next (handOverKept). cmd/dispatch passes the same bus.Client it publishes through, whose
 	// grant covers that read. A nil reader makes no handover at all, as a nil role reader is
-	// errNoRoleReaders: the kept copy then waits for the role's next claim, keep or the
-	// listener's sweep, which is what this package's tests that publish through a stand-in with
-	// no stream behind it leave it to.
+	// errNoRoleReaders: the kept copy then waits for the listener's next handover of the lane -
+	// the role's next claim, a keep, the registration that makes a session holding the role live
+	// again or the claim route's refresh that does, or the sweep (handOverKept) - which is what
+	// this package's tests that publish through a stand-in with no stream behind it leave it to.
 	KeptLanes KeptLaneReader
 	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
 	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
@@ -189,13 +190,16 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // in at most eight statements (loadLookups) and its role routes' holders read once per role
 // (resolveRoleHolders), and sends it through one window (Publisher.WindowUntil) as
 // chains: the sends of one owner's events to one destination key go one at a time, in id order,
-// each once the one before it reached its destination, while the chains of different owners and
-// destination keys proceed side by side (planChains, sendChains). That is the order a receiver
-// needs and the only one the batch keeps: a session takes an owner's events in id order on each
-// subject family it receives them on, while the sends to different owners or destination keys land
-// in whatever order their answers allow. A send that fails holds back only its own chain, and an
-// event that is not due holds back its owner's later events only from the destinations it has not
-// reached. An event whose recipient read failed holds them back too, from every session key its
+// each once the one before it reached its destination, and each send of the owner to a key other
+// than its topic family once the owner's earlier topic sends reached that family, while the chains
+// of different owners and destination keys proceed side by side (planChains, sendChains). That is
+// the order a receiver needs and the only one the batch keeps: a session takes an owner's events
+// in id order across its own subject and the owner's topic family it follows, while the sends to
+// different owners or destination keys land in whatever order their answers allow. A send that
+// fails holds back only its own chain, save a topic send, which holds back the owner's later sends
+// to every key, and an event that is not due holds back its owner's later events only from the
+// destinations it has not reached, and from every key while one of them is the topic family. An
+// event whose recipient read failed holds them back too, from every session key its
 // list neither names nor it already reached, until its retry. What an owner came to is written in
 // one statement, and what the owners left at the batch's end came to in one more (recordBatch).
 //
@@ -972,7 +976,7 @@ func (d *destinations) addSession(sessionID, label, id string) {
 		return
 	}
 	d.addDestination(destination{
-		subject:   contracts.AgentSubject(sessionID),
+		subject:   contracts.LegacyAgentSubject(sessionID),
 		label:     label,
 		id:        id,
 		dedupeKey: d.mentions.fallbackKeys[sessionID],
@@ -1011,7 +1015,7 @@ func (d *destinations) addWorkingSession(sessionID, label, id string) {
 		return
 	}
 	d.addDestination(destination{
-		subject:   contracts.AgentSubject(sessionID),
+		subject:   contracts.LegacyAgentSubject(sessionID),
 		label:     label,
 		id:        id,
 		dedupeKey: d.mentions.fallbackKeys[sessionID],
@@ -1188,11 +1192,13 @@ func payloadPreviousClaimSession(payload any) string {
 // human added), on the session's own topic, in the order they followed it. Unlike the route and
 // author routes this ignores Notify: an agent's reply on an ask must still reach the other
 // followers, who otherwise learn of it only by subscribing to the whole issue. A quiet ask.edited
-// (a version move of an approval request that an earlier version already moved since it was
-// opened or last handed back, model.AskEditEventPayload.Quiet) reaches no follower. The event's own
-// actor is skipped, and a follower whose own mention of a new comment delivers it is left to that
-// mention (destinations.addSession, the mention rule); a follower whose mention failed gets this
-// copy instead. Only the reply's creation is left to the mention; its edit, resolution and
+// (model.AskEditEventPayload.Quiet: a version move of an approval request that an earlier version
+// already moved since it was opened or last handed back, or a settlement's move that keeps the
+// request waiting on the human because the new version, which a settlement wrote, holds byte for
+// byte the text of the version it names, docs.MoveApprovalAsk) reaches no follower. The event's
+// own actor is skipped, and a follower whose own mention of a new comment delivers it is left to
+// that mention (destinations.addSession, the mention rule); a follower whose mention failed gets
+// this copy instead. Only the reply's creation is left to the mention; its edit, resolution and
 // reopening reach every follower. A topic the route already reaches is not added twice.
 func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	var askID string

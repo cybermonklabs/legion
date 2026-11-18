@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `agent-secrets` builds for Windows, without the value prompt, as its README says: the checks that
+  refuse a private file or directory another user owns read the owner through one package that
+  answers none on a target keeping no uid on a file.

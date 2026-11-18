@@ -49,6 +49,19 @@ makes there, so one person signed in on two machines holds a login on each, and 
 in on one machine hold one each. Revoking a sign-in on Dispatch ends its machine login with it:
 every session it enrolled ends, and the box signs in again to work on.
 
+A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
+access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
+pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
+and the one Dispatch project it may write, or no project for an entry that names none
+(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
+service and a fixed session instead, and no person and no project: the token holds the OAuth scope
+`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
+other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
+`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
+source, each component, and every issue of the project, closed and iceboxed ones included. No
+setting holds a read entry to some projects.
+
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
 a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
@@ -165,6 +178,89 @@ itself:
 - The first deploy of a broker with this behavior restores nothing that ran out before it.
 - A pod whose renewer already exited 76 has no renewer until the pod is relaunched.
 
+### Where a command takes its identity
+
+`agent-secrets NAME -- command`, and every other form that acts as a session (`request`,
+`status`, `cancel`, `revoke`, `self`, `whoami`, `sign`, `renew`), takes its broker identity from
+the first of four sources that has one for the calling process, as the AWS SDK takes a credential
+from the first provider in its chain that holds one. None of them needs a registered agent
+session, so the same command works in a shell, a systemd unit, a cron job, an agent session, a box
+and a pod.
+
+| Source | What it is | Nothing for the caller (skipped) | Present but broken (stops the command) |
+| --- | --- | --- | --- |
+| `key-dir` | The `key.pem` and `enrollment` a launcher put in the key directory (`AGENT_SECRETS_KEY_DIR`, else `$XDG_RUNTIME_DIR/agent-secrets`): a box or a pod. | No `key.pem` there, and no `enrollment.pending` younger than 160 seconds. | A `key.pem` that does not parse, no `enrollment` beside it (with the launcher's `enrollment.error` when it left one), or a launcher still enrolling: a fresh `enrollment.pending` and no `key.pem` after `AGENT_SECRETS_ENROLL_WAIT`. |
+| `sign-in` | A person's `agent-secrets login` on this machine (`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`). | Nobody has signed in on this machine. | Several people signed in and `AGENT_SECRETS_PERSON` names none of them, a record that does not parse, or a broker that refuses the sign-in. |
+| `helper` | `agent-secrets-helper`, for a caller inside a session `agent-secrets register` registered. The command asks the helper first, so a process that only inherited the socket goes on. | No socket file where no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset and no helper unit installed), or the helper answers `NOT_A_SESSION`. | A stopped helper: no socket file where `AGENT_SECRETS_HELPER_SOCK` names one or the helper's unit is installed (a clean stop removes the socket). A socket that does not answer, `NO_CREDENTIAL` (the machine is not logged in), or any other refusal. |
+| `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables or set to `kubernetes`, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
+
+A source that is present but broken, and any refusal of the broker's, stop the command with that
+error: the command never acts under the next identity in its place. With no source, one refusal
+names each source and why it had nothing:
+`no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`.
+
+The machine source finds the machine's identity from the Google exchange audience the broker
+answers in `GET /v1/settings` (`google_exchange_audience`), and takes the first of these that
+gives a token for it: an `external_account` credential file that `GOOGLE_APPLICATION_CREDENTIALS`
+names, acting as the service account its `service_account_impersonation_url` names; and the
+Compute Engine metadata server, which a machine with none answers "no metadata server" within 1.5
+seconds (a GKE pod's metadata server answers for the pod's own Google service account). A pod's
+projected Kubernetes token is not one of them: the broker's exchange mints no launcher credential
+for a Kubernetes identity, so no session could be registered under it, and a pod enrolls through
+its launcher or `agent-secrets enroll --pod` instead. On EC2 the machine source has nothing, since
+the broker takes no AWS identity: such a machine reaches the broker through a launcher's key
+directory, a sign-in or the helper.
+`AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`metadata` or `pool`,
+with its own variables; `kubernetes` is refused, exit 2, before anything is traded), and then
+nothing is detected. Because the cache sits below
+the sign-in, a person who runs `agent-secrets login` acts as themselves from their next command
+on, while the machine's session stays for every process no person signed in for. A machine
+session a client before this one kept in the key directory, marked `machine-session`, is moved to
+the machine cache by the first command that finds it.
+
+`GET /v1/settings` is public, and its Google audience chooses whom the identity token the
+machine mints is good for, so the machine source reads it only from an `https` broker, or an
+`http` one on loopback. Once it has found an identity to mint a token for that audience, and
+before it mints one, it keeps the audience in `google-exchange-audience` in the machine cache;
+a machine with no identity of its own mints nothing and keeps nothing. A broker that later
+names another audience than the one kept is refused before any token is minted for it; if the
+broker's audience really did change, remove that file. A broker publishes its Google audience
+only where `BROKER_VM_SERVICES` lists a machine that may trade a token for it.
+
+Each registration of the machine's session makes a key of its own, the first one and each one
+after the broker says the session is no longer live, so a copy of `key.pem` (in a backup of the
+home directory, or on a disk kept across a reboot) signs for no later enrollment. Commands that
+find the cache empty at the same time register one session between them: a lock in the cache
+holds a registration from its read of the cache to its write.
+
+A process started with no environment of its own, such as a systemd unit or a cron job, reads
+its settings from `~/.config/agent-secrets/config`, as the AWS CLI reads `~/.aws/config`: `KEY=value`
+lines, `#` comments and blank lines, with no quotes taken off, no `export` and no expansion. It
+takes nine keys — `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,
+`AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
+`AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
+`AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT` —
+and any other key is a usage error (exit 2) naming the file and the line. So is a path that is
+not a regular file, a file another user than this one or root owns, and a file its group or
+others can write: the file names the broker the machine proves its identity to, so nothing in it
+is read until it is the user's own and `chmod go-w` is run on it. A variable that is set and not
+empty wins over the file.
+Where the environment gives no `HOME`, as for a system unit that names no `User=`, the file, the
+sign-ins and the machine cache are under the home the password database gives the process's user
+(`/root` for root).
+
+`agent-secrets identity` answers by its exit status alone, as it always has: 0 for a launcher's
+key directory or a helper session, 1 otherwise, asking nothing of the network. `agent-secrets
+identity --source` walks the chain, registering nothing, and prints the source a command would
+use (`key-dir: <dir>`, `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in
+<dir>`, or `machine: ` and the identity it would trade), then `helper: <socket>` whenever the
+helper answered and is not that source; with none it prints the refusal above and exits 1. Each
+`helper: <socket>` line ends with the release of the helper process that answered, as that process
+reports it (`(agent-secrets-helper <release>)`), not the release installed on disk, which differs
+after an upgrade until the helper restarts. A helper from before that report answers
+`unknown op version`, and the line ends `(a helper from before this release; its binary is
+/proc/<pid>/exe)`, naming the process on the socket.
+
 ## Machine login
 
 A launcher (a person's machine helper, or the Legion daemon) cannot enroll anything until the
@@ -261,16 +357,24 @@ marked with tags or annotations:
 - **`owner`** is `shared`, a person's email in lowercase, the email they sign in to Dispatch with,
   or a service the broker is configured with (`BROKER_SERVICES` or `BROKER_VM_SERVICES`).
 - **`tier`** is `agent` or `human`.
-- **`kind`** is absent for a stored secret. It is `github-app` for a GitHub App key,
+- **`type`** is absent for a stored secret. It is `github-app` for a GitHub App key,
   `google-login` for a Google authorized-user login, or `google-service-account` for one Google
   service account the broker mints a token as, the account the deployment binds the secret to
-  (`BROKER_SERVICE_ACCOUNT_SECRETS`). A secret with a kind must have a current value.
-- **`github-owners`** is required on a `github-app` secret, and read on no other kind. It lists
+  (`BROKER_SERVICE_ACCOUNT_SECRETS`). A secret with a type must have a current value.
+  For one release, when `type` is absent, the broker reads the old `kind` tag instead and logs
+  one warning per secret per broker process. An explicitly empty `type` takes precedence too.
+  Writers use `type` on both stores. Deploy this reader before changing production tags; then
+  copy each old classifier to `type` and remove the old tag. Once a secret carries `type`, this
+  release is a rollback floor: an earlier broker reads no `type` tag and serves the secret as
+  stored ([Rolling back](/legion/broker/operate/#what-it-depends-on)). `agent-secrets` writes a
+  type only through a broker whose settings answer `secret_type_tag: true`.
+  `secret retag NAME --type none` removes both classifier names and the rollback guard.
+- **`github-owners`** is required on a `github-app` secret, and read on no other type. It lists
   the GitHub accounts the broker mints installation tokens for, separated by spaces
-  (`acme-org ada`) and compared without regard to case, a form both stores hold. A comma, or an
-  entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds
-  anything but ASCII letters, digits and hyphens, is over 39 characters, or is the word `none`), is
-  refused `github-owners-malformed`. A public App can be installed by any account, so an
+  (`acme-org ada`) and compared without regard to case, a form both stores hold.
+  A comma, or an entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and underscores, is over 39 characters, or is the word `none`), is refused `github-owners-malformed`.
+  An entry may hold an underscore, which GitHub's sign-up form refuses, because a managed user's login ends in `_<shortcode>` (`mona-cat_octo`).
+  A public App can be installed by any account, so an
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
@@ -284,13 +388,13 @@ marked with tags or annotations:
   `google-service-account` keeps whatever `max-grant` it has, or none, so a person's own mail and
   Drive logins stay at their tier and are capped by nothing. A `google-service-account` secret's
   list names its own person owner, once, and the secret is refused `requesters-not-owner`
-  otherwise, so a secret owned by `shared` or by a service carries no such kind. A human-tier one
+  otherwise, so a secret owned by `shared` or by a service carries no such type. A human-tier one
   may name registered services beside that owner, so a service's pod can ask and the owner
   approves each request; an agent-tier one may not, and neither may a secret the deployment binds
   to a `dev-<name>` account, at either tier, since that token is one person's own. Set the list
   with `agent-secrets secret create|retag --requesters "<email> <service>"`.
 - **`scopes`** is optional, read on a `google-service-account` secret and refused on any other
-  kind (`scopes-kind`). It lists the OAuth scopes the minted token carries, each the part of a
+  type (`scopes-type`). It lists the OAuth scopes the minted token carries, each the part of a
   Google scope after `https://www.googleapis.com/auth/`, separated by spaces
   (`cloud-platform bigquery`). A secret without it mints the `cloud-platform` scope alone, which
   is what every such secret minted before the tag existed, and a changed list reaches the token
@@ -300,7 +404,7 @@ marked with tags or annotations:
   `scopes-malformed`. Set it with `agent-secrets secret create|retag --scopes "<scope> <scope>"`.
 - **`admin`** is optional, and `true` is its only value; anything else is refused
   `admin-malformed`. It marks a secret whose grant is an administrator's, which the broker cannot
-  read off the kind, an admin console password and a personal API key both being stored strings.
+  read off the type, an admin console password and a personal API key both being stored strings.
   Such a secret is human tier, names its `requesters` and bounds its grants to an hour, so a
   person approves every release, only someone the secret names may ask, and the grant is short
   enough to review while it is live; one that is not is refused `admin-tier`,
@@ -318,9 +422,12 @@ marked with tags or annotations:
   secrets all carry it gets a grant that lasts until its session ends instead of that default. Any other
   value is refused `default-grant-malformed`. Set it with `agent-secrets secret create|retag
   --default-grant session`.
-- **`mint-service-account`** is written by `agent-secrets secret` beside every kind, with the value
-  `kind-secret`, and this broker never reads it. It makes the brokers before kinds, from
-  legion-envoy-v13.19.0 on, refuse a kind secret rather than serve its stored key.
+- **`mint-service-account`** is written by `agent-secrets secret` beside every type, with the value
+  `type-secret`, and this broker never reads it. Only the brokers from legion-envoy-v13.19.0 to
+  the release before v16.0.0 read it, and refuse a type secret rather than serve its stored key.
+  Every broker from v16.0.0 to the release before the `type` tag ignores it and serves a secret
+  that carries `type` alone as a stored secret, so it makes no rollback past the first release
+  that reads `type` safe: that release is the rollback floor.
 
 In Secret Manager these fields are annotations rather than labels because a label's value cannot
 hold an email (`@` and `.` are outside its alphabet), and the broker compares the owner with a
@@ -428,11 +535,12 @@ of the namespace, or the one after, since Secrets Manager's listing can lag a ch
 minutes. On Google Secret Manager it usually takes effect at the next read of the namespace too,
 but Google bounds its listing's lag only at a few hours, so a change made any other way than
 `agent-secrets secret` (`gcloud`, the console) should be
-followed by a reread. A read that fails (Secrets Manager or KMS out of reach) is logged, and the policy from the
-last good read stays in force. The broker leaves out a secret it cannot serve, and logs it by name
-on every read
+followed by a reread. A read that fails (Secrets Manager or KMS out of reach) is logged when the
+failures start and again when a read succeeds, and the policy from the last good read stays in
+force. The broker leaves out a secret it cannot serve, logs it by name once, when it starts to
+refuse it, and counts it in a metric for as long as it refuses it
 ([Operating the broker](/legion/broker/operate/#health-and-logs)): a missing or malformed `owner`
-or `tier` tag (an email with a capital letter is malformed), an unknown `kind`, a `github-app`
+or `tier` tag (an email with a capital letter is malformed), an unknown `type`, a `github-app`
 secret whose `github-owners` names no account or holds a comma, a `requesters` list the broker
 cannot read (`requesters-malformed`), an `admin` tag set to anything but `true`
 (`admin-malformed`), an `admin` secret that is not human tier (`admin-tier`) or that names no
@@ -440,16 +548,19 @@ cannot read (`requesters-malformed`), an `admin` tag set to anything but `true`
 `max-grant` or one longer than an hour (`max-grant-required`), a `google-service-account` secret
 whose `requesters` are not its one person owner, or that lists a service where it may not
 (`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
-tag on any other kind (`scopes-kind`), a malformed
+tag on any other type (`scopes-type`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
-agent-secrets key, the AWS-managed key included, or a secret with no current value (created without
-one, so none of its versions carries the `AWSCURRENT` label). A request for a secret left out is
+agent-secrets key, the AWS-managed key included, a secret with no current value (created without
+one, so none of its versions carries the `AWSCURRENT` label), or a type secret whose stored value
+its type's minter could not mint from (`value-malformed`), which the broker finds by reading the
+value once for each new version or type of the secret
+([the value read](/legion/broker/operate/#the-value-read)). A request for a secret left out is
 refused `UNKNOWN_SECRET` before anyone is asked to approve it, and a live grant of it releases
 nothing until the broker serves the secret again.
 
 The policy's **version** is the SHA-256 of every served secret's name, owner, tier, source, max
-grant, `requesters` list, `scopes` list and `admin` mark, recorded on every request. A kind
-secret's source names its kind, so a kind change moves the version too, and so does any change to
+grant, `requesters` list, `scopes` list and `admin` mark, recorded on every request. A type
+secret's source names its type, so a type change moves the version too, and so does any change to
 a list. A secret with no list writes the same bytes into the digest that it always did.
 
 ## Requests and grants
@@ -460,7 +571,9 @@ The broker evaluates every name
 (`packages/envoy/internal/broker/requests/machine_state.go`):
 
 - A name the policy does not serve, even after the reread above, refuses the whole request with
-  `UNKNOWN_SECRET`, and nothing is recorded.
+  `UNKNOWN_SECRET`, and nothing is recorded. A secret `agent-secrets secret create` made and has not
+  yet filled, in the ten minutes it waits for its value, refuses the request with `PENDING_VALUE`
+  instead, which is not final: ask again once its owner has stored the value.
 - A name the policy denies denies the whole request; nothing is ever half-granted. Only a service's
   secret, asked for by anyone but that service, is denied.
 - A request that reaches a person needs a reason. Where a name's answer would be an approval —
@@ -471,9 +584,15 @@ The broker evaluates every name
   `was denied: `, and the command exits 77. A request every name of which is granted at once
   reaches nobody, so it needs no reason, and a machine login, which is always signed with an
   empty reason, never passes this way.
+- On a broker that signs nobody in, `BROKER_SIGNIN=off`
+  ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), nobody could approve such a
+  name, so it is denied at once, with a reason or without one, and one such name denies the whole
+  request: the session reads `<NAME>: a person must approve it, and this broker signs nobody in
+  (BROKER_SIGNIN=off)` after `was denied: `, and the command exits 77. What the policy grants at
+  once is granted there as everywhere.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
-- A **kind secret** has `kind=github-app`, `kind=google-login` or `kind=google-service-account`,
+- A **type secret** has `type=github-app`, `type=google-login` or `type=google-service-account`,
   and a current stored value. A GitHub App value holds an App identifier and private key.
   Its release returns a JSON object with
   one installation token for each installation of the App that is not suspended and is on an
@@ -487,18 +606,42 @@ The broker evaluates every name
   to an account the tag does not list is refused `NARROWING_OWNER_NOT_LISTED`, and one GitHub
   refuses, such as a repository the installation does not reach, `NARROWING_REFUSED`; the broker
   releases a narrowed token only once GitHub's answer shows it holds no more. It narrows that
-  release alone; the grant's next release is owner-wide unless it narrows too. A narrowing and
-  the airlock do not go together: a release of a grant any of whose names is behind the airlock
-  ([The airlock](#the-airlock)) is refused `NARROWING_BEHIND_AIRLOCK`, naming that name, because
-  the proxy spends such a grant's values itself and mints them owner-wide for the life of the
-  grant, so no narrowing of one release could hold for them. A github-app secret the rules do
-  not name narrows as it always has: ask for it in a grant that holds no name behind the
-  airlock. The exec form's `--github-token` narrows nothing: the release holds the same JSON
-  object of installations, and the flag decides what the exec form puts in the command's
-  environment. With it the name holds that one installation's token alone, which is what a
-  command sends to GitHub, and without it the name holds the whole object. `--github-token`
-  needs `--github-owner`, and nothing runs where the release holds other than one installation
-  or where no name of the grant released a github-app value. A Google login
+  release alone; the grant's next release is owner-wide unless it narrows too. A request that
+  asks for a narrowing carries that same `github_app` body (`POST /v1/requests`). Where a person
+  must approve that request, the broker decides the narrowing before the approval request, so a
+  narrowing it cannot serve costs nobody an approval. It refuses the request then, and nobody is
+  asked, for each of five causes: a request that holds no github-app secret
+  (`NARROWING_NOT_APPLICABLE`), an account the secret's `github-owners` tag does not list
+  (`NARROWING_OWNER_NOT_LISTED`), a name behind the airlock (`NARROWING_BEHIND_AIRLOCK`), an App
+  with no installation on the account (`422 NARROWING_REFUSED` on the request, whose message
+  says `has no installation on`, where the release of a grant answers it `502 MINT_FAILED`), and
+  a narrowing GitHub refuses (`NARROWING_REFUSED`). For a narrowing that names repositories or
+  read access, it mints the token the release would mint and revokes it at once. It checks a
+  narrowing to an account alone from the App's list of
+  installations and mints no token for it: such a narrowing sends GitHub no repositories and no
+  permissions, so GitHub's answer to its token request can refuse the App but not the narrowing.
+  Where it reaches no verdict, the request waits for its approver as before and the release makes
+  the refusal. GitHub gives no verdict when it is out of reach, when it answers a 5xx or a rate
+  limit, and when it refuses the App itself with a `401`, `403` or `404`. The broker reaches no
+  verdict when it cannot read the stored value or mint from it, when the check passes its own
+  bounds (ten seconds for the whole check, five for one mint) or its caller goes away, when the
+  enrollment has used its checks (five at once, one more every twelve seconds), and when it
+  cannot read the requester or has no GitHub App minter. The narrowing is unsigned and narrows
+  nothing by itself, so the grant, its record and the approval page are the same, and a release
+  that asks for no narrowing is owner-wide whatever the request carried.
+  A narrowing and the airlock do not go together: where a person decides the request, the broker
+  refuses the request `NARROWING_BEHIND_AIRLOCK` before the approval request, naming that
+  secret, when any of its names is behind the airlock ([The airlock](#the-airlock)); where the
+  policy grants every name at once, the same refusal comes at the release of the grant. The
+  reason is that the proxy spends such a grant's values itself and mints them owner-wide for the
+  life of the grant, so no narrowing of one release could hold for them. A github-app secret
+  the rules do not name narrows as it always has: ask for it in a grant that holds no name
+  behind the airlock. The exec form's `--github-token` narrows nothing: the release holds the
+  same JSON object of installations, and the flag decides what the exec form puts in the
+  command's environment. With it the name holds that one installation's token alone, which is
+  what a command sends to GitHub, and without it the name holds the whole object.
+  `--github-token` needs `--github-owner`, and nothing runs where the release holds other than
+  one installation or where no name of the grant released a github-app value. A Google login
   value holds an `authorized_user` refresh-token credential. Its release returns a bare access
   token. A Google service-account value names one account,
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and its release returns a bare
@@ -516,22 +659,32 @@ The broker evaluates every name
   `requesters` tag names, beside the registered services a human-tier one may list, and for
   grants of an hour at most. The broker reads the stored value for each release,
   as it reads any secret, and mints from
-  it. It never returns the stored App key or refresh token. A token lasts about an hour, so a client
-  keeps the release until its `expires_at` rather than asking again for each use. A deleted kind
-  secret stops releasing as any deleted secret does. A release GitHub or Google refuses, such as a
-  Google login that needs a new sign-in, is refused `MINT_FAILED` with the upstream's HTTP status
-  code, Google's `invalid_rapt` or `rapt_required` subtype (any other is named `unknown`), or the
-  class of a failed call, never the upstream's own text, and the broker logs it for its operator.
-  A grant ends for good when a release finds its secret's kind changed
-  (removed, or changed to another kind) or its lifetime over the current `max-grant`: that
+  it. It never returns the stored App key or refresh token. It also reads each type secret's value
+  once for each new version or type, and checks it as the minter reads it, so a value the
+  minter could not mint from leaves the secret out (`value-malformed`) before anyone asks for it.
+  `agent-secrets secret` checks a value the same way before it writes one. A token lasts about an
+  hour, so a client
+  keeps the release until its `expires_at` rather than asking again for each use. A deleted type
+  secret stops releasing as any deleted secret does. A call to GitHub or Google that answers a
+  5xx or a rate limit, or gets no answer, is attempted up to three times within the release
+  ([the mint retry](/legion/broker/operate/#the-mint-retry)). A release GitHub or Google refuses,
+  such as a Google login that needs a new sign-in, is refused `MINT_FAILED` with the upstream's
+  HTTP status code, Google's `invalid_rapt` or `rapt_required` subtype (any other is named
+  `unknown`), or the class of a failed call, never the upstream's own text, and the broker logs it
+  for its operator.
+  A grant ends for good when a release finds its secret's type changed
+  (removed, or changed to another type) or its lifetime over the current `max-grant`: that
   release answers `GRANT_NOT_LIVE` and writes a `grant.revoked` audit row by
   `broker:release-recheck`, and the session asks again. A release of a stored secret checks the
-  policy again once it has read the store, so a retag to a kind reread during that read releases
-  nothing and ends the grant the same way: retag a stored secret to a kind, and wait for the broker
-  to serve it, before storing its App key or login. A change reverted before any release finds
-  it leaves the grant as it was: it was approved for that secret, kind and source, and its next
-  release mints a token of that same kind from that same frozen source, never the stored value. To
-  end a grant, revoke it. A kind secret the broker stops serving, such as one whose
+  policy again once it has read the store, so a retag to a type reread during that read releases
+  nothing and ends the grant the same way: retag a stored secret to a type, and wait for the broker
+  to read the new tags, before storing its App key or login. That retag checks the value the
+  secret holds, so a sign-in that may read it is refused while it is no value of that type
+  ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
+  A change reverted before any release finds
+  it leaves the grant as it was: it was approved for that secret, type and source, and its next
+  release mints a token of that same type from that same frozen source, never the stored value. To
+  end a grant, revoke it. A type secret the broker stops serving, such as one whose
   `github-owners` is removed or malformed, stops releasing until the secret is served again.
 - A secret with `max-grant` needs a lifetime no longer than that duration. A request whose `--ttl`
   (or, with none, the default of 15 minutes for a human-tier secret and 12 hours otherwise, or session length under `default-grant=session`) is longer is refused `GRANT_REQUIRES_LIFETIME` before the broker writes a request. A
@@ -659,7 +812,8 @@ the value: approve a secret only for a session you would trust with the value it
 behind the airlock is the exception: the broker releases a placeholder for it and never the value
 ([The airlock](#the-airlock)).
 
-A grant ends when its lifetime runs out, when its session revokes it (`agent-secrets revoke`), when
+A grant ends when its lifetime runs out, when its session revokes it (`agent-secrets revoke`, or
+`agent-secrets grant revoke` run inside the session), when
 its approver or its enrollment's operator revokes it in Dispatch or from one of their machines
 (`agent-secrets grant revoke`), and when the enrollment holding it ends for good: a person's revoke
 of the machine login or the sign-in behind it, or the carry window closing on an enrollment the
@@ -706,11 +860,23 @@ The proxy reads the grant behind the password on every connection, and the entry
 request (`packages/envoy/internal/broker/airlockproxy`). A host no entry of that grant binds is
 tunnelled unread, to a public address alone. A bound host is read with a certificate of the
 proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. A
-refusal is an HTTP error from the proxy naming the rule that refused it, such as `host not bound`
-or `not allowed by rule`, and the broker logs one line for each call to a bound host: the
-enrollment, the grant, the secret, the host, the method, the path, the answer's status and that
-reason, never a value. A path that holds a `.` or `..` segment is refused outright
+header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
+else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+request, with its `:authority` as its `Host`, so one connection carries no request for another
+host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
+(`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
+How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
+decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
+refused it, such as `host not bound` or `not allowed by rule`, and ending with its answer id. The
+broker logs one line for each call to a bound host, never with a value. A call it carried, or
+could not carry, writes
+`airlock proxy: a call to a bound host` with the enrollment, the grant, the secret, the host, the
+method, the path and the answer's status. A call it refused writes its refusal record,
+`broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
+method, the path, the reason and the answer id
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A path that
+holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
 not bound. On an entry that lists methods and paths, a request carrying
@@ -730,10 +896,11 @@ What the airlock does not stop is as much of the design as what it does:
 - The placeholder works as the proxy password for its grant's bound hosts until the grant ends,
   from wherever the proxy port is reachable.
 
-- Once the grant ends, every call through the proxy gets `407`, to any host, and a WebSocket the
-  proxy had joined to a bound host is closed with the grant rather than running to the idle
-  limit. A tunnel to a host no entry binds carries no value, so the idle limit is the whole of
-  what bounds one.
+- Once the grant ends, every call through the proxy gets `407`, to any host. A call still running
+  at that moment, such as a WebSocket the proxy joined to a bound host, a gRPC call whose answers
+  stream or a long poll, is ended with the grant within 15 seconds rather than running to the
+  idle limit. A call whose service has not answered yet gets the `407` itself. A tunnel to a host
+  no entry binds carries no value, so the idle limit is the whole of what bounds one.
 
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call
@@ -757,7 +924,7 @@ page signs the person in to the broker itself, with OpenID Connect and the broke
 deployment's Google Workspace, `BROKER_SIGNIN_*` in
 [Operate](/legion/broker/operate/#approval-sign-in)), only when they hold no live sign-in there,
 and brings them back to the same request. It prints the request from the broker's own record: the
-secret names, the enrollment the broker verified asked (its kind, operator, runtime and worker
+secret names, the enrollment the broker verified asked (its type, operator, runtime and worker
 slot), the session the request names when it differs, marked as the request's own claim, the
 reason, the lifetime, the times, the approver and the state; then every other request waiting on
 that person. Each request the person may decide has **Approve** and **Deny**, and one **Approve
@@ -765,6 +932,13 @@ all N shown** decides every request printed. A decision is posted to the broker'
 is bound to that sign-in and to the requests the page printed, so a page on another origin,
 Dispatch's among them, cannot make one, and no route a service calls decides a secret request: the
 broker refuses it `DECIDE_ON_BROKER_PAGE`, naming the page.
+
+A broker that signs nobody in, `BROKER_SIGNIN=off`
+([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no
+request waits on it: every request that would reach a person is denied at once
+([Requests and grants](#requests-and-grants)), and one a broker with sign-in on left pending is
+ended by the broker's next sweep: expired, as a rule, if its deadline has passed, and otherwise
+denied.
 
 The broker checks the signed-in person against the record's approver: anyone else gets a page
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
@@ -886,7 +1060,7 @@ name. Those settings are all-or-none, and the
 
 Everything a person decides rests on a **credential-request record**
 (`packages/envoy/internal/broker/record/record.go`): a fixed, line-by-line text holding the
-session's signed request verbatim, the approver, the enrollment's kind, runtime id and operator,
+session's signed request verbatim, the approver, the enrollment's type, runtime id and operator,
 the lifetime (`-` for a grant that lasts until its session ends), the policy version, the expiry,
 and, for a machine login, its confirmation code. The
 record's id is the SHA-256 of that text, so a record cannot change without changing its id.
@@ -903,7 +1077,14 @@ approved record behind it releases nothing.
 Beside the records, the broker keeps an append-only `audit` table with one row per event:
 `enrollment.created`, `enrollment.revoked`, `enrollment.expired`, `request.created`,
 `request.granted`, `request.denied`, `request.cancelled`, `request.expired`, `grant.used` (each time
-a session reads a grant, naming the secrets released), `grant.revoked` (naming, under `withheld`,
+a session or the airlock's proxy reads a grant, naming the secrets released and the reason the
+grant's request gave, and, for a session's read, the reason its own call gave where that differs
+and the command it said the release starts, with each secret the broker can name replaced by
+`[redacted]`: the values of 8 bytes or more the release handed out, the strings of 8 bytes or more
+of a stored JSON value, and every credential of a well-known shape; any other secret a session
+typed into its command, a shorter value among them, is kept as typed, and `GET /v1/grant-log`
+answers this row to the accounts that read the grant log),
+`grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
 a grant already revoked, naming under `withheld` the secrets it withheld from the session),
@@ -946,5 +1127,5 @@ Three things the log does not say, which a reviewer has to be told:
   hour from the moment it was minted. Revoking the grant stops the next release; it does not
   revoke a token the broker has already released.
 
-The review reads the `audit` table as it stands. It adds no audit kind and writes no audit row of
+The review reads the `audit` table as it stands. It adds no audit type and writes no audit row of
 its own: every row it reads is one the broker wrote when it decided.

@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The generated Dispatch contract declares the `download` query parameter on the four artifact
+  version operations, and a `text/markdown` answer on the three that can serve a document: with
+  `download=true` a document version answers its Markdown rather than its JSON.

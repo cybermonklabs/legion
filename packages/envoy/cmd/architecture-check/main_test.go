@@ -1,191 +1,36 @@
-// These tests judge the set builder over this package's testdata directories, for what a checkout
-// can hold, and over in-memory directories, for what a checkout cannot hold or this module must
-// not commit: two names that differ only in case, which a case-insensitive filesystem cannot
-// hold, and a note that is not valid UTF-8, which the store's test of every *.md file of this
-// module sends to Postgres. They test the bound with a note they write, and each exit on the
-// built binary, since go run does not carry a program's exit status. Names that hold a line break
-// are written into a temporary directory alone, since a git path holding one breaks tools that
-// read paths a line at a time.
+// These tests judge the command: each exit on the built binary, since go run does not carry a
+// program's exit status, over the notes package's testdata directories, which notes.ReadSet's own
+// tests read too, and over directories they write, and the bound's refusal through run. Names
+// that hold a line break are written into a temporary directory alone, since a git path holding
+// one breaks tools that read paths a line at a time.
 package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
-	"io/fs"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
+	"syscall"
 	"testing"
-	"testing/fstest"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
-// The set builder over what a checkout holds: a valid set, a set holding a broken note, and a set
-// beside entries that are not notes.
-func TestBuildSetOverTestdata(t *testing.T) {
-	t.Parallel()
-	t.Run("a valid set", func(t *testing.T) {
-		t.Parallel()
-		dir := testdataDir(t, "valid")
-		files, rejects, err := buildSet(os.DirFS(dir), dir)
-		if err != nil || len(rejects) != 0 {
-			t.Fatalf("buildSet(%s): rejected %v, err %v, want neither", dir, rejects, err)
-		}
-		if got, want := names(files), []string{"checker.md", "rules.md", "text.md"}; !slices.Equal(got, want) {
-			t.Fatalf("notes %q, want %q", got, want)
-		}
-		model, err := notes.Parse(files)
-		if err != nil {
-			t.Fatalf("notes.Parse: %v, want a valid set", err)
-		}
-		at := slices.IndexFunc(model.Components, func(component notes.Component) bool { return component.ID == "rules" })
-		if at < 0 {
-			t.Fatalf("model %+v holds no component rules", model)
-		}
-		if rules := model.Components[at]; rules.Parent != "checker" || !slices.Equal(rules.DependsOn, []string{"text"}) {
-			t.Errorf("component rules %+v, want parent checker and depends_on [text]", rules)
-		}
-	})
-	t.Run("a broken note", func(t *testing.T) {
-		t.Parallel()
-		dir := testdataDir(t, "broken")
-		files, rejects, err := buildSet(os.DirFS(dir), dir)
-		if err != nil || len(rejects) != 0 {
-			t.Fatalf("buildSet(%s): rejected %v, err %v, want neither", dir, rejects, err)
-		}
-		if got, want := names(files), []string{"alpha.md", "beta.md"}; !slices.Equal(got, want) {
-			t.Fatalf("notes %q, want %q", got, want)
-		}
-		_, err = notes.Parse(files)
-		if err == nil {
-			t.Fatal("notes.Parse accepted a note with an unknown front-matter key")
-		}
-		found := problems(err)
-		if len(found) != 1 {
-			t.Fatalf("problems %q, want one", found)
-		}
-		// yaml.v3 answers an unknown key over two lines, which printable writes as one, its line
-		// break as \n.
-		line := printable(found[0].Error())
-		if !strings.HasPrefix(line, "beta.md: front matter: ") || !strings.Contains(line, `:\n  line 2: field bogus not found`) || strings.Contains(line, "\n") {
-			t.Errorf("problem %q, want one line naming beta.md and its unknown key bogus", line)
-		}
-	})
-	t.Run("entries that are not notes", func(t *testing.T) {
-		t.Parallel()
-		dir := testdataDir(t, "mixed")
-		files, rejects, err := buildSet(os.DirFS(dir), dir)
-		if err != nil {
-			t.Fatalf("buildSet(%s): %v", dir, err)
-		}
-		want := []rejected{
-			{path: filepath.Join(dir, "link.md"), kind: notes.KindSymlink},
-			{path: filepath.Join(dir, "notes.txt"), kind: notes.KindFile},
-			{path: filepath.Join(dir, "sub"), kind: notes.KindDirectory},
-		}
-		if !slices.Equal(rejects, want) {
-			t.Errorf("rejected %v, want %v", rejects, want)
-		}
-		if got, want := names(files), []string{"alpha.md", "beta.md"}; !slices.Equal(got, want) {
-			t.Fatalf("notes %q, want %q", got, want)
-		}
-		if _, err := notes.Parse(files); err != nil {
-			t.Errorf("notes.Parse: %v, want a valid set", err)
-		}
-	})
-}
-
-// The set builder over in-memory directories: the two sets a checkout cannot hold or this module
-// must not commit, which notes.Parse refuses, and the kinds of entry the predicate decides by
-// mode alone.
-func TestBuildSetOverMemory(t *testing.T) {
-	t.Parallel()
-	const dir = "/checkout/.dispatch/architecture"
-	note := []byte("---\ntitle: A note\n---\nIts prose.\n")
-	for _, row := range []struct {
-		name    string
-		fsys    fstest.MapFS
-		notes   []string
-		rejects []rejected
-		problem string // what a problem notes.Parse answers holds; empty for a valid set
-	}{
-		{
-			name:    "names that differ only in case",
-			fsys:    fstest.MapFS{"Api.md": {Data: note}, "api.md": {Data: note}},
-			notes:   []string{"Api.md", "api.md"},
-			problem: `api.md: duplicate component id "api"`,
-		},
-		{
-			name:    "a note that is not valid UTF-8",
-			fsys:    fstest.MapFS{"binary.md": {Data: []byte("prose \xff\xfe")}},
-			notes:   []string{"binary.md"},
-			problem: "binary.md: file must be valid UTF-8",
-		},
-		{
-			name:    "a symbolic link",
-			fsys:    fstest.MapFS{"api.md": {Data: note}, "link.md": {Data: []byte("api.md"), Mode: fs.ModeSymlink | 0o777}},
-			notes:   []string{"api.md"},
-			rejects: []rejected{{path: dir + "/link.md", kind: notes.KindSymlink}},
-		},
-		{
-			name:  "a file of mode 0755",
-			fsys:  fstest.MapFS{"api.md": {Data: note, Mode: 0o755}},
-			notes: []string{"api.md"},
-		},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			files, rejects, err := buildSet(row.fsys, dir)
-			if err != nil {
-				t.Fatalf("buildSet: %v", err)
-			}
-			if got := names(files); !slices.Equal(got, row.notes) {
-				t.Errorf("notes %q, want %q", got, row.notes)
-			}
-			if !slices.Equal(rejects, row.rejects) {
-				t.Errorf("rejected %v, want %v", rejects, row.rejects)
-			}
-			_, err = notes.Parse(files)
-			switch {
-			case row.problem == "" && err != nil:
-				t.Errorf("notes.Parse: %v, want a valid set", err)
-			case row.problem != "" && (err == nil || !slices.ContainsFunc(problems(err), func(problem error) bool {
-				return strings.Contains(problem.Error(), row.problem)
-			})):
-				t.Errorf("notes.Parse: %v, want a problem holding %q", err, row.problem)
-			}
-		})
-	}
-}
-
-// The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before the set builder
-// reads any note, so the note beside it, whose front matter holds an unknown key, is never parsed
-// and its problem never printed.
-func TestTheBoundRefusesTheSetBeforeAnyNoteIsRead(t *testing.T) {
+// The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before any note is read,
+// so the note beside it, whose front matter holds an unknown key, is never parsed and its problem
+// never printed: the command prints the bound's one refusal and the count line.
+func TestTheBoundRefusesTheSetBeforeAnyNoteIsParsed(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	big := filepath.Join(dir, "big.md")
 	writeFile(t, big, bytes.Repeat([]byte("a"), notes.MaxFileSize+1))
 	writeFile(t, filepath.Join(dir, "broken.md"), []byte("---\nbogus: 1\n---\nA note with an unknown key.\n"))
-
-	opened := &openRecorder{fsys: os.DirFS(dir)}
-	files, _, err := buildSet(opened, dir)
-	var refused *sizeRefusal
-	if !errors.As(err, &refused) || !errors.Is(err, notes.ErrFileTooLarge) {
-		t.Fatalf("buildSet: %v, want a *sizeRefusal of notes.ErrFileTooLarge", err)
-	}
-	if files != nil || refused.held != 2 || len(refused.problems) != 1 || !strings.Contains(refused.problems[0].Error(), big+" is 1048577 bytes") {
-		t.Errorf("buildSet: files %q, %d notes held, problems %q; want no files, 2 notes and one refusal naming %s", names(files), refused.held, refused.problems, big)
-	}
-	if !slices.Equal(opened.names, []string{"."}) {
-		t.Errorf("opened %q, want the directory alone: a note was read", opened.names)
-	}
 
 	var stdout, stderr strings.Builder
 	code := run([]string{dir}, &stdout, &stderr)
@@ -197,70 +42,6 @@ func TestTheBoundRefusesTheSetBeforeAnyNoteIsRead(t *testing.T) {
 	})
 	if strings.Contains(got.stderr, "front matter") {
 		t.Errorf("stderr %q names a front matter problem: a note was parsed", got.stderr)
-	}
-}
-
-// The bound checks each note again once it is read, so a note that grew between the listing and
-// the read is refused as one the listing showed too large is.
-func TestTheBoundRefusesANoteThatGrewAfterItsSizeWasRead(t *testing.T) {
-	t.Parallel()
-	const dir = "/checkout/.dispatch/architecture"
-	files, _, err := buildSet(grownFS{fstest.MapFS{"api.md": {Data: []byte("a")}}}, dir)
-	var refused *sizeRefusal
-	if !errors.As(err, &refused) || !errors.Is(err, notes.ErrFileTooLarge) {
-		t.Fatalf("buildSet: %v, want a *sizeRefusal of notes.ErrFileTooLarge", err)
-	}
-	if files != nil || refused.held != 1 || len(refused.problems) != 1 || !strings.Contains(refused.problems[0].Error(), dir+"/api.md is 1048577 bytes") {
-		t.Errorf("buildSet: files %q, %d notes held, problems %q; want no files, 1 note and one refusal naming %s/api.md", names(files), refused.held, refused.problems, dir)
-	}
-}
-
-// A note the set builder cannot read is exit 2's "cannot be read", naming the note by its
-// absolute path, though os.DirFS's error names it by its name inside the directory.
-func TestBuildSetNamesANoteItCannotReadByItsAbsolutePath(t *testing.T) {
-	t.Parallel()
-	const dir = "/checkout/.dispatch/architecture"
-	files, _, err := buildSet(deniedFS{fstest.MapFS{"api.md": {Data: []byte("A note.\n")}}}, dir)
-	if !errors.Is(err, fs.ErrPermission) || files != nil {
-		t.Fatalf("buildSet: files %q, err %v; want no files and an error of fs.ErrPermission", names(files), err)
-	}
-	if want := "cannot be read: open " + dir + "/api.md: permission denied"; err.Error() != want {
-		t.Errorf("buildSet: %q, want %q", err, want)
-	}
-}
-
-// printable leaves an ordinary name as it is, a name that is not ASCII included, escapes each
-// control character, each format character, the line and paragraph separators and each byte that
-// is not UTF-8 as a Go string literal writes it, and writes the "[" of every "##[" as \x5b.
-func TestPrintable(t *testing.T) {
-	t.Parallel()
-	for _, row := range []struct{ name, in, want string }{
-		{name: "an ordinary path", in: "/checkout/.dispatch/architecture/api.md", want: "/checkout/.dispatch/architecture/api.md"},
-		{name: "a name that is not ASCII", in: "café.md", want: "café.md"},
-		{name: "a line feed", in: "x\n::error::forged", want: `x\n::error::forged`},
-		{name: "a carriage return", in: "y\r::warning::forged", want: `y\r::warning::forged`},
-		{name: "a tab", in: "a\tb", want: `a\tb`},
-		{name: "an escape", in: "a\x1b[31mb", want: `a\x1b[31mb`},
-		{name: "a delete", in: "a\x7fb", want: `a\x7fb`},
-		{name: "a C1 next line", in: "a\u0085b", want: `a\u0085b`},
-		{name: "a byte that is not UTF-8", in: "a\xffb", want: `a\xffb`},
-		{name: "a command of the second form", in: "##[", want: `##\x5b`},
-		{name: "three number signs", in: "###[", want: `###\x5b`},
-		{name: "two commands of the second form", in: "##[##[", want: `##\x5b##\x5b`},
-		{name: "a command of the second form inside a name", in: "x##[error]y", want: `x##\x5berror]y`},
-		{name: "a soft hyphen", in: "#\u00ad#[error]y", want: `#\u00ad#[error]y`},
-		{name: "a zero-width joiner", in: "#\u200d#[error]y", want: `#\u200d#[error]y`},
-		{name: "a byte order mark", in: "\ufeff::error::forged", want: `\ufeff::error::forged`},
-		{name: "a right-to-left override", in: "a\u202eb.md", want: `a\u202eb.md`},
-		{name: "a line separator", in: "x\u2028::error::y.md", want: `x\u2028::error::y.md`},
-		{name: "a paragraph separator", in: "x\u2029::error::y.md", want: `x\u2029::error::y.md`},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			if got := printable(row.in); got != row.want {
-				t.Errorf("printable(%q) = %q, want %q", row.in, got, row.want)
-			}
-		})
 	}
 }
 
@@ -290,15 +71,21 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("stderr %q, want one line starting %q and naming the unknown key bogus", got.stderr, prefix)
 		}
 	})
-	t.Run("a missing path exits 2", func(t *testing.T) {
+	t.Run("a missing path exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "missing")
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": does not exist\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": does not exist, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
-	t.Run("an empty directory exits 2", func(t *testing.T) {
+	t.Run("an empty directory exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": holds no note\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": holds no note, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
 	t.Run("a file given as the directory exits 2", func(t *testing.T) {
 		t.Parallel()
@@ -306,26 +93,25 @@ func TestTheBuiltBinary(t *testing.T) {
 		path := filepath.Join(parent, "api\n::error::forged.md")
 		writeFile(t, path, []byte("A note.\n"))
 		got := runBinary(t, binary, "", path)
-		if prefix := "architecture-check: " + parent + `/api\n::error::forged.md: cannot be read: `; got.code != 2 || got.stdout != "" ||
-			!strings.HasPrefix(got.stderr, prefix) || strings.Count(got.stderr, "\n") != 1 {
-			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and one line starting %q", got.code, got.stdout, got.stderr, prefix)
-		}
+		escaped := parent + `/api\n::error::forged.md`
+		expect(t, got, result{code: 2, stderr: "architecture-check: " + escaped + ": cannot be read: open " + escaped + ": not a directory\n"})
 		expectNoCommand(t, "stderr", got.stderr)
 	})
+	usageText := "usage: architecture-check [--allow-empty] <directory>\n" +
+		"  -allow-empty\n" +
+		"    \tread a directory that does not exist or holds no note as the empty set, which is valid\n"
 	for _, row := range []struct {
-		name string
-		args []string
+		name  string
+		args  []string
+		first string
 	}{
-		{name: "no argument exits 2"},
-		{name: "two arguments exit 2", args: []string{filepath.Join(testdata, "valid"), filepath.Join(testdata, "mixed")}},
-		{name: "an unknown flag exits 2", args: []string{"--bogus", filepath.Join(testdata, "valid")}},
+		{name: "no argument exits 2", first: "want one directory argument, got 0"},
+		{name: "two arguments exit 2", args: []string{filepath.Join(testdata, "valid"), filepath.Join(testdata, "mixed")}, first: "want one directory argument, got 2"},
+		{name: "an unknown flag exits 2", args: []string{"--bogus", filepath.Join(testdata, "valid")}, first: "flag provided but not defined: -bogus"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			got := runBinary(t, binary, "", row.args...)
-			if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, "usage: architecture-check [--allow-empty] <directory>\n") {
-				t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and the usage line", got.code, got.stdout, got.stderr)
-			}
+			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "architecture-check: " + row.first + "\n" + usageText})
 		})
 	}
 	t.Run("--allow-empty over an empty directory exits 0", func(t *testing.T) {
@@ -425,6 +211,24 @@ func TestTheBuiltBinary(t *testing.T) {
 	})
 }
 
+// An entry that is no file, no directory and no symbolic link is not a note, though its name is a
+// note's: the built binary warns of the named pipe queue.md once, as an other entry, and the valid
+// note beside it keeps the exit status at 0.
+func TestANamedPipeIsAWarningThatKeepsTheExitStatus(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "architecture-check")
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "api.md"), []byte("---\ntitle: API\n---\nThe one note.\n"))
+	pipe := filepath.Join(dir, "queue.md")
+	if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+		t.Fatalf("make the named pipe %s: %v", pipe, err)
+	}
+	expect(t, runBinary(t, binary, "", dir), result{
+		stdout: "architecture-check: " + dir + ": 1 note, the set is valid\n",
+		stderr: "architecture-check: warning: " + pipe + ": not a note (other entry); the importer passes over it\n",
+	})
+}
+
 // result is one run of the command: its exit status and what it wrote to each stream.
 type result struct {
 	code   int
@@ -432,15 +236,26 @@ type result struct {
 	stderr string
 }
 
+// binaryLimit bounds one run of the built binary, which answers in milliseconds. A run that blocks,
+// as one that opens a named pipe nothing writes to does, is killed at the limit and fails its test
+// then, rather than holding it until go test's own deadline and outliving it.
+const binaryLimit = 20 * time.Second
+
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output.
+// empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
+// test.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(binary, args...)
+	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("architecture-check %q did not finish within %s and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
+	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
 		t.Fatalf("run architecture-check %q: %v", args, err)
@@ -475,19 +290,15 @@ func expectNoCommand(t *testing.T, stream, out string) {
 	}
 }
 
-// testdataDir is the absolute path of name under this package's testdata directory.
+// testdataDir is the absolute path of name under the notes package's testdata directory, the note
+// sets notes.ReadSet's own tests read.
 func testdataDir(t *testing.T, name string) string {
 	t.Helper()
-	dir, err := filepath.Abs(filepath.Join("testdata", name))
+	dir, err := filepath.Abs(filepath.Join("..", "..", "internal", "dispatch", "architecture", "notes", "testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return dir
-}
-
-// names is the names of files, sorted.
-func names(files map[string][]byte) []string {
-	return slices.Sorted(maps.Keys(files))
 }
 
 // writeFile writes content to path.
@@ -496,33 +307,4 @@ func writeFile(t *testing.T, path string, content []byte) {
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// openRecorder is a directory that records every name opened in it, so a test sees which notes
-// the set builder read. It offers fs.FS's Open alone, so fs.ReadDir and fs.ReadFile both reach
-// the directory through it.
-type openRecorder struct {
-	fsys  fs.FS
-	names []string
-}
-
-func (r *openRecorder) Open(name string) (fs.File, error) {
-	r.names = append(r.names, name)
-	return r.fsys.Open(name)
-}
-
-// grownFS is a directory whose every note grew after it was listed: its listing gives the size
-// the MapFS holds, and a read answers notes.MaxFileSize + 1 bytes.
-type grownFS struct{ fstest.MapFS }
-
-func (grownFS) ReadFile(string) ([]byte, error) {
-	return bytes.Repeat([]byte("a"), notes.MaxFileSize+1), nil
-}
-
-// deniedFS is a directory that lists its notes and refuses to read any, as os.DirFS answers a note
-// its process may not read: a *fs.PathError naming the note inside the directory.
-type deniedFS struct{ fstest.MapFS }
-
-func (deniedFS) ReadFile(name string) ([]byte, error) {
-	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
 }

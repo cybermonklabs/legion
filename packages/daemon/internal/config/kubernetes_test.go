@@ -74,6 +74,14 @@ func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
     setup: [/bin/sh, -c, 'omp plugin marketplace add acme/agent-skills']
     skills_repository: acme/agent-skills
     idle_release: {idle_minutes: 20, backstop_minutes: 120}
+    sandbox:
+      type: microvm
+      canary_issues: [LEGSMOKE-7]
+      microvm:
+        compute_class: example-microvm
+        metadata:
+          workload_pool: `+testWorkloadPool+`
+          identity_provider: `+testIdentityProvider+`
     repository_cache:
       volume: 50Gi
       refresh_minutes: 5
@@ -183,6 +191,14 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 			Resources: Reservation{CPU: "2", CPURequest: "2", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"},
 		},
 		IdleRelease: IdleReleaseConfig{IdleMinutes: 20, BackstopMinutes: 120},
+		// A microVM project whose one canary runs in gVisor. The microvm block names no storage
+		// class, so its pods' is runtime.kubernetes.storage_class.
+		Sandbox: SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGSMOKE-7"}, MicroVM: &MicroVMConfig{
+			ComputeClass: "example-microvm", StorageClass: "gp2",
+			Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider},
+		}},
+		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
+		MemoryGuard: DefaultMemoryGuard(),
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)
@@ -488,7 +504,9 @@ func TestAPodsEphemeralStorageBoundSettlesFieldByField(t *testing.T) {
 
 // `session_store` settles to the one kind with the one field that kind carries: `postgres` the
 // providers Secret's key that holds the session database's whole URL, `cloudsql-iam` the Cloud SQL
-// instance, database and IAM login each pod signs in as. `pvc` and an omitted store are refused
+// instance, database and IAM login each pod signs in as, and the Google service account, when the
+// block names one, that the pod impersonates to sign in as that login. Any of Google's service
+// account forms is taken, with its own login as `user`. `pvc` and an omitted store are refused
 // (TestLoadForValidationRefusesUnderKubernetes): no issue disk holds a session.
 func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 	for _, tc := range []struct {
@@ -506,6 +524,34 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 			"    session_database: {instance: \"example.com:example-project:us-central1:example-instance\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
 			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
 				Instance: "example.com:example-project:us-central1:example-instance", Name: "legion_sessions", User: "legion-sessions@example-project.iam",
+			}}},
+		{"cloudsql-iam impersonating a service account", withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+			" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com}\n"),
+			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
+				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "legion-sessions@example-project.iam",
+				ImpersonateServiceAccount: "legion-sessions@example-project.iam.gserviceaccount.com",
+			}}},
+		{"cloudsql-iam impersonating a Compute Engine default service account", withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: 123-compute@developer," +
+			" impersonate_service_account: 123-compute@developer.gserviceaccount.com}\n"),
+			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
+				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "123-compute@developer",
+				ImpersonateServiceAccount: "123-compute@developer.gserviceaccount.com",
+			}}},
+		{"cloudsql-iam impersonating an App Engine default service account", withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: example-project@appspot," +
+			" impersonate_service_account: example-project@appspot.gserviceaccount.com}\n"),
+			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
+				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "example-project@appspot",
+				ImpersonateServiceAccount: "example-project@appspot.gserviceaccount.com",
+			}}},
+		{"cloudsql-iam impersonating a Google-managed service agent", withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: service-123@gcp-sa-cloud-sql.iam," +
+			" impersonate_service_account: service-123@gcp-sa-cloud-sql.iam.gserviceaccount.com}\n"),
+			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
+				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "service-123@gcp-sa-cloud-sql.iam",
+				ImpersonateServiceAccount: "service-123@gcp-sa-cloud-sql.iam.gserviceaccount.com",
 			}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -927,6 +973,55 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: \" example-project:us-central1:example-instance\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
 			want: `runtime.kubernetes.session_database.instance " example-project:us-central1:example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+		},
+		{
+			name: "session_database impersonating the login form of a service account",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+				" impersonate_service_account: legion-sessions@example-project.iam}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			name: "session_database impersonating a person's email",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: someone@example.com," +
+				" impersonate_service_account: someone@example.com}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account "someone@example.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			name: "session_database impersonating a bare name",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+				" impersonate_service_account: legion-sessions}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account "legion-sessions" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			name: "session_database impersonating a service account in upper case",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: Legion-Sessions@example-project.iam," +
+				" impersonate_service_account: Legion-Sessions@example-project.iam.gserviceaccount.com}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account "Legion-Sessions@example-project.iam.gserviceaccount.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			name: "session_database impersonating a service account led by whitespace",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+				" impersonate_service_account: \" legion-sessions@example-project.iam.gserviceaccount.com\"}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account " legion-sessions@example-project.iam.gserviceaccount.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			name: "session_database impersonating a blank service account",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+				" impersonate_service_account: \"\"}\n"),
+			want: "runtime.kubernetes.session_database.impersonate_service_account must not be empty",
+		},
+		{
+			name: "session_database signing in as another login than the service account's",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: other@example-project.iam," +
+				" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com}\n"),
+			want: `runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
 		},
 		{
 			name: "daemon_url empty",
@@ -1636,6 +1731,45 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// runtime.kubernetes.agent_secrets.exchange_audience is the audience of a second projected token
+// every enrolled pod carries, the one the secrets broker's exchange trades for a broker token
+// (BROKER_EXCHANGE_K8S_AUDIENCE). It lives inside the agent_secrets block, so a file that sets it
+// and names no broker is refused for the broker it names none of; it may not be empty, and it may
+// not be the enrollment's own audience, since the broker verifies the two at different routes and
+// the cluster admits one projected volume per audience. Unset, the block settles as it did before
+// the key existed.
+func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
+	const tf = agentSecretsTokenFile
+	for name, tc := range map[string]struct{ block, want string }{
+		"no broker url":        {"    agent_secrets:\n" + tf + "      exchange_audience: legion-broker-exchange\n", "runtime.kubernetes.agent_secrets.url is required"},
+		"blank":                {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: \"\"\n", "runtime.kubernetes.agent_secrets.exchange_audience must not be empty"},
+		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: agent-secrets\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both agent-secrets)"},
+		"the named audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: broker\n      exchange_audience: broker\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err %v, want %q", err, tc.want)
+			}
+		})
+	}
+	for name, tc := range map[string]struct{ block, want string }{
+		"set":   {"      exchange_audience: legion-broker-exchange\n", "legion-broker-exchange"},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: https://secrets.internal.example\n"+tf+tc.block), noEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience; got != tc.want {
+				t.Fatalf("agent_secrets.exchange_audience settled as %q, want %q", got, tc.want)
 			}
 		})
 	}

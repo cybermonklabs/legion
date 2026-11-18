@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -58,6 +59,124 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	}
 	if _, err := client.NextStoredMessage(ctx, "notifications.agent.ses_a", 1); !errors.Is(err, nats.ErrStreamNotFound) {
 		t.Fatalf("read without the stream = %v, want nats.ErrStreamNotFound", err)
+	}
+}
+
+// probeHeader is the header the listener's connection probe carries (cmd/listener).
+var probeHeader = nats.Header{"Envoy-Probe": []string{"1"}}
+
+// requestCoreClient connects a bus client and a plain connection of its own to one test server,
+// for the core requests the client makes and the subscriptions that answer or ignore them.
+func requestCoreClient(t *testing.T) (*Client, *nats.Conn) {
+	t.Helper()
+	uri := testnats.URL(t)
+	client, err := Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	responder, err := Dial("request-core-responder", []string{uri}, os.LookupEnv)
+	if err != nil {
+		t.Fatalf("connect the responder: %v", err)
+	}
+	t.Cleanup(responder.Close)
+	return client, responder
+}
+
+// The connection probe's request (RequestCore) carries its header and no body to the subject's
+// subscriber and returns that subscriber's reply; a subject nobody subscribes is
+// nats.ErrNoResponders, and one whose subscriber keeps silent waits out the caller's deadline and
+// returns ctx's error. These are the three answers the send route reads a session's connection
+// from: connected, stopped and connected.
+func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
+	client, responder := requestCoreClient(t)
+	heard := make(chan *nats.Msg, 1)
+	if _, err := responder.Subscribe(DeliverSubject("ses_answers"), func(msg *nats.Msg) {
+		heard <- msg
+		_ = msg.Respond(nil)
+	}); err != nil {
+		t.Fatalf("subscribe the answering subject: %v", err)
+	}
+	if _, err := responder.SubscribeSync(DeliverSubject("ses_silent")); err != nil {
+		t.Fatalf("subscribe the silent subject: %v", err)
+	}
+	if err := responder.Flush(); err != nil {
+		t.Fatalf("flush the subscriptions: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), probeHeader); err != nil {
+		t.Fatalf("request to a subscriber that answers = %v, want its reply", err)
+	}
+	select {
+	case msg := <-heard:
+		if msg.Header.Get("Envoy-Probe") != "1" || len(msg.Data) != 0 {
+			t.Fatalf("the subscriber heard header %v and %d body bytes, want Envoy-Probe: 1 and no body", msg.Header, len(msg.Data))
+		}
+	default:
+		t.Fatal("the request was answered without reaching the subscriber")
+	}
+
+	if _, err := client.RequestCore(ctx, DeliverSubject("ses_nobody"), probeHeader); !errors.Is(err, nats.ErrNoResponders) {
+		t.Fatalf("request to a subject nobody subscribes = %v, want nats.ErrNoResponders", err)
+	}
+
+	silentCtx, silentCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer silentCancel()
+	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("request to a subscriber that keeps silent = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// The connection probe's request takes its reply over a channel of nats.RequestChanLen slots, not
+// conn.SubscribeSync's, which nats.go sizes at nats.Options.SubChanLen (65,536 pointers, 512 KiB
+// allocated and zeroed per request): the send route probes once per send, so a send would cost
+// half a megabyte to hold one reply. requestConfirmed, which still subscribes that way, is
+// measured beside it, so a measurement that could not see the channel fails here rather than
+// passing the probe.
+func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T) {
+	client, responder := requestCoreClient(t)
+	subject := DeliverSubject("ses_allocation")
+	if _, err := responder.Subscribe(subject, func(msg *nats.Msg) { _ = msg.Respond(nil) }); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := responder.Flush(); err != nil {
+		t.Fatalf("flush the subscription: %v", err)
+	}
+	const requests = 64
+	perRequest := func(request func(ctx context.Context) error) uint64 {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := request(ctx); err != nil {
+			t.Fatalf("warm-up request: %v", err)
+		}
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range requests {
+			if err := request(ctx); err != nil {
+				t.Fatalf("request: %v", err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / requests
+	}
+	probe := perRequest(func(ctx context.Context) error {
+		_, err := client.RequestCore(ctx, subject, probeHeader)
+		return err
+	})
+	confirmed := perRequest(func(ctx context.Context) error {
+		_, err := client.requestConfirmed(ctx, subject, nil)
+		return err
+	})
+	t.Logf("bytes allocated per request: RequestCore %d, requestConfirmed %d", probe, confirmed)
+	if confirmed < 512<<10 {
+		t.Fatalf("requestConfirmed allocated %d bytes per request, under its 512 KiB channel, so this measurement cannot see the channel", confirmed)
+	}
+	if probe > 64<<10 {
+		t.Fatalf("RequestCore allocated %d bytes per request, want at most 64 KiB", probe)
 	}
 }
 

@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -78,6 +79,11 @@ const (
 	ExchangeSession = "example-worker"
 )
 
+// The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
+// a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
+// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
+const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
+
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
 const (
@@ -114,6 +120,14 @@ type Rig struct {
 	// Secrets is the secrets.Local standing in for Secrets Manager, which a test writes to as a
 	// person would, before asking the broker to reread a secret.
 	Secrets *secrets.Local
+	// Registry holds the policy's two metrics as cmd/broker/main.go builds them on its own
+	// registry: broker_policy_store_reads_total, counted from the first load on, and
+	// broker_unservable_secrets, registered once that load answered. A test reads them through
+	// Registry.Handler(), the scrape main serves.
+	Registry *metrics.Registry
+	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
+	// reload does (Refresh): the rig's own reload runs once an hour, so never within a test.
+	Policy *policy.Current
 	// podIssuer and podKey back every token this Rig mints — a pod's enrolment token, a service
 	// account's login token, and a subject token for the exchange: a local OIDC issuer this Rig's
 	// own verifier (wired into its enroll.Service and its api.Deps by NewRig) trusts, and the
@@ -145,8 +159,8 @@ func WithPoolMaxConns(n int) Option {
 	return func(c *rigConfig) { c.maxConns = n }
 }
 
-// WithMinters gives the broker a minter for each kind minters names, as cmd/broker/main.go's
-// kindMinters does, so a test releases a kind secret through a minter aimed at its own stub
+// WithMinters gives the broker a minter for each type minters names, as cmd/broker/main.go's
+// typeMinters does, so a test releases a type secret through a minter aimed at its own stub
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
@@ -157,8 +171,10 @@ func WithMinters(minters map[string]requests.Minter) Option {
 // which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
 // an enroll.K8sPodVerifier, mirroring cmd/broker/main.go's own wiring), which is also what
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
-// on an httptest.Server — wired exactly as cmd/broker/main.go and api_test.go's newTestServer
-// wire it. It skips t when BROKER_TEST_DATABASE_URL is unset (storetest.Open's own contract).
+// on an httptest.Server as cmd/broker/main.go and api_test.go's newTestServer mount it, but with
+// no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
+// (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
 	config := rigConfig{lease: time.Hour}
@@ -176,7 +192,10 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		policytest.Secret("TEST_AUTO_SECRET", operator, policy.TierAgent, "test-auto-secret-v1"),
 	}
 	local := secrets.NewLocal(fixtures...)
-	cur := policytest.Current(t, local)
+	// The policy's metrics as main wires them: the store-read counter before the first load,
+	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	registry := metrics.New()
+	cur := policytest.MeteredCurrent(t, local, registry)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -239,6 +258,8 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
+		Registry:  registry,
+		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins,
 	}
@@ -266,9 +287,9 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the one account and the
-// one workflow the Rig's constants name, so an exchange test has an identity to be and an unlisted
-// one to be refused as.
+// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
+// one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
@@ -278,7 +299,11 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("OAuth secret: %v", err)
 	}
 	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession}},
+		[]exchange.AccountEntry{
+			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
+			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+		},
+		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 		nil,
 		// The rig lists no machine, so there is no box a person could have signed in on and no

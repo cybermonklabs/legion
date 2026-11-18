@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/nats-io/nats.go"
 )
@@ -26,9 +27,15 @@ const SessionResumeSubjectPrefix = NotificationTopicPrefix + "envoy.resume."
 
 // SessionResumeSubject is the lane the listener records session sessionID's consumer resume floor
 // on before it deletes that consumer (SessionConsumers.Delete), one message per session, read back
-// when a registration that carries no resume point creates the consumer again
-// (SessionConsumers.Ensure). Without it a session that comes back with no resume point of its own
-// would start at the stream's end and lose what was published while it was away.
+// when the consumer is created again, both for a create with no start and for one from a caller's
+// start (SessionConsumers.Ensure, SessionConsumers.create): a create with no start of its own
+// starts at the record's floor plus one, and a caller's start above that is lowered to it. A
+// create at a pending start a restart left reads none. Without it a session that comes back with
+// no resume point of its own would start at the stream's end and lose what was published while
+// it was away; and one that comes back with a resume point past the stream's end, which a
+// consumer created at a clamped start leaves its client holding, would be clamped again, to the
+// stream's first sequence, and handed again every message the stream holds on its filters, the
+// ones it acked included.
 //
 // The record expires with the stream's own MaxAge (streamDuplicateWindow, 72 hours), which is the
 // stream's retention, so a floor older than that named a sequence the stream no longer holds.
@@ -43,40 +50,91 @@ func SessionResumeSubject(sessionID string) string {
 
 // SessionResumeRecord is the body of a session's resume record (SessionResumeSubject): the stream
 // sequence up to which the session's consumer had every message acked when that consumer was
-// deleted (ackFloor), and the identity of the stream those sequences belong to
+// deleted (ackFloor), or the sequence before the stream's first where that floor was past the
+// stream's end (recordResumeFloorAt), and the identity of the stream those sequences belong to
 // (StreamIDMetadataKey). A consumer created again for the session with no start of its own starts
-// at Floor + 1, and a record naming another stream's identity is ignored, since its sequences
-// name messages of a stream this one is not.
+// at Floor + 1, one created from a caller's start above Floor + 1 starts at Floor + 1 instead
+// (SessionConsumers.create), and a record naming another stream's identity is ignored by both,
+// since its sequences name messages of a stream this one is not.
 type SessionResumeRecord struct {
 	Floor    uint64 `json:"floor"`
 	StreamID string `json:"stream_id"`
 }
 
-// recordResumeFloorAt publishes session sessionID's resume record, floor and the stream's own
-// identity, on the session's resume lane (SessionResumeSubject). The newest record stands, so the
-// write takes no precondition (Client.publishStoredRaw).
-func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID string, floor uint64) error {
+// recordResumeFloorAt publishes session sessionID's resume record, a floor and the stream's own
+// identity, on the session's resume lane (SessionResumeSubject), and returns the floor it
+// recorded. The newest record stands, so the write takes no precondition
+// (Client.publishStoredRaw).
+//
+// The floor recorded is floor itself unless floor is past the stream's end: above the stream's last
+// sequence, as the stream read this call makes reads it (streamState, whose read begins after this
+// call, and so after the read of the consumer the caller took floor from). A floor past the end is
+// recorded as the sequence before the stream's first (firstStart minus one, the stream's first
+// sequence minus one: 0 for a stream that has stored nothing or whose first sequence is still 1,
+// and the stream's last sequence for a stream that age or a purge has emptied, whose first sequence
+// is then its last plus one). Such a floor is the ack floor of a consumer the
+// stream's sequences went back under (ackFloor reads no lower than the floor the server reports,
+// and at least the sequence before the start of a consumer that has acked nothing): one an earlier
+// build created past the end, before create reset every start past the end, or one a one-copy
+// stream's loss of every message left unreconciled (RestartAtFloor); or it is the sequence before
+// the pending start a restart of such a consumer left when its create failed (recordDroppedStart).
+// Every message the stream holds is then at a sequence below that consumer's next one, so none of
+// them was ever handed to it, the ones stored after its start was fixed among them. From the
+// sequence before the stream's first, the next create of the session starts at the stream's first
+// sequence, whether its start is 0, which starts at the record's floor plus one, or a caller's
+// start, which the record rule lowers to that floor plus one (SessionConsumers.create), as create's
+// reset of a start past the end and the relay's restart of a consumer past the end do
+// (RestartAtFloor), and it skips none of those messages. Where the stream holds messages, a record
+// of its last sequence would start that create after them and skip every one. The cost is the
+// reset's own: the session is handed again what it was handed before at the sequences the stream
+// holds, which its plugin's ledger drops within 72 hours (DELIVERY_DUPLICATE_WINDOW_MS) and 20,000
+// frames (DELIVERY_LEDGER_LIMIT, packages/envoy-client/src/delivery-ledger.ts).
+//
+// So a record this call writes never holds a floor past the stream's end, and a loss that later
+// cuts the stream below a floor it recorded removes the record too, since the stream stored the
+// record after the floor. Once the record's publish succeeded, and only then, a floor past the
+// end is logged as a WARN line naming the session (session_id), the floor asked (floor), the floor
+// recorded (recorded_floor), the stream's last sequence (stream_last_seq) and the stream's
+// identity (stream_id). A call that fails, its stream read or its publish, records nothing, logs
+// nothing and returns 0 with its error.
+func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID string, floor uint64) (uint64, error) {
 	state, err := s.streamState(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	record, err := json.Marshal(SessionResumeRecord{Floor: floor, StreamID: state.id})
+	recorded, pastTheEnd := floor, floor > state.lastSeq
+	if pastTheEnd {
+		recorded = state.firstStart() - 1
+	}
+	record, err := json.Marshal(SessionResumeRecord{Floor: recorded, StreamID: state.id})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := s.client.publishStoredRaw(ctx, SessionResumeSubject(sessionID), record, nil); err != nil {
-		return fmt.Errorf("bus: record the resume floor of session %q: %w", sessionID, err)
+		return 0, fmt.Errorf("bus: record the resume floor of session %q: %w", sessionID, err)
 	}
-	return nil
+	if pastTheEnd {
+		s.logger.Warn("session resume floor past the stream's end, recorded at the sequence before the stream's first",
+			slog.String("session_id", sessionID),
+			slog.Uint64("floor", floor),
+			slog.Uint64("recorded_floor", recorded),
+			slog.Uint64("stream_last_seq", state.lastSeq),
+			slog.String("stream_id", state.id))
+	}
+	return recorded, nil
 }
 
 // resumeFloor is the floor session sessionID's resume record holds (SessionResumeSubject), and
 // whether the stream holds one that counts: a record naming an identity other than streamID, the
 // stream's own, names sequences of a stream this one is not and is ignored, as is a session with
 // no record at all, which is the ordinary answer (nats.ErrMsgNotFound) for a session whose
-// consumer was never deleted. Any other failure of the read is returned, which leaves the
-// registration behind it on core delivery, where the durable path serves it, rather than creating
-// a consumer at the stream's end that would miss every message stored since the floor.
+// consumer was never deleted. Any other failure of the read is returned, and the create that read
+// it fails rather than create a consumer that could skip every message stored since the floor:
+// both creates that read the record, one at start 0 and one at a caller's start (a pending start
+// reads none), fail when the read fails (SessionConsumers.create). A registration is then refused
+// 503 (cmd/listener sessionDelivery.refused), consumer_error unless the server refused the read
+// for want of a grant (no_grant), and its next heartbeat tries again; a repair logs the failure
+// (cmd/listener repairRegistered).
 func (s *SessionConsumers) resumeFloor(ctx context.Context, sessionID, streamID string) (uint64, bool, error) {
 	stored, err := s.client.LastStoredMessage(ctx, SessionResumeSubject(sessionID))
 	if errors.Is(err, nats.ErrMsgNotFound) {

@@ -229,6 +229,46 @@ test("eventDescription names a saved artifact version", () => {
   expect(eventDescription(event)).toEqual(["Saved cu-update-2026-09-15.md v2"]);
 });
 
+test("eventDescription names the document and version of a review", () => {
+  const approved: Extract<DispatchEvent, { type: "artifact.approved" }> = {
+    actor: { id: "person@example.com", kind: "user" },
+    created_at: "2026-09-15T00:00:00Z",
+    id: 6,
+    issue_key: "OPS-52",
+    notify: true,
+    payload: {
+      actor: { id: "person@example.com", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: null,
+      version: 4,
+    },
+    seq: 6,
+    type: "artifact.approved",
+  };
+  const changesRequested: Extract<DispatchEvent, { type: "artifact.changes_requested" }> = {
+    actor: { id: "person@example.com", kind: "user" },
+    created_at: "2026-09-16T00:00:00Z",
+    id: 7,
+    issue_key: "OPS-52",
+    notify: true,
+    payload: {
+      actor: { id: "person@example.com", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: "Name the rollback step.",
+      version: 5,
+    },
+    seq: 7,
+    type: "artifact.changes_requested",
+  };
+
+  expect(eventDescription(approved)).toEqual(["Approved spec.md v4"]);
+  expect(eventDescription(changesRequested)).toEqual(["Changes requested on spec.md v5"]);
+});
+
 test("eventDescription names the phase and version of a recorded handoff", () => {
   const event: Extract<DispatchEvent, { type: "handoff.recorded" }> = {
     actor: { id: "session-1", kind: "session" },
@@ -410,4 +450,37 @@ test("the issue log keeps the session an unsubscribe or a follower names", () =>
 
   expect(eventDescription(sessionEvent("subscription.removed"))).toEqual(["Unsubscribed ", agent]);
   expect(eventDescription(sessionEvent("ask.follower_added"))).toEqual([agent, " follows an ask"]);
+});
+
+// A queued attempt waits for a session that is not running, so the line says queued even when the
+// stream already held the message: "already delivered" would say the session has it.
+test("the issue log reads a queued delivery receipt as queued, a queued repeat included", () => {
+  const receipt = (
+    type: "message.delivery" | "comment.delivery",
+    state: "sent" | "queued",
+    duplicate: boolean
+  ) =>
+    ({
+      actor: { id: "system", kind: "system" },
+      created_at: "2026-11-02T09:15:00Z",
+      id: 11,
+      issue_key: "CORE-1",
+      notify: false,
+      payload: { delivery: "aside", duplicate, state, target: "session:planner" },
+      seq: 11,
+      type,
+    }) as DispatchEvent;
+
+  expect(eventDescription(receipt("message.delivery", "queued", true))).toEqual([
+    "Message queued: Aside",
+  ]);
+  expect(eventDescription(receipt("message.delivery", "sent", true))).toEqual([
+    "Message already delivered: Aside",
+  ]);
+  expect(eventDescription(receipt("comment.delivery", "queued", true))).toEqual([
+    "Comment queued: Aside",
+  ]);
+  expect(eventDescription(receipt("comment.delivery", "sent", true))).toEqual([
+    "Comment already delivered: Aside",
+  ]);
 });

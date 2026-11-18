@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
@@ -57,6 +58,10 @@ type tokenLoginResponse struct {
 // holds 409 KEY_HOLDS_LIVE_CREDENTIAL, and a broker that trusts no Kubernetes token issuer
 // answers 404 TOKEN_LOGIN_OFF.
 func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
+	// The route takes no credential of the broker's, but the login is the token it carries: a
+	// refusal before that token verifies is the authentication's, and after it the service's.
+	recorder := answer.FromContext(r.Context())
+	recorder.NoteCaller(answer.CallerUnauthenticated, "")
 	var body tokenLoginBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
@@ -71,6 +76,7 @@ func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 		writeTokenLoginRefusal(w, err)
 		return
 	}
+	recorder.NoteCaller(answer.CallerService, serviceIdentity(account))
 	giveBackAccount, refused := s.launcherLimiter.refuseAccount(w, account.Subject)
 	if refused {
 		return

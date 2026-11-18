@@ -136,6 +136,11 @@ func (s *server) promptAgentsList() []string {
 // ready: what the report says is never a reason to refuse the ready — the daemon runs the session
 // and reports what it lacks — and a row the table has no live row for is dropped and logged by its
 // name cleaned as a detail is (capabilities.Normalize).
+//
+// A ready that carries no report — a boot's, or a role-regain's — first queues the publication of
+// the issue's role sessions to Dispatch (Options.RoleHoldersChanged), before the machine takes the
+// ready and sends the first task. A queue the daemon could not write refuses the ready with 503,
+// so no task goes before the publication is queued, and the plugin tries the ready again.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
@@ -153,6 +158,16 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, req.ClaimToken)
 	defer decided()
+	if req.Capabilities == nil && s.roleHoldersChanged != nil {
+		if c := m.Claim(); c.Issue != "" && c.Role != claim.RoleController {
+			if err := s.roleHoldersChanged(ctx, c); err != nil {
+				s.log.Warn("api: refused a ready: the daemon could not queue the publication of its issue's role sessions",
+					"claim", c.Token, "issue", c.Issue, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, errorBody("the daemon could not queue the role publication; try the ready again"))
+				return
+			}
+		}
+	}
 	err := m.Handle(ctx, supervise.RequestReady{
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID,
 	})
@@ -354,11 +369,16 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 //
 // It refuses exactly as its siblings do — a blank field with the field's name, a claim this
 // daemon does not hold or a wrong secret with claim.InvalidSecret, a stale plugin with the
-// stale-contract 409 — and answers 204, as ready and exit do. A report of a launch that is gone
-// by the time it is written, a relaunch having moved the claim on after the check, is refused
-// with claim.InvalidSecret too, since its secret was that launch's. A report the daemon cannot
-// write is a 500 the session's next one replaces: a claim with no report after its last turn is
-// never released, so nothing lost here costs anything but a release.
+// stale-contract 409 — and answers 204, as ready and exit do. A relaunch can move the claim on
+// after the check, while the report is on its way to the store, and what the report is answered
+// then depends on when the store's statement began (store.Store.PutClaimActivity). One that began
+// after the launch's write committed finds no row at its launch and is refused with
+// claim.InvalidSecret too, since its secret was that launch's. One whose update waited behind the
+// row lock that write held writes nothing, since the update checks the generation again against
+// the row the launch committed, and answers 204, since the store answers from the row as the
+// statement found it. Neither is written onto the new launch. A report the daemon cannot write is
+// a 500 the session's next one replaces: a claim with no report after its last turn is never
+// released, so nothing lost here costs anything but a release.
 func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	var req claim.ActivityRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,

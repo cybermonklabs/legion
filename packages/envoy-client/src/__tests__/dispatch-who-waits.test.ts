@@ -642,7 +642,7 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
   ],
   // Tests that name the old rule to catch it.
   [
-    "packages/envoy/internal/dispatch/api/who_waits_test.go",
+    "packages/envoy/internal/dispatch/api/one_expression_guard_test.go",
     "a read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`",
     "the spelling the count beneath it exists to catch",
   ],

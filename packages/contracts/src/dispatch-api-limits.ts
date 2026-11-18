@@ -78,6 +78,35 @@ export type DeliveryCapability = (typeof DELIVERY_CAPABILITIES)[number];
 export type MessageDeliveryMode = DeliveryCapability;
 
 /**
+ * The four states one delivery attempt, of a message or of a mention, is in.
+ *
+ * `pending` is an attempt Dispatch committed and has not settled: it is before the listener
+ * call, or its outcome was never learned. `sent` and `queued` are both the listener having
+ * taken the message, and every reader that asks whether it took it counts the two alike - the
+ * outbox publishes no second copy, the delivery sweep settles neither as failed, and the
+ * session may take either as its own turn. They differ in one thing: a sent message is with a
+ * session that is running now, and a queued one waits in the consumer of a session the listener
+ * knows and that is not running, which gets it when it runs again, within the
+ * `DELIVERY_DUPLICATE_WINDOW_MS` the stream keeps it. `failed` is everything else, and only a
+ * failed attempt may be retried: a queued attempt is already stored, so a repeat would store a
+ * second copy.
+ */
+export const DELIVERY_ATTEMPT_STATES = ["pending", "sent", "queued", "failed"] as const;
+
+export type DeliveryAttemptState = (typeof DELIVERY_ATTEMPT_STATES)[number];
+
+/** What a delivery receipt in the event log carries: an attempt that settled, never `pending`,
+ *  because the sender that appends the receipt holds the attempt's claim and settles the row in
+ *  the statement that appends it. */
+export const SETTLED_DELIVERY_STATES = [
+  "sent",
+  "queued",
+  "failed",
+] as const satisfies readonly DeliveryAttemptState[];
+
+export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
+
+/**
  * The most sessions one broadcast sends to (`POST /api/v1/broadcasts`'s `session_ids`, after the
  * duplicates are dropped). A runaway guard, not a product limit: selection is a human ticking
  * boxes, but select-all makes a large send one click. Generated into Go as
@@ -150,8 +179,9 @@ export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
  * anything runs, its key untouched, when the request's caller is another person or no person at
  * all, so a write one person pressed never runs under another's session - another tab signs in
  * in place, and this tab's retry goes out on the new cookie before it learns of it. A caller that
- * resolves to nobody (a lapsed cookie) is answered by the route's own `401`. A write without the
- * header (the `dispatch` command, an agent) is not checked.
+ * resolves to nobody (a lapsed cookie) is answered by the `401` written further in: the keyed
+ * layer's for a keyed write, the handler's for any other. A write without the header (the
+ * `dispatch` command, an agent) is not checked.
  */
 export const DISPATCH_LOGIN_HEADER = "Dispatch-Login";
 
@@ -167,6 +197,17 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
  * the refusal is whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
+
+/**
+ * The code of the `403` for a request by an access token the secrets broker issued that holds
+ * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
+ * service and a session, no person and no project, and Dispatch serves it on the routes its read
+ * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
+ * runs and before its idempotency key is read, so the refused request claims no key and writes
+ * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
+ * the request possible for that token.
+ */
+export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
  *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */
@@ -282,6 +323,9 @@ export const IDEMPOTENCY_LEASE_MS = 60 * 1000;
  * that the repeat arrives.
  */
 export const DELIVERY_DUPLICATE_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+/** `DELIVERY_DUPLICATE_WINDOW_MS` in whole hours, for text that names the window. */
+export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_600_000;
 
 /**
  * The cause a delivery attempt records when the listener never answered its send. The listener

@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -236,7 +237,7 @@ func TestEnsureKeyValueRaisesAnR1BucketToThreeCopiesChangingNothingElse(t *testi
 	before := testnats.AwaitSettledStream(t, js, "KV_"+bucket)
 
 	counting := &countingJetStream{JetStreamContext: js}
-	if _, err := OpenKeyValue(conn, counting, bucket); err != nil {
+	if _, err := OpenKeyValue(context.Background(), conn, counting, bucket); err != nil {
 		t.Fatalf("open the bucket for a rebuild: %v", err)
 	}
 	if writes := counting.written(); len(writes) != 0 {
@@ -596,6 +597,12 @@ func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t
 // its value, and wraps the server's error (single server). A single nats-server v2.15.1 refuses a
 // create at more than one copy but takes an update to more, recording the count while it holds one
 // copy, so a refused raise is TestARefusedRaiseNamesTheReplicaSetting's, on a cluster.
+//
+// Each row runs on a server of its own whose JetStream may keep at most boundedFileStore on disk
+// (boundedStoreConfig), so tooLarge is a byte limit it cannot reserve on any machine. The shared
+// server keeps the default, 75% of the free space of its store's filesystem, and gVisor reports
+// about 2^63 bytes free on / and /tmp: a test whose temporary directory is there saw the server
+// reserve tooLarge and take the stream.
 func TestARefusedStreamNamesTheSettingsItCarried(t *testing.T) {
 	const tooLarge = int64(1) << 60
 	for _, row := range []struct {
@@ -610,7 +617,7 @@ func TestARefusedStreamNamesTheSettingsItCarried(t *testing.T) {
 		{"an update to a byte limit the server cannot reserve", true, []ConnectOption{WithStreamMaxBytes(tooLarge)}, fmt.Sprintf("%s=%d: ", StreamMaxBytesEnvVar, tooLarge)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			uri := testnats.URL(t)
+			_, uri := testnats.StartConfig(t, boundedStoreConfig, []string{"-js"}, true)
 			if row.deploy {
 				client, err := ConnectOwningStream([]string{uri})
 				if err != nil {
@@ -630,6 +637,13 @@ func TestARefusedStreamNamesTheSettingsItCarried(t *testing.T) {
 		})
 	}
 }
+
+// boundedFileStore is the most a boundedStoreConfig server's JetStream keeps on disk.
+const boundedFileStore = 1 << 30
+
+// boundedStoreConfig is a server whose JetStream keeps at most boundedFileStore on disk, whatever
+// free space the machine reports, and admits a client with no credential.
+var boundedStoreConfig = fmt.Sprintf("jetstream {\n  max_file_store: %d\n  max_memory_store: %d\n}\n", boundedFileStore, 64<<20)
 
 // On a single server with the default settings, a start after the one that created the stream and
 // a bucket writes nothing to either.

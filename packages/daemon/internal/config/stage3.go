@@ -70,20 +70,29 @@ func (g Gates) Steps() []record.DesignStep {
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
 // its controller, and whether a merge that closes one of its issues opens a production check at
-// all. Its repositories are Dispatch's mapping (Settings → Repositories → Projects), which the
-// daemon reads at boot and when it changes, never this file.
+// all. Dispatch's mapping (Settings → Repositories → Projects) names the project's default
+// repository and the repositories the daemon prepares before an issue names one. The daemon reads
+// that mapping at boot and when it changes, never this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
 	// CommitIssueTrailerRepos are `commit_issue_trailer_repos`, the repositories whose commits a
-	// pane stamps with the issue key, in the file's order; nil when the file names none. The
-	// project's repositories are Dispatch's mapping (Settings → Repositories → Projects), and this
-	// key only selects among them, so a name the project does not serve stamps nothing.
+	// pane stamps with the issue key, in the file's order, and nil when the file names none. A
+	// pane stamps the commit when its launch's repository is one of these names. The boot checks
+	// each name against Dispatch's mapping for this project alone, which catches a typo. That
+	// mapping decides no reach: an issue may name any repository.
 	CommitIssueTrailerRepos []ghrepo.Repository
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
 	Memory Memory
+	// Experiments are `experiments`, the experiments the project declares, in the order its file
+	// declares them; nil when the file names none. The order is the file's and is kept as a slice
+	// rather than a mapping because a later reader loads a drawn unit's files in the order the
+	// project declares the experiments, and a mapping's iteration order is no contract. The
+	// `memory` block is an experiment too and is not in this list: ExperimentsDeclared maps the
+	// block in and answers the one list every reader below the loader asks.
+	Experiments []Experiment
 	// ProductionCheck is `production_check`, the role that works the production check a merge
 	// closing one of the project's issues opens: the tester, which a project that names no key
 	// gets, or the empty role, which is the file's `off` and opens no check at all. The key
@@ -192,11 +201,11 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if value.Kind != yaml.MappingNode {
 		return Project{}, nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "commit_issue_trailer_repos", "deploys", "memory", "production_check", "slack_channels")
+	fields, err := describedMembers(value, key, "projects.<KEY>")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
-			return Project{}, nil, fmt.Errorf(`Unknown key %q: the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`, key+".repo")
+			return Project{}, nil, fmt.Errorf(`Unknown key %q: Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`, key+".repo")
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
 		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)
@@ -206,7 +215,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// members has already refused the key named twice, so this is at most one line.
+	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		if value.Content[index].Value == "deploys" {
@@ -227,6 +236,17 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	if memory := fields["memory"]; memory != nil {
 		if project.Memory, err = readMemory(memory, key+".memory"); err != nil {
+			return Project{}, nil, err
+		}
+	}
+	if experiments := fields["experiments"]; experiments != nil {
+		if project.Experiments, err = readExperiments(experiments, key+".experiments"); err != nil {
+			return Project{}, nil, err
+		}
+		// The block and `experiments.memory` are one experiment spelled two ways, and only here
+		// are both spellings in view: the memory member is read by the mapping's own key rather
+		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
@@ -306,7 +326,7 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 			return nil, errors.New(gatesMergeMessage)
 		}
 	}
-	fields, err := members(value, key, "design")
+	fields, err := describedMembers(value, key, "gates")
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +387,7 @@ func readGitHubApps(value *yaml.Node, key string) (*GitHubApps, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	roles, err := members(value, key, "implement", "review")
+	roles, err := describedMembers(value, key, "github_apps")
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +411,7 @@ func readGitHubApp(value *yaml.Node, key string) (GitHubApp, error) {
 	if value.Kind != yaml.MappingNode {
 		return GitHubApp{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "app_id", "private_key", "private_key_command", "private_key_secret", "token_command", "installations")
+	fields, err := describedMembers(value, key, "github_apps.<APP>")
 	if err != nil {
 		return GitHubApp{}, err
 	}

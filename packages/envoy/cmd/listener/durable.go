@@ -231,9 +231,10 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 			return bind, err
 		}
 		// A reconnect during the wait re-subscribes the subscription the failed attempt registered
-		// (bus.Client.onReconnect), which binds it once the durable is free. Another attempt would
-		// replace that handle with a bind racing the server's release of it, which can be refused
-		// with "consumer is already bound to a subscription".
+		// (bus.Client.afterReconnect, off nats.go's callback goroutine and never under a hook run's
+		// context), which binds it once the durable is free. Another attempt would replace that
+		// handle with a bind racing the server's release of it, which can be refused with "consumer
+		// is already bound to a subscription".
 		if client.SubOK() {
 			bind.waited = time.Since(start)
 			return bound(true)
@@ -373,17 +374,19 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // storedSeq, may need this listener's durable path, read from the subject alone, and when it does
 // not, how many sessions of this machine hold it in a consumer of their own
 // (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
-// consumer, so the durable path still delivers it). A role lane's subject always needs it. A
-// session's agent subject does unless the session's consumer holds it or the session is another
-// listener's (agentSubjectNeedsDelivery). Any other subject does when it matches a topic of an
-// interest of this machine (the registry's subject index) whose session's consumer does not hold
-// it; with none, the fan-out would deliver it to nobody and report nothing.
+// consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and
+// what it logs, is decided by agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go).
+// A role lane's subject always needs it. A session's agent subject does unless the session's
+// consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
+// subject does when it matches a topic of an interest of this machine (the registry's subject
+// index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
+// nobody and report nothing.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
 	}
-	if sessionID, ok := strings.CutPrefix(subject, contracts.AgentTopicPrefix); ok {
-		return agentSubjectNeedsDelivery(cfg, sessionID, storedSeq)
+	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
+		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject), storedSeq)
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
 		entry, err := cfg.sessions.Get(interest.SessionID)
@@ -408,4 +411,15 @@ func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID stri
 	}
 	interest, cached := cfg.registry.CachedInterest(sessionID)
 	return !cached || interest.MachineID == "" || interest.MachineID == cfg.machineID, 0
+}
+
+// agentSubjectSession is the session an agent subject names, in either form: the session alone
+// (notifications.agent.<session>) or under a project (notifications.agent.<PROJECT or _>.<session>),
+// read through the new form's old twin (contracts.LegacyTwin). A reader that cut the prefix off the
+// new form would look up a session named <PROJECT>.<session>, which none is.
+func agentSubjectSession(subject string) string {
+	if twin, ok := contracts.LegacyTwin(subject); ok {
+		subject = twin
+	}
+	return strings.TrimPrefix(subject, contracts.AgentTopicPrefix)
 }

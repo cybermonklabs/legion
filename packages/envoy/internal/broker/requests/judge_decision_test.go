@@ -78,7 +78,7 @@ func signJudgeable(t *testing.T, m *Machine, key *ecdsa.PrivateKey, reason strin
 // decides from.
 func pendingJudgeable(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, reason string, lifetime int, names ...string) Request {
 	t.Helper()
-	req, err := m.Create(t.Context(), enrollmentID, signJudgeable(t, m, key, reason, lifetime, names...), "")
+	req, err := m.Create(t.Context(), enrollmentID, signJudgeable(t, m, key, reason, lifetime, names...), "", nil)
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(%v) = %+v, %v; want a pending request", names, req, err)
 	}

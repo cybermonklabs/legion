@@ -133,6 +133,70 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 	}
 }
 
+// A service account to impersonate names a session database, so the launcher told one without the
+// instance, the database and the login refuses before it dials anything. A launcher that did not
+// know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the
+// configuration for the other stores and dial the unreachable daemon until its context ends.
+func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, []string{
+		"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p",
+		"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(),
+		"--session-impersonate-service-account", "legion-sessions@example-project.iam.gserviceaccount.com",
+	}, &stdout, &stderr)
+	const want = "the session database is named in part: no --session-instance, no --session-database, no --session-user"
+	if code != 1 || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
+	}
+}
+
+// The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
+// --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
+// on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
+// exit 2 on its usage, and one it dropped would change the refusal or dial the unreachable daemon
+// until the context ends. The controller's form with --microvm is refused for its roles directory
+// alone, so --microvm reached it too.
+func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		pool     = "example-project.svc.id.goog"
+		provider = "https://container.googleapis.com/v1/projects/example-project/locations/example-location/clusters/example-cluster"
+	)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"the pool alone", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--microvm", "--metadata-workload-pool", pool},
+			"the metadata endpoint is named in part: no --metadata-identity-provider"},
+		{"the identity provider alone", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--microvm", "--metadata-identity-provider", provider},
+			"the metadata endpoint is named in part: no --metadata-workload-pool"},
+		{"a gVisor pod", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
+		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--microvm", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
+			if code := run(ctx, args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
 // `legion launcher role-init` is the launcher's own, hidden from its usage, and refuses to run
 // anywhere but as the init of a role's new namespaces: run by hand it would otherwise mount a
 // role's private view over the caller's own. Every refusal, its usage's included, is a failure

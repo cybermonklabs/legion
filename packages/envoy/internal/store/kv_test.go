@@ -76,6 +76,34 @@ func TestMatch_FiltersByMachineID(t *testing.T) {
 	}
 }
 
+// The all-machines walk a publish's recipient count reads returns every session whose topics
+// match, whatever machine it registered on, each once however many of its topics match; a session
+// whose topics do not match is left out on every machine.
+func TestMatchAllMachinesReturnsEachMatchingSessionOnceWhateverItsMachine(t *testing.T) {
+	r := holding(t, map[string]Interest{
+		"ses_a":     {SessionID: "ses_a", MachineID: "machine-A", Topics: []string{"notifications.team.x.>"}},
+		"ses_b":     {SessionID: "ses_b", MachineID: "machine-B", Topics: []string{"notifications.team.x.>", "notifications.team.*.update"}},
+		"ses_c":     {SessionID: "ses_c", MachineID: "", Topics: []string{"notifications.team.x.update"}},
+		"ses_other": {SessionID: "ses_other", MachineID: "machine-A", Topics: []string{"notifications.team.y.>"}},
+	})
+
+	got := r.MatchAllMachines("notifications.team.x.update")
+	ids := make([]string, len(got))
+	for i, item := range got {
+		ids[i] = item.SessionID
+	}
+	sort.Strings(ids)
+	if want := []string{"ses_a", "ses_b", "ses_c"}; !slices.Equal(ids, want) {
+		t.Fatalf("MatchAllMachines = %v, want %v", ids, want)
+	}
+	if got := r.MatchAllMachines("notifications.team.z.created"); len(got) != 0 {
+		t.Fatalf("MatchAllMachines of a topic no session follows = %v, want none", got)
+	}
+	if got := (&Registry{}).MatchAllMachines("notifications.team.x.update"); len(got) != 0 {
+		t.Fatalf("a registry with no index matched %v", got)
+	}
+}
+
 func TestMatch_WildcardPatterns(t *testing.T) {
 	r := holding(t, map[string]Interest{
 		"ses_exact":   {SessionID: "ses_exact", MachineID: "m1", Topics: []string{"notifications.github.sjawhar.legion.pr"}},
@@ -1293,7 +1321,7 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 		role      = "legion-acme-controller"
 		lane      = "notifications.legion.acme.controller"
 	)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 	if _, err := reg.SetRole(sessionID, "m1", role, false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
@@ -1371,7 +1399,7 @@ func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 		sessionID = "ses_unsubscribe_race"
 		followed  = "notifications.dispatch.issue.KEY-1.>"
 	)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 	ctx := context.Background()
 	registration, err := reg.PlanInterest(ctx, sessionID, []string{followed, own})
 	if err != nil {
@@ -3126,7 +3154,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	putInterest(t, recreated, Interest{SessionID: "ses_b", MachineID: "m1", Topics: []string{"notifications.b"}})
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = cachedIDs(reg) })
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the new bucket's read to deliver every record")
@@ -3175,7 +3203,7 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 	roles, roleWatch := reg.roles(), reg.roleWatcher.KV()
 	roleWatcher := reg.roleWatcher
 	second, closeSecond := connectNATS(t)
-	if err := reg.Rewatch(second); err == nil {
+	if err := reg.Rewatch(context.Background(), second); err == nil {
 		t.Fatal("Rewatch onto a connection without the role bucket succeeded")
 	}
 	closeSecond()
@@ -3224,7 +3252,7 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	roles, roleWatch := reg.roles(), reg.roleWatcher.KV()
 	roleWatcher := reg.roleWatcher
 	second, closeSecond := connectNATS(t)
-	if err := reg.Rewatch(second); err == nil {
+	if err := reg.Rewatch(context.Background(), second); err == nil {
 		t.Fatal("Rewatch onto a connection without the interest bucket succeeded")
 	}
 	closeSecond()

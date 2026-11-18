@@ -1,0 +1,2 @@
+kind: Changed
+body: 'The agent-secrets skill and the legion-controller skill''s Slack reference say the Legion Slack bot token is a shared agent secret (owner `shared`, tier `agent`), granted to every session with a broker identity, not to the Legion daemon''s pods alone.'

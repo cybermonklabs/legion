@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -320,13 +321,32 @@ func lockedHead(ctx context.Context, tx pgx.Tx, room string) (int64, error) {
 // clearSettlementPending deletes the document's pending settlement inside the settlement
 // transaction that has read every update, so it commits only with that settlement's writes. The
 // settlement holds the document's advisory lock from before it reads the update cursor until it
-// commits, so no update it has not read can be appended meanwhile.
-func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string) error {
-	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, room); err != nil {
+// commits, so no update it has not read can be appended meanwhile. The same statement keeps kept
+// as the document's closed edit source (doc_closed_edit_sources), or deletes the one kept where
+// kept is nil.
+func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *model.Actor) error {
+	encoded, err := encodeActor(kept)
+	if err != nil {
+		return fmt.Errorf("encode the closed issue's document's edit source: %w", err)
+	}
+	if _, err := tx.Exec(ctx, clearSettlementPendingStatement, room, encoded); err != nil {
 		return fmt.Errorf("clear the document's pending settlement: %w", err)
 	}
 	return nil
 }
+
+// clearSettlementPendingStatement is clearSettlementPending's one statement: it deletes the pending
+// row of the document $1 and either keeps $2 as the document's closed edit source or, where $2 is
+// null, deletes the one kept.
+const clearSettlementPendingStatement = `
+	with pending as (
+		delete from doc_settlements_pending where artifact_id = $1::uuid
+	), kept as (
+		insert into doc_closed_edit_sources (artifact_id, last_actor)
+		select $1::uuid, $2::jsonb where $2::jsonb is not null
+		on conflict (artifact_id) do update set last_actor = excluded.last_actor
+	)
+	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
 
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work

@@ -88,7 +88,7 @@ func TestTheInterestWriteRoutesAnswerOverAnUnreadableInterestRecord(t *testing.T
 		if err := json.Unmarshal(entry.Value(), &stored); err != nil {
 			t.Fatalf("the record the subscribe wrote does not decode: %q: %v", entry.Value(), err)
 		}
-		want := contracts.AgentSubject(sessionID) + " " + topic
+		want := contracts.LegacyAgentSubject(sessionID) + " " + topic
 		if got := strings.Join(stored.Topics, " "); got != want || stored.MachineID != "test-machine" {
 			t.Fatalf("the record the subscribe wrote = %+v, want topics %q on test-machine", stored, want)
 		}

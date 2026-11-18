@@ -11,6 +11,7 @@ import {
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundUnavailable,
   RELAY_PROGRESS_INTERVAL_MS,
+  RelayHeader,
   type RelayMessage,
   type RelayReply,
   registerWithRelay,
@@ -241,6 +242,43 @@ describe("relay frames", () => {
     expect(replies).toEqual([["_INBOX.bad", "done"]]);
     expect(handed).toEqual([]);
     expect(logs.some((line) => line.includes("undecodable"))).toBe(true);
+  });
+
+  // The listener's connection probe rides the relay subject with one header and no body. Read as
+  // a frame it would move the resume point past stored messages; logged, it would put a line in
+  // the session's log for every send to it.
+  test("a connection probe is answered done, logs nothing, reaches no host and moves no resume point", () => {
+    const { delivery, replies, handed, logs, gaps, persisted } = setup();
+    const probe = (reply: string | undefined): RelayMessage => ({
+      data: new Uint8Array(),
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : "") },
+      reply,
+    });
+    expect(RelayHeader.probe).toBe("Envoy-Probe");
+
+    delivery.receive(probe("_INBOX.probe.1"));
+    expect(replies).toEqual([["_INBOX.probe.1", "done"]]);
+    expect(delivery.resumePoint()).toBeUndefined();
+    expect(persisted).toEqual([]);
+
+    delivery.receive(relay({ seq: 7 }));
+    handed[0]?.done();
+    const point = delivery.resumePoint();
+    const writes = persisted.length;
+    const answered = replies.length;
+    const logged = logs.length;
+    delivery.receive(probe("_INBOX.probe.2"));
+    // A probe with no inbox asks nothing, so nothing answers it.
+    delivery.receive(probe(undefined));
+
+    expect(replies.slice(answered)).toEqual([["_INBOX.probe.2", "done"]]);
+    expect(handed).toHaveLength(1);
+    expect(delivery.resumePoint()).toEqual(point);
+    expect(point).toEqual({ stream_id: STREAM, seq: 7 });
+    expect(persisted).toHaveLength(writes);
+    expect(gaps).toEqual([]);
+    expect(logs).toHaveLength(logged);
+    expect(logs.some((line) => line.includes("undecodable"))).toBe(false);
   });
 });
 
@@ -753,6 +791,58 @@ describe("follow filter", () => {
     delivery.receive(relay({ seq: 1, subject: AGENT, storedAt: T0 - 60 * MINUTE }));
 
     expect(seqs(handed)).toEqual([1]);
+  });
+
+  // A message name the rename moves has two forms while every reader takes both
+  // (dispatch://INFRA-3862): the listener's filters carry both, so this client, the last reader
+  // of a frame, must take a frame in either form of a topic the session follows. One that
+  // compares the spellings as they are drops every event of a session that followed the other
+  // form, and drops it in silence: the frame is answered `done` and the resume point passes it.
+  test("a frame reaches the session in either form of a topic it follows", () => {
+    const stored = T0 + MINUTE;
+    for (const [followed, subject] of [
+      [ISSUE_TOPIC, ISSUE],
+      [ISSUE_TOPIC, "notifications.dispatch.issue.INFRA.INFRA-1.comment"],
+      ["notifications.dispatch.issue.INFRA.INFRA-1.>", ISSUE],
+      [
+        "notifications.dispatch.issue.INFRA.INFRA-1.>",
+        "notifications.dispatch.issue.INFRA.INFRA-1.comment",
+      ],
+    ] as const) {
+      const { delivery, handed, replies } = setup();
+      delivery.setFollowed([followed]);
+      delivery.receive(relay({ seq: 1, subject, storedAt: stored, reply: "_INBOX.1" }));
+
+      expect(seqs(handed), `${subject} while following ${followed}`).toEqual([1]);
+      expect(repliesTo(replies, "_INBOX.1"), `${subject} while following ${followed}`).toEqual([
+        "received",
+      ]);
+    }
+  });
+
+  // The session's own inbox in either form is its own, whenever it was stored, as the old form
+  // always was; another session's inbox in either form is not, so the rename widens no reach.
+  test("the session's own agent subject is taken in either form, and no other session's", () => {
+    for (const subject of [
+      AGENT,
+      "notifications.agent._.ses_a",
+      "notifications.agent.PRIV.ses_a",
+    ]) {
+      const { delivery, handed } = setup();
+      delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
+
+      expect(seqs(handed), subject).toEqual([1]);
+    }
+    for (const subject of [
+      "notifications.agent.ses_other",
+      "notifications.agent._.ses_other",
+      "notifications.agent.PRIV.ses_other",
+    ]) {
+      const { delivery, handed } = setup();
+      delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
+
+      expect(seqs(handed), subject).toEqual([]);
+    }
   });
 
   test("a topic's follow time survives a restart, and an unfollow forgets it", () => {

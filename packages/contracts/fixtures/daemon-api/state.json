@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 133,
-    "caller": 133
+    "daemon": 152,
+    "caller": 152
   },
   "admission": {
     "cap": 5,
@@ -264,8 +264,24 @@
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
       "phaseEntry": 4,
       "givenEntry": 4,
+      "entryQueuedAt": "2026-09-22T08:58:14Z",
+      "entryConfirmedAt": "2026-09-22T08:58:51Z",
       "treeMovedAt": "2026-09-22T09:17:12Z",
-      "quietHours": 0.013333333333333334
+      "quietHours": 0.013333333333333334,
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "short",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -281,7 +297,21 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "long",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -328,8 +358,18 @@
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
       },
+      "architectStalls": [
+        "claim-unreachable"
+      ],
       "treeMovedAt": "2026-09-22T06:18:00Z",
-      "quietHours": 3
+      "quietHours": 3,
+      "assignments": [
+        {
+          "experiment": "plan-length",
+          "variant": "",
+          "mode": ""
+        }
+      ]
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -751,6 +791,10 @@
       {
         "repo": "acme/widgets",
         "default": true,
+        "apps": {
+          "implement": true,
+          "review": true
+        },
         "cache": {
           "repo": "acme/widgets",
           "sandbox": "legion-legion-cache-acme-widgets-d782c874",
@@ -765,6 +809,10 @@
       {
         "repo": "zeta/tools",
         "default": false,
+        "apps": {
+          "implement": true,
+          "review": true
+        },
         "cache": {
           "repo": "zeta/tools",
           "sandbox": "legion-legion-cache-zeta-tools-1b2c3d4e",
@@ -777,7 +825,15 @@
     "refused": [
       {
         "repo": "acme/gadgets",
-        "reason": "the review App is not installed on acme/gadgets"
+        "reason": "the review App is not installed on acme/gadgets",
+        "apps": {
+          "implement": true,
+          "review": false
+        }
+      },
+      {
+        "repo": "zeta/archive",
+        "reason": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
       }
     ],
     "withoutWebhookApp": [
@@ -879,6 +935,19 @@
         "idle_release": {
           "idle_minutes": 10,
           "backstop_minutes": 60
+        },
+        "memory_guard": {
+          "issue_pods": {
+            "enabled": true,
+            "act_percent": 80,
+            "floor_percent": 15,
+            "wait_seconds": 8,
+            "interval_milliseconds": 250
+          }
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
         }
       }
     },
@@ -919,6 +988,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "tester",
         "deploys": []
       },
@@ -927,6 +997,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "off",
         "deploys": []
       }

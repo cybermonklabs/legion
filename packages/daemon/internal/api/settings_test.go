@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
@@ -118,6 +119,22 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
 	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
 	"IdleReleaseConfig.BackstopMinutes":              "runtime.kubernetes.idle_release.backstop_minutes",
+	"Kubernetes.Sandbox":                             "runtime.kubernetes.sandbox",
+	"SandboxConfig.Type":                             "runtime.kubernetes.sandbox.type",
+	"SandboxConfig.CanaryIssues":                     "runtime.kubernetes.sandbox.canary_issues",
+	"SandboxConfig.MicroVM":                          "runtime.kubernetes.sandbox.microvm",
+	"MicroVMConfig.ComputeClass":                     "runtime.kubernetes.sandbox.microvm.compute_class",
+	"MicroVMConfig.StorageClass":                     "runtime.kubernetes.sandbox.microvm.storage_class (runtime.kubernetes.storage_class when the block names none)",
+	"MicroVMConfig.Metadata":                         "runtime.kubernetes.sandbox.microvm.metadata",
+	"MetadataConfig.WorkloadPool":                    "runtime.kubernetes.sandbox.microvm.metadata.workload_pool",
+	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
+	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
+	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
+	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
+	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.issue_pods.act_percent",
+	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
+	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
+	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
 	"RepositoryCacheConfig.Volume":                   "runtime.kubernetes.repository_cache.volume",
 	"RepositoryCacheConfig.RefreshMinutes":           "runtime.kubernetes.repository_cache.refresh_minutes",
 	"RepositoryCacheConfig.RetainHours":              "runtime.kubernetes.repository_cache.retain_hours",
@@ -140,6 +157,7 @@ var settingsEmitted = map[string]string{
 	"AgentSecretsConfig.URL":                         "runtime.kubernetes.agent_secrets.url",
 	"AgentSecretsConfig.Audience":                    "runtime.kubernetes.agent_secrets.audience",
 	"AgentSecretsConfig.TokenExpirySeconds":          "runtime.kubernetes.agent_secrets.token_expiry_seconds",
+	"AgentSecretsConfig.ExchangeAudience":            "runtime.kubernetes.agent_secrets.exchange_audience",
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
@@ -149,6 +167,17 @@ var settingsEmitted = map[string]string{
 	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
 	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
 	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
+	"Project.Experiments":                            "projects.<KEY>.experiments",
+	"Experiment.Name":                                "projects.<KEY>.experiments.<name> (the mapping key the block is declared under)",
+	"Experiment.Mode":                                "projects.<KEY>.experiments.<name>.mode",
+	"Experiment.Unit":                                "projects.<KEY>.experiments.<name>.unit",
+	"Experiment.Roles":                               "projects.<KEY>.experiments.<name>.roles",
+	"Experiment.OnVariant":                           "projects.<KEY>.experiments.<name>.on_variant",
+	"Experiment.Variants":                            "projects.<KEY>.experiments.<name>.variants",
+	"Variant.Name":                                   "projects.<KEY>.experiments.<name>.variants[].name",
+	"Variant.Weight":                                 "projects.<KEY>.experiments.<name>.variants[].weight",
+	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
+	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -196,6 +225,8 @@ var settingsExcluded = map[string]string{
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
+	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
+	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -324,9 +355,15 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
 		"agent_secrets", "plugins", "setup", "skills_repository", "test_postgres", "repository_cache", "idle_release",
+		"memory_guard", "sandbox",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
 		"idle_minutes", "backstop_minutes",
+	})
+	memoryGuardKeys := keysOf(t, kubernetesKeys["memory_guard"])
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods"})
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard.issue_pods", keysOf(t, memoryGuardKeys["issue_pods"]), []string{
+		"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.repository_cache", keysOf(t, kubernetesKeys["repository_cache"]), []string{
 		"volume", "refresh_minutes", "retain_hours", "resources",
@@ -336,8 +373,11 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.github_apps.implement", keysOf(t, apps["implement"]), []string{"app_id", "installations"})
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
+	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
+	// under that key (contract 141); what a project that declares one carries is
+	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"slack_channels", "memory", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -438,6 +478,70 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"}
 	if plugins := settings.Runtime.Kubernetes.Plugins; plugins == nil || *plugins != want {
 		t.Errorf("runtime.kubernetes.plugins = %+v, want %+v", plugins, want)
+	}
+}
+
+// The sandbox rides the settings as the loader settles it. The maximal file names no block, so it
+// shows gVisor, `canary_issues` as `[]` and no `microvm`. A block shows each member the file
+// names. An inert microvm block, which no issue pod uses, shows no compute class, and its storage
+// class is runtime.kubernetes.storage_class. None of it is a credential (settingsEmitted).
+func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
+	const pool = "example-project.svc.id.goog"
+	const provider = "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"
+	const metadata = `
+        metadata:
+          workload_pool: ` + pool + `
+          identity_provider: ` + provider + `
+`
+	for _, tc := range []struct {
+		name, block string
+		want        SandboxSettings
+		wire        string
+	}{
+		{
+			name: "no block",
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}},
+			wire: `{"type":"gvisor","canary_issues":[]}`,
+		},
+		{
+			name:  "a canary list on a gVisor project",
+			block: "    sandbox:\n      canary_issues: [LEGION-208, LEGION-209]\n      microvm:\n        compute_class: example-microvm\n        storage_class: example-microvm-disk" + metadata,
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{"LEGION-208", "LEGION-209"}, MicroVM: &MicroVMSettings{
+				ComputeClass: "example-microvm", StorageClass: "example-microvm-disk",
+				Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
+			}},
+			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk",` +
+				`"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+		},
+		{
+			name:  "a microVM project",
+			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm}\n",
+			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3"}},
+			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3"}}`,
+		},
+		{
+			name:  "an inert microvm block",
+			block: "    sandbox:\n      microvm:" + metadata,
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{
+				StorageClass: "gp3", Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
+			}},
+			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
+			}
+			encoded, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			kubernetes := keysOf(t, keysOf(t, keysOf(t, encoded)["runtime"])["kubernetes"])
+			if got := string(kubernetes["sandbox"]); got != tc.wire {
+				t.Errorf("settings.runtime.kubernetes.sandbox =\n%s\nwant\n%s", got, tc.wire)
+			}
+		})
 	}
 }
 
@@ -555,6 +659,70 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(stamped)) {
 		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// A project's `experiments` ride the settings as the file writes them: every block in the file's
+// order, under the name it is declared with, with its mode, its unit, the roles its arms reach
+// (absent where it names none), the arm `on` would give and its arms in the file's order, each
+// with its weight and its overlays. The paths are the
+// operator's own file names, as the `memory` block's are (settingsEmitted). A project that
+// declares none under the key carries `[]`, never no key at all, which the census above reads off
+// the fixture.
+func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
+	const declared = `    experiments:
+      plan-length:
+        mode: random
+        unit: issue
+        variants:
+          - {name: short, weight: 3}
+          - name: long
+      review-depth:
+        mode: on
+        roles: [planner, implementer]
+        on_variant: deep
+        variants:
+          - {name: deep}
+          - {name: shallow}
+`
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n"+declared, 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	settings := SettingsOf(loadSettingsFile(t, body))
+	want := []ExperimentSettings{
+		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
+			{Name: "short", Weight: 3, ConfigFiles: []string{}},
+			{Name: "long", Weight: 1, ConfigFiles: []string{}},
+		}},
+		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, Roles: []claim.Role{claim.RolePlanner, claim.RoleImplementer}, OnVariant: "deep", Variants: []VariantSettings{
+			{Name: "deep", Weight: 1, ConfigFiles: []string{}},
+			{Name: "shallow", Weight: 1, ConfigFiles: []string{}},
+		}},
+	}
+	if got := settings.Projects["WIDGETS"].Experiments; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the project's experiments = %+v, want %+v", got, want)
+	}
+	if got := settings.Projects["LEGION"].Experiments; len(got) != 0 {
+		t.Fatalf("a project that declares no experiment under the key carries %+v, want none", got)
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	projects := keysOf(t, keysOf(t, encoded)["projects"])
+	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
+	})
+	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
+		t.Errorf("a project that declares no experiment under the key carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 141)", got)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := nullKeys(document, "settings"); len(got) != 0 {
+		t.Errorf("settings carry the null keys %q, want none: an arm that names no overlay carries `[]`", got)
 	}
 }
 
@@ -726,4 +894,31 @@ func nullKeys(document any, prefix string) []string {
 		}
 	}
 	return keys
+}
+
+// runtime.kubernetes.agent_secrets.exchange_audience reaches the settings as the block's
+// exchange_audience where the file sets it, an audience and no credential, and is absent where it
+// does not, so a deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ audience, want string }{
+		"set":   {"legion-broker-exchange", `"exchange_audience":"legion-broker-exchange"`},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = tc.audience
+			encoded, err := json.Marshal(SettingsOf(cfg).Runtime.Kubernetes.AgentSecrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const before = `{"url":"https://agent-secrets.internal.example","audience":"fixture-broker-audience","token_expiry_seconds":1800`
+			want := before + "}"
+			if tc.want != "" {
+				want = before + "," + tc.want + "}"
+			}
+			if string(encoded) != want {
+				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
 }

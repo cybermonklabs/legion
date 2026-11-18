@@ -1,0 +1,291 @@
+name: CI job dispatch-two-builds
+
+# The steps of ci.yaml's `dispatch-two-builds` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The Go step runs behind an input of its own, which ci.yaml's calling job fills from the
+# `changes` output of the same name (dispatch_two_builds_go), whose filter is that step's reads.
+# The step runs only the tests the twobuild tag adds, since envoy-go runs ./cmd/dispatch's
+# untagged ones, and its gate of its own holds envoy-go's filter to what this step reads rather
+# than to what the browser half reads. A step of a called workflow cannot read
+# `needs.changes.outputs.<name>`, so it is an input here. The job runs only when `changes`
+# succeeded, so the step needs no `changes-result` term.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      dispatch_two_builds_go:
+        description: >-
+          ci.yaml's `needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
+          that filter matched.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  dispatch-two-builds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The browser half's own database, which its rows truncate.
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/dispatch_cross_build?sslmode=disable
+      # The first-rollout build's commit, the release tagged legion-envoy-v30.20.2. That tag is
+      # lightweight and no ruleset protects it, so it can move: the commit is the pin.
+      # firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same
+      # commit.
+      FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: ./.github/actions/setup-bun
+      # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
+      - run: bun install --frozen-lockfile
+      - name: Resolve the previous build's commit
+        id: previous
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      # The cache saves the build when the job ends in success and found none under this key.
+      - name: Cache the previous build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+      # A restored directory holds the complete build of that commit, which the script leaves as it
+      # is. The runner context is not available in a job's env, so each step that reads the build's
+      # directory names it in its own.
+      - name: Build the previous build
+        env:
+          PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+      # The first-rollout build: the newest release before the first that registers its schema
+      # numbers (FIRST_ROLLOUT_COMMIT above, and firstRolloutRelease in
+      # packages/envoy/cmd/dispatch/twobuild_harness_test.go, which holds the same commit). The
+      # transition row that drives the fleet's first rollout runs it as its earlier build, since
+      # every previous release from legion-envoy-v30.21.0 on registers its numbers. This step fails
+      # when the release's tag names another commit than the pin. The release is pinned, so its
+      # cache entry is written once and restored after that.
+      - name: Resolve the first-rollout build's commit
+        run: |
+          resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
+          if [[ "$resolved" != "$FIRST_ROLLOUT_COMMIT" ]]; then
+            echo "::error::The tag legion-envoy-v30.20.2 names commit $resolved. FIRST_ROLLOUT_COMMIT pins the first-rollout build to commit $FIRST_ROLLOUT_COMMIT, and firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same commit. Move the tag back to $FIRST_ROLLOUT_COMMIT, or change the pin in both places."
+            exit 1
+          fi
+      - name: Cache the first-rollout build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
+      - name: Build the first-rollout build
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # Only what the twobuild tag adds: envoy-go's unit step runs ./cmd/dispatch's untagged tests,
+      # so the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
+      # source at run time. The assignment is a line of its own: under bash -e it carries the
+      # script's exit status, so an empty or refused list fails the step instead of running
+      # -run "", which matches every test.
+      - name: Two-build tests of the Dispatch server
+        if: inputs.dispatch_two_builds_go == 'true'
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: |
+          pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
+          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+        working-directory: packages/envoy
+      # dispatch-browser.yaml's shard job's step of this name, for the reason it gives: Playwright's
+      # Node runner reads `@legion/contracts` out of a build this checkout has to make before the
+      # config loads, and the entries Dispatch imports are all it needs. `build:dispatch` bundles
+      # those four and so compiles no module outside the set this job's filter lists - not
+      # ./legion-api, which nothing of this job loads. `bun run e2e:multiprocess` below makes the
+      # same build again (packages/dispatch's build:contracts).
+      - name: Build contracts for dispatch e2e
+        run: bun run build:dispatch
+        working-directory: packages/contracts
+      - name: Build the Dispatch server
+        # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
+        # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
+        # and starts in seconds.
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # No apt in this step: Playwright's `chromium` entry in its ubuntu24.04-x64 table adds no
+        # package this image lacks, and this job's one spec runs headless Chromium and compares no
+        # screenshot, so the font packages `--with-deps` brought are not needed either. The
+        # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
+        # with the apt work gone this step's removal of the runner image's chrome-stable apt
+        # source goes with it. The 4-minute budget is that step's, for the same download.
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Browser-test each build's page against the other build's server
+        # B is the previous build, which serves on the socket the harness holds for it, as A does,
+        # so this step names no port for it.
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_PREVIOUS_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
+      # The same rows with B the first-rollout build, a release before the fleet columns, which
+      # registers no schema numbers: B's page is read-only on A's server while B is live, which the
+      # previous release, registering its numbers, no longer shows, and A's page is held to B's own
+      # exact version rule on B's server, which admits it writable while the two builds' schema
+      # versions are equal. The step tells the spec this is the first-rollout run with
+      # DISPATCH_E2E_FIRST_ROLLOUT_COMMIT: the spec fails unless B is that commit and the registry
+      # reads version 0 while B is live, and pageWritable then reads each direction's rule from the
+      # registry. The database is made again, so this run starts from what the step above started
+      # from.
+      - name: Browser-test each build's page against the first-rollout build's server
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" \
+            -c 'drop database dispatch_cross_build with (force)' \
+            -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
+            DISPATCH_E2E_FIRST_ROLLOUT_COMMIT="$FIRST_ROLLOUT_COMMIT" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-two-builds-browser-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-two-builds
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # THE SAME-BUILD PAIRING: the twobuild suite again, with this tree's own build as the previous
+  # build. The job above pairs the tree with the newest legion-envoy-v* release, so an assertion
+  # that holds only across a version boundary passes in the merge group of the change that breaks
+  # it, and fails later, in an unrelated pull request's group, once a release carries that change.
+  # On 2026-11-17 the approval-carry row compared a whole `model.Actor` after #4281 gave a person's
+  # actor `Proven: true`. #4281's own group passed against legion-envoy-v30.43.0, and every group
+  # with a Dispatch change failed once legion-envoy-v30.44.0, the first tag holding #4281, was the
+  # previous release. Pairing the tree with itself fails in the culprit's own group.
+  #
+  # It runs the whole suite unchanged. Each row that depends on the two builds' numbers decides
+  # from what the live fleet registers, not from which commit the previous build is, so a
+  # same-build pairing is a case the suite already states. The one row that needs an older build
+  # reads DISPATCH_FIRST_ROLLOUT_BUILD, which this job leaves unset, so that row skips here and
+  # runs in the job above. A row that fails only in this job holds a version assumption it never
+  # stated: that is a finding for the row's owning tree, which fixes the row, and no ground for a
+  # skip.
+  #
+  # A merge-group run alone runs it, and as a job of its own beside the one above, so the group
+  # fails before the merge, its wall time does not grow, and a pull request's run (`full-ci`) or
+  # a dispatched run costs what it did. The `if:` reads the caller's event: a called workflow's
+  # `github` context is its caller's.
+  dispatch-two-builds-same:
+    if: github.event_name == 'merge_group' && inputs.dispatch_two_builds_go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
+      # refuses a commit older than its floor release, which it reads by its tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: ./.github/actions/setup-bun
+      # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
+      - run: bun install --frozen-lockfile
+      # No cache: the head is a new commit in every run.
+      - name: Build this tree as the previous build
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit HEAD --out "$DISPATCH_PREVIOUS_BUILD"
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The job above's Go step, its -run read the same way, against this tree's own build.
+      - name: Two-build tests of the Dispatch server against its own build
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
+        run: |
+          pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
+          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+        working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-two-builds
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

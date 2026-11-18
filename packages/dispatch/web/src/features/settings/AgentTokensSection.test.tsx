@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -248,8 +248,10 @@ async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswer
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
     .mockResolvedValue(listed);
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const lostMint = Promise.withResolvers<never>();
   const createAgentToken = spyOn(api, "createAgentToken")
-    .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
+    .mockReturnValueOnce(lostMint.promise)
     .mockResolvedValue({ ...token, id: "replacement", name: "reviewer", token: "dsp_replacement" });
   const revokeAgentToken = spyOn(api, "revokeAgentToken").mockResolvedValue();
   const asked: string[] = [];
@@ -271,6 +273,9 @@ async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswer
   await user.click(label);
   await user.paste("reviewer");
   await user.click(screen.getByRole("button", { name: "New token" }));
+  await act(async () => {
+    lostMint.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }));
+  });
   await screen.findByTestId("landed-without-answer");
   return {
     asked,
@@ -323,8 +328,14 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
     await tick(20);
     expect(page.revokeAgentToken).not.toHaveBeenCalled();
 
+    // The revoke's answer is held as the lost mint's was, and given inside `act` once it is out.
+    const revoked = Promise.withResolvers<void>();
+    page.revokeAgentToken.mockReturnValueOnce(revoked.promise);
     await page.user.click(replace);
     await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
+    await act(async () => {
+      revoked.resolve();
+    });
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
     // The replacement holds what the lost token held.
     expect(page.createAgentToken.mock.calls[1]?.[0]).toEqual({

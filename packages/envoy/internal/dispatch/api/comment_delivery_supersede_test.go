@@ -44,7 +44,7 @@ func copiesOfTheComment(
 		t.Fatalf("count the attempts of %s that delivered the comment: %v", commentID, err)
 	}
 	for _, topic := range published.topicsAbout(t, commentID) {
-		if topic == contracts.AgentSubject(session) {
+		if topic == contracts.LegacyAgentSubject(session) {
 			copies++
 		}
 	}
@@ -158,7 +158,7 @@ func TestAFailedRetryLeavesTheQueuedAttemptToItsLane(t *testing.T) {
 		t.Fatalf("the Retry's attempt = %#v, want it failed", settled[1])
 	}
 	destinations := awaitPublishedCommentCreated(t, lane.database, lane.queued)
-	if slices.Contains(destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("comment.created reached %v, want nothing of s1's own: the mention delivered the comment", destinations)
 	}
 	if copies := copiesOfTheComment(t, lane.database, published, lane.queued, "s1"); copies != 1 {

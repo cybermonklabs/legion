@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/natsversion"
 )
 
 const Stream = "ENVOY_NOTIFICATIONS"
@@ -42,6 +43,15 @@ const (
 	// SessionBucket holds each live session's registration, keyed by session id
 	// (internal/session).
 	SessionBucket = "envoy_sessions"
+	// KnownSessionBucket holds one record per session that registered in the last 30 days, keyed
+	// by session id (internal/session). A record says the session was known in the last 30 days,
+	// never that it is registered now: it outlives both stores that answer for a session that
+	// runs, the session entry (SessionBucket) and the interest row (InterestBucket), so a send to
+	// a stopped session is queued rather than refused and a publish counts that session as a
+	// recipient. The code that needs a live session or a role holder therefore never reads it:
+	// role resolution (roleHolderSessions.Holder in cmd/listener/role_holder.go) and the reapers
+	// each ask the stores whose records end when the session is gone.
+	KnownSessionBucket = "envoy_known_sessions"
 	// CIStateBucket holds the CI state of each commit of a pull request (internal/cistore).
 	CIStateBucket = "envoy_ci_state"
 	// LegionAgentBucket holds the Legion agent registry: each Legion session the daemon ran, under
@@ -58,19 +68,28 @@ const (
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
+	// PrivateProjectsBucket holds one key per private project, its value the repositories
+	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// it and the listeners read it to hold each session to its token's projects
+	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
+	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
+	// refuses both its write and its read, which both sides read as no project being private.
+	PrivateProjectsBucket = "envoy_private_projects"
 )
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
-// them: the interest and role-claim buckets (internal/store), the session registry
-// (internal/session), the Legion agent registry (internal/legionagents), the CI state bucket,
-// which only a listener with the GitHub webhook route opens (internal/cistore), and the
-// spent-proof bucket, which only a listener that takes broker access tokens opens
+// them: the interest and role-claim buckets (internal/store), the session registry and the
+// known-session store (internal/session), the Legion agent registry (internal/legionagents), the
+// CI state bucket, which only a listener with the GitHub webhook route opens (internal/cistore),
+// and the spent-proof bucket, which only a listener that takes broker access tokens opens
 // (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
 // envoy-infra grants the listener and the host each one's calls
 // (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
+// A bucket named here is granted to the host and Dispatch users too; the note on that file's
+// ListenerBuckets loop (listenerGrant) says where what that widens is written down.
 // Each call returns a fresh slice, so no caller changes another's list.
 func ListenerBuckets() []string {
-	return []string{InterestBucket, RoleClaimBucket, SessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
+	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
@@ -129,6 +148,23 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
+
+// ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
+// relay subject (DeliverSubject), with the value "1", and no body: a core request whose answer, or
+// a second of silence, says something still subscribes the subject, and whose no-responders says
+// nothing does (cmd/listener/connection_probe.go). It is not a relay frame header (Envoy-Subject
+// and the rest, cmd/listener/session_relay.go): the probe carries none of those, since a message on
+// the relay subject that carried them would be read as a frame and move the session's resume point
+// past the messages it stands for. Every subscriber of a relay subject that stands for a session -
+// the plugins, and each stand-in for one in the tests, the load test and the end-to-end scripts -
+// answers a message carrying this header done, when it carries a reply subject, before it decodes
+// anything, and takes nothing else from it: no frame, no envelope, no count. The plugins answer it
+// in their shared consumer delivery (packages/envoy-client/src/consumer-delivery.ts,
+// RelayHeader.probe); one older than the header answers the same bytes, which decode as no frame,
+// done too. A subscriber that is no session and holds the subject only through a wildcard -
+// natstail on notifications.>, an end-to-end capture of every notification - passes it over
+// unanswered and takes nothing from it either: an answer would speak for a session it is not.
+const ConnectionProbeHeader = "Envoy-Probe"
 
 // KeptTopicPrefix begins the listener's kept lane: the role messages it kept because it could not
 // deliver them and the drain cursors over them (cmd/listener/role_keep.go). The listener alone
@@ -258,7 +294,8 @@ var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes
 // subject carrying a session's payload cannot be added without listing it here.
 var privateStreamSubjects = []string{
 	// Each session's own inbox: Dispatch's routes, follower and author copies, and every
-	// message sent to one session (contracts.AgentSubject).
+	// message sent to one session (contracts.AgentSubject, and contracts.LegacyAgentSubject in
+	// the old form).
 	contracts.AgentTopicPrefix + ">",
 	// The Legion daemon's notices for one project's controller (daemon notify.ControllerTopic),
 	// which only the session holding that project's controller role may register
@@ -318,14 +355,17 @@ func NamesControllerNoticeLane(topics []string) bool {
 // wildcard rules (subjectsOverlap), so another session's inbox, a failed-delivery lane (a session's
 // own included), another project's controller notice lane, and wildcards reaching any of them
 // (notifications.>, notifications.*.<x>, notifications.envoy.>) count. Two literal subjects are a
-// session's own: its agent subject, and the controller notice lane of a project whose controller
-// role roles names (ControllerNoticeRole), which its holder registers because a session receives
-// what its own consumer delivers and nothing else, the lane's core subscription having gone with
-// the rest of that receive path (INFRA-771). roles is what the session holds, as each controller
-// role's own claim record says (store.Registry's controllerLaneRoles, which reads the record of
-// every lane's role from the claim bucket rather than the listener's copy of the claims), so a
-// session that lost the role loses the lane at its next registration. A session id holding `*`
-// or `>` makes a wildcard of its "own" agent subject, which is no session's alone and counts too.
+// session's own: its agent subject, in either form (contracts.LegacyAgentSubject, and
+// contracts.AgentSubject under a project, NoProject or a wildcard over every project, whose old
+// form contracts.LegacyTwin reads back), and the controller notice lane of a project whose
+// controller role roles names (ControllerNoticeRole), which its holder registers because a session
+// receives what its own consumer delivers and nothing else, the lane's core subscription having
+// gone with the rest of that receive path (INFRA-771). roles is what the session holds, as each
+// controller role's own claim record says (store.Registry's controllerLaneRoles, which reads the
+// record of every lane's role from the claim bucket rather than the listener's copy of the
+// claims), so a session that lost the role loses the lane at its next registration. A session id
+// holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
+// counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
 		return false
@@ -333,7 +373,9 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	if role, lane := ControllerNoticeRole(topic); lane {
 		return !slices.Contains(roles, role)
 	}
-	return topic != contracts.AgentSubject(sessionID) || strings.ContainsAny(sessionID, "*>")
+	own := contracts.LegacyAgentSubject(sessionID)
+	twin, _ := contracts.LegacyTwin(topic)
+	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
@@ -495,19 +537,41 @@ const (
 	streamMaxConsumersDefaultMinor = 15
 )
 
+// connectedDefaultsAnUnsetCap is serverDefaultsAnUnsetCap of the version conn's server reports,
+// read as natsversion.ConnectedVersion reads it: only once the connection reports one. A
+// connection that is reconnecting or draining answers "" for its server's version. A bus
+// connection buffers nothing while it reconnects (ReconnectBufSize -1, internal/bus Connect), so
+// an ensure's request on it then fails at once; but a reconnect that lands between an empty read
+// and the ensure's first request let the ensure write the stream with an older server's answer:
+// on nats-server 2.15 a stream with no consumer cap, capped at 1000, was left as it is. A
+// connection that reports no version before ctx is done or the wait passes answers the error, and
+// the caller decides nothing; a ctx already done looks once
+// (TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion).
+func connectedDefaultsAnUnsetCap(ctx context.Context, conn *nats.Conn) (bool, error) {
+	version, err := connectedVersion(ctx, conn)
+	if err != nil {
+		return false, err
+	}
+	return serverDefaultsAnUnsetCap(version), nil
+}
+
+// connectedVersion is the read connectedDefaultsAnUnsetCap makes, natsversion.ConnectedVersion; a
+// test replaces it to put a second outage exactly between a reconnect and that read
+// (TestAFlapRunsTheSecondDisconnectHookAtOnce).
+var connectedVersion = natsversion.ConnectedVersion
+
 // serverDefaultsAnUnsetCap reports whether serverVersion is the version of a server that applies
 // its own default consumer cap to a stream that sets none: nats-server
 // streamMaxConsumersDefaultMajor.Minor or later. serverVersion is what the connected server
-// answers, read from (*nats.Conn).ConnectedServerVersion(), and the whole question this binary
-// asks of a deployed stream whose cap is -1 or 0: on such a server that stream is capped at 1000
-// and is raised to streamMaxConsumers, on every older one it is unlimited and is left as it is
-// (ownedStream).
+// reports (connectedDefaultsAnUnsetCap), and the whole question this binary asks of a deployed
+// stream whose cap is -1 or 0: on such a server that stream is capped at 1000 and is raised to
+// streamMaxConsumers, on every older one it is unlimited and is left as it is (ownedStream).
 //
 // Only the major and the minor are read, since the first such server is a minor's own first
 // release, and each is the number its field begins with, so a pre-release (`2.15.0-RC.1`) counts
 // as the release it leads to and an optional leading `v` is taken as nats.go's own version parse
-// takes it (versionComponents). A string that carries no major and minor - the empty string a
-// client with no live connection answers among them - is no such server.
+// takes it (versionComponents). A string that carries no major and minor is no such server; the
+// empty string a connection answers outside CONNECTED never reaches here.
 func serverDefaultsAnUnsetCap(serverVersion string) bool {
 	major, rest, split := strings.Cut(strings.TrimPrefix(serverVersion, "v"), ".")
 	if !split {
@@ -629,7 +693,12 @@ func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *n
 // subjectsOverlap reports whether some subject matches both patterns. JetStream refuses two such
 // subjects in one stream.
 func subjectsOverlap(a, b string) bool {
-	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
+	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
+}
+
+// tokensOverlap is subjectsOverlap on two subjects already split into their tokens, for a caller
+// that weighs each subject against many others and splits it once.
+func tokensOverlap(aTokens, bTokens []string) bool {
 	for index := 0; index < len(aTokens) && index < len(bTokens); index++ {
 		aToken, bToken := aTokens[index], bTokens[index]
 		if aToken == ">" || bToken == ">" {

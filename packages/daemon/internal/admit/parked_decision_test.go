@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -208,8 +209,9 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 	}
 	readmitRoot(t, pool, admission)
 	starts := architectStartRows(t, pool)
-	if len(starts) != 1 || starts[0].Task != "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
-		"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue." {
+	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT",
+		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
+			"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue.") {
 		t.Fatalf("architect starts %#v, want one naming dispatch://LEGION-ROOT/ask/ask-1", starts)
 	}
 	if kept := starts[0].Kept; kept == nil || len(kept.Decisions) != 1 || kept.Decisions[0].Ref != "dispatch://LEGION-ROOT/ask/ask-1" ||
@@ -255,8 +257,9 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 	apply(t, pool, admission, "busy-parked", intake.DispatchIssue{Key: "LEGION-BUSY", ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated",
 		Status: "backlog", Title: "LEGION-BUSY", Rank: "A", HandedOver: true}, admission.engine)
 	tasks := architectStartTasks(t, pool)
-	if len(tasks) != 1 || tasks[0] != "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
-		"dispatch://LEGION-ROOT/comment/c-1 (ask-reply by user:alice). Read each before you continue." {
+	if len(tasks) != 1 || tasks[0] != architectStart(t, pool, admission, "LEGION-ROOT",
+		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
+			"dispatch://LEGION-ROOT/comment/c-1 (ask-reply by user:alice). Read each before you continue.") {
 		t.Fatalf("architect starts' tasks %q, want one naming dispatch://LEGION-ROOT/comment/c-1", tasks)
 	}
 }
@@ -317,14 +320,171 @@ func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 	}
 }
 
-// A root first admitted keeps nothing, so its architect starts with no task, as before.
-func TestAFirstAdmissionStartsItsArchitectWithNoTask(t *testing.T) {
+// A root first admitted keeps nothing, so its architect's start names no decision: it carries the
+// root's own first task alone, which every admission of a queued root carries
+// (workflow.ArchitectStartTask).
+func TestAFirstAdmissionStartsItsArchitectWithItsOwnTaskAlone(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
 	apply(t, pool, admission, "first", intake.DispatchIssue{Key: "LEGION-NEW", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.created",
 		Status: "todo", Title: "new", Rank: "A", HandedOver: true}, admission.engine)
-	if tasks := architectStartTasks(t, pool); len(tasks) != 1 || tasks[0] != "" {
-		t.Fatalf("architect starts' tasks %q, want one start with no task", tasks)
+	starts := architectStartRows(t, pool)
+	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-NEW", "") || starts[0].Kept != nil {
+		t.Fatalf("architect starts %#v, want one carrying the root's own first task and naming no decision", starts)
+	}
+}
+
+// Whatever shape of first task a root's record gives it, what a person decided on its tree while
+// nobody in it could hear them leads that task: the decided text, a blank line, then the shape's
+// own words (workflow.ArchitectStartTask). A root whose earlier generation ended in no phase of
+// its own and whose architect never claimed it owes the whole first act, so it reads as a tree
+// nobody has architected; one whose architect ran at the generation before is told that its tree
+// ran then and that re-admission cleared the old design gate. Both carry the first-task
+// instruction, which a narrowing of a decision that leaves the tree keeps, since the start is of
+// the entry its promotion raised (workflow.NarrowRootTask).
+func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) {
+	const decided = "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: " +
+		"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue."
+	for _, tc := range []struct {
+		name  string
+		ran   bool
+		label string
+	}{
+		{"a tree nobody has architected", false, workflow.ArchitectFreshTreeLabel},
+		{"a tree whose architect ran at the generation before", true, workflow.ArchitectReadmittedLabel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := migratedPool(t)
+			admission := newAdmission(t, 1, nil)
+			parkedRoot(t, pool)
+			if tc.ran {
+				putEarlierRootArchitect(t, pool)
+			}
+			inTx(t, pool, func(tx pgx.Tx) {
+				if err := record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT",
+					Ref: "dispatch://LEGION-ROOT/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice", At: fixedNow}); err != nil {
+					t.Fatalf("keep the decision: %v", err)
+				}
+			})
+			readmitRoot(t, pool, admission)
+			tasks := architectStartTasks(t, pool)
+			if len(tasks) != 1 || !strings.HasPrefix(tasks[0], decided+"\n\n") {
+				t.Fatalf("architect start tasks %q, want one led by %q", tasks, decided)
+			}
+			if !strings.Contains(tasks[0], tc.label) {
+				t.Fatalf("the start's task %q, want the shape labelled %q", tasks[0], tc.label)
+			}
+		})
+	}
+}
+
+// The start row claims what it names of what the tree is owed, so a row left for its backoff and
+// run again tells the architect each decision once and no pass composes a second telling
+// (workflow.EnqueueNaming, record.Store.ClaimKeptDecisions): the rows it holds are claimed, so
+// the next pass finds nothing unclaimed to name.
+func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	admission := newAdmission(t, 1, nil)
+	parkedRoot(t, pool)
+	refs := []string{"dispatch://LEGION-ROOT/ask/ask-1", "dispatch://LEGION-ROOT/comment/c-1"}
+	inTx(t, pool, func(tx pgx.Tx) {
+		records := record.NewStore()
+		for i, ref := range refs {
+			if err := records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT", Ref: ref,
+				Decision: record.DecisionAskAnswered, Actor: "user:alice", At: fixedNow.Add(time.Duration(i) * time.Minute)}); err != nil {
+				t.Fatalf("keep the decision %s: %v", ref, err)
+			}
+		}
+	})
+	readmitRoot(t, pool, admission)
+
+	var id int64
+	if err := pool.QueryRow(ctx, `select id from outbox where kind = 'supervise' and issue = 'LEGION-ROOT'
+		and payload->>'op' = 'start' and payload->>'role' = 'architect'`).Scan(&id); err != nil {
+		t.Fatalf("read the architect start row: %v", err)
+	}
+	// The lane took the row, waited behind the architect's pending delivery and left it for its
+	// backoff, which is the retry. The row's own counters are written here, because the start
+	// waits behind the issue's branch row and so is claimable by no lease of this test
+	// (record.Store.ClaimRow, over outboxInOrder).
+	if _, err := pool.Exec(ctx, `update outbox set attempts = attempts + 1, next_at = $2, last_error = $3,
+		lease_token = '', lease_until = null where id = $1`, id, fixedNow, "a delivery is already pending"); err != nil {
+		t.Fatalf("leave the architect start row for its backoff: %v", err)
+	}
+	// A pass of its own, which admits nothing: the root this one carries is not handed to Legion.
+	apply(t, pool, admission, "another-pass", intake.DispatchIssue{Key: "LEGION-OTHER", ResolvedRepo: "acme/widgets",
+		Seq: 1, Type: "issue.updated", Status: "todo", Title: "not Legion's", Rank: "Z"}, admission.engine)
+
+	starts := architectStartRows(t, pool)
+	if len(starts) != 1 {
+		t.Fatalf("architect starts %#v, want the one retried row", starts)
+	}
+	for _, ref := range refs {
+		if named := strings.Count(starts[0].Task, ref); named != 1 {
+			t.Fatalf("the retried row's task names %s %d times, want once:\n%q", ref, named, starts[0].Task)
+		}
+	}
+	if kept := starts[0].Kept; kept == nil || len(kept.Decisions) != len(refs) {
+		t.Fatalf("the retried row's kept record %#v, want one mark for each of %v", kept, refs)
+	}
+	var attempts int
+	if err := pool.QueryRow(ctx, `select attempts from outbox where id = $1`, id).Scan(&attempts); err != nil || attempts != 1 {
+		t.Fatalf("the row's attempts = %d, %v; want the one retry this test made", attempts, err)
+	}
+	inTx(t, pool, func(tx pgx.Tx) {
+		decisions, _, err := record.NewStore().UnclaimedKept(ctx, tx, "LEGION-ROOT")
+		if err != nil || len(decisions) != 0 {
+			t.Fatalf("unclaimed decisions of the tree = %#v, %v; want none: the retried row holds them all", decisions, err)
+		}
+	})
+}
+
+// putEarlierRootArchitect records the architect claim LEGION-ROOT's close left, which served the
+// generation before, the run record.Store.ArchitectServed reads. The claim token is written here
+// rather than minted (putWorkerClaim), because LEGION-ROOT is no issue key.
+func putEarlierRootArchitect(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ('claim-root-architect', $1, 'LEGION-ROOT', 'LEGION-ROOT', $2, 1, 'ses_architect', '/sessions/ses_architect.jsonl',
+		$3, 1, 0, 0, 0, 0, 0, $4)`,
+		testProject, string(claim.RoleArchitect), string(supervise.StateSuspended), string(supervise.SuspendedByDaemon)); err != nil {
+		t.Fatalf("record the architect claim of the generation before: %v", err)
+	}
+}
+
+// One function writes every root architect's first task. The task admission put on the start row
+// and the task the derivation gives for the record admission wrote are the same string, for a
+// re-admission whose architect never ran and for one whose architect ran at the generation
+// before, so no site composes a wording of its own (workflow.ArchitectStartTask).
+func TestEveryStartsArchitectTaskIsTheDerivationOverItsRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ran  bool
+	}{
+		{"a re-admission whose architect never ran", false},
+		{"a re-admission whose architect ran at the generation before", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := newAdmission(t, 1, nil)
+			parkedRoot(t, pool)
+			if tc.ran {
+				putEarlierRootArchitect(t, pool)
+			}
+			readmitRoot(t, pool, admission)
+
+			want := architectStart(t, pool, admission, "LEGION-ROOT", "")
+			if want == "" {
+				t.Fatal("the derivation gives this record no task, so the start has nothing to equal")
+			}
+			starts := architectStartRows(t, pool)
+			if len(starts) != 1 || starts[0].Task != want {
+				t.Fatalf("architect starts %#v, want one whose task is the derivation's own %q", starts, want)
+			}
+		})
 	}
 }
 
@@ -371,8 +531,11 @@ func TestARootReadmittedOnAnOlderApprovalIsToldBothVersions(t *testing.T) {
 			})
 			readmitRoot(t, pool, admission)
 			starts := architectStartRows(t, pool)
-			if len(starts) != 1 || starts[0].Task != tc.want {
-				t.Fatalf("architect starts %#v, want one whose task is %q", starts, tc.want)
+			// tc.want is what the start names of what the tree is owed; the root's own first task
+			// carries it (workflow.ArchitectStartTask).
+			want := architectStart(t, pool, admission, "LEGION-ROOT", tc.want)
+			if len(starts) != 1 || starts[0].Task != want {
+				t.Fatalf("architect starts %#v, want one whose task is %q", starts, want)
 			}
 			named := 0
 			if strings.Contains(tc.want, "request approval") {
@@ -471,8 +634,9 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 		}
 	})
 	readmitRoot(t, pool, admission)
-	if starts := architectStartRows(t, pool); len(starts) != 1 || starts[0].Task != versions {
-		t.Fatalf("first architect starts %#v, want one whose task is %q", starts, versions)
+	if starts := architectStartRows(t, pool); len(starts) != 1 ||
+		starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", versions) {
+		t.Fatalf("first architect starts %#v, want one whose task names %q", starts, versions)
 	}
 	// The start finishes without delivering (its tree parked again first): its row goes, and with
 	// it its claim on the pair.
@@ -485,8 +649,9 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 	parkedRoot(t, pool)
 	apply(t, pool, admission, "readmitted-again", intake.DispatchIssue{Key: "LEGION-ROOT", ResolvedRepo: "acme/widgets", Seq: 9, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
-	if starts := architectStartRows(t, pool); len(starts) != 1 || starts[0].Task != versions {
-		t.Fatalf("second architect starts %#v, want one whose task is %q", starts, versions)
+	if starts := architectStartRows(t, pool); len(starts) != 1 ||
+		starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", versions) {
+		t.Fatalf("second architect starts %#v, want one whose task names %q", starts, versions)
 	}
 }
 
@@ -613,8 +778,9 @@ func TestARootAPersonsApprovalHandsOverIsToldNoStaleApproval(t *testing.T) {
 	if len(starts) != 1 {
 		t.Fatalf("architect starts %#v, want one", starts)
 	}
-	if strings.Contains(starts[0].Task, "request approval") || (starts[0].Kept != nil && starts[0].Kept.Approved != 0) {
-		t.Fatalf("the start's task %q (kept %#v) names an approval pair, want none: the person approved the latest version", starts[0].Task, starts[0].Kept)
+	if starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", "") || (starts[0].Kept != nil && starts[0].Kept.Approved != 0) {
+		t.Fatalf("the start's task %q (kept %#v) names an approval pair, want the root's own first task alone: the person approved the latest version",
+			starts[0].Task, starts[0].Kept)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		if approved, latest, err := record.NewStore().ReadmittedApproval(ctx, tx, "LEGION-ROOT"); err != nil || approved != 0 || latest != 0 {

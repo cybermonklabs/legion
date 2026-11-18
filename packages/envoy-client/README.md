@@ -227,10 +227,15 @@ Successful direct sends return both the envelope and listener-selected recipient
 `duplicate` when the listener already held a send under that target and idempotency key.
 A publish returns the envelope and an optional role holder. A role publish has three answers,
 told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
-message the listener kept for the session that claims the role next, with `kept`, `keptReason`
-(`unclaimed` or `holder_lapsed`) and `holder` when a lapsed claim named one. 404 is nothing kept,
-thrown as an `EnvoyApiError`, and the sender's own fallback must run. A sender that keeps a queue
-of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
+message the listener kept for one hour because no live session holds the role, with `kept`,
+`keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
+`lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
+milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
+none does, the listener drops it and sends the publishing session a dead letter, when the publish
+named that session as its source and the listener did not drop it more than an hour late. A
+listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
+`EnvoyApiError`, and the sender's own fallback must run. A sender that
+keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
 attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
 idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
 got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
@@ -240,9 +245,13 @@ attempt was refused: the message may or may not have arrived. The error names it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
 still sees it twice). A send
-refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error responses preserve their
-`error` and optional `expected` fields. The listener's bearer is the `token` the client is given
-(`envoySettings`); without one it sends no `Authorization` header.
+refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
+listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
+and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
+for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
+`Authorization` header.
 
 Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
 `unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
@@ -316,7 +325,9 @@ has nothing to retry either way.
 
 `subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
-list of them (`ErrorWireSchema.reason` in `src/transport.ts`).
+list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
+`sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
+sent faster than the listener lets one session send: the message was not stored.
 
 ## envoy.json
 
@@ -355,7 +366,7 @@ Pi sets it in `process.env` at load, Claude Code's `SessionStart` hook appends i
 
 The `dispatch` command reads the file its session's plugin chose: with `DISPATCH_HOST` set, the
 file `ENVOY_CONFIG_FILE` names, else its host's own rule (`envoyConfigPath(host)`). A Bash that
-lacks what the hook wrote, as a Claude Code subagent's can (anthropics/claude-code#46696), has
+lacks what the hook wrote, as a Claude Code subagent's can (Claude Code issue 46696), has
 `DISPATCH_HOST` unset and `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash it
 runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CONFIG_DIR`, the
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
@@ -602,8 +613,9 @@ A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JS
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
-names the method, the URL with its query (never the bearer, which is a header), the status and
-reason phrase, a one-line plain-text excerpt of the body, and what asking again can do. The excerpt
+names the method, the URL with its query and without the user and password it may carry (never
+the bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
+body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
 reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
 of the client's bearer's characters (a shorter bearer only whole), so a copy cut short, split by
@@ -687,19 +699,134 @@ against it rather than the API's URL, which every call still goes to; a dashboar
 `ref` resolves on either address; and a value that is not an http or https URL disables Dispatch,
 naming it in `error`.
 
-With no bearer configured at all, a machine that proves an identity of its own trades it at the
-secrets broker instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`,
-`brokerCredential`): the credential is then a DPoP-bound access token presented under the `DPoP`
-scheme rather than a bearer. Every bearer source above is resolved first and unchanged, so a
-session that has one behaves exactly as it did. `DISPATCH_TOKEN_BROKER=1` makes that route the
-only one: no bearer is read at all — not the variables, not the chosen file's `dispatch.token`,
-not a checkout's pair — and a machine that can trade none leaves Dispatch disabled with an
-`error` naming the broker variable that is missing, rather than falling back to whatever bearer
-the box holds. A deployment sets it on a session whose Dispatch credential must be that machine's
-own identity and nothing else, such as the controller `legion controller start` launches under
-`dispatch_token_broker`, which runs in the operator's own HOME where that person's envoy.json
-holds their `dispatch.token`. Any other value of the variable is refused, naming it:
-`DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`.
+With no bearer configured at all, the session's credential is traded at the secrets broker
+instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
+credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
+bearer. Every bearer source above is resolved first and unchanged, so a session that has one
+behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
+`@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
+machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
+a Google identity token through a workload identity pool, as the Go client's `PoolIdentity`
+does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
+Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
+`AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+An identity with one of its variables missing is an error that names the variable.
+
+A pod writes under a session name only once its deployment has registered that name for the pod,
+and its trade can reach the broker first. The broker refuses that trade with a description
+beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
+in `@legion/broker-client/token-client`). With no live token in hand, the client trades again in
+the background, 15 s later, doubling to 5 minutes, until a trade lands, and a call that arrives
+meanwhile has it trade at once. Each Dispatch and Envoy call hands the credential its own
+deadline (`RequestCredential.headers`), so a call still waiting at that deadline fails with
+`RegistrationPendingError`, which names the session and says the trade is being retried; the
+next call takes the token once the registration lands. The client logs the wait through
+`console.warn` once, naming the session, and again every 30 minutes. A call made while a live
+token is in hand goes on with that token. Every other refusal fails the call as before.
+
+The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
+no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
+one this process makes, and the session name is the caller's own session, else
+`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
+trades that person, as the Go client does:
+
+- The subject is the person's Google identity token. The client renews it at every trade, from
+  the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
+- The actor is the machine's identity token. The broker takes only a Google identity token as
+  the actor, so the machine's identity is `metadata` or `pool`. The broker refuses a `kubernetes`
+  actor in its own words.
+- The DPoP key is the sign-in's box key. So the broker records one sign-in for the box, and a
+  revoke of that sign-in stops the session's trades.
+- The session name is the caller's own session, else `signin-<person>-<thumbprint>`, where
+  `<thumbprint>` is the first 12 characters of the box key's thumbprint (Go's `SessionFor`). It
+  is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the broker gives a
+  name to one identity only.
+- The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
+  by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
+  each one, and refuses the trade naming the first they may not see. A person who signs in is of
+  the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
+  that is no list fails the call naming the variable. The machine's own trade names no project.
+
+Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
+writes as that person.
+
+The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
+`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
+`$HOME/.local/state/agent-secrets/signins`. With two or more people signed in,
+`AGENT_SECRETS_PERSON` names the person the session acts for. Without it, the client refuses and
+names the people. The renewal goes to the issuer `AGENT_SECRETS_SIGNIN_ISSUER` names
+(`https://accounts.google.com` when it is unset). It authenticates as the client
+`AGENT_SECRETS_SIGNIN_CLIENT_ID` names, with the secret in the file
+`AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE` names. A sign-in on a machine that sets neither client
+variable is an error that names both.
+
+While a sign-in record is on the machine, the client never trades the machine in its place. An
+error while it chooses, reads or trades the sign-in fails the call. Each refusal that a new
+sign-in cures names `agent-secrets login`. Some refusals are final (`isFinalRefusal`): the broker
+refused the sign-in, or the issuer answered `invalid_grant`. The process keeps a final refusal
+against that sign-in, the person and the box key's thumbprint, for the session it was refused to.
+A later call of that session in that process fails with the same words and sends nothing to the
+issuer or the broker. This stops when the store no longer holds that sign-in: a new
+`agent-secrets login` makes a new sign-in, with a new box key. A new process, such as the next
+`dispatch` command, keeps nothing and asks the broker again.
+
+The one exception is `PERSON_SIGNIN_TRADE=off` (`PERSON_TRADE_VAR` in `signins.ts`). A process
+sets it where its own credentials are a service's and never a person's. Under it, the client
+trades the machine as where nobody signed in, even where a sign-in record is on the machine, and
+it reads no sign-in at all. Unset or blank, the person trade is on. Any other value is refused
+with an error that names the variable. `legion controller start` sets it for the controller
+under every configuration. So the controller's own Dispatch credential, and its Envoy
+credential where no Envoy bearer is set, trade the machine even where the operator ran
+`agent-secrets login`, and no credential the controller trades at the broker acts in its
+operator's name. A bearer the controller is given is presented as it is at main: the token
+`dispatch_token_file` names, and an Envoy bearer from the operator's environment or from the
+`envoy.json` under the HOME the controller keeps, each of which resolves before the broker
+route. Only this client reads the setting, so the controller's `agent-secrets` secret reads are
+signed as they would be without it. Its name lies outside `AGENT_SECRETS_*` because
+`agent-secrets NAME -- <cmd>` strips most variables of that prefix from its child, so a
+`dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
+
+Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a token the broker no longer holds as live,
+such as one a revoke ended before it lapsed. `DispatchClient` then tells the credential
+(`stale`), presents the credential again, which trades at the broker, and sends the request one
+more time. A write goes again under the same `Idempotency-Key`. It does this once for each send:
+a second such answer is the call's refusal, but a request Dispatch answers with no route is sent
+again (a release may be rolling out), and each of those sends may be sent once more after such an
+answer of its own. If the broker refuses the new trade, the call fails in the broker's words.
+
+A sign-in reaches the sessions that start after it. The broker holds a session name for one
+identity for 90 days after the name's last token. So a session that traded as the machine cannot
+trade as the person under its own name: the broker refuses that trade and says that the name
+belongs to another identity. After `agent-secrets login`, start a new session rather than resume
+one that traded at the broker as the machine. A session that used a bearer did not trade at the
+broker, so you can resume it.
+
+Each person's trade costs one refresh at the issuer and one `launcher_credential.token_login`
+audit row at the broker. The broker writes that row for every person's trade, and it lets no
+person's trade decline the launcher credential (`personDeclinesNothing`). The client also reads
+the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
+(900 seconds by default), and the client trades again five minutes before the token lapses
+(`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
+calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
+`envoy-send` is a process of its own, so each one trades once.
+
+A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
+refused with words that name `agent-secrets login`. The revoke does not end a personal agent
+token that an agent made with the person's `approve` scope before the revoke. It does not end a
+machine-login approval that an agent made with that scope before the revoke.
+
+`DISPATCH_TOKEN_BROKER=1` makes the broker route the only one. No bearer is read at all: not the
+variables, not the chosen file's `dispatch.token`, not a checkout's pair. A machine that can trade
+none leaves Dispatch disabled with an `error` naming the broker variable that is missing, rather
+than falling back to whatever bearer the box holds. The broker route includes a person's sign-in
+on the machine, as above. A deployment sets the variable on a session whose Dispatch credential
+must be traded at the broker. The controller that `legion controller start` launches under
+`dispatch_token_broker` is such a session. It runs in the operator's own HOME, where that
+person's envoy.json holds their `dispatch.token`. Any other value of the variable is refused,
+naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also sets
+`PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
+the operator's sign-in (above).
 
 ### The `dispatch` command
 
@@ -756,7 +883,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the twenty-eight
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-five
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
@@ -791,3 +918,35 @@ anything, a `delete` or `retype` by block id that would take an `ask` block out 
 (the block itself, or one inside a deleted block) while its ask is open: the edit would write its
 version at once and settlement would retract the ask without writing another, so the question
 would leave the human's Inbox unanswered and the approval refusal would find no block to judge.
+
+`dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
+[--reason <text>]` records a person's review of one version of an issue's document: what the
+document header's Approve and Request changes record (`reviewCommand`,
+`src/dispatch-commands/reviews.ts`). The verdict is `approved` or `changes_requested`. The
+document is the issue's spec unless `--artifact` names another, resolved as `dispatch doc-read`
+resolves it. `changes_requested` needs `--reason`, and the command refuses it without one before
+it sends anything. It posts `{state, reason?}` to
+`POST /api/v1/artifacts/{id}/versions/{number}/reviews` (`DispatchClient.reviewArtifact`), the
+review route that names the version in its path, and asks no other review route. A Dispatch route
+ignores a body member it does not declare, so a version sent in the body of the older
+`POST /api/v1/artifacts/{id}/reviews` would be dropped by a build that predates the guard, and
+the review recorded at a version that build chooses. A build without the versioned route answers
+no route instead: once the client's no-route retries are spent, the command fails `NOT_FOUND`,
+says that an answer of no route records no review, and names `GET /healthz`, whose `commit`
+member is the commit of the build that answers that probe where its image was stamped with one
+(`null` otherwise). The no-route answer does not name the build, and while a release rolls out
+the build that answers `/healthz` may not be the one that refused, so run the command again a
+minute later before reading the refusal as an older Dispatch. In a rollout, a send that a newer
+build took but whose answer was lost, and was then sent again to an older build, may still have
+recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
+A review records an approval or a request for changes in the person's name, so it works only with
+a token that names a person who holds `approve`. A session gets such a token from a person's
+sign-in on the machine (above). Dispatch refuses any other token with `403 OAUTH_SCOPE_REQUIRED`
+or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller read, and it must be the version
+the review would record: the document's latest settled version, or the version an open approval
+request names for the document. Dispatch refuses any other version with `409 REVIEW_VERSION_MOVED`,
+which names the version to read, and records nothing. With an approval request open, the review
+answers that request and records the same verdict on every document the request names, each at
+the version the request names. The output names the state, the version and the actor that
+Dispatch recorded, and says when the review also answered an open request. A refusal starts with
+Dispatch's code.

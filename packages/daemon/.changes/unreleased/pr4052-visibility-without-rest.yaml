@@ -1,0 +1,30 @@
+kind: Fixed
+body: |-
+  A push or `legion gh` write no longer fails for want of one REST read while the installation's
+  REST rate limit is spent. The leak guard reads GitHub's rate limits with the daemon's own REST
+  model (`internal/githubrest`), and waits once only for a wait of at most two minutes that the
+  caller's bound has room for: until a core limit's reset, or a secondary limit's `Retry-After`.
+  When GitHub refuses the visibility read for its core rate limit and the guard does not wait, or
+  is refused again after its wait, the guard reads the visibility from GitHub's GraphQL API with
+  the same repository's token, whose budget is separate from the REST one. GraphQL's public,
+  private and internal for that repository are taken as the REST read's are. Only where GraphQL
+  refuses for a rate limit of its own, or where the REST read hit the secondary limit, which
+  GraphQL shares, does the guard run an unauthenticated `git ls-remote` of the repository's HTTPS
+  URL, and there only exit 0 reads as public; a 401 or any other failure is no answer, since
+  GitHub also answers an anonymous read of a public repository with 401 under unusual traffic.
+  Any other GraphQL answer (a repository GitHub could not resolve, another repository's name, any
+  error, no visibility it defines, a body that is not one JSON document) and any failed
+  `ls-remote` refuse the write as before, naming the limit and what the read said. `legion gh`
+  also answers the shared public leak check's own visibility read (`gh api --hostname github.com
+  repos/<slug> --jq .visibility`) itself by the same rule, printing the word, or nothing with exit
+  1 where no read answers. That read is the one the check makes for every `theorem-labs/`
+  repository before the guard's own, so this is how such a push now gets through in a spent hour.
+  It is read fresh, taking no kept answer and keeping none: the check counts the commits of
+  another remote it reads public as held and does not scan them, so a stale public would let a
+  now-private remote's commits through unscanned. The `ls-remote` carries no credential and
+  empties the credential helpers, the extra HTTP headers and `http.proactiveAuth` a git wrapper
+  may have added for no URL, for github.com or for the repository's URL. The guard's gh reads run
+  with `NO_COLOR=1` and `CLICOLOR_FORCE=0`, so a caller's forced colour cannot hide a rate limit.
+  For the guard's own read, a public answer is kept for the pod as before; a private or internal
+  one is read again on each call. The `legion gh` call log records such an answer as
+  `visibility="graphql"` or `visibility="ls-remote"`.

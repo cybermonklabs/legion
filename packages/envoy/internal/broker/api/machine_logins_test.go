@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
@@ -399,16 +400,21 @@ func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
 			t.Fatalf("renew with no body after renewing with the token = %d %s, want 403 POD_TOKEN_REQUIRED", status, code)
 		}
 		restore()
-		refusedWarn := 0
+		refusedWarn, recorded := 0, 0
 		for _, r := range records {
 			attrs := map[string]string{}
 			r.Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value.String(); return true })
 			if r.Level == slog.LevelWarn && r.Message == "broker: pod enrollment renewal refused: projected token required" && attrs["enrollment"] == id {
 				refusedWarn++
 			}
+			// The answer's own record, beside that line, names the session the proof proved.
+			if r.Level == slog.LevelWarn && r.Message == answer.RefusalMessage && attrs["code"] == "POD_TOKEN_REQUIRED" &&
+				attrs["caller_class"] == answer.CallerSession && attrs["caller"] == id {
+				recorded++
+			}
 		}
-		if refusedWarn != 1 {
-			t.Fatalf("WARN lines naming the token-required refusal's enrollment = %d of 1 (%d records)", refusedWarn, len(records))
+		if refusedWarn != 1 || recorded != 1 {
+			t.Fatalf("WARN lines naming the token-required refusal's enrollment = %d of 1, and its answer's %q records = %d of 1 (%d records)", refusedWarn, answer.RefusalMessage, recorded, len(records))
 		}
 	})
 

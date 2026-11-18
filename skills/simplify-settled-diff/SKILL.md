@@ -56,7 +56,7 @@ An interface or data shape that existed only in an earlier iteration of the curr
 
 ## Step 4: Verify behavior is preserved
 
-Run this step only when a fix was applied. Run project-wide typecheck and lint. Run tests matched to blast radius: scoped tests for local changes, broader tests for shared or wide-reach changes, and the full suite when the runner cannot scope tests. A pass that applied nothing left the head as it was, so there is nothing to verify: record `no fix applied; head unchanged, no verification run` in the summary and go to Step 5.
+Run this step only when a fix was applied. Run the typecheck, lint or build of the packages the fixes touched, and the tests that cover the changed code, by name. Run no whole test suite: CI runs each suite when the branch is pushed. A pass that applied nothing left the head as it was, so there is nothing to verify: record `no fix applied; head unchanged, no verification run` in the summary and go to Step 5.
 
 Report failures with the check name and relevant output. Fix simplification-caused failures or revert the responsible change; never relax assertions, weaken types, or skip tests.
 

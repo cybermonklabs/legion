@@ -2,6 +2,7 @@ package exchange_test
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,11 @@ import (
 const (
 	workerAccount = "system:serviceaccount:example-ns:example-worker"
 	daemonAccount = "system:serviceaccount:example-ns:example-daemon"
+	// readerAccount is the account the read entry lists, readerService the service its token
+	// names and readerSession the session it fixes.
+	readerAccount = "system:serviceaccount:example-ns:example-reader"
+	readerService = "example-reader"
+	readerSession = "example-reader-session"
 	repository    = "example-org/example-repo"
 	workflow      = ".github/workflows/release.yaml"
 	nightly       = ".github/workflows/nightly.yaml"
@@ -52,6 +58,7 @@ const (
 const (
 	workerPrincipal  = "account:" + workerAccount
 	daemonPrincipal  = "account:" + daemonAccount
+	readerPrincipal  = "account:" + readerAccount
 	releasePrincipal = "workflow:" + repository + "/" + workflow + "@" + ref
 	nightlyPrincipal = "workflow:" + repository + "/" + nightly + "@" + ref
 	personPrincipal  = "person:" + person
@@ -61,10 +68,10 @@ const (
 )
 
 // listed is the set every decision test asks: one account whose sessions name themselves, one
-// account whose session the entry fixes, the same pair for one workflow of one repository on one
-// ref, and three Google accounts — one pinned to a project and an instance-name pattern that
-// writes for a person, one pinned to nothing that names no person, and one that fixes the session
-// its machines write under.
+// account whose session the entry fixes, one read entry, the same pair for one workflow of one
+// repository on one ref, and three Google accounts — one pinned to a project and an
+// instance-name pattern that writes for a person, one pinned to nothing that names no person,
+// and one that fixes the session its machines write under.
 func listed(t *testing.T) *exchange.Set {
 	t.Helper()
 	set, err := exchange.NewSet(
@@ -72,6 +79,7 @@ func listed(t *testing.T) *exchange.Set {
 			{Account: workerAccount, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
 		},
+		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession}},
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
@@ -133,10 +141,17 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		change(&entry)
 		return entry
 	}
+	reader := exchange.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession}
+	withReader := func(change func(*exchange.ReadEntry)) exchange.ReadEntry {
+		entry := reader
+		change(&entry)
+		return entry
+	}
 	for _, c := range []struct {
 		name      string
 		machines  []exchange.GoogleEntry
 		accounts  []exchange.AccountEntry
+		reads     []exchange.ReadEntry
 		workflows []exchange.WorkflowEntry
 		names     string
 	}{
@@ -158,6 +173,21 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
 		{name: "a repository that is not <owner>/<name>",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
+		// A repository's owner is a GitHub login, so each owner below is refused for what no
+		// login holds.
+		{name: "a repository whose owner holds a dot, which only a repository name may",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a.b/example-repo" })}, names: "a.b/example-repo"},
+		{name: "a repository whose owner holds a slash, which makes it no <owner>/<name>",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a/b/example-repo" })}, names: "a/b/example-repo"},
+		{name: "a repository whose owner starts with a hyphen, which no login does",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "-ada/example-repo" })}, names: "-ada/example-repo"},
+		{name: "a repository whose owner starts with an underscore, which no login does",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "_ada/example-repo" })}, names: "_ada/example-repo"},
+		{name: "a repository whose owner is 40 characters, past GitHub's 39",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = strings.Repeat("a", 40) + "/example-repo" })},
+			names:     strings.Repeat("a", 40) + "/example-repo"},
+		{name: "a repository with no owner",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "/example-repo" })}, names: "/example-repo"},
 		{name: "a workflow with no path",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Workflow = "" })}, names: repository},
 		{name: "a workflow with no ref",
@@ -208,9 +238,31 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		{name: "a session name a machine and an account fix",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = fixedSession })},
 			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session = fixedSession })}, names: pinnedAccount},
+		{name: "a read entry whose account is not a service account subject",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = "example-reader" })}, names: `read entry 1, "example-reader"`},
+		{name: "a read entry with no account",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = "" })}, names: "read entry 1"},
+		{name: "a read entry with a blank service",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Service = " " })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "a read entry with no service",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Service = "" })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "a read entry with no session, which it must fix",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "" })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "a read entry whose session carries whitespace",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example reader" })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "a read entry whose session is too long",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
+		{name: "the same read account twice",
+			reads: []exchange.ReadEntry{reader, withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
+		{name: "an account an account entry and a read entry both list",
+			accounts: []exchange.AccountEntry{account},
+			reads:    []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
+		{name: "a session name a read entry and an account fix",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = readerSession })},
+			reads:    []exchange.ReadEntry{reader}, names: `read entry 1, "` + readerAccount + `"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			set, err := exchange.NewSet(c.accounts, c.workflows, c.machines, signInDomain)
+			set, err := exchange.NewSet(c.accounts, c.reads, c.workflows, c.machines, signInDomain)
 			if err == nil {
 				t.Fatalf("NewSet(%s) = %v, want a refusal", c.name, set)
 			}
@@ -221,9 +273,40 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 	}
 }
 
+// TestAnAccountEntryWithNoProjectNamesNone: an account entry may name a person and no project,
+// which is the shared public-session account's entry. Its pods' tokens are named, act for the
+// entry's person, and name no project; a request naming one is refused as any entry's is; and
+// MappedProjects and ProjectsForAccount answer the same empty list. Only an account entry may do
+// this: a workflow's and a person-naming Google entry's empty project is still refused (the
+// table above), and a blank project that is not empty is still refused too.
+func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Person: person}}, nil, nil, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet with an account entry naming no project = %v, want it taken", err)
+	}
+	claims, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", nil)
+	want := exchange.Claims{Session: "public-session-1", Person: person, Scope: exchange.ProjectScopeNamed, Principal: workerPrincipal, Instance: podUID}
+	if err != nil || !reflect.DeepEqual(claims, want) {
+		t.Fatalf("Pod under an entry naming no project = %+v, %v; want %+v: named, its person, no project", claims, err, want)
+	}
+	if _, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
+		t.Fatalf("a request naming %s under an entry naming none = %v, want ErrProjectsFixed", project, err)
+	}
+	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != person || len(projects) != 0 || !ok {
+		t.Fatalf("MappedProjects = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
+	}
+	if projects, ok := set.ProjectsForAccount(workerAccount); len(projects) != 0 || !ok {
+		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
+	}
+	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, nil, signInDomain); err == nil {
+		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
+	}
+}
+
 func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{{Account: workerAccount, Project: project, Person: person}},
+		nil,
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: workflow, Ref: "refs/heads/release", Project: "OTHER", Person: person},
@@ -237,10 +320,26 @@ func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 		gitRef string
 		want   string
 	}{{ref, project}, {"refs/heads/release", "OTHER"}} {
-		claims, err := set.Workflow(workflowToken(repository, repository+"/"+workflow+"@"+c.gitRef, repository+"/"+workflow+"@"+c.gitRef, c.gitRef), "release-bot")
-		if err != nil || claims.Project != c.want {
-			t.Errorf("Workflow(on %s) = %+v, %v; want project %s", c.gitRef, claims, err, c.want)
+		claims, err := set.Workflow(workflowToken(repository, repository+"/"+workflow+"@"+c.gitRef, repository+"/"+workflow+"@"+c.gitRef, c.gitRef), "release-bot", nil)
+		if err != nil || !slices.Equal(claims.Projects, []string{c.want}) {
+			t.Errorf("Workflow(on %s) = %+v, %v; want the projects [%s]", c.gitRef, claims, err, c.want)
 		}
+	}
+}
+
+// TestNewSetTakesAManagedUsersRepository: a managed user's login ends in `_<shortcode>`, so a
+// workflow entry of a repository such an account owns is read, and a run of that workflow is the
+// entry's.
+func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
+	const managed = "mona-cat_octo/example-repo"
+	set, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet(a workflow of %s): %v", managed, err)
+	}
+	run := managed + "/" + workflow + "@" + ref
+	claims, err := set.Workflow(workflowToken(managed, run, run, ref), "release-bot", nil)
+	if err != nil || !slices.Equal(claims.Projects, []string{project}) || claims.Person != person {
+		t.Errorf("Workflow(a run of %s) = %+v, %v; want the projects [%s] for %s", managed, claims, err, project, person)
 	}
 }
 
@@ -251,6 +350,7 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 	set := listed(t)
 	want := []exchange.Reservation{
 		{Session: fixedSession, Principal: daemonPrincipal},
+		{Session: readerSession, Principal: readerPrincipal},
 		{Session: nightlySession, Principal: nightlyPrincipal},
 		{Session: machineSession, Principal: fixedPrincipal},
 	}
@@ -267,7 +367,9 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 // TestPodAnswersTheListedAccount pins what each kind of entry answers, Instance included: an
 // entry that fixes no session answers the pod uid, which a registration has to name for the
 // exchange to go through, and an entry that fixes one answers none, since every pod of that
-// account writes under the configuration's name and is registered for nothing.
+// account writes under the configuration's name and is registered for nothing. A read entry
+// always fixes one, and answers its service and session, the project scope that writes nothing,
+// and no person and no project.
 func TestPodAnswersTheListedAccount(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
@@ -277,17 +379,23 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 		want    exchange.Claims
 	}{
 		{name: "the session the request names", token: podToken(workerAccount, podUID), session: "implementer-g1",
-			want: exchange.Claims{Session: "implementer-g1", Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: workerPrincipal, Instance: podUID}},
+			want: exchange.Claims{Session: "implementer-g1", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: workerPrincipal, Instance: podUID}},
 		{name: "the session the entry fixes, the request naming none", token: podToken(daemonAccount, podUID), session: "",
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
 		{name: "the session the entry fixes, the request naming the same", token: podToken(daemonAccount, podUID), session: fixedSession,
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
 		{name: "another pod of the account is the same principal", token: podToken(daemonAccount, "another-pod-uid"), session: "",
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+		{name: "a read entry's session, the request naming none", token: podToken(readerAccount, podUID), session: "",
+			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
+		{name: "a read entry's session, the request naming the same", token: podToken(readerAccount, podUID), session: readerSession,
+			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
+		{name: "another pod of the read account is the same principal", token: podToken(readerAccount, "another-pod-uid"), session: "",
+			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Pod(c.token, c.session)
-			if err != nil || claims != c.want {
+			claims, err := set.Pod(c.token, c.session, nil)
+			if err != nil || !reflect.DeepEqual(claims, c.want) {
 				t.Fatalf("Pod(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
 			}
 		})
@@ -312,6 +420,10 @@ func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 			session: "implementer-g1", want: exchange.ErrNoEntry, names: "system:serviceaccount:example-ns:example-other"},
 		{name: "a session the entry does not fix", token: podToken(daemonAccount, podUID), session: "implementer-g1",
 			want: exchange.ErrSessionMismatch, names: fixedSession},
+		{name: "a session the read entry does not fix", token: podToken(readerAccount, podUID), session: "implementer-g1",
+			want: exchange.ErrSessionMismatch, names: readerSession},
+		{name: "a read account's token bound to no pod", token: podToken(readerAccount, ""), session: "",
+			want: exchange.ErrNoPodBinding, names: readerAccount},
 		{name: "no session where the entry fixes none", token: podToken(workerAccount, podUID), session: "",
 			want: exchange.ErrSessionRequired, names: workerAccount},
 		{name: "a session carrying whitespace", token: podToken(workerAccount, podUID), session: "implementer g1",
@@ -320,7 +432,7 @@ func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 			want: exchange.ErrSessionInvalid, names: workerAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Pod(c.token, c.session)
+			claims, err := set.Pod(c.token, c.session, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Pod(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
@@ -335,7 +447,9 @@ func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 // written for: the pod of an entry that fixes no session, and nothing else. A token bound to no
 // pod proves only that the account exists, an account no entry lists exchanges nothing to begin
 // with, and an entry that fixes a session writes under the configuration's name, so registering
-// one of its pods would say something no exchange reads.
+// one of its pods would say something no exchange reads. A read entry always fixes its session,
+// so its account is refused as such an entry is, 409 SESSION_FIXED at the route, never as an
+// account no entry lists.
 func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 	set := listed(t)
 	if err := set.Registration(workerAccount, podUID, "implementer-g1"); err != nil {
@@ -354,6 +468,10 @@ func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 			session: "implementer-g1", want: exchange.ErrNoEntry, names: "system:serviceaccount:example-ns:example-other"},
 		{name: "an entry that fixes a session", account: daemonAccount, uid: podUID, session: fixedSession,
 			want: exchange.ErrSessionFixed, names: fixedSession},
+		{name: "a read entry, which fixes its session", account: readerAccount, uid: podUID, session: readerSession,
+			want: exchange.ErrSessionFixed, names: readerSession},
+		{name: "a read entry asked for another name", account: readerAccount, uid: podUID, session: "implementer-g1",
+			want: exchange.ErrSessionFixed, names: readerAccount},
 		{name: "a session carrying whitespace", account: workerAccount, uid: podUID, session: "implementer g1",
 			want: exchange.ErrSessionInvalid, names: workerAccount},
 		{name: "no session at all", account: workerAccount, uid: podUID, session: "",
@@ -374,7 +492,7 @@ func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 func TestPodNeverRepeatsAnUnusableSessionName(t *testing.T) {
 	set := listed(t)
 	const unusable = "implementer\x00g1"
-	_, err := set.Pod(podToken(workerAccount, podUID), unusable)
+	_, err := set.Pod(podToken(workerAccount, podUID), unusable, nil)
 	if !errors.Is(err, exchange.ErrSessionInvalid) {
 		t.Fatalf("Pod(an unprintable session) = %v, want ErrSessionInvalid", err)
 	}
@@ -392,15 +510,15 @@ func TestWorkflowAnswersTheListedRun(t *testing.T) {
 		want    exchange.Claims
 	}{
 		{name: "the session the request names", token: workflowToken(repository, runRef(workflow), runRef(workflow), ref),
-			session: "release-bot", want: exchange.Claims{Session: "release-bot", Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: releasePrincipal}},
+			session: "release-bot", want: exchange.Claims{Session: "release-bot", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: releasePrincipal}},
 		{name: "the session the entry fixes", token: workflowToken(repository, runRef(nightly), runRef(nightly), ref),
-			session: "", want: exchange.Claims{Session: nightlySession, Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: nightlyPrincipal}},
+			session: "", want: exchange.Claims{Session: nightlySession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: nightlyPrincipal}},
 		{name: "another run of the workflow is the same principal", token: withRun(workflowToken(repository, runRef(nightly), runRef(nightly), ref), "4243"),
-			session: "", want: exchange.Claims{Session: nightlySession, Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: nightlyPrincipal}},
+			session: "", want: exchange.Claims{Session: nightlySession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: nightlyPrincipal}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Workflow(c.token, c.session)
-			if err != nil || claims != c.want {
+			claims, err := set.Workflow(c.token, c.session, nil)
+			if err != nil || !reflect.DeepEqual(claims, c.want) {
 				t.Fatalf("Workflow(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
 			}
 		})
@@ -444,7 +562,7 @@ func TestWorkflowRefusesWhatItCannotDecide(t *testing.T) {
 			session: "release bot", want: exchange.ErrSessionInvalid, names: workflow},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Workflow(c.token, c.session)
+			claims, err := set.Workflow(c.token, c.session, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Workflow(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
@@ -463,56 +581,79 @@ func withRun(token map[string]any, run string) map[string]any {
 
 func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T) {
 	set := listed(t)
-	claims, err := set.Machine(credentialID, person, "ada-devbox")
+	claims, err := set.Machine(credentialID, person, "ada-devbox", nil)
 	if err != nil {
 		t.Fatalf("Machine: %v", err)
 	}
 	want := exchange.Claims{Session: "ada-devbox", Person: person, Scope: exchange.ProjectScopePerson, Principal: personPrincipal}
-	if claims != want {
-		t.Fatalf("Machine = %+v, want %+v: a machine credential names no project and says which absence that is", claims, want)
+	if !reflect.DeepEqual(claims, want) {
+		t.Fatalf("Machine = %+v, want %+v: a machine credential that asked for no project names none and says which absence that is", claims, want)
 	}
 	// Another machine of the same person is the same principal: the name belongs to the person.
-	other, err := set.Machine("77777777-8888-9999-aaaa-bbbbbbbbbbbb", person, "ada-devbox")
-	if err != nil || other != want {
+	other, err := set.Machine("77777777-8888-9999-aaaa-bbbbbbbbbbbb", person, "ada-devbox", nil)
+	if err != nil || !reflect.DeepEqual(other, want) {
 		t.Fatalf("Machine(another credential of %s) = %+v, %v; want %+v", person, other, err, want)
 	}
 }
 
-// TestEveryDecisionScopesItsProject: the zero ProjectScope is what a Claims nobody built carries,
-// so no constructor may answer it; a later project check refuses a token that names neither a
-// project nor the person's whole reach.
-func TestEveryDecisionScopesItsProject(t *testing.T) {
+// TestEveryDecisionCarriesItsProjects: the zero ProjectScope is what a Claims nobody built
+// carries, so no constructor may answer it; a named scope carries its entry's one project and a
+// person scope the list its trade asked for, so a later reader never has to guess which a list
+// is. A read entry's decision says that it writes nothing, carries no project, and reads apart
+// from the zero value in a refusal or a log line too.
+func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	set := listed(t)
-	pod, err := set.Pod(podToken(workerAccount, podUID), "implementer-g1")
+	pod, err := set.Pod(podToken(workerAccount, podUID), "implementer-g1", nil)
 	if err != nil {
 		t.Fatalf("Pod: %v", err)
 	}
-	run, err := set.Workflow(workflowToken(repository, runRef(workflow), runRef(workflow), ref), "release-bot")
+	run, err := set.Workflow(workflowToken(repository, runRef(workflow), runRef(workflow), ref), "release-bot", nil)
 	if err != nil {
 		t.Fatalf("Workflow: %v", err)
 	}
-	machine, err := set.Machine(credentialID, person, "ada-devbox")
+	read, err := set.Pod(podToken(readerAccount, podUID), "", nil)
+	if err != nil {
+		t.Fatalf("Pod of the read account: %v", err)
+	}
+	fleet, err := set.Google(googleToken(pinnedAccount, true, cloudProject, instanceName), "example-machine", nil)
+	if err != nil {
+		t.Fatalf("Google: %v", err)
+	}
+	service, err := set.Google(googleToken(poolAccount, true, "", ""), "example-pool-1", nil)
+	if err != nil {
+		t.Fatalf("Google: %v", err)
+	}
+	machine, err := set.Machine(credentialID, person, "ada-devbox", []string{"PRIV", "PUB"})
 	if err != nil {
 		t.Fatalf("Machine: %v", err)
 	}
+	signIn, err := set.Person(personToken(person, true, signInDomain), googleToken(poolAccount, true, "", ""), "example-box", []string{"PRIV"})
+	if err != nil {
+		t.Fatalf("Person: %v", err)
+	}
 	for _, c := range []struct {
-		name   string
-		claims exchange.Claims
-		want   exchange.ProjectScope
+		name     string
+		claims   exchange.Claims
+		scope    exchange.ProjectScope
+		projects []string
 	}{
-		{name: "Pod", claims: pod, want: exchange.ProjectScopeNamed},
-		{name: "Workflow", claims: run, want: exchange.ProjectScopeNamed},
-		{name: "Machine", claims: machine, want: exchange.ProjectScopePerson},
+		{name: "Pod", claims: pod, scope: exchange.ProjectScopeNamed, projects: []string{project}},
+		{name: "Workflow", claims: run, scope: exchange.ProjectScopeNamed, projects: []string{project}},
+		{name: "Google with a person", claims: fleet, scope: exchange.ProjectScopeNamed, projects: []string{project}},
+		{name: "Google naming no person", claims: service, scope: exchange.ProjectScopePerson, projects: nil},
+		{name: "Machine", claims: machine, scope: exchange.ProjectScopePerson, projects: []string{"PRIV", "PUB"}},
+		{name: "Person", claims: signIn, scope: exchange.ProjectScopePerson, projects: []string{"PRIV"}},
+		{name: "Pod of the read account", claims: read, scope: exchange.ProjectScopeNone, projects: nil},
 	} {
-		if c.claims.Scope != c.want {
-			t.Errorf("%s scope = %v, want %v", c.name, c.claims.Scope, c.want)
-		}
-		if (c.claims.Project != "") != (c.want == exchange.ProjectScopeNamed) {
-			t.Errorf("%s = %+v: a named scope names a project and no other scope does", c.name, c.claims)
+		if c.claims.Scope != c.scope || !slices.Equal(c.claims.Projects, c.projects) {
+			t.Errorf("%s = scope %v, projects %v; want scope %v, projects %v", c.name, c.claims.Scope, c.claims.Projects, c.scope, c.projects)
 		}
 	}
 	if got := exchange.ProjectScopeUnset.String(); !strings.Contains(got, "no project scope") {
 		t.Errorf("ProjectScopeUnset.String() = %q, want it to say the scope was never set", got)
+	}
+	if none, unset := exchange.ProjectScopeNone.String(), exchange.ProjectScopeUnset.String(); none == unset || strings.Contains(none, "no project scope") {
+		t.Errorf("ProjectScopeNone.String() = %q beside ProjectScopeUnset's %q, want a decision that writes nothing to read apart from one never made", none, unset)
 	}
 }
 
@@ -533,7 +674,7 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 		{name: "a request naming a session past the cap", credential: credentialID, approver: person, session: strings.Repeat("s", exchange.MaxSessionBytes+1), want: exchange.ErrSessionInvalid, names: person},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Machine(c.credential, c.approver, c.session)
+			claims, err := set.Machine(c.credential, c.approver, c.session, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Machine(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
@@ -547,7 +688,7 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 func TestSessionAtTheCapIsUsable(t *testing.T) {
 	set := listed(t)
 	name := strings.Repeat("s", exchange.MaxSessionBytes)
-	claims, err := set.Pod(podToken(workerAccount, podUID), name)
+	claims, err := set.Pod(podToken(workerAccount, podUID), name, nil)
 	if err != nil || claims.Session != name {
 		t.Fatalf("Pod(a session of exactly %d bytes) = %+v, %v; want it answered", exchange.MaxSessionBytes, claims, err)
 	}
@@ -588,13 +729,13 @@ func TestGoogleAnswersTheListedMachine(t *testing.T) {
 	}{
 		{name: "a pinned machine of the project and a name the pattern matches",
 			token: googleToken(pinnedAccount, true, cloudProject, instanceName), session: "example-machine",
-			want: exchange.Claims{Session: "example-machine", Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: pinnedPrincipal, Fleet: pinnedService}},
+			want: exchange.Claims{Session: "example-machine", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: pinnedPrincipal, Fleet: pinnedService}},
 		{name: "another machine of that account is the same principal",
 			token: googleToken(pinnedAccount, true, cloudProject, "example-vm-8"), session: "example-other",
-			want: exchange.Claims{Session: "example-other", Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: pinnedPrincipal, Fleet: pinnedService}},
+			want: exchange.Claims{Session: "example-other", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: pinnedPrincipal, Fleet: pinnedService}},
 		{name: "email_verified as the string Google writes on some of its tokens",
 			token: googleToken(pinnedAccount, "true", cloudProject, instanceName), session: "example-machine",
-			want: exchange.Claims{Session: "example-machine", Person: person, Scope: exchange.ProjectScopeNamed, Project: project, Principal: pinnedPrincipal, Fleet: pinnedService}},
+			want: exchange.Claims{Session: "example-machine", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: pinnedPrincipal, Fleet: pinnedService}},
 		{name: "an entry naming no person answers its service and no project",
 			token: googleToken(poolAccount, true, "", ""), session: "example-pool-1",
 			want: exchange.Claims{Session: "example-pool-1", Service: poolService, Scope: exchange.ProjectScopePerson, Principal: poolPrincipal, Fleet: poolService}},
@@ -606,8 +747,8 @@ func TestGoogleAnswersTheListedMachine(t *testing.T) {
 			want: exchange.Claims{Session: machineSession, Service: poolService, Scope: exchange.ProjectScopePerson, Principal: fixedPrincipal, Fleet: poolService}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Google(c.token, c.session)
-			if err != nil || claims != c.want {
+			claims, err := set.Google(c.token, c.session, nil)
+			if err != nil || !reflect.DeepEqual(claims, c.want) {
 				t.Fatalf("Google(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
 			}
 		})
@@ -650,7 +791,7 @@ func TestGoogleRefusesWhatItCannotDecide(t *testing.T) {
 			want: exchange.ErrSessionInvalid, names: pinnedAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Google(c.token, c.session)
+			claims, err := set.Google(c.token, c.session, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Google(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
@@ -674,7 +815,7 @@ func TestGoogleSaysWhichRefusalItIs(t *testing.T) {
 		"another Compute project":     googleToken(pinnedAccount, true, "other-project", instanceName),
 		"an instance name not listed": googleToken(pinnedAccount, true, cloudProject, "example-other-1"),
 	} {
-		_, err := set.Google(token, "example-machine")
+		_, err := set.Google(token, "example-machine", nil)
 		if err == nil {
 			t.Fatalf("Google(%s) was answered, want a refusal", name)
 		}
@@ -730,8 +871,8 @@ func TestPersonAnswersTheSignedInPersonAndTheMachineActingForThem(t *testing.T) 
 			want: exchange.Claims{Session: "example-box-4", Person: person, Scope: exchange.ProjectScopePerson, Principal: personPrincipal, Actor: poolAccount, Fleet: poolService}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Person(c.token, c.actor, c.session)
-			if err != nil || claims != c.want {
+			claims, err := set.Person(c.token, c.actor, c.session, nil)
+			if err != nil || !reflect.DeepEqual(claims, c.want) {
 				t.Fatalf("Person(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
 			}
 		})
@@ -776,7 +917,7 @@ func TestPersonRefusesWhatItCannotDecide(t *testing.T) {
 			want: exchange.ErrSessionInvalid, names: person},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Person(c.token, c.actor, c.session)
+			claims, err := set.Person(c.token, c.actor, c.session, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Person(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
@@ -801,7 +942,7 @@ func TestPersonSaysWhichRefusalItIs(t *testing.T) {
 		"no machine acting for them": {personToken(person, true, signInDomain), nil},
 		"a machine where it may not": {personToken(person, true, signInDomain), googleToken(pinnedAccount, true, "other-project", instanceName)},
 	} {
-		_, err := set.Person(c.token, c.actor, "example-box")
+		_, err := set.Person(c.token, c.actor, "example-box", nil)
 		if err == nil {
 			t.Fatalf("Person(%s) was answered, want a refusal", name)
 		}
@@ -820,7 +961,7 @@ func TestPersonSaysWhichRefusalItIs(t *testing.T) {
 // their token says, rather than taking every account outside any Workspace. It is the rule
 // oidc.WorkspaceLogin states, and the one a broker told about no domain has to follow.
 func TestAnEmptySignInDomainAdmitsNobody(t *testing.T) {
-	set, err := exchange.NewSet(nil, nil, []exchange.GoogleEntry{{Account: poolAccount, Service: poolService}}, "")
+	set, err := exchange.NewSet(nil, nil, nil, []exchange.GoogleEntry{{Account: poolAccount, Service: poolService}}, "")
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}
@@ -828,7 +969,7 @@ func TestAnEmptySignInDomainAdmitsNobody(t *testing.T) {
 		personToken(person, true, signInDomain),
 		personToken(person, true, ""),
 	} {
-		if _, err := set.Person(token, googleToken(poolAccount, true, "", ""), "example-box"); !errors.Is(err, exchange.ErrNotInDomain) {
+		if _, err := set.Person(token, googleToken(poolAccount, true, "", ""), "example-box", nil); !errors.Is(err, exchange.ErrNotInDomain) {
 			t.Errorf("Person(hd %v) = %v, want %v: an empty configured domain admits nobody", token["hd"], err, exchange.ErrNotInDomain)
 		}
 	}

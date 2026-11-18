@@ -20,10 +20,11 @@ package appauth
 // The release reaches every repository the account's installation holds, here as in key mode: the
 // account that installs the App chooses them, and the daemon asks for no narrowing of them
 // (INFRA-2543). A read-only token holds what the command's read-only release gives: the broker's
-// holds contents, metadata, pull requests and Actions read, key mode's ReadToken set, less the
-// Actions read an installation that is not granted it does not hold. What a release leaves out is
-// the command's own business: the daemon reads what an installation is granted only where it
-// mints with a key of its own (exchangeGranted), and asks a command for no permission at all.
+// holds contents, metadata, pull requests and Actions read, which is key mode's ReadToken set
+// less its issues read, and less the Actions read an installation that is not granted it does not
+// hold. What a release leaves out is the command's own business: the daemon reads what an
+// installation is granted only where it mints with a key of its own (exchangeGranted), and asks a
+// command for no permission at all.
 //
 // No token reaches a log or an error: the command's stdout is never quoted, and its stderr, which
 // `agent-secrets` uses for the names and the request it waits on, goes to the daemon's stderr and
@@ -94,8 +95,8 @@ type releasedInstallation struct {
 	expiresAt time.Time
 }
 
-// commandRun is one run of a token_command, which every caller asking for the same scope while it
-// runs shares: the owner, the read-only flag and the repositories the lease is cached under.
+// commandRun is one run of a token_command, which every caller asking for the same owner and
+// read-only flag while it runs shares.
 type commandRun struct {
 	done          chan struct{}
 	installations map[string]releasedInstallation
@@ -321,9 +322,14 @@ func (r *redactingLines) flush() {
 	r.pending = nil
 }
 
-// loginPattern is a GitHub account login: what a release may name an installation by, and the only
-// owner text a refusal of a release quotes.
-var loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+// loginPattern is a GitHub account login, ghrepo's ownerName: what a release may name an
+// installation by, and the only owner text a refusal of a release quotes. It is a letter or digit
+// and then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
+// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and the broker releases such an
+// account's installation like any other: a rule here narrower than ghrepo's refused the whole
+// release, so no owner of it was minted for. The 39 characters are GitHub's own bound, which no
+// login exceeds.
+var loginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
 
 // parseRelease reads a token_command's stdout as the broker's release. Every refusal names the
 // field and the account and never quotes the output, which holds tokens.
@@ -342,7 +348,13 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 	}
 	installations := make(map[string]releasedInstallation, len(release.Installations))
 	for owner, entry := range release.Installations {
-		if !loginPattern.MatchString(owner) {
+		// Every refusal after this one quotes the key, and a token's text is what no error may
+		// carry, so a key holding a token form tokenPattern names is refused here, unquoted. A
+		// real token is 40 characters or more and already fails loginPattern's 39; this closes
+		// the shorter text spelled as one, which the underscore a login holds would otherwise let
+		// through. A login that merely opens like a token (`ghs_acme`) holds no token form and is
+		// read.
+		if !loginPattern.MatchString(owner) || tokenPattern.MatchString(owner) {
 			return nil, fmt.Errorf("%s released an installation whose account is not a GitHub login", field)
 		}
 		if _, err := installationID(entry.InstallationID); err != nil {
@@ -568,8 +580,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 }
 
 // listInstallation reads whether repo is among the repositories of its owner's installation,
-// under that owner's read lease cached under repo; refused reports a 401, a token GitHub no
-// longer honours.
+// under that owner's read lease; refused reports a 401, a token GitHub no longer honours.
 //
 // The listing is the whole answer. No token request names a repository any longer
 // (INFRA-2543), so neither GitHub nor the broker refuses one, and the one thing that says
@@ -579,7 +590,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // among them.
 //
 // The read is that answer's one source, so it drops whatever the Manager remembers of that
-// scope's refusal first (ForgetNarrowingRefusal) and mints: the mapping's check is made
+// scope's refusal first (forgetNarrowingRefusal) and mints: the mapping's check is made
 // precisely when an operator has changed something — the App's installation above all — and a
 // refusal served from the five minutes one is remembered for would fail the check for an
 // account the App was just installed on (lease, narrowingRefusalWindow, INFRA-513). A refusal
@@ -587,8 +598,8 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
 // next mapping read drops it again as this one did.
 func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrepo.Repository) (installed, refused bool, err error) {
-	m.ForgetNarrowingRefusal(role, repo.Owner(), []string{repo.Name()})
-	lease, err := m.ReadToken(ctx, role, repo.Owner(), []string{repo.Name()})
+	m.forgetNarrowingRefusal(role, repo.Owner())
+	lease, err := m.ReadToken(ctx, role, repo.Owner())
 	if errors.Is(err, ErrNotInstalled) {
 		return false, false, nil
 	}
