@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // The relaunch of a claim Envoy cannot reach (R5): the controller's `relaunch`, or the daemon's own
@@ -469,6 +470,75 @@ func TestARelaunchHandsTheRuntimeWhetherItMayReplaceThePod(t *testing.T) {
 	}
 	h.wantCalls("Suspend", 0)
 	h.wantCalls("Resume", 1)
+}
+
+// gatedRelaunchStop holds the relaunch's stop in place until the test lets it through, as a
+// Sandbox stop waits on its pod.
+type gatedRelaunchStop struct {
+	*inPlaceRuntime
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedRelaunchStop) StopForRelaunch(ctx context.Context, loc runtime.Locator, mayReplacePod bool) error {
+	g.entered <- struct{}{}
+	<-g.release
+	return g.inPlaceRuntime.StopForRelaunch(ctx, loc, mayReplacePod)
+}
+
+// The relaunch ends the claim's process only to start it again on the same session, in the same
+// decision, so the claim keeps its role while the stop waits on the runtime, as a process the
+// registration deadline retires and relaunches keeps it: the view every reader of the claim reads
+// (View) does not say the process is being stopped (ClaimView.Stopping). The daemon's outbox reads
+// that view to tell whether a role message or a hook prompt it holds for a claim Envoy cannot
+// reach still has a session to wait for (its keepsItsSession): read as stopping, the row would be
+// finished as one whose claim ended, in the very relaunch the hold waits for.
+func TestARelaunchKeepsTheClaimsRoleWhileItsStopWaitsOnTheRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		gated func(rt *fake.Runtime, entered, release chan struct{}) runtime.Runtime
+	}{
+		{name: "a stop the runtime makes as a suspension", gated: func(rt *fake.Runtime, entered, release chan struct{}) runtime.Runtime {
+			return &gatedRuntime{Runtime: rt, entered: entered, release: release}
+		}},
+		{name: "a stop the runtime makes in place", gated: func(rt *fake.Runtime, entered, release chan struct{}) runtime.Runtime {
+			return &gatedRelaunchStop{inPlaceRuntime: &inPlaceRuntime{Runtime: rt}, entered: entered, release: release}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBareHarness(t)
+			entered, release := make(chan struct{}, 1), make(chan struct{})
+			h.deps.Runtime = tc.gated(h.rt, entered, release)
+			c := queuedClaim()
+			if err := h.store.PutClaim(h.ctx, c); err != nil {
+				t.Fatal(err)
+			}
+			h.token = c.Token
+			h.start(c)
+			h.waitingSilently()
+
+			relaunched := make(chan error, 1)
+			go func() { relaunched <- h.m.Handle(h.ctx, h.relaunchOf(false)) }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the relaunch's stop never reached the runtime")
+			}
+			if v := h.m.View(); v.Stopping || v.State != StateWorking || v.Session != session {
+				t.Errorf("while the relaunch's stop waits on the runtime View says stopping %t, %s on session %q; want the claim keeping its role: not stopping, working on %q",
+					v.Stopping, v.State, v.Session, session)
+			}
+			close(release)
+			if err := <-relaunched; err != nil {
+				t.Fatalf("relaunch: %v", err)
+			}
+			h.m.Wait()
+			h.wantState(StateLaunching)
+			if v := h.m.View(); v.Stopping {
+				t.Error("once the relaunch returned View says the process is stopping")
+			}
+		})
+	}
 }
 
 // A claim between states has no settled agent to cut off, so the table refuses the relaunch there.

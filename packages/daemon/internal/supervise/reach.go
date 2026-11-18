@@ -257,6 +257,13 @@ type RequestRelaunch struct {
 // an error from it is a process the runtime would not say it stopped, which is refused as one
 // that outlived its stop.
 //
+// The stop is no stop for good: the process is ended only to be started again on the same
+// session in this same decision, as a process the registration deadline retires is, so the claim
+// keeps its role throughout and View never says its process is stopping (ClaimView.Stopping). A
+// role message or a hook prompt the daemon holds for the claim while Envoy cannot reach it waits
+// through the stop for the session this relaunch brings back, rather than being finished as one
+// whose claim ended (the daemon's outbox, keepsItsSession).
+//
 // A suspension held over the claim, a wake waiting over it and a compaction in flight each own
 // what becomes of its process already, so each refuses the relaunch as a claim between states.
 func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) error {
@@ -297,7 +304,7 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 	if inPlace != nil {
 		stop = func() error { return inPlace.StopForRelaunch(ctx, loc, ev.MayReplacePod) }
 	}
-	if err := m.stopForRelaunch(stop); err != nil {
+	if err := stop(); err != nil {
 		// A runtime that relaunches in place says itself which failure is a process that outlived
 		// its stop (StopForRelaunch): a refused suspension of the controller's pod ended nothing
 		// and is no such failure. Suspend says only that the stop failed, so its error is read as
@@ -338,14 +345,6 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 			"generation", m.claim.Generation, "error", err)
 	}
 	return nil
-}
-
-// stopForRelaunch runs the relaunch's stop of the claim's process with the claim reported as
-// stopping, as every stop of a live process is (stoppingProcess), so a reader of the view does not
-// take the claim for one whose process is running while the stop waits on the runtime.
-func (m *Machine) stopForRelaunch(stop func() error) error {
-	defer m.stoppingProcess()()
-	return stop()
 }
 
 // relaunchClaim is the RequestRelaunch event's row, for the three states a settled agent stands in.

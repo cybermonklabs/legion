@@ -700,7 +700,8 @@ type ClaimView struct {
 	// Stopping is whether the decision in flight is stopping the claim's process for good — a
 	// suspension, a failure, a release, a root's exit (endProcess, release) — while the claim still
 	// shows the state it is leaving. A process retired and relaunched in one decision
-	// (chargePrompt, the registration deadline) is not stopping: its claim keeps its role.
+	// (chargePrompt, the registration deadline, the relaunch of a claim Envoy cannot reach) is not
+	// stopping: its claim keeps its role.
 	Stopping bool
 	// SendInFlight is whether a prompt of the claim's pending task is on its way to the agent:
 	// the send's own goroutine is running, between startSend and the outcome that ends it
