@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    The Claude Code bridge (`legion claude-bridge`) no longer loses a turn's outcome when the daemon
+    is not serving at the turn's end. It made one post of 15 seconds, so a refused turn that ended
+    while the daemon restarted was never counted, and a claim whose provider refused every turn
+    could go without failing. The bridge now waits for the daemon as an Oh My Pi worker's calls do:
+    for up to an hour from its first post, it posts the outcome again after a pause of half a
+    second, doubling to at most 30 seconds. It does so after a refused, reset or closed connection,
+    a host that does not resolve or cannot be reached, a timeout, a post that has no answer after 5
+    minutes, which it ends before the next, and an uncoded 502, 503 or 504. An answer the daemon
+    gave goes back at once: a 4xx, an uncoded 500, and the daemon's own coded 500
+    (`DISPATCH_UNAVAILABLE`, `FACTS_UNAVAILABLE`) and 502 (`DISPATCH_FAILED`). The daemon keeps one
+    outcome for each generation and sequence, so a post sent again changes no count. The pane logs
+    `the Legion daemon is unreachable, most likely restarting (...)` once when the wait starts.
+time: 2026-11-18T13:44:14Z
+custom:
+    Issue: pr4175
