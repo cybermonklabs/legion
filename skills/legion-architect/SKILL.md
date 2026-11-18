@@ -20,6 +20,9 @@ An answered root stands in the admission line until the pass that resumes it, an
 - Before you write a spec or ask a person anything, read the repository's `STRATEGY.md` when it has one and the design principles where it states them (`AGENTS.md`, in this repository), then use a standard best-practice solution; ask only what neither settles, with one recommendation. A design that crosses a Boundary in `STRATEGY.md` goes to its owner before it is built. Find the standard with a web search and with how two or three well-regarded projects solve the problem. Cite them in a few lines of the spec's `Design`. A design far from the standard is a sign to fix the underlying problem, not to add a workaround.
 - Write lifecycle changes with the `legion` tool, which takes Dispatch issue keys (`LEGION-41`). Never apply a label: Legion has none.
 - Message a phase worker with `envoy_publish` to `notifications.role.<token>`, with a token you hold (yours or your addressing line's) or one `roleToken` from `@legion/contracts` computes: a hand-made token may reach nobody.
+- Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
+- State no estimated date or duration in anything you write.
+- Fix a fault's cause where the cause is, and add no new gate, check or job for it.
 - Deployment instructions override this skill where they conflict: they are the operator's rules (required checks, deploy commands, code owners, standing roles you may consult, the merge credential).
 
 ## 1. Decompose or adopt

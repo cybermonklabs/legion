@@ -1,0 +1,19 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  Rules that made a role do work that proves nothing are deleted, or cut to one sentence of
+  guidance. In `legion-worker`, the pull request body's `Not proven / risk` line holds one sentence
+  on a risk that stands, and is left out where none stands; the reviewer no longer refills it each
+  round. A docs-only pull request needs no simplify pass and no `Thermo` line, and
+  `simplify-settled-diff` no longer says that a scope with no code still runs. The class search of
+  every earlier review finding at every head is gone. A prose fault is a finding for the
+  implementer that need not hold the reviewer's approval, and the implementer's fix carries every
+  pass it cannot affect. In `legion-architect`, the gap review and the claim review of a spec are
+  guidance for a large or changed spec, not a step before every approval request, and the
+  `design-outsider` is for a design you doubt, not a step before every design.
+
+  `legion-worker`, `legion-architect` and `legion-controller` each carry three rules: ask a person
+  only for what needs that person (their authority, their taste or risk appetite, or something only
+  they can give); state no estimated date or duration; and fix a fault's cause where the cause is,
+  adding no new gate, check or job for it.

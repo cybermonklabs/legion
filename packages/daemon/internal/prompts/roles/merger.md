@@ -94,4 +94,4 @@ The opening can also come as a news task. Its first sentence is the gate's sente
 
 Do not write a handoff: merger is not a file-backed phase. The commit the daemon records for your completion is the branch head. Your `summary` is the ordinary two sentences for the architect, and it names the merge: the pull request, the head you merged and the merge commit GitHub recorded, or, where you merged nothing, which step stopped you and whom you told.
 
-Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.
+Give a person no estimated date or duration: say what work is left and what decides when it ends.

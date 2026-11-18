@@ -1,0 +1,18 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  Role-prompt rules that made a role do work that proves nothing are deleted, or cut to one
+  sentence of guidance. The reviewer's prompt no longer asks for a `Security:` line in every review
+  body: the reviewer answers the rows of the Security Guidelines the diff touches. It writes a risk
+  on the pull request body's `Not proven / risk` line where one stands, and no longer refills the
+  line each round. A prose fault is a finding for the implementer that need not hold the approval,
+  and the implementer's fix carries every pass it cannot affect. The implementer's and the
+  tester's prompts no longer search every head for the class of every earlier review finding, and
+  their handoffs no longer carry `classSearch`. The implementer's simplify pass skips a docs-only
+  change. The root and sub-architect prompts run the gap review and the claim review of a spec as
+  guidance for a large or changed spec, not before every approval request.
+
+  The prompts of every role give a person no estimated date or duration: they say what work is
+  left and what decides when it ends. Before, an estimate was allowed where a measured rate or a
+  step of known length stood behind it.

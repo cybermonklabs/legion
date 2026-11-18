@@ -26,6 +26,9 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
 - Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
 - Write every Dispatch comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
+- Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
+- State no estimated date or duration in anything you write.
+- Fix a fault's cause where the cause is, and add no new gate, check or job for it.
 
 Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/session.md`.
 
