@@ -39,8 +39,9 @@ base) rather than once per run. The checks it serves run by hand, before the mer
 Between those hand runs CI holds the plugin-pack part of the property itself. The plugin-pack
 step's `-run` and the daemon-go race step's `-skip` are both built from one list,
 PLUGIN_PACK_TESTS in ci_job_reads.py, and check-ci-filters.sh pins each step's whole script, so an
-edit to either step's text is refused (a step whose script is not its pinned text counts as
-reading every Go file) and the two cannot come to name different tests. ci_job_reads.py's
+edit to either step's text is refused (a step whose script is not its pinned text fails, naming
+the step and each test its -run or -skip names and the pin does not, or the other way round) and
+the two cannot come to name different tests. ci_job_reads.py's
 hold_plugin_pack_tests() refuses, at import, a name in that list that the package no longer
 declares and a test of agentmodels_omp_test.go the list does not name. What CI does not see is
 what this script decides: a (package, function) pair two steps of one run run without a declared

@@ -9,11 +9,13 @@ header says what is proved).
             (pinned_step): its whole run: script and directory, and the Runs that stand for what
             it compiles. The check fails when a run: step of a ci.yaml job - or of a job of a
             local workflow that job calls, whose steps it reads the same way - starts a go
-            command no Run or exact entry claims, and when a pin's text is gone, so the table
-            cannot drift from ci.yaml silently. A claimed command the check does not reduce (check-ci-filters.sh's
-            header says which it does), and every Run of an exact entry whose step no longer holds
-            its script, counts as reading every Go file of the repository and every file under a
-            Go module's directory; a script's pin is its whole line.
+            command no Run or exact entry claims, when a pin's text is gone, and when a step's
+            script or directory is not its exact entry's, naming the step and the difference, so
+            the table cannot drift from ci.yaml silently. A claimed command the check does not
+            reduce (check-ci-filters.sh's header says which it does), and every Run of an exact
+            entry whose step's env, shell, container or job could move what it compiles, counts
+            as reading every Go file of the repository and every file under a Go module's
+            directory; a script's pin is its whole line.
   RULES     a source file -> what it does when a test run compiles it: a go command it starts (a
             Run, whose closure is added) or a file it reads outside its package (a Read). A
             _test.go file counts when go list lists it in a tested package under the job's tags;
@@ -2171,13 +2173,13 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-78)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:79-81)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2432 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2876-2911 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2527 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2971-3006 holds the guide's slow-suite list to the jobs the full-ci label gates"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),

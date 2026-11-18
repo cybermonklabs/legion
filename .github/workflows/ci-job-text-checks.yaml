@@ -99,8 +99,12 @@ jobs:
       # they run here rather than in the job that carries Postgres for that package. They sit in
       # the package they guard, beside its Postgres-backed tests, so this step selects them by
       # name: the list is generated in .github/scripts/ci_job_reads.py from TEXT_CHECK_TESTS,
-      # the same declaration that leaves exactly these fifteen out of envoy-go's plain step, so a
-      # guard test added or renamed reaches both or fails the ci-filters job naming this step.
+      # the same declaration that leaves exactly these fifteen out of envoy-go's plain step. A
+      # guard test added to or renamed in its file must be named there (ci_job_reads.py refuses
+      # the file otherwise), and check-ci-filters.sh refuses this step when its run: is not the
+      # text built from the list, naming this step and each test the one names and the other
+      # lacks: a test dropped from this -run, or named here and not in the list, fails the
+      # ci-filters job rather than running in no job or in both.
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)

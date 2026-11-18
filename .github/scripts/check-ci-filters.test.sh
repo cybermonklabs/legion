@@ -3,9 +3,11 @@
 # Go closures recomputed with go list (with -race for a -race command), the table of go commands
 # must say what ci.yaml and the workflows its jobs call say, a claimed go command the check does
 # not reduce (another form, a
-# step that is more than the go line, a shell, a container, a BASH_ENV) and a step off its exact
-# entry's pinned script count as reading every Go file of the repository and every file under a
-# Go module's directory, a why that cites a step must name a workflow file that still holds it,
+# step that is more than the go line, a shell, a container, a BASH_ENV) counts as reading every
+# Go file of the repository and every file under a Go module's directory, a step off its exact
+# entry's pinned script or directory is refused naming the line that differs and, on a -run or
+# -skip list, the tests one side names and the other lacks, a why that cites a step must name a
+# workflow file that still holds it,
 # CI_OK_SELECTED_BY must map every job changes gates, it and CI_OK_PULL_REQUEST_ONLY must say what
 # each job's if: tests, every job of ci.yaml must be in exactly one of ci-ok's three classes
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
@@ -1764,15 +1766,108 @@ check "fails once the closure reads a file outside the filter" "$(is "$status" 1
 check "and names it with the exact entry's run" \
   "$(contains "$out" '::error file=mod/other/other.go::app reads mod/other/other.go.*"Test the app" (its pinned script): go test of each package of the loop (go list -deps)')"
 
-echo "case: a step one character off its pinned script falls to everything"
+# A step off its pin is refused rather than read as reading everything: the pin is also what the
+# table says the step runs, and a step read wide passes unseen wherever its filter already selects
+# every Go file.
+echo "case: a step one character off its pinned script is refused, naming the line that differs"
 root=$(fixture exact-step-changed)
 exact_step_table "$root"
 replace "$root/.github/workflows/ci.yaml" "-count=1" "-count=2"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step and why it falls" \
-  "$(contains "$out" 'job app step "Test the app".s pinned script, which this check does not reduce (the step.s script is not the pinned text), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
+check "names the file, the step, the gate and both lines" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; make the step run the entry.s text there again, or change the entry')"
+check "and still reads the step as its runs, not as everything" \
+  "$(is "$(contains "$out" '::error file=mod/other/other.go::')" false)"
+
+echo "case: a step pinned whole that runs in another directory is refused, naming both"
+root=$(fixture exact-step-moved)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" "        working-directory: mod/cmd"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the two directories" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: it runs in mod/cmd, the entry.s in mod; ')"
+
+echo "case: a step pinned whole under an env outside ENV_ALLOWED falls to everything"
+root=$(fixture exact-step-env)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+  $'        working-directory: mod\n        env:\n          GOFLAGS: -tags=probe'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the env" \
+  "$(contains "$out" 'job app step "Test the app".s pinned script, which this check does not reduce (step "Test the app".s env sets GOFLAGS), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
 check "and a file it falls to" "$(contains "$out" '::error file=mod/other/other.go::')"
+check "but holds the step to its pin all the same" "$(is "$(contains "$out" 'is off the script and directory')" false)"
+
+# guard_list_table <root>: the app job runs the library's two tests by name, its -run built in
+# ci_job_reads.py from one list as this repository's text-check job's guard step is built from
+# TEXT_CHECK_TESTS, and pinned whole by an exact entry. The app filter selects the whole module, as
+# the text_checks filter selects every Go file, so a step off its pin that counted as reading
+# everything would pass: these cases exit 0 on a check that reads such a step wide.
+guard_list_table() {
+  printf 'package lib\n\nimport "testing"\n\nfunc TestGuard(t *testing.T) {}\n' > "$1/mod/lib/guard_test.go"
+  cat > "$1/.github/scripts/ci_job_reads.py" <<'PY'
+from ci_filter_coverage import Read, at, exact, gate, run
+
+GUARD_TESTS = ["TestData", "TestGuard"]
+GUARD_SCRIPT = f"go test -count=1 -run '^({'|'.join(sorted(GUARD_TESTS))})$' ./lib"
+RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}
+GATES = [
+    gate("app", "app", exact=[
+        exact("Test the app", "mod", GUARD_SCRIPT, [
+            run("mod", ["./lib"], at("app", "Test the app") + " (its pinned script): go test -run of the library's tests"),
+        ]),
+    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),
+]
+EXCLUDED = {"image": "an image build another check proves"}
+PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
+WORKSPACES = ["packages/widget"]
+DAEMON_RACE_PACKAGES = ["lib"]
+TAG_RUNS = []
+PY
+  replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
+    "        run: go test -count=1 -run '^(TestData|TestGuard)\$' ./lib"
+  replace "$1/.github/workflows/ci.yaml" "              - 'mod/cmd/app/*'" "              - 'mod/**'"
+}
+
+echo "case: a step whose -run one list builds passes while it runs exactly that list"
+root=$(fixture guard-list)
+guard_list_table "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the runs' closure" "$(contains "$out" '^report: app: [0-9][0-9]* files, 0 uncovered (filter app)$')"
+
+echo "case: a test the list names and the step's -run drops is refused, naming the step and the test"
+root=$(fixture guard-list-dropped)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" ")"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the step and the test the step lacks" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run leaves out TestGuard, which the pinned -run names; ')"
+check "and refuses it once" "$(is "$(grep -c 'is off the script and directory' <<<"$out" || true)" 1)"
+
+echo "case: a test the step's -run names and the list does not is refused, naming the test"
+root=$(fixture guard-list-added-to-the-step)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" "|TestGuard|TestOther)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the test the list lacks" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run names TestOther, which the pinned -run does not; ')"
+
+echo "case: a test added to the list and not to the step's -run is refused, naming the test"
+root=$(fixture guard-list-added-to-the-list)
+guard_list_table "$root"
+printf '\nfunc TestNewGuard(t *testing.T) {}\n' >> "$root/mod/lib/guard_test.go"
+replace "$root/.github/scripts/ci_job_reads.py" 'GUARD_TESTS = ["TestData", "TestGuard"]' \
+  'GUARD_TESTS = ["TestData", "TestGuard", "TestNewGuard"]'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the test the step lacks" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run leaves out TestNewGuard, which the pinned -run names; ')"
 
 for odd in cr nbsp; do
   echo "case: a hidden command after a ${odd} that Python reads as a comment and bash runs"

@@ -25,9 +25,10 @@ related_issues:
 - **Where the price is large, pin instead of widening.** A step whose commands the check cannot
   reduce (a loop, a pipe, `GOOS=… go build`, `-ldflags`) can be pinned by its whole script text and
   working directory, with the closures it stands for listed beside it (one per `GOOS`/`GOARCH` it
-  loops over). Its filter then stays the closure. Any edit to the pinned text falls back to
-  reading everything, so the pin cannot hide drift; it only defers the cost until the step
-  changes.
+  loops over). Its filter then stays the closure. Any edit to the pinned text is refused, naming
+  the step and the first difference, so the pin cannot hide drift. It once fell back to reading
+  everything instead, which hid every edit to a step whose filter already selects every Go file:
+  a guard test dropped from the text-check step's `-run` passed the check and ran in no job.
 - **Put the number on the pull request** (its minutes section), so the person who decides on the
   rule sees what it costs.
 
