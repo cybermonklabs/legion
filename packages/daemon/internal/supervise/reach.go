@@ -341,9 +341,7 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 	if m.held != nil {
 		return m.endHeld(ctx)
 	}
-	m.relaunchCause = ev.Cause
-	m.letGo(ctx, ev.Cause)
-	m.relaunchCause = ""
+	m.letGo(ctx, letGoCause{cause: ev.Cause, relaunch: true})
 	before := m.claim.Generation
 	if err := m.launchAfter(ctx, false, true, noEnd); err != nil || m.claim.Generation == before {
 		return err

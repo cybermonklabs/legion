@@ -1185,11 +1185,6 @@ type Machine struct {
 	// that arrived after the sweep read the claims is already in this machine's inbox, ahead of
 	// the backstop's own event, so a turn whose agent moved in that window is left alone.
 	steppedAt time.Time
-	// relaunchCause is the cause of the relaunch of a claim Envoy cannot reach while that
-	// relaunch lets the process go (relaunchUnreachable), and "" otherwise: the
-	// let-go records it whatever the process ended (recordEnd), since the relaunch records its own
-	// cause on the claim, where any other let-go that ended nothing worth telling records none.
-	relaunchCause string
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
@@ -2520,7 +2515,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 	// wake gate does for the kind it reads off it (reserveWake).
 	intent := m.pluginRelaunch
 	m.commitPluginRelaunch()
-	m.letGo(ctx, cause)
+	m.letGo(ctx, letGoCause{cause: cause})
 	starting, started := m.startable(ctx)
 	defer started()
 	for {
@@ -3082,7 +3077,7 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 			m.log.Error("supervise: could not suspend the failed claim's process", "incarnation", loc.Incarnation, "error", err)
 		}
 	}
-	m.letGo(ctx, ended)
+	m.letGo(ctx, letGoCause{cause: ended})
 	m.claim.State, m.claim.Failure = StateFailed, why
 	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
 	m.claim.PendingCause = ""
@@ -3114,7 +3109,7 @@ func (m *Machine) suspendProcess(ctx context.Context, cause string) error {
 	if err := m.deps.Runtime.Suspend(ctx, *m.claim.Locator); err != nil {
 		return err
 	}
-	m.letGo(ctx, cause)
+	m.letGo(ctx, letGoCause{cause: cause})
 	return nil
 }
 
@@ -3153,7 +3148,7 @@ func (m *Machine) endProcess(ctx context.Context, cause string) error {
 // purpose, so a record left on it would tell a later start of the claim that work it ended on
 // purpose was lost.
 func (m *Machine) retire(ctx context.Context, cause string) error {
-	m.letGo(ctx, cause)
+	m.letGo(ctx, letGoCause{cause: cause})
 	m.claim.State = StateRetired
 	drops := m.dropsUpdateTask()
 	if drops {
@@ -3201,15 +3196,15 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // the suspension, the retirement, the failure — so no stored charge ever outlives the process it
 // was made for.
 //
-// Before any of that, what the process ended is recorded for cause, the caller's reading of why
-// it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
-// task's, and the background work its own activity report named. It is read here, first,
-// because everything it reads goes with the process below, and the launch that follows clears
-// the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
-// with the process too (cutTurnOf), and so do the marks of the sentences a prompt to it carried
-// (carried): the next process has been sent nothing yet.
-func (m *Machine) letGo(ctx context.Context, cause string) {
-	m.recordEnd(ctx, cause)
+// Before any of that, what the process ended is recorded for why, the caller's reading of the
+// reason it lets the process go (letGoCause, recordEnd): the turn it was in, whether that turn
+// was the pending task's, and the background work its own activity report named. It is read
+// here, first, because everything it reads goes with the process below, and the launch that
+// follows clears the report. noEnd records nothing. The mark of a task taken back from that
+// process's turn goes with the process too (cutTurnOf), and so do the marks of the sentences a
+// prompt to it carried (carried): the next process has been sent nothing yet.
+func (m *Machine) letGo(ctx context.Context, why letGoCause) {
+	m.recordEnd(ctx, why)
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil
