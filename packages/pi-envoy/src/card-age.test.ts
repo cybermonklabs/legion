@@ -503,7 +503,7 @@ describe("a card after a resume", () => {
   // record was not written. A process that resumed such a session and wrote an old card again
   // before its first request took the time of that write for the old card, and its `delivered:`
   // line moved on by the hours between the two processes.
-  test("after a resume of a session that records no delivery, an old card the resumed process writes again before its first request keeps its delivered line, and a new card carries its own time", () => {
+  test("after a resume of a session that records no delivery, an old card the resumed process writes again before its first request takes its older entry's time, not the time of that write, and a new card carries its own time", () => {
     const files = sessionFiles();
     const file = files.entries(SESSION);
     // Oh My Pi stamps a card's entry with the time it was handed the card, never later than the
@@ -534,6 +534,9 @@ describe("a card after a resume", () => {
     const after = resumed.annotate([old, replayed, fresh], () => file, SESSION);
 
     expect(before).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
+    // The old card's text stays the same here because its entry's stamp and the time the earlier
+    // process showed fall in one second; the host can stamp the entry seconds earlier (a card that
+    // waited for that process to start), and the line then moves by those seconds.
     expect(textOf(after, "evt-old")).toBe(before);
     expect(textOf(after?.slice(1), "evt-old")).toBe(before);
     expect(textOf(after, "evt-new")).toContain('\n  delivered: "2026-10-31T14:13:04Z"\n');
@@ -559,7 +562,9 @@ describe("a card's delivery, fixed at its write or at a request", () => {
   const RECORDED = LATE - 60_000;
   const LEDGER = LATE - 40_000;
   const PLACED = LATE - 20_000;
-  /** The card's own entry, after a message the host wrote at `PLACED`. */
+  /** An older entry of the card's event, after a message the host wrote at `PLACED`: the card is
+   *  handed again at `NOW`, as a process that resumed the session writes it again, and the place
+   *  is that older entry's. Only `annotate`'s last source (`#handedHere`) reads the handed time. */
   const placed = (message: Record<string, unknown>) => [
     { type: "message", timestamp: new Date(PLACED).toISOString(), message: { role: "assistant" } },
     cardEntry(message, PLACED),
