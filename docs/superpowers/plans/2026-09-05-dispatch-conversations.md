@@ -2325,7 +2325,7 @@ cd /home/ubuntu/legion && jj describe -m "feat(dispatch): thread argument posts 
 **Verification (user-observable):** with the service running from this branch (`Task 16` builds and starts it), a plugin-shaped request against `http://127.0.0.1:8766/mcp` with `thread` posts a comment on the named issue and `gh issue view <n> --comments` shows the new turn without YAML; a second identical request returns the same `comment` URL and `gh api repos/<o>/<r>/issues/<n>/comments --jq length` is unchanged. Scoped proof now: the Go suite above. Exact operator command, once the container runs the new image (Task 16 step 3):
 
 ```bash
-cd /home/ubuntu/legion && env TOKEN="$(gh auth token)" bash -c 'curl -sS -X POST http://127.0.0.1:8766/mcp -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"dispatch\",\"arguments\":{\"thread\":\"acme-org/example-repo#<n>\",\"context\":\"Checking the follow-up path.\",\"question\":\"Does this land as a comment with no visible YAML?\",\"origin\":{\"host\":\"omp\",\"cwd\":\"/home/ubuntu/legion\"}}}}"'
+cd /home/ubuntu/legion && ( header=$(umask 077; mktemp) && trap 'rm -f "$header"' EXIT && printf 'Authorization: Bearer %s\n' "$(gh auth token)" >"$header" && curl -sS -X POST http://127.0.0.1:8766/mcp -H @"$header" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dispatch","arguments":{"thread":"acme-org/example-repo#<n>","context":"Checking the follow-up path.","question":"Does this land as a comment with no visible YAML?","origin":{"host":"omp","cwd":"/home/ubuntu/legion"}}}}' )
 ```
 
 Expected: a JSON-RPC response whose `result.content[0].text` is `{"thread":<n>,"url":"https://github.com/acme-org/example-repo/issues/<n>","comment":"https://github.com/acme-org/example-repo/issues/<n>#issuecomment-<id>"}`.
@@ -6812,7 +6812,7 @@ Expected: build succeeds (bun web stage builds `packages/dispatch`, Go stage bui
 - [ ] **Step 2: The service accepts the two-mode schema**
 
 ```bash
-cd /home/ubuntu/legion && env TOKEN="$(gh auth token)" bash -c 'curl -sS -X POST http://127.0.0.1:8766/mcp -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"' | sed -n 's/^data: //p' | jq -c '.result.tools[0].inputSchema.required'
+cd /home/ubuntu/legion && ( header=$(umask 077; mktemp) && trap 'rm -f "$header"' EXIT && printf 'Authorization: Bearer %s\n' "$(gh auth token)" >"$header" && curl -sS -X POST http://127.0.0.1:8766/mcp -H @"$header" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' ) | sed -n 's/^data: //p' | jq -c '.result.tools[0].inputSchema.required'
 ```
 
 Expected: `["context","question"]`.
