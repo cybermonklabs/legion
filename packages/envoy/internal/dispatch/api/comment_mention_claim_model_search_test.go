@@ -25,11 +25,13 @@ import (
 // own, and the test that runs the sender as built and its control.
 
 // key is the run's state as the search keys on it: every claim in play named by its order among
-// them and its age up to a lease and a slot, then the model's rows, tries, timers and refresh,
-// and the sender's maps.
+// them and its age up to a lease and a slot, then the model's rows, the sender's goroutines in the
+// order they started - with what each holds in its own variables, the lane it serves, the send it
+// carries and an answer it has not acted on yet - their tries, the refresh, the sweep's hand-offs
+// and the park timer, and the sender's maps.
 func (r *cmRun) key() string {
-	r.sender.mu.Lock()
-	defer r.sender.mu.Unlock()
+	r.lock.Mutex.Lock()
+	defer r.lock.Mutex.Unlock()
 	var claims []time.Time
 	add := func(claim time.Time) {
 		if !claim.IsZero() {
@@ -61,15 +63,27 @@ func (r *cmRun) key() string {
 			addAll(try.read.found)
 		}
 	}
-	for _, parking := range r.parking {
-		add(parking.try.item.claimed)
+	for _, g := range r.gs {
+		if g.ended != nil {
+			add(g.ended.answer.item.claimed)
+		}
+		add(g.carried.claimed)
+		if g.answered != nil {
+			addAll(g.answered.named)
+			addAll(g.answered.found)
+		}
 	}
-	if r.refresh != nil {
-		addAll(r.refresh.queued)
-		addAll(r.refresh.written)
-		if r.refresh.read != nil {
-			addAll(r.refresh.read.named)
-			addAll(r.refresh.read.found)
+	for _, sweep := range r.sweeps {
+		add(sweep.item.claimed)
+	}
+	if f := r.refresh; f != nil {
+		if f.read != nil {
+			addAll(f.read.named)
+			addAll(f.read.found)
+		}
+		if f.stmt != nil {
+			addAll(f.stmt.queued)
+			addAll(f.stmt.written)
 		}
 	}
 	slices.SortFunc(claims, time.Time.Compare)
@@ -95,8 +109,11 @@ func (r *cmRun) key() string {
 		}
 		return fmt.Sprintf("%v %t %v", canonAll(read.named), read.ran, canonAll(read.found))
 	}
+	// A send as the sender reads it: its claim, what it last waited behind, and whether it was
+	// stamped as waiting and warned of, which a late WARN reads (reportLate).
 	send := func(s mentionSend) string {
-		return fmt.Sprintf("%s:%s:%s", s.comment.ID, canon(s.claimed), s.heldFor)
+		return fmt.Sprintf("%s:%s:%s:%d:%t:%t", s.comment.ID, canon(s.claimed), s.heldFor, s.heldBy.EventID,
+			!s.heldSince.IsZero(), s.warned)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "s%d pub%t/%t took%v broke%v failed%d out%d|", r.slot, r.published, r.publishedBetween, r.took,
@@ -104,22 +121,54 @@ func (r *cmRun) key() string {
 	for _, row := range r.rows {
 		fmt.Fprintf(&b, "row %t %t %s %s|", row.committed, row.pending, canon(row.created), canon(row.claim))
 	}
+	// A goroutine as it can still act: the refresh by the slot it started in, which holds time
+	// back; a lane goroutine by its lane and its park's pending timer, and at next by the send it
+	// has finished, if any - the one next releases - and elsewhere by the send it carries, which a
+	// lane goroutine at next no longer reads.
+	for i, g := range r.gs {
+		at := "statement"
+		if g.lock != nil {
+			at = g.site
+		}
+		if g.refresh {
+			fmt.Fprintf(&b, "g%d refresh %t %s", i, g.born < r.slot, at)
+		} else if strings.HasPrefix(at, "next:") {
+			finished := -1
+			if g.done {
+				finished = g.last
+			}
+			fmt.Fprintf(&b, "g%d %s %v %t finished %d", i, at, g.lane, g.givenUp, finished)
+		} else {
+			fmt.Fprintf(&b, "g%d %s %v %t %s", i, at, g.lane, g.givenUp, send(g.carried))
+		}
+		if g.ended != nil {
+			fmt.Fprintf(&b, " ended %s", send(g.ended.answer.item))
+		}
+		if g.answered != nil {
+			fmt.Fprintf(&b, " answered %s %t", read(g.answered), g.readFailed)
+		}
+		b.WriteString("|")
+	}
 	if f := r.refresh; f != nil {
-		fmt.Fprintf(&b, "refresh %t %s %v %t %v|", f.began < r.slot, read(f.read), canonAll(f.queued), f.wrote,
-			canonAll(f.written))
+		fmt.Fprintf(&b, "refresh %t %s", f.named, read(f.read))
+		if f.stmt != nil {
+			fmt.Fprintf(&b, " %v %t %v %t %t", canonAll(f.stmt.queued), f.stmt.wrote, canonAll(f.stmt.written),
+				f.stmt.answered, f.stmt.lost)
+		}
+		b.WriteString("|")
 	}
 	for c := range 2 {
 		if try := r.tries[c]; try != nil {
-			fmt.Fprintf(&b, "try %d %v %t %s %t %s %t %t %s %t|", c, try.lane, try.began < r.slot, read(try.read),
-				try.trying, send(try.item), try.ran, try.took, send(try.answer.item), try.answer.waits)
+			fmt.Fprintf(&b, "try %d g%d %t %s %s %t %t %s %t|", c, slices.Index(r.gs, try.g), try.began < r.slot,
+				read(try.read), send(try.item), try.ran, try.took, send(try.answer.item), try.answer.waits)
+		}
+		if sweep := r.sweeps[c]; sweep != nil {
+			fmt.Fprintf(&b, "sweep %s|", send(sweep.item))
 		}
 	}
-	var timers []string
-	for lane, timer := range r.timers {
-		timers = append(timers, fmt.Sprintf("%v:%t", lane, timer.began < r.slot))
+	if r.timer != nil {
+		fmt.Fprintf(&b, "timer %t|", r.timer.began < r.slot)
 	}
-	slices.Sort(timers)
-	fmt.Fprintf(&b, "timers %v|", timers)
 	// Each attempt's lost count is keyed as whether it moved since a re-read in flight named it,
 	// which is all claimKnown and rereadUnsure compare.
 	var held []string
@@ -154,13 +203,7 @@ func (r *cmRun) key() string {
 		waits = append(waits, fmt.Sprintf("%v:%d", lane, wait.by.EventID))
 	}
 	slices.Sort(waits)
-	var parking []string
-	for c, p := range r.parking {
-		parking = append(parking, fmt.Sprintf("%d %v %t %s", c, p.try.lane, p.try.began < r.slot, send(p.try.item)))
-	}
-	slices.Sort(parking)
-	fmt.Fprintf(&b, "lanes %v waits %v parking %v ready %v serving %d", lanes, waits, parking, r.sender.ready,
-		r.sender.serving)
+	fmt.Fprintf(&b, "lanes %v waits %v ready %v serving %d", lanes, waits, r.sender.ready, r.sender.serving)
 	return b.String()
 }
 

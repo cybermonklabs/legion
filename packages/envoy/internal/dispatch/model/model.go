@@ -2463,6 +2463,13 @@ func DeliveryClaimSinceSQL(param string) string {
 	return `(claimed_at >= ` + param + ` and claimed_at < ` + param + ` + ` + DeliveryClaimLapseInterval + `)`
 }
 
+// DeliveryClaimLiveSQL is true of the claim param names while it is live: written less than
+// DeliveryClaimLapse ago. The mention sender's refresh writes a claim again only while the one it
+// names is (refreshMentionClaims in internal/dispatch/api), so it never revives a lapsed one.
+func DeliveryClaimLiveSQL(param string) string {
+	return `(` + param + ` > now() - ` + DeliveryClaimLapseInterval + `)`
+}
+
 // mentionLaterAttemptSQL is true of the comment_deliveries row named row when a later attempt of
 // its (comment, target) satisfies condition, which names that attempt's row later.
 func mentionLaterAttemptSQL(row, condition string) string {

@@ -41,7 +41,7 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 			as queued(comment_id, target, attempt, claimed_at)
 		where d.comment_id = queued.comment_id and d.target = queued.target and d.attempt = queued.attempt
 		  and d.state = 'pending' and d.claimed_at = queued.claimed_at
-		  and queued.claimed_at > now() - `+model.DeliveryClaimLapseInterval+`
+		  and `+model.DeliveryClaimLiveSQL("queued.claimed_at")+`
 		returning d.comment_id::text, d.target, d.attempt, d.claimed_at
 	`, comments, targets, attempts, claimed)
 	if err != nil {

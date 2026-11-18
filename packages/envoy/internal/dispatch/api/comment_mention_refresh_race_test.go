@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A refresh whose statement has committed but whose result is not yet recorded loses to a keyed
@@ -454,4 +458,116 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A hand-off - the delivery sweep's resumeOwedDelivery, or a keyed repeat - that reaches the
+// sender after serve's claimedDuring found the claim unmoved and before next lets the send go
+// must not be taken into the send that ends: its send would never be tried, held or released, and
+// the attempt would wait under its claim, a lease, for the sweep. TestTheMentionSenderClaimModel
+// finds it as a pending attempt under a live claim that no sender holds. The window is held open
+// at reportLate's WARN, which the lane logs inside it; the control row hands off while the try is
+// in flight, which claimedDuring catches.
+func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		atLog bool
+	}{
+		{name: "control: the hand-off lands while the try is in flight"},
+		{name: "the hand-off lands between claimedDuring and next", atLog: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lifetime, stop := context.WithCancel(context.Background())
+			var sender *mentionSender
+			first := time.Now().Add(-30 * time.Second)
+			sweeps := time.Now()
+			item := mentionSend{
+				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+				attempt: 1, claimed: first,
+				// A send the delivery sweep handed over once before (held.send): it waited.
+				heldFor: "s1", heldBy: model.MentionCopyHolder{EventID: 7}, heldSince: time.Now().Add(-2 * time.Minute),
+			}
+			handOff := item
+			handOff.claimed = sweeps
+			var handedOff atomic.Bool
+			doHandOff := func() {
+				if handedOff.CompareAndSwap(false, true) {
+					sender.enqueue(context.Background(), handOff)
+				}
+			}
+			logs := &storetest.LockedLog{}
+			logtest.SetDefault(t, logHook{next: slog.NewTextHandler(logs, nil), hook: func(r slog.Record) {
+				if tc.atLog && strings.Contains(r.Message, "waits behind an earlier event") {
+					doHandOff()
+				}
+			}})
+			var mu sync.Mutex
+			var tried []time.Time
+			triedHandOff := make(chan struct{}, 1)
+			sender = newMentionSender(lifetime, time.Hour,
+				func(_ context.Context, try mentionSend) (mentionSend, bool) {
+					mu.Lock()
+					tried = append(tried, try.claimed)
+					mu.Unlock()
+					if try.claimed.Equal(sweeps) {
+						triedHandOff <- struct{}{}
+						return mentionSend{}, false
+					}
+					// The row carries the sweep's claim: the try under the older one is refused.
+					if !tc.atLog {
+						doHandOff()
+					}
+					return mentionSend{}, false
+				},
+				func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil },
+				rereadNone,
+				func(context.Context, []mentionClaim) error { return nil },
+			)
+			sender.mu.Lock()
+			sender.heldWarnAfter = time.Nanosecond
+			sender.mu.Unlock()
+			sender.enqueue(context.Background(), item)
+			var sent bool
+			select {
+			case <-triedHandOff:
+				sent = true
+			case <-time.After(3 * time.Second):
+			}
+			sender.mu.Lock()
+			_, holds := sender.held[item.key()]
+			sender.mu.Unlock()
+			stop()
+			sender.wait()
+			mu.Lock()
+			defer mu.Unlock()
+			t.Logf("handed off %t; tries carried %v; hand-off claim %v; sender still holds the key %t", handedOff.Load(),
+				tried, sweeps, holds)
+			if !sent {
+				t.Fatalf("the hand-off's claim %v was never tried, and the sender holds no entry for it (%t): the attempt is left pending under a claim nothing refreshes or sends until it lapses",
+					sweeps, holds)
+			}
+		})
+	}
+}
+
+// logHook passes every record to next and, first, to hook.
+type logHook struct {
+	next slog.Handler
+	hook func(slog.Record)
+}
+
+func (h logHook) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h logHook) Handle(ctx context.Context, r slog.Record) error {
+	h.hook(r)
+	return h.next.Handle(ctx, r)
+}
+
+func (h logHook) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return logHook{next: h.next.WithAttrs(attrs), hook: h.hook}
+}
+
+func (h logHook) WithGroup(name string) slog.Handler {
+	return logHook{next: h.next.WithGroup(name), hook: h.hook}
 }
