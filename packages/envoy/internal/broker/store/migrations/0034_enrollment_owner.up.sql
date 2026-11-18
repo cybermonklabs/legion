@@ -17,7 +17,7 @@
 --     machine:<credential service>/<pod uid>, with /<slot> after it for a slot of the pod, for a
 --     pod enrollment that states no claim, so the role processes of one pod are owners apart.
 -- Null on every row this migration finds, and on an enrollment whose caller proved none of those,
--- and a null owner is owned by its own enrollment alone: requests.Machine.OwnerOf answers
+-- and a null owner is owned by its own enrollment alone: requests.Machine.OwnerAndState answers
 -- 'enrollment:' || id for it, which is the rule every request was held to before this column.
 --
 -- claim is what the launcher stated, kept beside the owner so a reader of the row sees it without

@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -278,7 +279,13 @@ func (c *client) do(ctx context.Context, method, url string, body []byte, header
 // doStatus is do, also answering the 2xx status itself, which tells apart the two answers a
 // route gives for success — POST /v1/enrollments's 201 for a new enrollment and 200 for the one
 // this key already holds.
+//
+// A failure names the call by its URL without the query, as its proof does: the only query this
+// client sends is one it builds itself (GetRequest's wait), and the redactor prints no URL that
+// holds a query, so a read that asked the broker to hold it would otherwise name neither its
+// call nor its cause.
 func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, []byte, error) {
+	named, query, _ := strings.Cut(url, "?")
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -292,7 +299,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		if c.baseURL.Clean() {
 			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
-		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, url, errNothingSent}
+		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -302,12 +309,12 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, unreachable(c.baseURL, method, url, err)
+		return 0, nil, unreachable(c.baseURL, method, named, withoutQuery(err, query))
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, &cutOffError{method + " " + c.baseURL.Call(url), c.baseURL.Error(err)}
+		return 0, nil, &cutOffError{method + " " + c.baseURL.Call(named), c.baseURL.Error(err)}
 	}
 	if resp.StatusCode/100 == 3 {
 		// A redirect this client refuses to follow (redirects.Refused), handed back as the
@@ -348,6 +355,18 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	return resp.StatusCode, data, nil
 }
 
+// withoutQuery is err with the URL of the *url.Error net/http wraps a failed call in cut at query,
+// the query doStatus's call carried, so the redactor reads the URL this client built from the
+// broker's address and a route. A URL that does not end in that query, a redirect's target say,
+// stays as net/http named it.
+func withoutQuery(err error, query string) error {
+	var ue *url.Error
+	if query != "" && errors.As(err, &ue) {
+		ue.URL = strings.TrimSuffix(ue.URL, "?"+query)
+	}
+	return err
+}
+
 // answerIDHeader is the header every answer the broker itself writes names its answer id in
 // (answer.Header in internal/broker/answer, which this client does not link); net/http's own
 // 400, 431 and 417, written before any of the broker's code runs, carry none.
@@ -371,8 +390,9 @@ func enrollmentNotLive(err error) bool {
 	return errors.As(err, &refusal) && refusal.enrollmentEnded()
 }
 
-// doProof signs the request with signer.Sign against exactly this method and URL (no query
-// string appended after signing), the shape proof.Verifier.Verify compares htm/htu against.
+// doProof signs the request with signer.Sign against exactly this method and URL less any query
+// path carries, the shape proof.Verifier.Verify compares htm/htu against (the broker rebuilds the
+// htu from BROKER_PUBLIC_URL and the request's path, never its query).
 func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) ([]byte, error) {
 	_, data, err := c.doProofStatus(ctx, signer, method, path, body)
 	return data, err
@@ -418,7 +438,8 @@ func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, p
 // register another.
 func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
 	url := c.route(path)
-	token, err := signer.Sign(method, url)
+	signedPath, _, _ := strings.Cut(path, "?")
+	token, err := signer.Sign(method, c.route(signedPath))
 	if err != nil {
 		return 0, nil, fmt.Errorf("sign proof: %w", err)
 	}
@@ -453,6 +474,10 @@ type RequestResult struct {
 	Coalesced       bool             `json:"coalesced,omitempty"`
 	Detail          *string          `json:"detail"`
 	ApproveURL      string           `json:"approve_url"`
+	// JudgeDeciding is true while the model judge holds the request: no person is asked unless
+	// the judge cannot decide it, and the answer then carries ApproveURL. Such a request carries
+	// no page while it is held.
+	JudgeDeciding bool `json:"judge_deciding"`
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
@@ -551,14 +576,15 @@ type requestDecision struct {
 // RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's,
 // and so is Detail: the broker's own sentence about the refusal, nil when it recorded none.
 type RequestStatus struct {
-	State      string           `json:"state"`
-	GrantID    *string          `json:"grant_id"`
-	RecordID   *string          `json:"record_id"`
-	Approver   *string          `json:"approver"`
-	DecidedAt  *time.Time       `json:"decided_at"`
-	Decision   *requestDecision `json:"decision"`
-	Detail     *string          `json:"detail"`
-	ApproveURL string           `json:"approve_url"`
+	State         string           `json:"state"`
+	GrantID       *string          `json:"grant_id"`
+	RecordID      *string          `json:"record_id"`
+	Approver      *string          `json:"approver"`
+	DecidedAt     *time.Time       `json:"decided_at"`
+	Decision      *requestDecision `json:"decision"`
+	Detail        *string          `json:"detail"`
+	ApproveURL    string           `json:"approve_url"`
+	JudgeDeciding bool             `json:"judge_deciding"`
 }
 
 // refusedBeforeCall is a refusal this client made before it sent anything, so refusalText adds
@@ -578,11 +604,20 @@ func pathID(kind, id string) error {
 	return nil
 }
 
-func (c *client) GetRequest(ctx context.Context, signer Signer, id string) (RequestStatus, []byte, error) {
+// GetRequest reads request id. waitSeconds above 0 asks the broker to hold the read while the
+// request is pending, up to that many seconds (GET /v1/requests/{id}?wait=), sent as it is: the
+// caller keeps it from 1 to record.MaxRequestWaitSeconds, which the broker refuses past. 0 sends
+// no wait, and the broker answers at once. A broker from before the parameter ignores it and
+// answers at once either way.
+func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitSeconds int) (RequestStatus, []byte, error) {
 	if err := pathID("a request id", id); err != nil {
 		return RequestStatus{}, nil, err
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodGet, "/v1/requests/"+id, nil)
+	path := "/v1/requests/" + id
+	if waitSeconds > 0 {
+		path += "?wait=" + strconv.Itoa(waitSeconds)
+	}
+	raw, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
 	if err != nil {
 		return RequestStatus{}, nil, err
 	}
@@ -809,6 +844,18 @@ type Settings struct {
 	GCPProject             string `json:"gcp_project,omitempty"`
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
+	// JudgeKeys is each key the broker's airlock rules give the model judge, with its judge
+	// seconds and its guidance; absent where the rules give the judge nothing. `secret show`
+	// reads it to say who decides a request for a key and what the judge will look for.
+	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
+}
+
+// JudgeKey is one key in Settings.JudgeKeys.
+type JudgeKey struct {
+	// Seconds is the longest grant the judge makes of the key, and its default lifetime.
+	Seconds uint32 `json:"seconds"`
+	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
+	Guidance string `json:"guidance,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {

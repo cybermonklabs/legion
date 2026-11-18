@@ -615,7 +615,7 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 //
 // Every enrollment also records whose its requests are (ownerKey): the person its credential
 // carries, the claim its launcher stated for a pod, or the machine. Any enrollment of the same
-// owner reads and cancels a request of another (requests.Machine.OwnerOf), and the next pod of a
+// owner reads and cancels a request of another (requests.Machine.OwnerAndState), and the next pod of a
 // claim takes what a dormant pod of that claim left (adopt). A claim is only for a pod a launcher
 // enrols, in the shape a claim token takes (ErrInvalidClaim).
 func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (Enrollment, error) {
@@ -816,7 +816,7 @@ const claimOwnerPrefix = "claim:"
 
 // ownerKey is whose the requests an enrollment makes are, which the insert writes into
 // enrollments.owner: any enrollment with the same owner reads and cancels them
-// (requests.Machine.OwnerOf), and the next pod of a claim takes what a dormant pod of that claim
+// (requests.Machine.OwnerAndState), and the next pod of a claim takes what a dormant pod of that claim
 // left (adopt). It is read from what the caller has already proved and from the claim a launcher
 // stated, which is the launcher's word as the session name it gives each pod is
 // (podUnderTokenLogin), and from nothing else:
@@ -941,7 +941,7 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // still running, and this is no end of it. A person's and a machine's grants move by the session
 // rule alone, so a session that resumes gets its own grant back even after another session of
 // the same person enrolled first, and that other session, which reads and cancels the request
-// (requests.Machine.OwnerOf), never takes the grant. A row both rules find is the session
+// (requests.Machine.OwnerAndState), never takes the grant. A row both rules find is the session
 // rule's.
 //
 // What moves is the rows keyed by the predecessor: grants.enrollment_id and

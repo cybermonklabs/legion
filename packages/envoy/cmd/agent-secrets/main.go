@@ -113,7 +113,7 @@ import (
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person to approve it, or its status could not be read when --wait ran out
+	exitPending      = 75  // request still waiting for a person or for the model judge, or its status could not be read when --wait ran out
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -650,17 +650,12 @@ func writeVerbatim(w io.Writer, raw []byte) {
 	w.Write(raw)
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
-// to a ten-second cap. The renewer's own step is leasetime.NextBackoff, which the broker's
-// lease bound walks it by; these polls are nobody's lease, and a change made to move that
-// floor is not a change to how often `agent-secrets request --wait` asks.
+// to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
+// wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
+// failed read). The renewer's own step is leasetime.NextBackoff, which the broker's lease bound
+// walks it by; these polls are nobody's lease, and a change made to move that floor is not a
+// change to how often either of them asks.
 func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
@@ -867,7 +862,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", redact.OneLine(result.RequestID), redact.OneLine(result.State), c.source(ctx))
 		printDetail(stdout, result.Detail)
 		if result.State == "pending" {
-			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch result.State {
@@ -901,7 +896,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	result, raw, err := c.GetRequest(ctx, signer, positional[0])
+	result, raw, err := c.GetRequest(ctx, signer, positional[0], 0)
 	if err != nil {
 		refuse(stderr, "agent-secrets status", c.source(ctx), err)
 		return 1
@@ -912,7 +907,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", redact.OneLine(result.State), c.source(ctx))
 	if result.State == "pending" {
-		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
 		fmt.Fprintf(stdout, "grant_id: %s\n", redact.OneLine(*result.GrantID))
@@ -1134,21 +1129,37 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// waiting for is one nothing collects.
 	var pollErr error
 	if state == "pending" {
-		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
+		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
+		// backoff is the sleep before the next read after one that came back undecided before
+		// the wait it asked had run out. The broker holds a read until the request is decided or
+		// that wait passes, so a pending answer that comes sooner is from a broker before ?wait=,
+		// which answers every read at once; a failed read that comes back sooner gets the same
+		// sleep. Without it the loop would ask such a broker as fast as it answers.
 		backoff := 2 * time.Second
 		for state == "pending" {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				break
 			}
-			time.Sleep(minDuration(backoff, remaining))
-			backoff = nextBackoff(backoff)
-			status, _, err := c.GetRequest(ctx, signer, requestID)
+			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
+			// rounded up so the last read covers the deadline, at most
+			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision, so
+			// the command learns of it at once rather than at its next poll.
+			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
+			sent := time.Now()
+			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
 			switch {
 			case err == nil:
 				pollErr = nil
 				state, grantID, detail = status.State, status.GrantID, status.Detail
+				// The judge held the request and has given it up: it is its person's now, and the
+				// agent is told who that is and where they decide it, once.
+				if judging && !status.JudgeDeciding && state == "pending" {
+					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+					judging = false
+				}
 			case retryable(err):
 				// Said once per run of failed polls, not once per poll.
 				if pollErr == nil {
@@ -1158,6 +1169,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			default:
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
+			}
+			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
+				time.Sleep(min(backoff, time.Until(deadline)))
+				backoff = nextBackoff(backoff)
 			}
 		}
 	}
@@ -1256,12 +1271,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	return 0 // unreachable: syscall.Exec replaces this process on success
 }
 
-// reportPending says, once, before the exec form's wait, that a person must decide the request,
-// where the secrets it would inject come from (src), and who decides it, and on which page of the
-// broker when its answer names one (waitingOn).
-func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, wait time.Duration, src source) {
+// reportPending says, once, before the exec form's wait, who decides the request — a person, or
+// the model judge while it holds the request — where the secrets it would inject come from (src),
+// and on which page of the broker a person decides it when its answer names one (waitingOn).
+func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
 	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", redact.OneLine(requestID), src, wait)
-	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage))
+	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
 }
 
 // waitingOn is the sentence that says whom a pending request waits on and where they decide it:
@@ -1278,7 +1293,15 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // before it did names none, and the sentence says so rather than guessing. The page is the
 // broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
 // character in it would start a line of its own.
-func waitingOn(approver *string, brokerPage string) string {
+//
+// A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
+// keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
+// is asked, and never that its approver must approve it. If the judge cannot decide it, a later
+// answer carries the page, and the exec form says so.
+func waitingOn(approver *string, brokerPage string, judging bool) string {
+	if judging {
+		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
+	}
 	where := ""
 	if brokerPage != "" {
 		where = ": " + redact.OneLine(brokerPage)

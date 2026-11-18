@@ -84,9 +84,9 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 			[]string{`secrets[1] "ANTHROPIC"`, "1800", "900"},
 		},
 		{
-			"a judge and no host",
-			`{"secrets": [{"name": "ANTHROPIC", "hosts": [], "judge": 600}]}`,
-			[]string{`secrets[0] "ANTHROPIC"`, "no host"},
+			"guidance longer than the judge reads",
+			`{"secrets": [{"name": "ANTHROPIC", "judge": 600, "guidance": "` + strings.Repeat("g", 2001) + `"}]}`,
+			[]string{`secrets[0] "ANTHROPIC"`, "guidance", "2001", "2000"},
 		},
 		{
 			"a repeated name",
@@ -151,7 +151,7 @@ func TestAirlockCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 ]}`)
 	now := airlockFile(t, "airlock.json", `{"secrets": [
   {"name": "GITHUB", "hosts": ["api.github.com", "uploads.github.com"], "headers": ["authorization", "x-api-key"],
-   "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600}
+   "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600, "guidance": "grant for the release job"}
 ]}`)
 	code, stdout, stderr := runAirlockCheck(t, now, "--against", old)
 	if code != 0 || stderr != "" {
@@ -164,6 +164,7 @@ secret "GITHUB": header x-api-key added
 secret "GITHUB": allow GET /v1/ → POST /v1/
 secret "GITHUB": kind "" → aws
 secret "GITHUB": judge 300 seconds → 600 seconds
+secret "GITHUB": guidance "" → "grant for the release job"
 secret "LEGACY": removed
 secret "LEGACY": host old.example.com removed
 secret "LEGACY": header authorization removed

@@ -50,6 +50,12 @@
 #     Legion issue pod's gVisor kernel does not have. The enrolment id is written beside the
 #     session key, so AGENT_SECRETS_KEY_DIR names the directory and `agent-secrets self` answers
 #     kind: pod.
+#   - That session's renewer, `agent-secrets renew --pod-token-file`, for as long as the stack
+#     runs, as the Legion worker shim runs one for each pod (internal/shim, startRenewer). The
+#     broker ends a session whose lease (BROKER_LEASE_SECONDS, 900 seconds by default) passes
+#     unrenewed, and every grant of it with it, so a check that holds a grant for longer would
+#     have its calls refused 407 midway. Each renewal sends the pod token dev-oidc-issuer
+#     rewrites in place, as a kubelet rewrites a projected token.
 #
 # Every bound host is a name of this stack's own (s.airlock.test and the rest), which no
 # resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where each one is and
@@ -156,6 +162,7 @@ AZURE_TOKEN_FILE="$WORK_DIR/azure-identity-token"
 JUDGE_DISPATCH_TOKEN_FILE="$WORK_DIR/judge-dispatch-token"
 KEY_DIR="$WORK_DIR/session-key"
 ENROLL_JSON="$WORK_DIR/enrollment.json"
+RENEW_LOG="$WORK_DIR/renew.log"
 API_FRONT_JSON="$WORK_DIR/api-front.json"
 API_FRONT_LOG="$WORK_DIR/api-front.log"
 API_BACKENDS="$WORK_DIR/api-backends"
@@ -219,10 +226,21 @@ JUDGED_SECRET="AIRLOCK_JUDGED_TOKEN"
 UNJUDGED_SECRET="AIRLOCK_UNJUDGED_TOKEN"
 SHARED_SECRET="AIRLOCK_SHARED_TOKEN"
 ADMIN_SECRET="AIRLOCK_ADMIN_TOKEN"
+# HOSTLESS_SECRET is a second judge key of the approver's whose rules entry binds no host: it
+# says who decides a request for the key and nothing about where its value goes, so a grant of
+# it releases the value itself. A request for it beside JUDGED_SECRET is two judge keys, which
+# the judge decides together, each against its own guidance.
+HOSTLESS_SECRET="AIRLOCK_HOSTLESS_TOKEN"
 ADMIN_MAX_GRANT="1h"
-# The seconds the rules let the judge decide of JUDGED_SECRET, SHARED_SECRET and ADMIN_SECRET,
-# which is also the longest lifetime a request for one of them may sign and still be judged.
+# The seconds the rules let the judge decide of the judge keys, which is also the longest
+# lifetime a request for one of them may sign, and the lifetime a request naming none gets.
 JUDGE_SECONDS=900
+# The guidance the rules give the judge for JUDGED_SECRET and for HOSTLESS_SECRET: the key
+# owner's instruction, which the stand-in model is shown with every request for the key. Each
+# is printed single-quoted in the exports below and written into the rules JSON as it is, so
+# neither may hold a quote of either kind or a backslash.
+JUDGE_GUIDANCE="grant for the stack check runs, which name the run in the reason"
+HOSTLESS_GUIDANCE="grant for the stack release job"
 # What the judge is configured with: the model id its verdicts are recorded under
 # (record.JudgeActor writes "judge:<id>"), the protocol the model stand speaks, and the
 # audience of the identity token the broker mints for it at the metadata stand.
@@ -243,6 +261,7 @@ JUDGED_VALUE="the-real-airlock-judged-token-7c2d"
 UNJUDGED_VALUE="the-real-airlock-unjudged-token-5a8b"
 SHARED_VALUE="the-real-airlock-shared-token-2e6f"
 ADMIN_VALUE="the-real-airlock-admin-token-8d41"
+HOSTLESS_VALUE="the-real-airlock-hostless-token-6b19"
 # The session token of the stack's AWS key pair. One string for both halves of the stand: the
 # fake store hands it to the broker as part of the stored value, and --aws-session-token tells
 # the stand-in AWS service to require exactly it, so a call the proxy signed again verifies.
@@ -278,6 +297,7 @@ else
 fi
 
 DEV_BROKER_PID=""
+RENEW_PID=""
 STANDS_PID=""
 API_FRONT_PID=""
 PROXY_FRONT_PID=""
@@ -285,10 +305,11 @@ BROKER_PIDS=()
 CREATED_DB=false
 
 cleanup() {
-  # This stack's own processes first, then dev-broker.sh, whose own EXIT trap stops its broker
-  # and its issuer and drops its database.
+  # This stack's own processes first, the session's renewer before the brokers it renews at,
+  # then dev-broker.sh, whose own EXIT trap stops its broker and its issuer and drops its
+  # database.
   local pid
-  for pid in "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
+  for pid in "$RENEW_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -427,6 +448,7 @@ echo "dev-airlock: starting dev-airlock-stands..." >&2
   --github-owner "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
   --google-lifetime 7m \
   --aws-session-token "$AWS_SESSION_TOKEN" \
+  --ask-answered-by "$APPROVER_LOGIN" \
   >"$STANDS_JSON" 2> >(trap '' TERM INT; exec tee -a "$STANDS_LOG" >&2) &
 STANDS_PID=$!
 await "dev-airlock-stands" 60 "$STANDS_LOG" 'stands listening records=' "$STANDS_PID"
@@ -452,6 +474,7 @@ METADATA_URL="$(stand '.stands.metadata.url')"
 METADATA_ADDRESS="$(stand '.stands.metadata.address')"
 DISPATCH_OPEN_ISSUE="$(stand .dispatch_open_issue)"
 DISPATCH_DONE_ISSUE="$(stand .dispatch_done_issue)"
+DISPATCH_ANSWERED_ASK="$(stand .dispatch_answered_ask)"
 # Every bound host is reached by its name on 443, which is how its Host header matches its
 # CONNECT target, so no URL here carries a port.
 S_URL="https://${S_HOST}"
@@ -476,10 +499,11 @@ cat >"$RULES_FILE" <<EOF
   {"name": "$GOOGLE_SECRET", "hosts": ["$S_HOST"]},
   {"name": "$AZURE_SECRET", "hosts": ["$MICROSOFT_HOST", "$AZURE_RESOURCE_HOST"], "kind": "azure"},
   {"name": "$AWS_SECRET", "hosts": ["$AWS_HOST"], "kind": "aws"},
-  {"name": "$JUDGED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
+  {"name": "$JUDGED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$JUDGE_GUIDANCE"},
   {"name": "$UNJUDGED_SECRET", "hosts": ["$S_HOST"]},
   {"name": "$SHARED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
-  {"name": "$ADMIN_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}
+  {"name": "$ADMIN_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
+  {"name": "$HOSTLESS_SECRET", "judge": $JUDGE_SECONDS, "guidance": "$HOSTLESS_GUIDANCE"}
 ]}
 EOF
 
@@ -501,7 +525,7 @@ jq -n \
   --arg service "$SERVICE" --arg approver "$APPROVER_LOGIN" \
   --arg demo "$DEMO_VALUE" --arg scoped "$SCOPED_VALUE" \
   --arg judged "$JUDGED_VALUE" --arg unjudged "$UNJUDGED_VALUE" --arg shared "$SHARED_VALUE" \
-  --arg admin "$ADMIN_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
+  --arg admin "$ADMIN_VALUE" --arg hostless "$HOSTLESS_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
   --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
   --arg owner "$GITHUB_OWNER" \
   --arg awskey "$AWS_KEY_ID" --arg awssecret "$AWS_SECRET_KEY" --arg awssession "$AWS_SESSION_TOKEN" \
@@ -534,7 +558,9 @@ jq -n \
      {name: ($prefix + "airlock-admin-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human", admin: "true",
              requesters: ($approver + " " + $service), "max-grant": $maxgrant},
-      value: $admin}
+      value: $admin},
+     {name: ($prefix + "airlock-hostless-token"), kms_key_id: $kms,
+      tags: {owner: $approver, tier: "human"}, value: $hostless}
    ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
@@ -690,8 +716,19 @@ fi
 printf '%s' "$ENROLLMENT_ID" >"$KEY_DIR/enrollment"
 echo "dev-airlock: enrolled pod session $ENROLLMENT_ID (pod $POD_UID, service $SERVICE)" >&2
 
-# One banner line per broker, built here rather than substituted into the banner below: a
-# command substitution there would lose the last line's newline.
+# --- The session's renewer, for as long as this stack runs: the same command and the same token
+# file the Legion worker shim gives a pod's renewer, so the session's lease outlives any check
+# however long it holds a grant. It renews at once and then a third of the way through each
+# lease, retries what the broker refuses for now, and exits only on a refusal it can never get
+# past (76), which its log names. ---
+AGENT_SECRETS_URL="$API_FRONT_URL" AGENT_SECRETS_KEY_DIR="$KEY_DIR" \
+  "$AGENT_SECRETS_BIN" renew --pod-token-file "$POD_TOKEN_FILE" >"$RENEW_LOG" 2>&1 &
+RENEW_PID=$!
+echo "dev-airlock: renewing pod session $ENROLLMENT_ID's lease (agent-secrets renew, pid $RENEW_PID, log $RENEW_LOG)" >&2
+
+# One banner line per broker and one for the session's renewer, built here rather than
+# substituted into the banner below: a command substitution there would lose the last line's
+# newline.
 BROKER_BANNER=""
 for n in $(seq 1 "$BROKER_COUNT"); do
   if [ -n "$BROKER_BANNER" ]; then
@@ -699,6 +736,7 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   fi
   BROKER_BANNER+="  broker $n:            api ${BROKER_API_ADDRS[n]}, proxy ${BROKER_PROXY_ADDRS[n]}, pid ${BROKER_PIDS[n]}, log ${BROKER_LOGS[n]}"
 done
+BROKER_BANNER+=$'\n'"  session renewer:     pid $RENEW_PID, agent-secrets renew --pod-token-file $POD_TOKEN_FILE, log $RENEW_LOG"
 
 cat <<EOF
 
@@ -737,6 +775,7 @@ dev-airlock: ready.
   export AIRLOCK_DISPATCH_TOKEN_FILE=$JUDGE_DISPATCH_TOKEN_FILE
   export AIRLOCK_DISPATCH_OPEN_ISSUE=$DISPATCH_OPEN_ISSUE
   export AIRLOCK_DISPATCH_DONE_ISSUE=$DISPATCH_DONE_ISSUE
+  export AIRLOCK_DISPATCH_ANSWERED_ASK=$DISPATCH_ANSWERED_ASK
   export AIRLOCK_METADATA_URL=$METADATA_URL
   export AIRLOCK_METADATA_RECORDS=$RECORDS_URL/records/metadata
   export AIRLOCK_JUDGE_MODEL=$JUDGE_MODEL
@@ -746,6 +785,10 @@ dev-airlock: ready.
   export AIRLOCK_UNJUDGED_SECRET=$UNJUDGED_SECRET
   export AIRLOCK_SHARED_SECRET=$SHARED_SECRET
   export AIRLOCK_ADMIN_SECRET=$ADMIN_SECRET
+  export AIRLOCK_HOSTLESS_SECRET=$HOSTLESS_SECRET
+  export AIRLOCK_HOSTLESS_VALUE=$HOSTLESS_VALUE
+  export AIRLOCK_JUDGE_GUIDANCE='$JUDGE_GUIDANCE'
+  export AIRLOCK_HOSTLESS_GUIDANCE='$HOSTLESS_GUIDANCE'
   export AIRLOCK_ADMIN_MAX_GRANT=$ADMIN_MAX_GRANT
   export AIRLOCK_APPROVER=$APPROVER_LOGIN
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
@@ -758,18 +801,24 @@ $BROKER_BANNER
                        authorization and x-key, GET /read alone), $GITHUB_SECRET (github-app,
                        installation $GITHUB_INSTALLATION on $GITHUB_OWNER), $GOOGLE_SECRET (google-login),
                        $AZURE_SECRET (kind azure, human tier) and $AWS_SECRET (kind aws)
-  judge:               $JUDGE_MODEL at $MODEL_URL, which answers approve until a check
-                       POSTs another answer to $MODEL_ANSWER_URL; it reads
-                       $DISPATCH_OPEN_ISSUE (open) and $DISPATCH_DONE_ISSUE (done) at $DISPATCH_URL
-                       and mints its own credential at the metadata stand on $METADATA_ADDRESS.
-                       It decides up to $JUDGE_SECONDS seconds of $JUDGED_SECRET and of
-                       $SHARED_SECRET (owned by nobody), and nothing of $UNJUDGED_SECRET,
-                       which waits for its person. $ADMIN_SECRET carries the same
-                       $JUDGE_SECONDS seconds in the rules and is an administrator's secret
-                       (admin: "true", requesters $APPROVER_LOGIN and $SERVICE, max-grant
-                       $ADMIN_MAX_GRANT): the judge refuses it before the model and the
-                       decision transaction refuses it again, so a person approves it. Ask with
-                       agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming $DISPATCH_OPEN_ISSUE>"
+  judge:               $JUDGE_MODEL at $MODEL_URL, which answers grant until a check
+                       POSTs another answer to $MODEL_ANSWER_URL; it reads, as data for the
+                       model, $DISPATCH_OPEN_ISSUE (open) and $DISPATCH_DONE_ISSUE (done) at
+                       $DISPATCH_URL and the one ask that stand holds, $DISPATCH_ANSWERED_ASK on
+                       $DISPATCH_OPEN_ISSUE, answered by $APPROVER_LOGIN, and mints its own
+                       credential at the metadata stand on $METADATA_ADDRESS.
+                       Who decides each key is its rules entry: the judge decides up to
+                       $JUDGE_SECONDS seconds of $JUDGED_SECRET and $HOSTLESS_SECRET (owned by
+                       $APPROVER_LOGIN, each against its guidance; $HOSTLESS_SECRET's entry binds
+                       no host, so its value is released to the command) and of $SHARED_SECRET
+                       (owned by nobody). A request for them alone is the judge's: no approve_url,
+                       a read-only page, never listed; granted, or refused for good. No request
+                       has to cite anything. $ADMIN_SECRET carries the same $JUDGE_SECONDS seconds
+                       and is an administrator's secret (admin: "true", requesters $APPROVER_LOGIN
+                       and $SERVICE, max-grant $ADMIN_MAX_GRANT), and $UNJUDGED_SECRET has no judge
+                       entry: each is $APPROVER_LOGIN's card, and so is any request with one of
+                       them beside a judge key. Ask with
+                       agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming the stack check run>"
   approver:            $APPROVER_LOGIN, who approves $AZURE_SECRET on ${API_FRONT_URL}/approve/<record>;
                        the sign-in at $ISSUER_URL signs that person in with no page to fill in,
                        and a POST to ${API_FRONT_URL}/approve needs an Origin header or the page answers 403

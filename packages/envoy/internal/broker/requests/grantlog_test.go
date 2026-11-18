@@ -427,7 +427,7 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 }
 
 // TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment: any enrollment of the
-// owner that made a request cancels it (OwnerOf), and the request.cancelled audit row names the
+// owner that made a request cancels it (OwnerAndState), and the request.cancelled audit row names the
 // enrollment the request hangs off. The grant-log line carries the ids that row names, so it names
 // that enrollment too, not the caller's, while the actor on both is the caller's session; and the
 // request's detail says another session of the owner cancelled it. The request's own session
