@@ -105,7 +105,7 @@ readonly script_dir
 readonly repo_root="$script_dir/../../../.."
 # proc_group reads one process's group from its own /proc entry, where `ps -p` reads every process
 # on the host for that answer.
-# shellcheck source=../../../../scripts/e2e/lib/process-tree.sh
+# shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/process-tree.sh
 . "$repo_root/scripts/e2e/lib/process-tree.sh"
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
 
