@@ -187,6 +187,7 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 		{"an option line marking its option boolean and naming a value", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web[=true|false] string   Open\n", "marks its option boolean and names a value"},
 		{"a parent's help", prView, "USAGE\n  gh pr <command> [flags]\n", "gh has no command"},
 		{"gh co's, pr checkout's, which lists no alias co", []string{"co"}, co, "is a gh alias"},
+		{"a passthrough leaf passing on something it does not know", []string{"repo", "archive"}, "USAGE\n  gh repo archive [<repository>] [-- <git-args>...]\n\nFLAGS\n  --help   Show help\n", `passes "<git-args>" on after ` + "`--`"},
 	} {
 		if _, err := parseGhHelp(tc.path, tc.help); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parseGhHelp of %s = %v, want an error containing %q", tc.name, err, tc.want)
@@ -197,6 +198,24 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 	}
 	if later, err := parseGhHelp(prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --mirror string   Read the pull request from this repository instead\n  --notes string   Notes\n\nINHERITED FLAGS\n  --help   Show help\n"); err != nil || later.flags["mirror"].selects != "unknown" || later.flags["notes"].selects != "" {
 		t.Errorf("a later gh's options read as %+v, %v; want --mirror, which names a repository, unknown and --notes none of the table's", later.flags, err)
+	}
+	// A later gh that renames `<gitflags>` keeps a clone leaf's passed-on flags judged
+	// (ghCloneLeaves), so round 2's clone route cannot reopen through a new name; the same
+	// rename on a leaf that clones nothing is refused above. Control: today's name is judged.
+	for _, tc := range []struct{ path, help string }{
+		{"repo clone", "USAGE\n  gh repo clone <repository> [<directory>] [-- <git-args>...]\n\nFLAGS\n  --help   Show help\n"},
+		{"repo fork", "USAGE\n  gh repo fork [<repository>] [-- <git-flags>...] [flags]\n\nFLAGS\n  --clone   Clone the fork\n  --help   Show help\n"},
+		{"gist clone", "USAGE\n  gh gist clone <gist> [<directory>] [-- <args>...]\n\nFLAGS\n  --help   Show help\n"},
+		{"repo clone", "USAGE\n  gh repo clone <repository> [<directory>] [-- <gitflags>...]\n\nFLAGS\n  --help   Show help\n"},
+	} {
+		cmd, err := parseGhHelp(strings.Fields(tc.path), tc.help)
+		if err != nil || !cmd.passesGitFlags {
+			t.Errorf("%s's help %q reads as passesGitFlags=%v, %v; want its passed-on arguments judged as git clone's flags", tc.path, tc.help, cmd.passesGitFlags, err)
+			continue
+		}
+		if _, err := cmd.parse([]string{"acme/widgets", "--", "-c", "http.https://github.com/.sslVerify=false"}); err == nil || !strings.Contains(err.Error(), `hands "-c" to git clone`) {
+			t.Errorf("%s under the help %q took -- -c ...: %v, want it refused", tc.path, tc.help, err)
+		}
 	}
 }
 

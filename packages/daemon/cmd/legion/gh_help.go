@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -178,9 +179,41 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 		cmd.flags[name] = flag
 	}
 	cmd.slots, cmd.passthrough = ghSlots(cmd.path, args)
-	cmd.passesGitFlags = cmd.passthrough && strings.Contains(args, "<gitflags>")
+	if cmd.passthrough {
+		placeholder := ""
+		if match := ghPassedOnRule.FindStringSubmatch(args); match != nil {
+			placeholder = match[1]
+		}
+		gitFlags, known := ghPassedOnPlaceholders[placeholder]
+		leaf := strings.Join(cmd.path, " ")
+		switch {
+		case ghCloneLeaves[leaf]:
+			cmd.passesGitFlags = true
+		case !known:
+			return ghCommand{}, fmt.Errorf("%s passes %q on after `--`, which is none this command reads (%s), so it cannot tell what gh hands on; it sends nothing", what, placeholder, strings.Join(slices.Sorted(maps.Keys(ghPassedOnPlaceholders)), ", "))
+		default:
+			cmd.passesGitFlags = gitFlags
+		}
+	}
 	return cmd, nil
 }
+
+// ghPassedOnRule finds what a passthrough usage passes on after `--`, the first `<…>` after
+// `[--`, in a nested group or not: `<gitflags>` in `[-- <gitflags>...]`, `<scp flags>` in `[--
+// [<scp flags>...]]`.
+var ghPassedOnRule = regexp.MustCompile(`\[--[\s\[]+(<[^>]*>)`)
+
+// ghPassedOnPlaceholders are what a passthrough leaf of gh 2.98.0's and 2.104.0's may pass on
+// after `--`, with whether it is git clone's flags, which ghCloneGitFlags judges: `<gitflags>`
+// (repo clone, repo fork, gist clone), `<ssh-flags>` (codespace ssh) and `<scp flags>` (codespace
+// cp). A leaf whose help names any other, or none, is refused, so a later gh that renames
+// `<gitflags>` cannot make a clone's flags pass unread.
+var ghPassedOnPlaceholders = map[string]bool{"<gitflags>": true, "<ssh-flags>": false, "<scp flags>": false}
+
+// ghCloneLeaves are the leaves that hand git clone what they pass on, whatever their help calls
+// it (cli/cli v2.104.0 pkg/cmd/repo/clone/clone.go, repo/fork/fork.go, gist/clone/clone.go): a
+// later gh's help that renames `<gitflags>` keeps them judged by ghCloneGitFlags.
+var ghCloneLeaves = map[string]bool{"repo clone": true, "repo fork": true, "gist clone": true}
 
 // ghUsageNamesSubcommands says whether the arguments of a USAGE line, after the command's path,
 // are a group's: its subcommand first.
