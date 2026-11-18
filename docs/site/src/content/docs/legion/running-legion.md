@@ -690,23 +690,40 @@ What each part is for:
   token at every start and keeps logging in; no person approves it, provided the broker's
   `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount.
 - **`runtime.kubernetes.setup`** (optional) is a command, as an argv, that every role, in its own
-  namespaces,
-  runs before each start of its Oh My Pi. It runs in the role's working directory with the role's
-  environment, and its `git` answers `https://github.com` from the role's gh bundle: the role's
-  own App token on every owner that App is installed on, with the role's own permissions, each
-  reaching every repository that owner's installation holds, and the controller's read-only.
-  Oh My Pi starts only once it exits 0; a failure is a failed launch, and its
-  output is in the role's log. Under
-  this runtime it must fetch nothing: a clone in a role's launch context ends the pod's gVisor
-  sandbox a few seconds in, so install skills with `skills_repository` below and leave `setup` to
-  check that they are there.
-- **`runtime.kubernetes.skills_repository`** (optional) is the Oh My Pi plugin marketplace your
-  pods' roles load their skills from, as `owner/name`. Each issue pod clones its default branch
-  shallow in an init container of its own, with the project's App token, and every role installs
-  from that clone before Oh My Pi starts — so a pod's skills are that branch as of the pod's start,
-  with no image rebuild and no fetch in any role's launch. Each role then checks that the files Oh
-  My Pi installed are the ones that commit holds, and fails its launch if they are not, so a pod
-  can always say which commit its agents' skills came from.
+  namespaces, runs before each start of its Oh My Pi. It runs in the role's working directory with
+  the role's environment, and its `git` answers `https://github.com` from the role's gh bundle:
+  the role's own App token on every owner that App is installed on, with the role's own
+  permissions, each reaching every repository that owner's installation holds, and the
+  controller's read-only. Oh My Pi starts only once it exits 0; a failure is a failed launch, and
+  its output is in the role's log. It may install an Oh My Pi plugin marketplace from GitHub. Such
+  an install renames a directory in the role's home overlay, which stopped the pod's gVisor
+  sandbox until legion-v19.18.1 mounted that overlay with `userxattr` (gVisor could not write its
+  opaque mark on the renamed directory). For example:
+
+  ```yaml
+  runtime:
+    kubernetes:
+      setup:
+        - /bin/sh
+        - -c
+        - |
+          [ -z "${LEGION_CONTROLLER:-}" ] || exit 0
+          cd "$HOME" || { echo "setup: cd $HOME failed" >&2; exit 0; }
+          repo=acme/agent-skills marketplace=acme-skills plugin=agent-skills
+          omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+          if ! timeout 120 omp plugin marketplace add "$repo"; then
+            echo "setup: omp plugin marketplace add $repo failed" >&2
+          elif ! timeout 60 omp plugin install "$plugin@$marketplace" --force; then
+            echo "setup: omp plugin install $plugin@$marketplace failed" >&2
+          elif ! omp plugin enable "$plugin@$marketplace"; then
+            echo "setup: omp plugin enable $plugin@$marketplace failed" >&2
+          fi
+          omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+          exit 0
+  ```
+
+  This example skips the controller and exits 0 when a step fails, so a failed install stops no
+  role.
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).

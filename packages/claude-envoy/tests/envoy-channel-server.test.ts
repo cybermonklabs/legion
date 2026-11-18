@@ -121,7 +121,8 @@ test("delivers each dedupe key once and answers each relayed frame, never a rece
  * One Dispatch message as the listener publishes it for one send: `/v1/messages/send` mints a
  * fresh `event_id`, `source_event_id` and `trace_id` for every request and derives `dedupe_key`
  * from the idempotency key Dispatch passes, which is the same for an attempt and its same-mode
- * Retry (`packages/envoy/cmd/listener/api.go` messageEnvelope, sendHandler).
+ * Retry (`packages/envoy/internal/contracts/message_envelope.go` AgentSendEnvelope, which
+ * `packages/envoy/cmd/listener/api.go` sendHandler calls).
  */
 function listenerSend(send: string): string {
   return JSON.stringify({
