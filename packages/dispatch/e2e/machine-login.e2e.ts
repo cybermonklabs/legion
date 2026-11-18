@@ -8,12 +8,14 @@ import { withAlice } from "./users";
 const typedCode = "wxyz4321";
 
 /** The machine login `agent-secrets machine login` opened, as the broker's lookup answers it:
- *  waiting on alice, who is the only person it admits. */
+ *  waiting on alice, who is the only person it admits. Its deadline is an hour after this run
+ *  starts, since the broker reads a login whose deadline passed as expired and refuses its
+ *  decision (e2e/fake-broker.ts does too). */
 const pendingLogin: RecordResponse = {
   approver: "alice",
   decided: null,
   enrollment: null,
-  expires_at: "2026-09-27T01:00:00Z",
+  expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
   identifiers: ["worker-7.example.com"],
   kind: "launcher_credential",
   lifetime_seconds: 900,

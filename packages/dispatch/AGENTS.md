@@ -2613,15 +2613,29 @@ margin ask card, open or decided, is one keyed list in the Comments tab, with `N
 item in it (the Inbox's pattern), so an answered ask moves out of the group in place, and a reply
 the reader started typing in its thread stays; the group is each card's `data-margin-section`,
 and `needsYouCards(page)` (`e2e/editor.ts`) finds the open ones.
-`e2e/fake-broker.ts` answers the broker's two UI-bearer reads, `GET /v1/pending?approver=<login>`
-(the requests seeded for that login, in the broker's row shape) and `GET /v1/grants` (always
-empty), and 404 to every other broker route. A row seeds pending requests with
-`setPendingCredentialRequests` (`e2e/fake-broker-helpers.ts`), each naming the login it waits on,
-and `resetDatabase()` clears them with the rest. Only a run whose server reads the fake has one
-(`usesFakeBroker`, `e2e/harness-broker.ts`): a deployed target, or a server the switch points at no
-broker or another, gets no fake broker from Playwright, the reset skips it, and a row that seeds one
-is skipped. A script that calls `resetDatabase()` beside a broker of its own exports the switch to
-itself as well as to `run-server.sh`, since the reset reads it from its own process.
+`e2e/fake-broker.ts` is the secrets broker the server relays to while
+`DISPATCH_E2E_AGENT_SECRETS_URL` is unset (above), and its header lists every route it serves;
+every other broker route answers 404.
+Its `GET /v1/pending?approver=<login>` lists the requests seeded for that login in the broker's
+row shape: only the states its `state` parameters name (Dispatch names `pending` and `expired`),
+every row when they name none, never a dismissed one, and the pending rows before the expired
+ones.
+Its `POST /v1/credential-requests/<id>/dismiss` answers as the broker's does: `404 NOT_FOUND` for
+an id no row holds, `403 NOT_APPROVER` for a login that is not the row's approver (unless that is
+`anyone`), `409 RECORD_PENDING` for a pending row, and `200` once, taking the row off the list,
+with a repeat answering the first dismissal's values.
+A seeded machine login nobody decided whose `expires_at` has passed looks up as `expired` with no
+decision, and its approve and deny answer `409 RECORD_TERMINAL` and record nothing, as the
+broker's do.
+A row seeds requests with `setPendingCredentialRequests` (`e2e/fake-broker-helpers.ts`), each
+naming the login it waits on, and machine logins with `setMachineLogins`;
+`expiredCredentialRequest` and `expiredMachineLogin` build expired ones, and `resetDatabase()`
+clears them all with the rest.
+Only a run whose server reads the fake has one (`usesFakeBroker`, `e2e/harness-broker.ts`): a
+deployed target, or a server the switch points at no broker or another, gets no fake broker from
+Playwright, the reset skips it, and a row that seeds one is skipped.
+A script that calls `resetDatabase()` beside a broker of its own exports the switch to itself as
+well as to `run-server.sh`, since the reset reads it from its own process.
 `e2e/clipboard.ts`'s `recordClipboard(page)` swaps the page's async clipboard for a recorder before
 navigation, so a copy-button test asserts the written value rather than only the `Copied` label.
 `e2e/live-views.ts` reads what the page reports about its live views (INFRA-812, D15):
