@@ -40,8 +40,9 @@ type BootToken struct {
 // under a live pane resolves the pane's token from the store, which is how the shim's reconnect
 // hello is accepted after a restart. A token of a launch the claim has since replaced is no longer
 // on the row: this process recognises it as stale when it saw that launch persisted (an in-memory
-// mint record beside the persisted hash), and the store keeps the last few such hashes with their
-// generations (PriorBootTokenStore), so a daemon restarted since knows it as stale too.
+// mint record beside the persisted hash), and the store keeps the hash of every launch the claim
+// replaced, with its generation, until the claim itself is deleted (PriorBootTokenStore), so a
+// daemon restarted since knows it as stale too.
 type BootTokens struct {
 	store BootTokenStore
 
