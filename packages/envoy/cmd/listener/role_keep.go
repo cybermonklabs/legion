@@ -952,6 +952,12 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		if err != nil && !result.unconfirmed && shutDown() {
 			return outcome, nil
 		}
+		// A walk the grant refused ends the handover whatever else this pass found, a holder
+		// resolution that did not answer included: the grant refuses the walk again however often
+		// the lane is walked.
+		if errors.Is(err, bus.ErrPublishDenied) {
+			return ended()
+		}
 		progressed := result.forwarded > 0 || result.ended > 0
 		if progressed {
 			idle, backoff = 0, 0
@@ -966,9 +972,6 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		case roleKeepLaneDrained, roleKeepCopyWaits:
 			return ended()
 		case roleKeepDrainFailed:
-			if errors.Is(err, bus.ErrPublishDenied) {
-				return ended()
-			}
 			waitOut()
 			continue
 		case roleKeepLaneBusy:
