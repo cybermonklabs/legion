@@ -106,6 +106,18 @@ export function ArtifactHeader({
   // the callback below.
   const issueKey = artifact.issue_key;
 
+  // The landing highlight: the accent ring that tells a reader who navigated to one artifact
+  // which thing on the page they navigated to (`ArtifactRoutePanel.tsx` arms it), gone two
+  // seconds later.
+  //
+  // `data-landing-ring` stands on the box below for as long as the ring is painted. The visual
+  // review shoots each page in light and then in dark, and a two-second state is one either shot
+  // can catch, so that layer waits for this attribute to be gone rather than for a duration
+  // (`e2e/review-routes.ts`'s `waitForRouteSettled`). The name is the one
+  // cybermonklabs/legion#2697 and #2813 give the same state, so a forward merge joins the three
+  // rather than reconciling three names for it. Only the name is shared: #2813 renders the
+  // value `"true"` where these two render `""`, and nothing reads either - the wait is a
+  // presence selector, and so is the row of `ArtifactHeader.test.tsx` that holds this mark.
   useEffect(() => {
     if (!highlight) {
       setHighlighted(false);
@@ -136,6 +148,7 @@ export function ArtifactHeader({
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
+        data-landing-ring={highlighted ? "" : undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">

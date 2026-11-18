@@ -546,13 +546,26 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row, and it is two waits. No element may be
+ *  The other half is page-wide and belongs to no row, and it is three waits. No element may be
  *  left carrying `data-markdown-pending`, the mark a body wears while the parse worker owes its
  *  formatting (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that
  *  long holds its own literal text until the answer lands, so a page read in between is a page
  *  of unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold. And the shell's one Inbox number must have
- *  stopped moving (`waitForInboxCountSettled` below), which every page draws and no row names.
+ *  per row about which bodies cross the threshold.
+ *
+ *  The landing highlight is the second of that page-wide half, and the only one of these that
+ *  ends on a clock rather than on an answer: an address that names an artifact rings that
+ *  artifact's header for two seconds, to tell the reader which thing on the page they
+ *  navigated to, and then the page drops the ring by itself
+ *  (`web/src/features/artifacts/ArtifactHeader.tsx`, which marks the header
+ *  `data-landing-ring` for exactly as long as the ring is painted). So a page still carrying
+ *  that attribute is a page still changing, and both layers wait it out here rather than in a
+ *  row: it belongs to no row, it is the artifact pages' alone to carry, and it costs every
+ *  other page one locator that matches nothing. The wait is for the mark itself and never for
+ *  two seconds of wall clock - a duration would be the same race run against a stopwatch.
+ *
+ *  And the shell's one Inbox number must have stopped moving (`waitForInboxCountSettled`
+ *  below), which every page draws and no row names.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -565,6 +578,7 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
   await waitForInboxCountSettled(page);
 }
 

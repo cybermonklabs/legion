@@ -47,10 +47,38 @@
  *    switches the scheme are mid-ease. Two things cover it: the assertion waits until two
  *    consecutive screenshots are identical before it compares, and a finite transition is
  *    fast-forwarded to completion by the default above.
- *  - The caret and the focus ring. No row clicks, types or focuses anything: it signs in,
- *    navigates and waits. A page that focuses an element of its own on load draws the same ring
- *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,
- *    `toHaveScreenshot`'s default.
+ *  - The caret and the focus ring, and the write that hiding a caret used to make. No row
+ *    clicks, types or focuses anything: it signs in, navigates and waits, and
+ *    `document.activeElement` is the body on all 44 readings of this corpus
+ *    (dispatch://INFRA/artifact/visual-shot-state-census-md). A page that focuses an element of
+ *    its own on load draws the same ring in the baseline and in the comparison, and no caret is
+ *    drawn on any of these pages at all. That is why the shot is taken with `caret: "initial"`
+ *    rather than with `toHaveScreenshot`'s default of `caret: "hide"`: the default is not a way
+ *    of reading the page but a WRITE to it. It sets `caret-color: transparent !important` on
+ *    every `input`, `textarea` and `[contenteditable]` of the page before each shot and takes it
+ *    off again after (`hideCaret`, playwright-core/lib/coreBundle.js), and that write repaints
+ *    what it lands on: `inbox` moved 2 pixels at x 756, y 561-562 between two shots of one
+ *    unchanged frame with no mutation of the page, and cybermonklabs/legion#2697 measured the
+ *    same repaint of the Inbox's ask card at 39 to 62 pixels in CI.
+ *  - The landing highlight, which is the one state here that ends on a clock. An address that
+ *    names an artifact rings that artifact's header for two seconds, to say which thing on the
+ *    page the reader navigated to (`web/src/features/artifacts/ArtifactHeader.tsx`), and this
+ *    file shoots each page twice - light, then dark - so the ring is a state one shot can hold
+ *    and the other cannot. Both answers were seen: the committed baselines held it in both
+ *    schemes, and CI run 44155672869 failed `issue-artifact-dark` by 3,070 pixels, of which the
+ *    ring's own band is 2,508 (the forced control below) and the rest is that run's own change.
+ *    Re-taking the baseline settles nothing, because the next run rolls the same dice.
+ *
+ *    The ring is a real thing a reader is shown, so it is neither masked nor turned off for the
+ *    shot: the page is shot AFTER it instead, and the row waits for the mark the header carries
+ *    while it is painted - `data-landing-ring`, waited out in `waitForRouteSettled`
+ *    (e2e/review-routes.ts) with `data-markdown-pending`, the page-wide half that belongs to no
+ *    row. The wait is for the thing itself and not for a duration: two seconds of wall clock
+ *    here would be the same race timed with a stopwatch, and this layer's own clock is a fake
+ *    one. The cost is that no baseline holds the ring, so what this layer reviews of the
+ *    highlight is nothing. `ArtifactHeader.test.tsx` holds the mark to the ring - the attribute,
+ *    the class and the two seconds, and no pixel of either - and what the ring is drawn in is
+ *    `highlightRing` (`web/src/theme/classes.ts`), which no layer compares against a swatch.
  *  - Scrollbars. Headless Chromium is launched with `--hide-scrollbars`
  *    (`playwright-core/lib/coreBundle.js`), so no scrollbar is in any capture. The shot is
  *    `fullPage`, the whole scrollable page rather than whatever part of it the window is
@@ -164,6 +192,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
       // reported as one, and the reader fixed light, re-ran, and met dark the round after.
       // It also costs one screenshot on a failing row only, which a failing row can afford.
       await expect.soft(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
+        // No caret is hidden, because none is drawn: `toHaveScreenshot`'s default writes a
+        // style on every input and contenteditable of the page before each shot, and that write
+        // repaints what it lands on. The head of this file has the measurement.
+        caret: "initial",
         fullPage: true,
         // The one thing on these pages that is not the same twice and cannot be waited for:
         // the moment the page answered. A `<time>` carries the relative labels of the Inbox
