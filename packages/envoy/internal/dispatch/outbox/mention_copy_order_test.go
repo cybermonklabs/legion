@@ -185,10 +185,11 @@ func seedProject(t *testing.T, database *store.Store) {
 	}
 }
 
-// A pending subscription command (api/subscribers.go) moves its owner's last_seq, but no batch
-// reads it and it makes no session a destination, so it leaves an earlier event's record current:
-// s1's copy waits behind nothing for it. The control is the same event appended not pending, a
-// write the record did not see, which holds the copy behind the earlier event.
+// A pending subscription command (subscription.remove_requested, which api/subscribers.go writes
+// pending) moves its owner's last_seq, but no batch reads it and it makes no session a
+// destination, so it leaves an earlier event's record current: s1's copy waits behind nothing for
+// it. The control is the same event appended not pending, a write the record did not see, which
+// holds the copy behind the earlier event.
 func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -213,7 +214,7 @@ func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testin
 				payload["pending"] = true
 			}
 			appendEvent(t, database, broker, model.Event{
-				IssueKey: new("T-1"), Type: "subscription.removed", Actor: model.Actor{Kind: "session", ID: "s9"}, Payload: payload,
+				IssueKey: new("T-1"), Type: "subscription.remove_requested", Actor: model.Actor{Kind: "session", ID: "s9"}, Payload: payload,
 			})
 			by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, contracts.LegacyAgentSubject("s1"), "s1")
 			if err != nil {
