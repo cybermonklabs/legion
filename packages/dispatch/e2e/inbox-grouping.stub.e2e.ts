@@ -110,7 +110,8 @@ test("the list bands by priority and by whose turn it is, and its rows stay one 
   );
 
   // Whatever the banding, the rows are one list: the Inbox selects its first row, `j` walks
-  // down it and `k` walks back up, across every band heading on the way.
+  // down it and `k` walks back up, across every band heading on the way. The count above
+  // waited for every row of the scene, so the list read here is the whole of it.
   const forward = await inboxRows(page);
   await page.locator("body").focus();
   for (const [index, id] of forward.entries()) {

@@ -377,6 +377,77 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 	}
 }
 
+// --sender-messages-per-minute and --sender-message-burst set the sender limit as the component's
+// two inputs do: the lines are the environment WebhookListener registers for the same values, each
+// variable printed exactly when its flag is given, and a value the component refuses is refused
+// naming the flag that set it.
+func TestWebhookListenerEnvSenderMessageFlags(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		rate, burst *int
+		want        []string // the sender limit's lines
+	}{
+		{"no sender flag", nil, nil, nil},
+		{"a rate alone", pulumi.IntRef(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
+		{"a rate and a burst", pulumi.IntRef(4), pulumi.IntRef(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
+	} {
+		t.Run("webhook-listener-env prints "+c.name, func(t *testing.T) {
+			var set []string
+			if c.rate != nil {
+				set = append(set, "--sender-messages-per-minute", strconv.Itoa(*c.rate))
+			}
+			if c.burst != nil {
+				set = append(set, "--sender-message-burst", strconv.Itoa(*c.burst))
+			}
+			stdout, stderr, code := run(listenerFlags(nil, set...)...)
+			require.Equal(t, 0, code, stderr)
+			require.Empty(t, stderr)
+			var printed []string
+			for _, line := range strings.Split(stdout, "\n") {
+				if strings.HasPrefix(line, "ENVOY_SENDER_") {
+					printed = append(printed, line)
+				}
+			}
+			require.Equal(t, c.want, printed)
+
+			in := listenerArgs()
+			in.SenderMessagesPerMinute, in.SenderMessageBurst = c.rate, c.burst
+			m := registered(t, func(ctx *pulumi.Context, opts pulumi.ResourceOption) error {
+				_, err := envoyaws.NewWebhookListener(ctx, "example-listener", in, opts)
+				return err
+			})
+			var env strings.Builder
+			for _, v := range container(t, m, "envoy-listener")["environment"].([]any) {
+				variable := v.(map[string]any)
+				env.WriteString(variable["name"].(string) + "=" + variable["value"].(string) + "\n")
+			}
+			require.Equal(t, env.String(), stdout)
+		})
+	}
+	requireRefused(t, []refusal{
+		{
+			name: "webhook-listener-env refuses --sender-messages-per-minute 0",
+			args: listenerFlags(nil, "--sender-messages-per-minute", "0"),
+			want: "refused: --sender-messages-per-minute: senderMessagesPerMinute 0 is outside 1-60000",
+		},
+		{
+			name: "webhook-listener-env refuses --sender-messages-per-minute 60001",
+			args: listenerFlags(nil, "--sender-messages-per-minute", "60001"),
+			want: "refused: --sender-messages-per-minute: senderMessagesPerMinute 60001 is outside 1-60000",
+		},
+		{
+			name: "webhook-listener-env refuses --sender-message-burst 0",
+			args: listenerFlags(nil, "--sender-messages-per-minute", "4", "--sender-message-burst", "0"),
+			want: "refused: --sender-message-burst: senderMessageBurst 0 is below 1",
+		},
+		{
+			name: "webhook-listener-env refuses --sender-message-burst with no rate",
+			args: listenerFlags(nil, "--sender-message-burst", "8"),
+			want: "refused: --sender-message-burst: senderMessageBurst is given without senderMessagesPerMinute",
+		},
+	})
+}
+
 // filter is one entry of `render metric-filters --json`.
 type filter struct {
 	LogicalName     string `json:"logicalName"`

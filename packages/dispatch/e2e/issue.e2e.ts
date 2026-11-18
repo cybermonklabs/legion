@@ -964,6 +964,8 @@ test("issue header delivers the click that ends a title edit to the control unde
     await page.getByTestId("issue-header").getByRole("heading", { level: 1 }).click();
     await expect(page.getByLabel("Issue title")).toBeFocused();
     await expect(control).toBeEnabled();
+    await expect(control).toBeVisible();
+    // The wait above drew the control, and a drawn element has a box, so the box is there.
     const box = await control.boundingBox();
     if (box === null) {
       throw new Error("the control must be visible while the title is being edited");
