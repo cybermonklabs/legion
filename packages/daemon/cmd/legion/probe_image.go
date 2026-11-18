@@ -271,7 +271,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
-	if err := newTLSPositiveControls(ctx, environ, workDir); err != nil {
+	if err := newTLSPositiveControls(ctx, environ); err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
@@ -282,7 +282,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		return 1
 	}
 	defer removeTLSStateDir()
-	observations, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, workDir, tlsStateDir))
+	observations, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir))
 	for _, observation := range observations {
 		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
 			observation.client, observation.site.name, observation.status, observation.detail)

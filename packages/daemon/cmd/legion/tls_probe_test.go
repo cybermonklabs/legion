@@ -25,7 +25,7 @@ func (c fakeTLSClient) probe(_ context.Context, site tlsSite) tlsOutcome {
 	return c.outcomes[site.name]
 }
 
-func passingImageTLSClients(string, []string, string, string) []tlsClient {
+func passingImageTLSClients(string, []string, string) []tlsClient {
 	outcomes := map[string]tlsOutcome{
 		emSignTLSSite.name:  {status: tlsCertificateRefused, detail: "CERT_REVOKED"},
 		aaaTLSSite.name:     {status: tlsCertificateRefused, detail: "CERT_REVOKED"},
@@ -187,7 +187,7 @@ func TestTLSCommandClientClassifiesApplicationErrorBeforeTruncatingDetail(t *tes
 }
 
 func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
-	clients := imageTLSClients("omp", nil, "", "")
+	clients := imageTLSClients("omp", nil, "")
 	want := []struct {
 		name     string
 		timeout  time.Duration
@@ -253,10 +253,10 @@ var optionalTLSClientNames = []string{"gcloud", "bq", "az", "mise", "socat"}
 
 // imageTLSClientsOf returns the image's clients of type T by name, built with no environment,
 // failing t unless each of names is one of them.
-func imageTLSClientsOf[T tlsClient](t *testing.T, workDir, stateDir string, names ...string) map[string]T {
+func imageTLSClientsOf[T tlsClient](t *testing.T, stateDir string, names ...string) map[string]T {
 	t.Helper()
 	clients := map[string]T{}
-	for _, client := range imageTLSClients("omp", nil, workDir, stateDir) {
+	for _, client := range imageTLSClients("omp", nil, stateDir) {
 		if typed, ok := client.(T); ok {
 			clients[typed.name()] = typed
 		}
@@ -284,7 +284,7 @@ var tlsSiteHosts = map[tlsSite]string{
 // reads, and the same marker reads the answer each gives at a compromised site whose chain it
 // accepted.
 func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
-	clients := imageTLSClientsOf[tlsCommandClient](t, "", t.TempDir(), "wget", "git", "go", "kubectl", "redis-cli")
+	clients := imageTLSClientsOf[tlsCommandClient](t, t.TempDir(), "wget", "git", "go", "kubectl", "redis-cli")
 	for _, testCase := range []struct {
 		client, name, stderr, exit string
 		want                       tlsStatus
@@ -330,8 +330,7 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
-	workDir := t.TempDir()
-	clients := imageTLSClientsOf[tlsCommandClient](t, workDir, stateDir, "go", "kubectl")
+	clients := imageTLSClientsOf[tlsCommandClient](t, stateDir, "go", "kubectl")
 	goClient, kubectl := clients["go"], clients["kubectl"]
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 	pod := []string{
@@ -342,12 +341,12 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 	}
 	goClient.env, kubectl.env = pod, pod
 
-	if goClient.workDir != workDir {
-		t.Errorf("go runs in %q, want the probe's working directory %s", goClient.workDir, workDir)
+	if goClient.workDir != stateDir {
+		t.Errorf("go runs in %q, want the state directory %s", goClient.workDir, stateDir)
 	}
 	for site, host := range tlsSiteHosts {
 		program, args, env := goClient.commandLine(site)
-		if want := []string{"mod", "download", "-C", stateDir, host + "/legion-tls-probe@latest"}; program != "go" || !slices.Equal(args, want) {
+		if want := []string{"mod", "download", host + "/legion-tls-probe@latest"}; program != "go" || !slices.Equal(args, want) {
 			t.Errorf("go command for %s = %s %q, want go %q", site.name, program, args, want)
 		}
 		for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "GOPATH", "GOMODCACHE", "GOCACHE"} {
@@ -382,7 +381,7 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 // REDISCLI_AUTH, the credential it would send as AUTH, is dropped with every other.
 func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 	stateDir := t.TempDir()
-	client := imageTLSClientsOf[tlsCommandClient](t, "", stateDir, "redis-cli")["redis-cli"]
+	client := imageTLSClientsOf[tlsCommandClient](t, stateDir, "redis-cli")["redis-cli"]
 	client.env = []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
 	for site, host := range tlsSiteHosts {
 		program, args, env := client.commandLine(site)
@@ -406,7 +405,7 @@ type tlsCommandLine interface {
 func imageTLSCommandLines(t *testing.T, env []string, stateDir string) []tlsCommandLine {
 	t.Helper()
 	var commands []tlsCommandLine
-	for _, client := range imageTLSClients("omp", env, t.TempDir(), stateDir) {
+	for _, client := range imageTLSClients("omp", env, stateDir) {
 		command, ok := client.(tlsCommandLine)
 		if !ok {
 			t.Fatalf("%s is a %T, which runs no command", client.name(), client)
@@ -605,7 +604,7 @@ func TestImageTLSProbeFailsAPodTrustSettingThatAcceptsTheEmSignChain(t *testing.
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			script := `if [ "$1" = control ] || { ` + testCase.accepts + `; }; then exit 0; fi; echo certificate verify failed >&2; exit 1`
-			image := imageTLSClientsOf[tlsCommandClient](t, t.TempDir(), t.TempDir(), testCase.clients...)
+			image := imageTLSClientsOf[tlsCommandClient](t, t.TempDir(), testCase.clients...)
 			standIns := func(env []string) []tlsClient {
 				clients := make([]tlsClient, 0, len(testCase.clients))
 				for _, name := range testCase.clients {
@@ -661,7 +660,7 @@ func TestImageTLSClientsReadNoSystemConfigurationOfThePods(t *testing.T) {
 	for name, value := range pod {
 		env = append(env, name+"="+value)
 	}
-	for _, client := range imageTLSClients("omp", env, t.TempDir(), t.TempDir()) {
+	for _, client := range imageTLSClients("omp", env, t.TempDir()) {
 		command, ok := client.(interface {
 			commandLine(tlsSite) (string, []string, []string)
 		})
@@ -719,7 +718,7 @@ func TestTLSEnvironmentKeepsAndSetsByExplicitLists(t *testing.T) {
 // a refusal, and an error before any answer neither. bq writes its error to stdout, so its
 // stand-in does too.
 func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
-	clients := imageTLSClientsOf[tlsOptionalClient](t, "", t.TempDir(), optionalTLSClientNames...)
+	clients := imageTLSClientsOf[tlsOptionalClient](t, t.TempDir(), optionalTLSClientNames...)
 	for _, testCase := range []struct {
 		client, name, stdout, stderr, exit string
 		want                               tlsStatus
@@ -817,7 +816,7 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 		t.Fatalf("probeTLSClients() with the program on PATH accepting every chain = %v, want the emSign acceptance named", err)
 	}
 
-	optional := imageTLSClientsOf[tlsOptionalClient](t, "", t.TempDir(), optionalTLSClientNames...)
+	optional := imageTLSClientsOf[tlsOptionalClient](t, t.TempDir(), optionalTLSClientNames...)
 	t.Setenv("PATH", bin)
 	for name, client := range optional {
 		for _, site := range tlsSites {
@@ -839,7 +838,7 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
-	clients := imageTLSClientsOf[tlsOptionalClient](t, "", stateDir, optionalTLSClientNames...)
+	clients := imageTLSClientsOf[tlsOptionalClient](t, stateDir, optionalTLSClientNames...)
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 	miseData := map[string]bool{}
 
@@ -879,7 +878,7 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 // Chromium resolves only the probed site, so its certificate verifier's AIA fetches fail at once
 // instead of waiting on the CA's repository host.
 func TestImageChromiumResolvesOnlyTheProbedSite(t *testing.T) {
-	chromium := imageTLSClientsOf[tlsChromiumClient](t, "", "", "chromium")["chromium"]
+	chromium := imageTLSClientsOf[tlsChromiumClient](t, "", "chromium")["chromium"]
 	for site, host := range tlsSiteHosts {
 		program, args, _ := chromium.command(site)
 		want := []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + host, "--dump-dom", site.url}
@@ -928,7 +927,7 @@ func TestTLSPositiveControlsRequireTheExpectedChain(t *testing.T) {
 // argument (measured: `curl -q -s …` sent no header from a CURL_HOME curlrc, `curl -s -q …` sent it).
 func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 	found := false
-	for _, client := range imageTLSClients("omp", nil, t.TempDir(), t.TempDir()) {
+	for _, client := range imageTLSClients("omp", nil, t.TempDir()) {
 		command, ok := client.(interface {
 			commandLine(tlsSite) (string, []string, []string)
 		})
@@ -955,7 +954,7 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	// The stand-in curl accepts every site, the isolation endpoint included, so the controls fail;
 	// only the arguments they ran curl with matter here.
-	_ = probeTLSPositiveControls(context.Background(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir())
+	_ = probeTLSPositiveControls(context.Background(), []string{"PATH=" + os.Getenv("PATH")})
 	data, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatalf("the positive controls never ran curl: %v", err)
@@ -1067,7 +1066,7 @@ func TestTLSChromiumClientClassifiesNavigationResult(t *testing.T) {
 // Chromium's first process in a probe pod needs more time than the other clients,
 // while each ordinary client keeps the short refusal bound.
 func TestImageTLSChromiumClientHasColdStartHeadroom(t *testing.T) {
-	clients := imageTLSClients("omp", nil, "", "")
+	clients := imageTLSClients("omp", nil, "")
 	chromium, ok := clients[len(clients)-1].(tlsChromiumClient)
 	if !ok {
 		t.Fatalf("last image TLS client = %T, want tlsChromiumClient", clients[len(clients)-1])

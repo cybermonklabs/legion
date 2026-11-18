@@ -116,10 +116,8 @@ func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) 
 	return nil
 }
 
-// tlsPositiveControlSpec is the positive controls' curl. It is built through tlsClientSpec.build
-// so that it runs as every client does, with a HOME of its own in a state directory and only the
-// tlsKeptVariables of env, and its -q comes first for the reason the curl client's does
-// (workerTLSClients).
+// tlsPositiveControlSpec is the positive controls' curl. It is built through tlsClientSpec.build,
+// and takes -q first for the reason at the curl spec (workerTLSClients).
 var tlsPositiveControlSpec = tlsClientSpec{
 	name: "positive-control", program: "curl", timeout: tlsDefaultProbeTimeout,
 	command: func(site tlsSite, _, _ string) ([]string, []string) {
@@ -127,13 +125,13 @@ var tlsPositiveControlSpec = tlsClientSpec{
 	},
 }
 
-func probeTLSPositiveControls(ctx context.Context, env []string, workDir string) error {
+func probeTLSPositiveControls(ctx context.Context, env []string) error {
 	stateDir, remove, err := newTLSStateDir()
 	if err != nil {
 		return err
 	}
 	defer remove()
-	client := tlsPositiveControlSpec.build("", env, workDir, stateDir)
+	client := tlsPositiveControlSpec.build("", env, stateDir)
 	return verifyTLSPositiveControls(compromisedTLSSites(), func(site tlsSite) tlsOutcome {
 		return client.probe(ctx, site)
 	})
@@ -317,15 +315,22 @@ func chromiumNavigationFailure(stderr string) string {
 // as a wgetrc's check_certificate or a kubeconfig's insecure-skip-tls-verify, is not tested.
 //
 // On top of the kept variables, each client runs with the probe's own values: a HOME of its own
-// in the state directory, which replaces the image's (tlsClientSpec.build), the settings its
-// command gives, and LEGION_TLS_URL naming the site. A client that reads its configuration from
-// its user's passwd home where that HOME holds none also takes the flag that stops it reading
-// any: curl, the one such client measured, takes -q as its first argument (workerTLSClients). So
-// no credential variable of the pod's reaches a client, and no credential file one names or the
-// pod's home holds.
+// in the state directory, which replaces the image's, the state directory as its working
+// directory (tlsClientSpec.build), the settings its command gives, and LEGION_TLS_URL naming the
+// site. The state directory holds only the probe's access-token file and go.mod (newTLSStateDir),
+// so no configuration file of the pod's working directory is read. Each client that reads
+// configuration from somewhere neither moves is given the flag or variable that stops it, each
+// with its measurement at the client's spec (workerTLSClients): curl's -q (its passwd home's
+// curlrc), mise's and uv's --no-config (their working directory's parents), git's
+// GIT_CEILING_DIRECTORIES (a parent repository), and go's own go.mod (a parent go.mod). So no
+// credential variable of the pod's reaches a client, and no file of the pod's home or working
+// directory does.
 //
-// A proxy variable of the pod's reaches no client either. That changes no verdict: Chromium already
-// fails every load behind a proxy, so the probe cannot pass behind one (chromiumTLSArgs says why).
+// No proxy variable of the pod's reaches a client, so the probe tests each client's direct path
+// to each site. Where a pod's roles reach a site only through a proxy, the probe's control fails
+// as unavailable; where a pod has a proxy and direct egress both, the probe tests the direct path
+// while the roles' traffic takes the proxy, which the probe does not test. Proxy variables are
+// left out because a proxy URL can carry a login.
 var tlsKeptVariables = slices.Concat(sandbox.ImageEnv, tlsTrustVariables)
 
 // tlsTrustVariables are the pod's trust and verification settings every client keeps
@@ -454,6 +459,18 @@ func tlsCertificateError(detail string) bool {
 
 const tlsFetchProgram = `const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status);`
 
+// tlsClientKind is which client tlsClientSpec.build makes.
+type tlsClientKind int
+
+const (
+	// tlsCommandKind, the zero value, makes a tlsCommandClient.
+	tlsCommandKind tlsClientKind = iota
+	// tlsOptionalKind makes a tlsOptionalClient, absent where its program is not on PATH.
+	tlsOptionalKind
+	// tlsChromiumKind makes a tlsChromiumClient, which reads Chromium's navigation result.
+	tlsChromiumKind
+)
+
 // tlsClientSpec is one client of the TLS probe, which build makes: a client of workerTLSClients,
 // or the positive controls' curl (tlsPositiveControlSpec).
 type tlsClientSpec struct {
@@ -462,10 +479,8 @@ type tlsClientSpec struct {
 	// program is what the client runs, looked up on PATH where it is no path.
 	program string
 	timeout time.Duration
-	// optional makes the client a tlsOptionalClient, absent where program is not on PATH.
-	optional bool
-	// chromium makes the client a tlsChromiumClient, which reads Chromium's navigation result.
-	chromium bool
+	// kind is the client build makes, a tlsCommandClient unless it names another.
+	kind tlsClientKind
 	// readStdout and applicationSeen are the command client's.
 	readStdout      bool
 	applicationSeen func(string) bool
@@ -474,23 +489,24 @@ type tlsClientSpec struct {
 	command func(site tlsSite, stateDir, invocation string) (args, set []string)
 }
 
-// build makes the client spec names, under env and in workDir. Every client gets a HOME of its own,
-// <stateDir>/<name>, before the variables its command sets, so a client's own HOME replaces it.
-func (spec tlsClientSpec) build(invocation string, env []string, workDir, stateDir string) tlsClient {
+// build makes the client spec names, under env, with stateDir as its working directory and a HOME
+// of its own, <stateDir>/<name>, given before the variables its command sets, so a client's own
+// HOME replaces it.
+func (spec tlsClientSpec) build(invocation string, env []string, stateDir string) tlsClient {
 	home := "HOME=" + filepath.Join(stateDir, spec.name)
 	client := tlsCommandClient{
-		clientName: spec.name, env: env, workDir: workDir, timeout: spec.timeout,
+		clientName: spec.name, env: env, workDir: stateDir, timeout: spec.timeout,
 		applicationSeen: spec.applicationSeen, readStdout: spec.readStdout,
 		command: func(site tlsSite) (string, []string, []string) {
 			args, set := spec.command(site, stateDir, invocation)
 			return spec.program, args, append([]string{home}, set...)
 		},
 	}
-	switch {
-	case spec.chromium:
-		return tlsChromiumClient{tlsCommandClient: client}
-	case spec.optional:
+	switch spec.kind {
+	case tlsOptionalKind:
 		return tlsOptionalClient{tlsCommandClient: client, program: spec.program}
+	case tlsChromiumKind:
+		return tlsChromiumClient{tlsCommandClient: client}
 	default:
 		return client
 	}
@@ -505,11 +521,12 @@ const (
 	tlsAccessTokenFile = "access-token"
 )
 
-// newTLSStateDir makes the directory every client of the TLS probe keeps its home in
-// (tlsClientSpec.build), and gcloud, bq, az, mise, go and kubectl their state (go also changes to
-// it, -C), so none of it lands in the runtime user's home (the image build's final step requires
-// that) and no client reads a file of that home, and writes into it the access-token file gcloud
-// and bq sign in with. remove deletes the directory with everything the clients wrote there.
+// newTLSStateDir makes the TLS probe's state directory: every client's working directory and the
+// parent of its HOME (tlsClientSpec.build), where gcloud, bq, az, mise, go and kubectl keep their
+// state too, so none of it lands in the runtime user's home (the image build's final step requires
+// that). It is made holding two files: the access-token file gcloud and bq sign in with, and a
+// go.mod, which go reads in place of a parent directory's (the go client of workerTLSClients says
+// why). remove deletes the directory with everything the clients wrote there.
 func newTLSStateDir() (dir string, remove func(), err error) {
 	dir, err = os.MkdirTemp("", "legion-tls-probe-")
 	if err != nil {
@@ -519,6 +536,10 @@ func newTLSStateDir() (dir string, remove func(), err error) {
 	if err = os.WriteFile(filepath.Join(dir, tlsAccessTokenFile), []byte(tlsProbeSignIn), 0o600); err != nil {
 		remove()
 		return "", nil, fmt.Errorf("write the TLS probe's access token: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module legion-tls-probe\n"), 0o600); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("write the TLS probe's go.mod: %w", err)
 	}
 	return dir, remove, nil
 }
@@ -630,14 +651,8 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 // the system roots, and socat because its OPENSSL: address verifies its peer against OpenSSL's
 // default store.
 //
-// No client carries a credential of the pod's to a site: of the pod's variables, each keeps only
-// those the image declares and every trust setting named beside the pairs above (tlsKeptVariables,
-// which says why it is a list of what to keep and why a trust setting carries no credential); it
-// runs with a HOME of its own in the state directory; and curl, which reads the curlrc of its
-// user's passwd home where CURL_HOME, XDG_CONFIG_HOME and HOME hold none, runs with -q first,
-// which stops it reading any curlrc. So neither a credential variable of the pod's nor a
-// credential file of the pod's home reaches a client. The positive controls' curl is built the
-// same way (tlsPositiveControlSpec).
+// No client carries a credential of the pod's to a site, and none reads a file of the pod's home
+// or working directory: tlsKeptVariables says how.
 //
 // Deliberately not here, each with what was measured:
 //
@@ -695,10 +710,14 @@ var workerTLSClients = []tlsClientSpec{
 			return []string{"--input-type=module", "--eval", tlsFetchProgram}, nil
 		},
 	},
+	// --no-config keeps uv from the uv.toml and pyproject.toml of its working directory's parents,
+	// which it reads as its settings (measured on 2026-11-18, uv 0.13.5: a parent's uv.toml failed
+	// it with "Failed to parse: …/uv.toml", a parent's pyproject.toml was read "during settings
+	// discovery", and with --no-config neither was read).
 	{
 		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
+			return []string{"pip", "install", "--no-config", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
 		},
 	},
 	{
@@ -745,28 +764,35 @@ var workerTLSClients = []tlsClientSpec{
 	// The PATH's git: in a pod, the /opt/legion/bin/git wrapper, which hands ls-remote to
 	// /usr/bin/git unchanged. GIT_TERMINAL_PROMPT=0 keeps it from waiting on a credential prompt.
 	// Its user configuration, whose http.extraHeader git sends to every host, is under its own empty
-	// HOME, and no GIT_CONFIG_* variable of the pod's reaches it (tlsKeptVariables), so outside a
-	// repository git reads the image's system configuration, /etc/gitconfig, and no other.
+	// HOME, and no GIT_CONFIG_* variable of the pod's reaches it (tlsKeptVariables).
+	// GIT_CEILING_DIRECTORIES at the state directory's parent keeps it from a parent repository's
+	// .git/config (measured on 2026-11-18, git 2.47: from a repository's child directory, `git
+	// config --get http.extraheader` printed that repository's header, and printed none with the
+	// ceiling at the child's parent; a ceiling at the child itself did not stop it). So git reads
+	// the image's system configuration, /etc/gitconfig, and no other.
 	// No site is a git repository, so git fails ls-remote at the control too, after the handshake;
 	// gitSiteAnswer reads that answer.
 	{
 		name: "git", program: "git", timeout: tlsDefaultProbeTimeout, applicationSeen: gitSiteAnswer.MatchString,
-		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"ls-remote", site.url}, []string{"GIT_TERMINAL_PROMPT=0"}
+		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
+			return []string{"ls-remote", site.url}, []string{"GIT_TERMINAL_PROMPT=0", "GIT_CEILING_DIRECTORIES=" + filepath.Dir(stateDir)}
 		},
 	},
 	// go's fetch of a module path at the site's host, the fetch `go install` and `go get` make with
-	// GOPROXY=direct. -C makes go change to the state directory before it reads anything, so no
-	// go.mod of the probe's working directory is read (measured on 2026-11-18, go 1.27.3: -C after
-	// `mod download` works, and a go.mod of the working directory that needs go 1.99 is not read),
-	// and every path go writes is under that directory. GOTOOLCHAIN=local keeps it from downloading
-	// a toolchain, and GOAUTH=off from running any authentication command. No site serves a Go
-	// module path, so go fails at the control too; goGetAnswer reads the site's answer.
+	// GOPROXY=direct. go reads the first go.mod it finds from its working directory up to /, and
+	// nothing turns that walk off, so the state directory holds a go.mod of its own
+	// (newTLSStateDir), which go reads in place of a parent's (measured on 2026-11-18, go 1.27.3: a
+	// parent's go.mod needing go 1.99 failed it with "go: ../go.mod requires go >= 1.99", and with
+	// the state directory's go.mod go read that one, and its answer at the emSign site was the line
+	// it gave with no go.mod at all). The variables below keep every path go writes under the state
+	// directory. GOTOOLCHAIN=local keeps it from downloading a toolchain, and GOAUTH=off from
+	// running any authentication command. No site serves a Go module path, so go fails at the
+	// control too; goGetAnswer reads the site's answer.
 	{
 		name: "go", program: "go", timeout: tlsDefaultProbeTimeout, applicationSeen: goGetAnswer.MatchString,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			home := filepath.Join(stateDir, "go")
-			return []string{"mod", "download", "-C", stateDir, tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, []string{
+			return []string{"mod", "download", tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, []string{
 				"XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
 				"GOPATH=" + filepath.Join(home, "path"),
 				"GOMODCACHE=" + filepath.Join(home, "mod"),
@@ -809,7 +835,7 @@ var workerTLSClients = []tlsClientSpec{
 	// gcloud's compute call, with the compute endpoint at the site. `gcloud storage` is not the
 	// form because it retried for 35-41 s before it answered.
 	{
-		name: "gcloud", program: "gcloud", timeout: tlsDefaultProbeTimeout, optional: true, applicationSeen: gcloudResponseSeen,
+		name: "gcloud", program: "gcloud", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind, applicationSeen: gcloudResponseSeen,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			return []string{"compute", "regions", "list", "--project", "legion-tls-probe"},
 				append(googleCloudTLSEnvironment(stateDir, "gcloud"), "CLOUDSDK_API_ENDPOINT_OVERRIDES_COMPUTE="+site.url+"compute/v1/")
@@ -820,7 +846,7 @@ var workerTLSClients = []tlsClientSpec{
 	// currently have an active account selected"; the token file still serves the `gcloud config`
 	// subprocess bq runs. bq writes its error to stdout, so the client reads stdout too.
 	{
-		name: "bq", program: "bq", timeout: tlsBigQueryProbeTimeout, optional: true, readStdout: true, applicationSeen: bqResponseSeen,
+		name: "bq", program: "bq", timeout: tlsBigQueryProbeTimeout, kind: tlsOptionalKind, readStdout: true, applicationSeen: bqResponseSeen,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			return []string{"--oauth_access_token=" + tlsProbeSignIn, "--api=" + site.url, "ls", "--project_id=legion-tls-probe"}, googleCloudTLSEnvironment(stateDir, "bq")
 		},
@@ -830,19 +856,22 @@ var workerTLSClients = []tlsClientSpec{
 	// directory, happens once a probe. az exited 0 on the control's page, so, as curl, it needs no
 	// response marker.
 	{
-		name: "az", program: "az", timeout: tlsDefaultProbeTimeout, optional: true,
+		name: "az", program: "az", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			return []string{"rest", "--method", "get", "--url", site.url, "--skip-authorization-header"}, []string{"AZURE_CONFIG_DIR=" + filepath.Join(stateDir, "az", "config")}
 		},
 	},
 	// mise's http: backend, downloading the site as a tool, in a directory of its own per site so
 	// one site's download never satisfies the next. MISE_VERBOSE prints the status line
-	// miseHTTPStatus reads.
+	// miseHTTPStatus reads. --no-config, first, keeps mise from every config file, where it reads a
+	// mise.toml of each directory from its working directory up to / (measured on 2026-11-18, mise
+	// 2026.8.12: a parent's mise.toml was read, and with --no-config neither it, the working
+	// directory's .mise.toml nor a config.toml in MISE_CONFIG_DIR was).
 	{
-		name: "mise", program: "mise", timeout: tlsDefaultProbeTimeout, optional: true, applicationSeen: miseHTTPStatus.MatchString,
+		name: "mise", program: "mise", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind, applicationSeen: miseHTTPStatus.MatchString,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			home := filepath.Join(stateDir, "mise", site.name)
-			return []string{"x", "http:legion-tls-probe[url=" + site.url + "]@1", "--", "true"}, []string{
+			return []string{"--no-config", "x", "http:legion-tls-probe[url=" + site.url + "]@1", "--", "true"}, []string{
 				"HOME=" + home,
 				"MISE_DATA_DIR=" + filepath.Join(home, "data"),
 				"MISE_CACHE_DIR=" + filepath.Join(home, "cache"),
@@ -857,14 +886,14 @@ var workerTLSClients = []tlsClientSpec{
 	// it completes the handshake, sends nothing and exits. It exits 0 on the control, so, as curl,
 	// it needs no response marker, and it keeps no state.
 	{
-		name: "socat", program: "socat", timeout: tlsDefaultProbeTimeout, optional: true,
+		name: "socat", program: "socat", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
 			host, port := tlsSiteHostPort(site)
 			return []string{"-u", "-", "OPENSSL:" + host + ":" + port}, nil
 		},
 	},
 	{
-		name: "chromium", program: "chromium", timeout: tlsChromiumProbeTimeout, chromium: true,
+		name: "chromium", program: "chromium", timeout: tlsChromiumProbeTimeout, kind: tlsChromiumKind,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
 			return chromiumTLSArgs(site), nil
 		},
@@ -880,9 +909,7 @@ var workerTLSClients = []tlsClientSpec{
 // the positive controls show that each test site serves every certificate up to its pinned root's
 // subject, and the sites' AIA URLs hold only self-signed roots, which a path can end at only as
 // anchors of the local trust store. `^NOTFOUND` is the rule's token for "fail with
-// ERR_NAME_NOT_RESOLVED" (net/dns/mapped_host_resolver.h). A proxy in env is a host name or address
-// this rule also leaves unresolvable, so behind one every load fails as unavailable, never as a
-// refusal.
+// ERR_NAME_NOT_RESOLVED" (net/dns/mapped_host_resolver.h).
 func chromiumTLSArgs(site tlsSite) []string {
 	return []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + tlsSiteURL(site).Hostname(), "--dump-dom", site.url}
 }
@@ -906,13 +933,12 @@ func tlsSiteHostPort(site tlsSite) (host, port string) {
 }
 
 // imageTLSClients returns the image's TLS-capable programs. The gh wrapper manages worker tokens,
-// so the probe runs the real gh binary it wraps; no probe uses an operator token. stateDir is where
-// every client has its home and the clients that keep state keep it, and the directory go changes
-// to (newTLSStateDir).
-func imageTLSClients(invocation string, env []string, workDir, stateDir string) []tlsClient {
+// so the probe runs the real gh binary it wraps; no probe uses an operator token. stateDir is the
+// probe's state directory (newTLSStateDir).
+func imageTLSClients(invocation string, env []string, stateDir string) []tlsClient {
 	clients := make([]tlsClient, 0, len(workerTLSClients))
 	for _, spec := range workerTLSClients {
-		clients = append(clients, spec.build(invocation, env, workDir, stateDir))
+		clients = append(clients, spec.build(invocation, env, stateDir))
 	}
 	return clients
 }
