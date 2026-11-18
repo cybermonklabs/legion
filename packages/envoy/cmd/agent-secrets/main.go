@@ -436,10 +436,12 @@ func flagGiven(flags *flag.FlagSet, name string) bool {
 }
 
 // reportError prints a command's failure as "<prefix>: <err>", except that a helper holding no
-// launcher credential is reported with the one line identity prints for it, whatever the command.
+// launcher credential is reported with the one line identity prints for it, whatever the command:
+// the helper's own answer, which says what cures it in the helper's mode.
 func reportError(stderr io.Writer, prefix string, err error) {
-	if errors.Is(err, errNoCredential) {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", errNoCredential)
+	var none *noCredentialError
+	if errors.As(err, &none) {
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", none.sessionLine())
 		return
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
