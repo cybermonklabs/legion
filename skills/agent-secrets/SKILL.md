@@ -190,46 +190,40 @@ Without the grant line the status is the client's own:
   source with why it had nothing.
 - **2** — a usage error: no `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client
   refuses.
-- **75** — the request still waits for a person, or for the model judge, when `--wait` runs out.
-  The message names who decides it, where, and the `agent-secrets status <request_id>` that reads
-  it. A status poll that did not reach the broker (a reset, a timeout, a 502 or 503) does not end
-  the wait: stderr says once that the command keeps waiting, and polling goes on. If the wait runs
-  out while polls still fail, the exit is 75 too, and the message names the last failure;
-  `agent-secrets status <request_id>` says whether the request was decided, and running the same
-  command again (the same names and `--ttl`, from the same session) collects a grant it already
-  has, asking no one again.
-- **77** — the request was denied. The approver denied it, the model judge refused it, the policy
-  refused a name (a service's secret, or one whose requesters list does not name this session), or
-  the request named a secret a person must approve and carried no reason, which the detail reads
-  `<NAME>: a reason is necessary; ask again with --reason`. A denial by the approver or the judge
-  is final: do not send the same request again.
+- **75** — the request still waits for a person when `--wait` runs out. The message names who
+  decides it, where, and the `agent-secrets status <request_id>` that reads it. A status poll
+  that did not reach the broker (a reset, a timeout, a 502 or 503) does not end the wait: stderr
+  says once that the command keeps waiting, and polling goes on. If the wait runs out while polls
+  still fail, the exit is 75 too, and the message names the last failure; `agent-secrets status
+  <request_id>` says whether the request was decided, and running the same command again (the same
+  names and `--ttl`, from the same session) collects a grant it already has, asking no one again.
+- **77** — the request was denied. The approver denied it, the policy refused a name (a
+  service's secret, or one whose requesters list does not name this session), or the request
+  named a secret a person must approve and carried no reason, which the detail reads
+  `<NAME>: a reason is necessary; ask again with --reason`.
 
 The other statuses come from forms this skill does not use: 76 from `agent-secrets renew`, a
 refusal that is permanent; 126 and 127 from `agent-secrets register --exec`, whose command could not
 run or was not found; and 129, 130, 131 and 143 from a signal at the value prompt of
 `agent-secrets secret create` or `secret set`. `agent-secrets --help` lists them all.
 
-## Who decides a request
+## Asking so a model judge can decide it
 
-Each key says who decides a request for it. Run `agent-secrets secret show NAME` before you ask,
-and read its `decides:` and `guidance:` lines:
+Your deployment may run a model judge over a narrow class of the requests that would otherwise
+wait for a person. Three things in your own command decide whether a request can fall in that
+class:
 
-- **nobody** — an agent-tier key your session's tags allow is granted at once.
-- **the model judge** — the deployment's rules let the judge decide the key. Nobody else sees the
-  request while the judge decides it. Write `--reason` so it meets the `guidance:` line: say what
-  you will do, and include what the guidance asks for, such as the Dispatch issue you work on or a
-  `dispatch://KEY/ask/<id>` answer it names. The judge grants the request, or refuses it for good:
-  the command exits 77 with `the model judge refused this request: <reason>. This request will not
-  be granted.` Tell whoever gave you the work what the reason says; do not send the same request
-  again. If the judge cannot decide, the request goes to the key's person once, as an ordinary
-  card, and you wait as for any other.
-- **a person, on the broker page** — the key's person decides it, as below. An administrator's key
-  is always a person's, whatever the rules say.
+- One secret. A request that names two is outside it.
+- `--ttl 15m`, or less. A longer one is outside it. With no `--ttl`, the judge reads the lifetime
+  the broker gives instead: 15 minutes for a human-tier secret, which is inside it, and the whole
+  session for a secret tagged `default-grant=session`, which is outside it. Pass `--ttl 15m`.
+- The key of the issue you work on in `--reason`, for an issue that is not done.
 
-No request has to cite anything. A request for several keys is the judge's when the judge decides
-every key in it that needs a decision; a key your session gets at once may stand beside them, and
-the judge's grant releases it too. Otherwise a person decides the request whole. Ask for every key
-the work needs, at the lifetime it needs, from one session: each request is decided once.
+The rules of your deployment decide which secrets the judge may take, and you are told none of
+them, so ask this way and wait as you would anyway. One class is never judged, whatever those
+rules say: a secret tagged as an administrator's, of which a person approves every release. The
+judge approves a request in its class or leaves it for the person who approves it today, and it
+never denies. Every other request waits for that person, as it does now.
 
 ## Waiting, and a grant you already hold
 
@@ -252,14 +246,12 @@ the work needs, at the lifetime it needs, from one session: each request is deci
 
 ## Where a name comes from, and how you may use it
 
-The broker answers no list of the names a session may ask for. Its settings name only the keys its
-model judge decides, so that `agent-secrets secret show NAME` can say who decides a request for a
-name you already have. A name comes from your deployment instructions, your role prompt, a skill,
-or the issue you work on. There is no list to browse and nothing to guess.
+The broker tells a session no names. A name comes from your deployment instructions, your role
+prompt, a skill, or the issue you work on. There is no list to browse and nothing to guess.
 
 - Request a secret only to use it for the work in front of you. A request made to learn whether a
   secret exists is recorded against your session with the reason you signed, and it reaches a
-  person's Inbox, or the model judge where the key is one it decides.
+  person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
 - `PENDING_VALUE` is not final: the secret exists, and its owner is storing its value with
   `agent-secrets secret create` now. No request was made and no approver asked. Ask again in a few
@@ -309,9 +301,11 @@ source says why it had nothing:
 - **`machine: the broker at … names no exchange audience`.** The broker accepts no machine identity
   yet. The person signs in (`agent-secrets login`), or restarts the agent as a session:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.
-- **`this machine is not logged in to the secrets broker`.** The helper holds no machine credential.
-  `agent-secrets machine login-status` prints `issued` only while it holds one. The person logs the
-  machine in, as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows.
+- **`this machine's agent-secrets-helper holds no credential at the secrets broker`.** The part after
+  `the helper:` names the cure. `run: agent-secrets machine login`: the person logs the machine in,
+  as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows. `the helper's trade
+  loop is trading …`: the helper gets one itself; report it, and retry later. `the helper stopped
+  trading …`: nothing here cures it, so report it with the helper's log.
 
 A stopped helper is not a missing one. Where the helper is installed, or `AGENT_SECRETS_HELPER_SOCK`
 names its socket, and the socket is gone, the command exits 1 with

@@ -116,6 +116,7 @@ import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+import { parseHookArguments } from "./hook-arguments"
 
 const OPEN_ASKS_TIMEOUT_MS = 3_000
 const OpenAsksInput = z.object({
@@ -143,6 +144,14 @@ const ANSWERS_LEAST_WAIT_MS = 150
 /** How long after the hook's print deadline a read that answered past it may still write
  *  `answers.json` for the next hook before the process exits. */
 const ANSWERS_SETTLE_MS = 50
+/**
+ * The host whose envoy.json this hook reads, and its mode and the mode's own arguments, from
+ * `<mode> [arguments…] [--host <claude|codex>]`. Claude Code's hooks.json names no host, so it is
+ * `claude`; the Codex plugin's names `--host codex`, so a Codex session reads the same envoy.json
+ * its MCP server and its other hook read (`sessionConfigFile`), and not `$CLAUDE_CONFIG_DIR`'s.
+ */
+const { host: HOST, mode, modeArguments } = parseHookArguments(process.argv.slice(2))
+
 /** The refresher's lock, holding its pid, and what it read for the hooks, in the session's
  *  Dispatch state directory. */
 const REFRESH_LOCK = "answers-refresh.lock"
@@ -248,7 +257,7 @@ async function openAsks(raw: unknown): Promise<void> {
   const envFile = process.env["CLAUDE_ENV_FILE"]
   // A file location that cannot be worked out hands nothing on: the open-asks summary below says
   // why Dispatch is unavailable.
-  const chosen = sessionConfigFile("claude", process.env)
+  const chosen = sessionConfigFile(HOST, process.env)
   if (envFile) {
     appendOnce(envFile, DISPATCH_HOST_LINE)
     if (chosen.path !== null) {
@@ -334,7 +343,7 @@ function dispatchFirst(raw: unknown): void {
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
     input.cwd ?? process.cwd(),
   )
-  const chosen = sessionConfigFile("claude", process.env)
+  const chosen = sessionConfigFile(HOST, process.env)
   if (!sessionDispatchSettings(chosen, process.env, { cwd: directory }).dispatch.enabled) return
   const pluginRoot = configuredValue(process.env["CLAUDE_PLUGIN_ROOT"])
   if (pluginRoot === undefined) {
@@ -437,7 +446,7 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd], {
+    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -480,7 +489,7 @@ async function answersMessage(
   startedAt: number,
   by: number,
 ): Promise<{ readonly text: string | undefined; readonly notice?: string | undefined }> {
-  const file = sessionConfigFile("claude", process.env)
+  const file = sessionConfigFile(HOST, process.env)
   let { dispatch } = sessionDispatchSettings(file, process.env, {
     cwd,
     commands: "kept",
@@ -573,7 +582,7 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   const lock = join(directory, REFRESH_LOCK)
   if (takeRefreshLock(lock)) {
     try {
-      const file = sessionConfigFile("claude", process.env)
+      const file = sessionConfigFile(HOST, process.env)
       // The URL this refresher targets, resolved as the hook resolves the one it compares with and
       // before any command runs: when envoy.json moved on since the hook started this refresher, no
       // hook carries what it read, and when the token command fails, the hook for the same URL
@@ -600,7 +609,6 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   process.exit(0)
 }
 
-const [mode, ...modeArguments] = process.argv.slice(2)
 if (mode === "answers-refresh") {
   const [session, cwd] = modeArguments
   if (session === undefined || cwd === undefined) {
