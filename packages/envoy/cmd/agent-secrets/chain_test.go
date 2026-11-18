@@ -1172,7 +1172,11 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 		{name: "helper session", setup: func(t *testing.T, r *chainRig) string {
 			sock, _ := fakeHelper(t, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
 			r.env["AGENT_SECRETS_HELPER_SOCK"] = sock
-			return "helper: " + sock + "\n"
+			// fakeHelper answers one canned line to any op, so it does not speak op `version`:
+			// identity --source names its binary by the pid serving the socket (this test
+			// process), the older-helper line. TestIdentitySourceNamesTheHelpersVersion covers a
+			// helper that does report a version.
+			return "helper: " + sock + fmt.Sprintf(" (a helper from before this release; its binary is /proc/%d/exe)\n", os.Getpid())
 		}},
 		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
@@ -1186,7 +1190,7 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 			writeSignInFixture(t, r, "ada@example.com")
 			sock, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
 			r.env["AGENT_SECRETS_HELPER_SOCK"] = sock
-			return "sign-in: ada@example.com\nhelper: " + sock + "\n"
+			return "sign-in: ada@example.com\nhelper: " + sock + fmt.Sprintf(" (a helper from before this release; its binary is /proc/%d/exe)\n", os.Getpid())
 		}},
 		{name: "none", setup: func(*testing.T, *chainRig) string { return "" }, exit: 1},
 	}

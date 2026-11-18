@@ -165,11 +165,23 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 	return views
 }
 
-// RepositoriesView is the project's repository mapping as the daemon serves it. Owners, Mapped,
-// Refused, WithoutWebhookApp and Caches are sorted, and never null. Caches are the repository
-// caches of repositories the mapping no longer names, each kept until its RetainedUntil (contract
-// 32). WithoutWebhookApp is each served repository Dispatch's GitHub App is not known to be
-// installed on, with why (contract 43).
+// RepositoriesView is every repository the daemon works in, as it serves them: the repositories
+// the project's Dispatch mapping names and the repositories the project's own records name, each
+// with the installation of each role App on it (INFRA-2543 R6). The mapping decides the
+// project's default repository and the repositories the daemon prepares before an issue names
+// one, and no longer decides where the project may work: the App installation does, so a
+// repository a record names is served exactly as a mapped one and no repository is left out for
+// want of a mapping.
+//
+// Owners is every mapped repository's owner account, which is an account both role Apps are
+// installed on, since the mapping serves a repository only once they are. It is not the reach
+// a pane's addressing names: that is the owners of the pane's own role's App, which the daemon
+// reads from what the last gh bundle of that App found (daemon.RepositoriesClause), and this
+// block reports no App's installations. Owners, Mapped, Refused, WithoutWebhookApp and Caches
+// are sorted, and never null. Caches are the repository caches of repositories the daemon no
+// longer serves, each kept until its RetainedUntil (contract 32). WithoutWebhookApp is each
+// served repository Dispatch's GitHub App is not known to be installed on, with why
+// (contract 43).
 type RepositoriesView struct {
 	Owners            []string                `json:"owners"`
 	Mapped            []MappedRepositoryView  `json:"mapped"`
@@ -178,13 +190,35 @@ type RepositoriesView struct {
 	Caches            []CacheView             `json:"caches"`
 }
 
-// MappedRepositoryView is a repository the daemon serves, as GitHub names it, whether it is the
-// project's default in Dispatch, and, under the Kubernetes runtime, its repository cache once the
-// runtime has made one (absent before, and under tmux).
+// MappedRepositoryView is a repository the daemon serves, as GitHub names it, whether the
+// project's Dispatch mapping names it or one of the project's own issue records does: whether
+// it is the project's default in Dispatch, which the mapping still decides and a record never
+// does; each role App's installation on it (Apps); and, under the Kubernetes runtime, its
+// repository cache once the runtime has made one (absent before, and under tmux).
 type MappedRepositoryView struct {
-	Repo    string     `json:"repo"`
-	Default bool       `json:"default"`
-	Cache   *CacheView `json:"cache,omitempty"`
+	Repo    string               `json:"repo"`
+	Default bool                 `json:"default"`
+	Apps    AppInstallationsView `json:"apps"`
+	Cache   *CacheView           `json:"cache,omitempty"`
+}
+
+// AppInstallationsView is each role App's installation on one repository, which is what decides
+// whether a project can work there at all (INFRA-2543 R6): the implement App a worker pushes and
+// opens pull requests with, and the review App a reviewer approves with. It is a field rather
+// than a sentence a reader must parse out of a refusal's reason, because it is the answer an
+// operator and a plugin both ask of a repository, and the daemon holds it for every repository it
+// has facts for.
+//
+// Both are true on a repository the daemon serves, which is the admission rule of each of the
+// two doors into the served set: a mapped repository one of the two Apps does not reach is
+// served for nothing — no token exists for its work — so it stands under
+// RepositoriesView.Refused instead, and an issue is recorded on a repository no mapping names only
+// once GitHub has answered that both Apps are installed on it. So the entries where the two can
+// differ are the refused ones, and each carries what GitHub answered of both Apps on the name
+// Dispatch maps (RefusedRepositoryView.Apps).
+type AppInstallationsView struct {
+	Implement bool `json:"implement"`
+	Review    bool `json:"review"`
 }
 
 // CacheView is a repository cache as the Kubernetes runtime shows it: its repository and Sandbox;
@@ -207,14 +241,26 @@ type CacheView struct {
 	RetainedUntil time.Time `json:"retainedUntil,omitzero"`
 }
 
-// RefusedRepositoryView is a mapped repository the daemon leaves out, as Dispatch maps it, and why.
+// RefusedRepositoryView is a repository the daemon leaves out, as Dispatch maps it or as a record
+// names it, and why: a role App is not installed on it, or that installation could not be read.
+// A repository no mapping names is never refused for that (INFRA-2543 R6), since the mapping
+// stopped deciding where a project may work.
+//
+// Apps is each role App's installation on Repo as GitHub answered it, so a reader learns which
+// App is missing without parsing Reason. It is present wherever GitHub answered both Apps' reads
+// of Repo, a repository left out for its default-branch read after both answered installed
+// among them (both true then, Reason naming the read), and absent where a read of Repo failed or
+// Repo is no <owner>/<name> at all, Reason naming which. A configured rename's other name, read
+// where neither App answered installed on Repo, is not what Apps answers for: Reason names what
+// GitHub said of it.
 type RefusedRepositoryView struct {
-	Repo   string `json:"repo"`
-	Reason string `json:"reason"`
+	Repo   string                `json:"repo"`
+	Reason string                `json:"reason"`
+	Apps   *AppInstallationsView `json:"apps,omitempty"`
 }
 
-// WebhookAppGapView is a served repository, as Dispatch maps it, that Dispatch's GitHub App is not
-// installed on, or whose check failed, and why. The daemon serves it all the same.
+// WebhookAppGapView is a served repository that Dispatch's GitHub App is not installed on, or
+// whose check failed, and why. The daemon serves it all the same.
 type WebhookAppGapView struct {
 	Repo   string `json:"repo"`
 	Reason string `json:"reason"`
@@ -1449,16 +1495,18 @@ func StrandedMoves() []StrandedMove {
 //     suspended before 0038, the operator's resume when an operator suspended it and it kept its
 //     task or its phase start waits, otherwise the operator's delivery of its phase's resume task.
 //   - StrandedRetry, a failed architect: the operator's retry (`legion claims retry`), which
-//     relaunches its session with fresh budgets, and a catch-up follows.
+//     relaunches its session with fresh budgets, or a new one once supervise's
+//     Machine.forgetSession has dropped it, and a catch-up follows.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
-//   - StrandedWorkflowStart, a retired claim, whatever its role: only a workflow start relaunches
-//     one, since the operator's retry refuses a claim that has not failed and a retired claim
-//     ignores resume and deliver. A start of its phase sends it the retry the daemon's own start
-//     executor makes of a retired claim, so the move is the act that queues such a start: the
-//     architect's retry_or_escalate of a held phase, a transition into the phase, or the tree's
-//     close and re-admission for an architect, whose tree's admission is the only start of it.
+//   - StrandedWorkflowStart, a retired claim, whatever its role: a retired claim ignores resume
+//     and deliver, and the operator's retry (`legion claims retry`) reaches it as it reaches a
+//     failed one (supervise's operatorRetry), but the move named is a workflow start. A start of
+//     its phase sends it the retry the daemon's own start executor makes of a retired claim, so
+//     the move is the act that queues such a start: the architect's retry_or_escalate of a held
+//     phase, a transition into the phase, or the tree's close and re-admission for an architect,
+//     whose tree's admission is the only workflow start of it.
 //
 // The retired case is read before every other, because a claim released and then retired keeps
 // `suspendedBy: released` on its row and SuspendersOfOperatorClaims copies that value whatever the

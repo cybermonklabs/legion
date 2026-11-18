@@ -553,7 +553,7 @@ func (r *idleWakeRig) restart() {
 // (sandbox.New) over the rig's Kubernetes API, with the worker stream, store and connection
 // directory the boot hands it, and the rig's own tools — a `legion` that is the role process
 // stand-in, and an agent command it never has to run.
-func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
+func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
 	_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
 ) (legionruntime.Runtime, error) {
 	r.built.mu.Lock()
@@ -631,8 +631,8 @@ func (r *idleWakeRig) toolsDir() string {
 // (appauth.GitIdentity).
 type idleRigAppTokens struct{ *workflowTokenRecorder }
 
-func (t idleRigAppTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	lease, err := t.workflowTokenRecorder.Token(ctx, role, repo)
+func (t idleRigAppTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	lease, err := t.workflowTokenRecorder.Token(ctx, role, owner)
 	if err != nil {
 		return lease, err
 	}
@@ -954,7 +954,8 @@ func (r *idleWakeRig) awaitResumed(issue idleRigIssue, registrations int) {
 // retry is the operator's `legion claims retry` of the issue's role, over the route that command
 // posts to: POST /legion/v1/operator/claims/{token}/retry with the body that says which retry it
 // is (api.RetryRequest). fresh is `--fresh-session`, which has the claim leave the session it
-// recorded behind and come back in a new one; a retry without it resumes the recorded session.
+// recorded behind and come back in a new one; a retry without it resumes the recorded session, or
+// a new one once supervise's Machine.forgetSession has dropped it.
 // A phase worker's retry is its issue's phase started again, which answers 202: the start it
 // queues is an outbox row that runs behind the answer (api's restartWorkedPhase).
 func (r *idleWakeRig) retry(issue idleRigIssue, fresh bool) {

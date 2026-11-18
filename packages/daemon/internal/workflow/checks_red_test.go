@@ -22,11 +22,12 @@ import (
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
 // daemon's to read the semantics of. What the settlement says is told instead, as one message per
 // role to three roles: the worker holding the issue's phase, the implementer, whose code the
-// checks ran on, and the tree's architect, who owns the tree. Each message names every check the
-// settlement reports and the conclusion it reports for it, in name order. A role named twice - the
-// implementer holding the phase, the architect holding admitted or accepting - is told once, and a
-// phase no worker holds names none. Nothing else happens: no phase moves, no architect hears
-// checks-red, no worker is started, and no return is counted.
+// checks ran on, and the architect that owns the issue, here the root's, since the issue is the
+// tree's root. Each message names every check the settlement reports and the conclusion it
+// reports for it, in name order. A role named twice - the implementer holding the phase, the
+// architect holding admitted or accepting - is told once, and a phase no worker holds names none.
+// Nothing else happens: no phase moves, no architect hears checks-red, no worker is started, and
+// no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase

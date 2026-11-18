@@ -431,7 +431,8 @@ tool_outcomes() {
 # ---- driving several issues at once ------------------------------------------------------------------
 declare -A gate_artifacts pr_of
 # gate_send ISSUE records the root's primary artifact and waits for its architect to register the
-# gate on its own, from the daemon's catch-up notice (architect_registers_gate); nobody prompts it.
+# gate on its own, from the task its start carries and the daemon's catch-up notice
+# (architect_registers_gate); the proof prompts it with nothing.
 gate_send() {
   local issue=$1
   gate_artifacts[$issue]=$(dispatch_get "issues/$issue" | jq -er .primary_artifact_id)
@@ -655,8 +656,9 @@ mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 cat >"$work/instructions.md" <<'EOF'
 # Acceptance proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
@@ -957,12 +959,14 @@ pass
 begin pr-closed-unmerged
 retarget_pr "$child"
 gh -R "$repo" pr close "${pr_of[$child]}" >/dev/null
-until_true 300 "the pr-closed-unmerged notice for $child on $root1's architect" notice_delivered "$root1" architect "$(notice_needle pr-closed-unmerged "$child")"
+# The notice is queued on the child and walks from it, and the child's rerun gave the child its own
+# architect back, which holds its role: the notice lands in that architect's session.
+until_true 300 "the pr-closed-unmerged notice for $child on $child's own architect" notice_delivered "$child" architect "$(notice_needle pr-closed-unmerged "$child")"
 sleep 30
-n=$(notice_deliveries "$root1" architect "$(notice_needle pr-closed-unmerged "$child")")
-[ "$n" = 1 ] || soft "$root1's architect received $n pr-closed-unmerged notices for $child, want 1"
-notice_line "$root1" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
-note "closed $repo#${pr_of[$child]} unmerged; $root1's architect got pr-closed-unmerged for $child $n time(s)"
+n=$(notice_deliveries "$child" architect "$(notice_needle pr-closed-unmerged "$child")")
+[ "$n" = 1 ] || soft "$child's own architect received $n pr-closed-unmerged notices for $child, want 1"
+notice_line "$child" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
+note "closed $repo#${pr_of[$child]} unmerged; $child's own architect got pr-closed-unmerged for $child $n time(s)"
 set_status "$child" backlog
 note "the proof human parked $child (backlog) so it takes no further turns"
 pass

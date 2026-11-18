@@ -259,7 +259,8 @@ const (
 	// LineFirstPhase is an issue of a tree that already runs, standing at admitted with its
 	// tree's design gate open, whose first phase can start: a released child, and the root itself
 	// once its own work comes round. Its promotion starts that phase as the gate's opening used
-	// to (workflow's gateOpened).
+	// to (workflow's gateOpened), and starts a child's own architect with it
+	// (workflow's StartFirstPhase).
 	LineFirstPhase
 	// LineWaitingOnIssue is an issue the daemon has started that waits on another issue: a
 	// Dispatch blocker of it that is not done, or an open child its own first phase waits for.
@@ -1200,7 +1201,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		// A child an unfinished Dispatch issue holds where it stands waits for that issue, not
 		// for a slot: offered one here it would take it from an issue that can work, and its own
-		// first phase would start on work its blocker has still to land. Its tree's architect is
+		// first phase would start on work its blocker has still to land. The architect above it is
 		// told when it starts, and the state names it under admission.blocked meanwhile.
 		if _, blocked := facts.Held[issue.Key]; blocked {
 			hold(issue)
@@ -1208,9 +1209,12 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		// A parent whose own Dispatch children are still open does its work after theirs
 		// (LineFacts.ChildWaits): offered a slot here it would build beside the children whose
-		// merges its own head is meant to carry. Its tree's architect is told once per issue and
-		// run of its tree when the wait begins (admit's tellChildrenFirst), and the state names
-		// it under admission.blocked meanwhile.
+		// merges its own head is meant to carry. The architect that owns it is told once per issue
+		// and run of its tree when the wait begins (admit's tellChildrenFirst): the root's own
+		// architect for a root, and for a child the architect above it, since the child's own
+		// starts only with that first phase. A person's todo on a child that ran or was held starts
+		// and stops nothing (workflow's ReenterChild), so its own architect, if it held its role,
+		// still holds it and is told. The state names it under admission.blocked meanwhile.
 		if _, waits := facts.ChildWaits[issue.Key]; waits {
 			hold(issue)
 			continue
