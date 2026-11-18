@@ -17,10 +17,12 @@ body: |-
     no longer tests a trust override that reaches the roles another way: a file a dropped variable
     names (a `CURL_HOME` curlrc, `UV_CONFIG_FILE`), the `GIT_CONFIG_*` variables, a `NODE_OPTIONS`
     preload, a `PYTHONPATH` `sitecustomize`, a dotfile of the pod's home, a proxy, or a
-    configuration file of a role's working directory. Each client runs with a home of its own and
-    with the probe's state directory as its working directory; `curl` takes `-q` first, `mise`
-    and `uv` take `--no-config`, `git` takes `GIT_CEILING_DIRECTORIES`, and `go` reads a `go.mod`
-    of the probe's own, so none reads a configuration file of the pod's home or working directory,
+    configuration file of a role's working directory, and it does not test the image's `mise`
+    system file, which its `mise` does not read. Each client runs with a home of its own and with
+    the probe's state directory as its working directory; `curl` takes `-q` first, `mise` takes
+    `--no-config`, `uv` reads a workspace `pyproject.toml` of the probe's own and still reads the
+    image's system `uv.toml`, `git` takes `GIT_CEILING_DIRECTORIES`, and `go` reads a `go.mod` of
+    the probe's own, so none reads a configuration file of the pod's home or working directory,
     none but `bun` and `omp`, which read a `package.json` and a `tsconfig.json`, reads one of the
     state directory's parents, and no credential variable or file of the pod's reaches a test site.
     Because the image sets `USER`, `runtime.kubernetes.pod.env` may no longer set it:

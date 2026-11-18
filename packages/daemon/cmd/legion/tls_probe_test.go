@@ -328,14 +328,16 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 	}
 }
 
-// No image client reads configuration from the probe's working directory or from a directory
-// above the state directory newTLSStateDir makes. What each guard keeps its client from, with the
-// measurement at that client's spec in workerTLSClients:
+// No image client but bun and omp, which read the package.json and tsconfig.json of each directory
+// above theirs, reads configuration from a directory above the state directory newTLSStateDir
+// makes, and none reads it from the probe's working directory. What each guard keeps its client
+// from, with the measurement at that client's spec in workerTLSClients:
 //
 //   - every client runs in the state directory: each, from the probe's working directory;
 //   - the state directory's go.mod: go, from a parent directory's go.mod;
 //   - --no-config as mise's first argument: mise, from a parent directory's mise.toml;
-//   - --no-config among uv's arguments: uv, from a parent directory's uv.toml and pyproject.toml;
+//   - the state directory's workspace pyproject.toml: uv, from a parent directory's uv.toml and
+//     pyproject.toml;
 //   - GIT_CEILING_DIRECTORIES at the state directory's parent: git, from a parent repository.
 func TestImageTLSClientsReadNoConfigurationAboveTheStateDirectory(t *testing.T) {
 	stateDir, remove, err := newTLSStateDir()
@@ -343,8 +345,12 @@ func TestImageTLSClientsReadNoConfigurationAboveTheStateDirectory(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
-	if goMod, err := os.ReadFile(filepath.Join(stateDir, "go.mod")); err != nil || !slices.Contains(strings.Split(string(goMod), "\n"), "module legion-tls-probe") {
-		t.Errorf("the state directory's go.mod is %q, %v; want one holding module legion-tls-probe", goMod, err)
+	isModule := func(line string) bool { return strings.HasPrefix(line, "module ") }
+	if goMod, err := os.ReadFile(filepath.Join(stateDir, "go.mod")); err != nil || !slices.ContainsFunc(strings.Split(string(goMod), "\n"), isModule) {
+		t.Errorf("the state directory's go.mod is %q, %v; want one holding a module directive", goMod, err)
+	}
+	if pyproject, err := os.ReadFile(filepath.Join(stateDir, "pyproject.toml")); err != nil || !slices.Contains(strings.Split(string(pyproject), "\n"), "[tool.uv.workspace]") {
+		t.Errorf("the state directory's pyproject.toml is %q, %v; want one holding a [tool.uv.workspace] line", pyproject, err)
 	}
 	clients := imageTLSClientsOf[tlsCommandClient](t, nil, stateDir, workerTLSClientNames()...)
 	for _, client := range clients {
@@ -357,12 +363,43 @@ func TestImageTLSClientsReadNoConfigurationAboveTheStateDirectory(t *testing.T) 
 		if _, args, _ := clients["mise"].commandLine(site); len(args) == 0 || args[0] != "--no-config" {
 			t.Errorf("mise at %s runs %q, want --no-config first", site.name, args)
 		}
-		if _, args, _ := clients["uv"].commandLine(site); !slices.Contains(args, "--no-config") {
-			t.Errorf("uv at %s runs %q, want --no-config among its arguments", site.name, args)
-		}
 		if _, _, env := clients["git"].commandLine(site); !slices.Contains(env, ceiling) {
 			t.Errorf("git at %s runs under %q, want %s", site.name, env, ceiling)
 		}
+	}
+}
+
+// The state directory's path is absolute and holds no colon, since git skips a relative
+// GIT_CEILING_DIRECTORIES entry and splits the value at colons: a relative TMPDIR is made absolute,
+// and a TMPDIR holding a colon is refused, with an error naming the path and no directory left.
+func TestTLSStateDirIsAbsoluteAndHoldsNoColon(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("relative", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", "relative")
+	stateDir, remove, err := newTLSStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remove)
+	if !filepath.IsAbs(stateDir) {
+		t.Errorf("with TMPDIR=relative the state directory is %q, want an absolute path", stateDir)
+	}
+
+	colon := filepath.Join(t.TempDir(), "a:b")
+	if err := os.Mkdir(colon, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", colon)
+	if stateDir, remove, err := newTLSStateDir(); err == nil {
+		remove()
+		t.Errorf("with TMPDIR=%s the state directory is %s, want an error: git reads a colon as a separator in GIT_CEILING_DIRECTORIES", colon, stateDir)
+	} else if !strings.Contains(err.Error(), colon) {
+		t.Errorf("with TMPDIR=%s the error is %q, want it to name the path", colon, err)
+	}
+	if entries, err := os.ReadDir(colon); err != nil || len(entries) != 0 {
+		t.Errorf("after the refusal TMPDIR=%s holds %v, %v; want it empty", colon, entries, err)
 	}
 }
 

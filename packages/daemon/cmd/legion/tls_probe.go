@@ -317,18 +317,22 @@ func chromiumNavigationFailure(stderr string) string {
 // On top of the kept variables, each client runs with the probe's own values: a HOME of its own
 // in the state directory, which replaces the image's, the state directory as its working
 // directory (tlsClientSpec.build), the settings its command gives, and LEGION_TLS_URL naming the
-// site. The state directory holds the probe's access-token file and go.mod (newTLSStateDir) and
-// what the clients keep there, so no configuration file of the pod's working directory is read.
-// Five clients that read configuration from somewhere neither moves are each given the flag,
-// variable or file that stops it, with its measurement at the client's spec (workerTLSClients):
-// curl's -q (its passwd home's curlrc), mise's and uv's --no-config (their working directory's
-// parents), git's GIT_CEILING_DIRECTORIES (a parent repository), and go's own go.mod (a parent
-// go.mod). bun and omp also read configuration from somewhere neither moves, the package.json and
-// tsconfig.json of each of their working directory's parents (measured on 2026-11-18 with bun
-// 1.4.4 and the omp built on it: a grandparent's of each was parsed, and the eval ran), and are
-// given nothing that stops it, since neither file holds a TLS setting of Bun's. So no credential
-// variable of the pod's reaches a client, and no file of the pod's home or working directory does
-// but one a kept variable names, as SSL_CERT_FILE may.
+// site. The state directory holds the probe's access-token file, go.mod and pyproject.toml
+// (newTLSStateDir) and what the clients keep there, so no configuration file of the pod's working
+// directory is read. Five clients that read configuration from somewhere neither moves are each
+// given the flag, variable or file that stops it, with its measurement at the client's spec
+// (workerTLSClients): curl's -q (its passwd home's curlrc), mise's --no-config (its working
+// directory's parents), the state directory's workspace pyproject.toml for uv (a parent's uv.toml
+// or pyproject.toml), git's GIT_CEILING_DIRECTORIES (a parent repository), and go's own go.mod (a
+// parent go.mod). mise's --no-config stays although it also skips the image's mise system file,
+// /etc/mise/config.toml, which the probe therefore does not read: mise 2026.8.12's `mise settings
+// ls --all` names no TLS setting (none for ssl, tls, cert, insecure or proxy), and its netrc
+// settings would carry a credential. bun and omp also read configuration from somewhere neither
+// moves, the package.json and tsconfig.json of each of their working directory's parents
+// (measured on 2026-11-18 with bun 1.4.4 and the omp built on it: a grandparent's of each was
+// parsed, and the eval ran), and are given nothing that stops it, since neither file holds a TLS
+// setting of Bun's. So no credential variable of the pod's reaches a client, and no file of the
+// pod's home or working directory does but one a kept variable names, as SSL_CERT_FILE may.
 //
 // No proxy variable of the pod's reaches a client, so the probe tests each client's direct path
 // to each site. Where a pod's roles reach the sites only through a proxy, the positive controls
@@ -529,16 +533,27 @@ const (
 // newTLSStateDir makes the TLS probe's state directory: every client's working directory and the
 // directory its HOME is under (tlsClientSpec.build), where gcloud, bq, az, mise, go and kubectl
 // keep their state too, so none of it lands in the runtime user's home (the image build's final
-// step requires that). It is made holding two files: the access-token file gcloud and bq sign in
-// with, and a go.mod, which go reads in place of a parent directory's (the go client of
-// workerTLSClients says why). remove deletes the directory with everything the clients wrote
-// there.
+// step requires that). It is made holding three files: the access-token file gcloud and bq sign
+// in with; a go.mod, which go reads in place of a parent directory's; and a pyproject.toml
+// holding only [tool.uv.workspace], which makes the state directory uv's workspace root (the go
+// and uv clients of workerTLSClients say why). Its path is made absolute, and one holding a colon
+// refused, because git skips a relative GIT_CEILING_DIRECTORIES entry and splits the value at
+// colons, either of which would turn git's ceiling off. remove deletes the directory with
+// everything the clients wrote there.
 func newTLSStateDir() (dir string, remove func(), err error) {
-	dir, err = os.MkdirTemp("", "legion-tls-probe-")
+	made, err := os.MkdirTemp("", "legion-tls-probe-")
 	if err != nil {
 		return "", nil, fmt.Errorf("make the TLS probe's state directory: %w", err)
 	}
+	if dir, err = filepath.Abs(made); err != nil {
+		_ = os.RemoveAll(made)
+		return "", nil, fmt.Errorf("make the TLS probe's state directory %s absolute: %w", made, err)
+	}
 	remove = func() { _ = os.RemoveAll(dir) }
+	if strings.Contains(dir, ":") {
+		remove()
+		return "", nil, fmt.Errorf("the TLS probe's state directory %s holds a colon, which git reads as a separator in GIT_CEILING_DIRECTORIES", dir)
+	}
 	if err = os.WriteFile(filepath.Join(dir, tlsAccessTokenFile), []byte(tlsProbeSignIn), 0o600); err != nil {
 		remove()
 		return "", nil, fmt.Errorf("write the TLS probe's access token: %w", err)
@@ -546,6 +561,10 @@ func newTLSStateDir() (dir string, remove func(), err error) {
 	if err = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module legion-tls-probe\n"), 0o600); err != nil {
 		remove()
 		return "", nil, fmt.Errorf("write the TLS probe's go.mod: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[tool.uv.workspace]\n"), 0o600); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("write the TLS probe's pyproject.toml: %w", err)
 	}
 	return dir, remove, nil
 }
@@ -716,14 +735,20 @@ var workerTLSClients = []tlsClientSpec{
 			return []string{"--input-type=module", "--eval", tlsFetchProgram}, nil
 		},
 	},
-	// --no-config keeps uv from the uv.toml and pyproject.toml of its working directory's parents,
-	// which it reads as its settings (measured on 2026-11-18, uv 0.13.5: a parent's uv.toml failed
-	// it with "Failed to parse: …/uv.toml", a parent's pyproject.toml was read "during settings
-	// discovery", and with --no-config neither was read).
+	// uv reads its settings from its workspace root, and the state directory's pyproject.toml,
+	// which declares only a workspace (newTLSStateDir), makes the state directory that root, so uv
+	// reads no parent's pyproject.toml or uv.toml; it still reads the image's system uv.toml
+	// (/etc/uv/uv.toml, or uv/uv.toml under XDG_CONFIG_DIRS) and merges it under that file, which
+	// overrides none of its settings. --no-config would skip the system file too. Measured on
+	// 2026-11-18, uv 0.13.5, with a parent's pyproject.toml declaring a project and offline = true:
+	// with an empty uv.toml in place of this file, uv took the parent as its workspace root and
+	// resolved offline; with this file, it took the state directory and failed at the fetch,
+	// reading neither that pyproject.toml nor a broken uv.toml added beside it; and it read a
+	// system uv.toml given through XDG_CONFIG_DIRS.
 	{
 		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"pip", "install", "--no-config", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
+			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
 		},
 	},
 	{
@@ -872,7 +897,11 @@ var workerTLSClients = []tlsClientSpec{
 	// miseHTTPStatus reads. --no-config, first, keeps mise from every config file, where it reads a
 	// mise.toml of each directory from its working directory up to / (measured on 2026-11-18, mise
 	// 2026.8.12: a parent's mise.toml was read, and with --no-config neither it, the working
-	// directory's .mise.toml nor a config.toml in MISE_CONFIG_DIR was).
+	// directory's .mise.toml nor a config.toml in MISE_CONFIG_DIR was). It also skips the image's
+	// system file, /etc/mise/config.toml or the one MISE_SYSTEM_CONFIG_FILE names, which the probe
+	// therefore does not read (tlsKeptVariables): measured on 2026-11-18 with mise 2026.8.12, with
+	// MISE_SYSTEM_CONFIG_FILE naming a broken file, mise failed on it without --no-config and did
+	// not read it with it.
 	{
 		name: "mise", program: "mise", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind, applicationSeen: miseHTTPStatus.MatchString,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
