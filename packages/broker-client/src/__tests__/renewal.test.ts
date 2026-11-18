@@ -144,8 +144,8 @@ test("a refusal of the identity stops at once, whatever is in hand", async () =>
 
 test("the broker's rate limit leaves the token in hand working until it lapses", async () => {
   // The broker's token endpoint spends a bucket per source address, and a bucket refills: a 429
-  // is the one refusal a later trade may be answered differently, so a client that holds a live
-  // token keeps writing with it rather than failing every call through the renewal window.
+  // is one of the refusals a later trade may be answered differently, so a client that holds a
+  // live token keeps writing with it rather than failing every call through the renewal window.
   const broker = stubBroker((_trade, count) =>
     count === 1
       ? { body: accepted("token-1", 600) }

@@ -209,3 +209,55 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub: newRequestMachine gives a release
+// that fails after a github-app mint the GiveBack of the same GitHub its minter mints at, so the
+// token that release minted is revoked there: a read made with it afterwards is refused.
+func TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub(t *testing.T) {
+	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
+	service.AnswerWith(stand.Answer)
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", secrets.NewRetry(metrics.New()))
+	giveBack := machine.GiveBacks[policy.TypeGitHubApp]
+	if giveBack == nil || len(machine.GiveBacks) != 1 {
+		t.Fatalf("the machine's GiveBacks hold %d types, github-app's %t; want github-app's alone", len(machine.GiveBacks), giveBack != nil)
+	}
+	minted, err := machine.Minters[policy.TypeGitHubApp](t.Context(), secrets.MintRequest{
+		Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHubOwners: []string{"acme-org"},
+	})
+	if err != nil {
+		t.Fatalf("a github-app mint: %v", err)
+	}
+	var installations struct {
+		Installations map[string]struct {
+			Token string `json:"token"`
+		} `json:"installations"`
+	}
+	if err := json.Unmarshal([]byte(minted.Value), &installations); err != nil || installations.Installations["acme-org"].Token == "" {
+		t.Fatalf("the minted value holds no token for acme-org: %v", err)
+	}
+	reads := func() int {
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, service.URL()+"/repos/acme-org/proofs", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+installations.Installations["acme-org"].Token)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	if status := reads(); status != http.StatusOK {
+		t.Fatalf("a read with the minted token answered %d, want 200", status)
+	}
+	giveBack(t.Context(), "APP_KEY", minted.Value)
+	if status := reads(); status != http.StatusUnauthorized {
+		t.Fatalf("a read with the given-back token answered %d, want 401", status)
+	}
+}

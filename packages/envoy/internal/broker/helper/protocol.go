@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // Request is the client's one line. Op is register, sign, sign-request, sign-launcher,
@@ -71,6 +73,8 @@ type Response struct {
 	CredentialExpiresAt string        `json:"credential_expires_at,omitempty"` // login-status: RFC3339, when the held credential lapses without a refresh; empty while none is held
 	LoginRefused        bool          `json:"login_refused,omitempty"`         // login-status: the helper dropped the credential it held (the broker refused it or its refresh, or it reached its expiry), and no login has started or settled since
 	CredentialDropped   string        `json:"credential_dropped,omitempty"`    // login-status: why, set exactly when LoginRefused (dropRefused, dropRefreshRefused or dropExpired); a helper from before this field sends LoginRefused alone
+	MachineIdentity     bool          `json:"machine_identity,omitempty"`      // login-status, sign-launcher: the helper trades this machine's own identity (AGENT_SECRETS_MACHINE_IDENTITY) and holds no machine login; a helper before this field sends none, which reads as machine-login mode
+	IdentityStopped     bool          `json:"identity_stopped,omitempty"`      // login-status, sign-launcher: beside MachineIdentity, the helper's trade loop stopped on a refusal no retry cures, and nothing trades again until the helper restarts
 	LeaseExpires        string        `json:"lease_expires,omitempty"`         // enroll-session-key: RFC3339Nano
 	Proof               string        `json:"proof,omitempty"`                 // sign: a session proof; sign-launcher: a launcher proof of the machine credential
 	CredentialID        string        `json:"credential_id,omitempty"`         // sign-launcher: the machine credential the proof names, so a machine revoke can tell this machine's own login
@@ -118,6 +122,25 @@ func NoCredentialReason(loginState string, refused bool, dropped string) string 
 	default:
 		return "the most recent machine login is " + loginState
 	}
+}
+
+// NoCredentialFailure is the class of a login-status or sign-launcher answer r while the helper
+// holds no live launcher credential (brokerclient.Hint): in identity mode the helper's own trade
+// loop gets one, or, once it has stopped, nothing does until the helper restarts; otherwise a
+// machine login a human approves. An answer from a helper before MachineIdentity reads as
+// machine-login mode, the only mode such a helper reports a login for.
+func (r Response) NoCredentialFailure() brokerclient.Failure {
+	return modeFailure(r.MachineIdentity, r.IdentityStopped)
+}
+
+func modeFailure(machineIdentity, identityStopped bool) brokerclient.Failure {
+	switch {
+	case machineIdentity && identityStopped:
+		return brokerclient.FailureIdentityStopped
+	case machineIdentity:
+		return brokerclient.FailureIdentityLapsed
+	}
+	return brokerclient.FailureNoMachineLogin
 }
 
 // SessionInfo is one registered session as `sessions` lists it: never a key.

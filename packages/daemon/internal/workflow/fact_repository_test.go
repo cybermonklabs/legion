@@ -102,6 +102,7 @@ func seedRenamedTree(t *testing.T, pool *pgxpool.Pool, prRepo string) {
 		Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "V", LastDispatchSeq: 1})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "head", Summary: "reviewed"})
+	seedClaimSession(t, pool, "legion-legion-legion-209-reviewer", "ses-reviewer")
 	if prRepo == "" {
 		return
 	}

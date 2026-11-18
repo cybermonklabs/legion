@@ -105,7 +105,7 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 
 	// --- the broker refuses the held credential ---
 	refuseTheHeldCredential(t, rig, srv, sock)
-	want = prefix + "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login\n"
+	want = prefix + "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it\n"
 	if stdout, stderr, exit := loginStatus(); exit != 1 || stdout != "expired\n" || stderr != want {
 		t.Fatalf("login-status after the broker refused the credential: exit %d, stdout %q, stderr %q; want 1, %q, %q", exit, stdout, stderr, "expired\n", want)
 	}
@@ -114,7 +114,7 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "deny", nil); exit != 1 {
 		t.Fatalf("denied machine login (code %s): exit %d, stderr %q; want 1", code, exit, stderr)
 	}
-	want = prefix + "the most recent machine login was denied; run: agent-secrets machine login\n"
+	want = prefix + "the most recent machine login was denied; run: agent-secrets machine login, and have a human approve it\n"
 	if stdout, stderr, exit := loginStatus(); exit != 1 || stdout != "denied\n" || stderr != want {
 		t.Fatalf("login-status after a denied login with no credential held: exit %d, stdout %q, stderr %q; want 1, %q, %q", exit, stdout, stderr, "denied\n", want)
 	}

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -281,6 +282,59 @@ func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
 	}
 	if got := r.count(t, `outcome="failed",code="RECORD_ID_INPUT",caller_class="public"`); got != "0" {
 		t.Errorf("the 500 counted %s under the code noted for a refusal, want 0", got)
+	}
+}
+
+// An answer whose caller had gone (NoteCallerEnded) is counted cancelled, under the code its
+// status gives, and writes no line: a 503 is not counted failed, nor a refusal refused, since
+// nobody reads the answer.
+func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
+	for _, row := range []struct {
+		name, body, code, otherwise string
+		status                      int
+	}{
+		{"a 503", `{"code":"REQUEST_ENDED","error":"the request ended"}`, "HTTP_503", `outcome="failed",code="HTTP_503"`, http.StatusServiceUnavailable},
+		{"a refusal", `{"code":"NOT_YOURS","error":"another session's"}`, "NOT_YOURS", `outcome="refused",code="NOT_YOURS"`, http.StatusForbidden},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				answer.FromContext(req.Context()).NoteCallerEnded()
+				writeJSON(w, row.status, row.body)
+			}))
+			if w := r.serve(httptest.NewRequest(http.MethodGet, "/", nil)); w.Code != row.status {
+				t.Fatalf("answer = %d, want %d", w.Code, row.status)
+			}
+			if lines := r.lines(t); len(lines) != 0 {
+				t.Errorf("an answer whose caller ended wrote %v, want no line", lines)
+			}
+			if got := r.count(t, `outcome="cancelled",code="`+row.code+`",caller_class="public"`); got != "1" {
+				t.Errorf("counted %s cancelled under %s, want 1", got, row.code)
+			}
+			if got := r.count(t, row.otherwise+`,caller_class="public"`); got != "0" {
+				t.Errorf("counted %s under %s, want 0", got, row.otherwise)
+			}
+		})
+	}
+}
+
+// Arrived is when Middleware first saw the request, before the handler ran, and, on a request no
+// Recorder records, the moment it is asked.
+func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
+	var arrived, handled time.Time
+	before := time.Now()
+	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		arrived, handled = answer.FromContext(req.Context()).Arrived(), time.Now()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	r.serve(httptest.NewRequest(http.MethodGet, "/", nil))
+	if arrived.Before(before) || handled.Sub(arrived) < 50*time.Millisecond {
+		t.Errorf("Arrived() = %s, want at or after %s and at least 50 ms before the handler read it at %s", arrived, before, handled)
+	}
+	asked := time.Now()
+	got := answer.FromContext(context.Background()).Arrived()
+	if after := time.Now(); got.Before(asked) || got.After(after) {
+		t.Errorf("Arrived() on no Recorder = %s, want the moment it was asked, from %s to %s", got, asked, after)
 	}
 }
 
