@@ -178,7 +178,9 @@ describe("the cut turn a resumed transcript holds", () => {
     expect(cut?.deliveries).toEqual([{ id: "msg-skill", from: "dispatch" }]);
   });
 
-  test("a tag no handled attempt records names nothing, and a person's Send before the cut turn is not named", () => {
+  // A control, not a red row: it passes before and after the change that names a person's Send,
+  // and it holds that change to what it must not name.
+  test("control: a tag no handled attempt records names nothing, and a person's Send before the cut turn is not named", () => {
     const cut = cutTurn([
       handledAttempt("msg-old"),
       personsTurn("an older request", "msg-old"),
