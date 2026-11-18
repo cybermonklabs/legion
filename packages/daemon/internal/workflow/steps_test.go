@@ -27,14 +27,23 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 		phase.Retro:        {record.StepPlace{Task: "default", Kind: "retro", Place: 0}, "implementer", ""},
 		phase.Merging:      {record.StepPlace{Task: "default", Kind: "merge", Place: 0}, "merger", ""},
 	}
+	steps := 0
 	for _, p := range phase.Order {
 		place, role, typ, ok := stepOf(p)
 		w, stepPhase := want[p]
 		if ok != stepPhase {
 			t.Fatalf("stepOf(%s) ok = %v, want %v", p, ok, stepPhase)
 		}
-		if got := (step{place, role, typ}); ok && got != w {
+		if !ok {
+			continue
+		}
+		steps++
+		if got := (step{place, role, typ}); got != w {
 			t.Errorf("stepOf(%s) = %+v, want %+v", p, got, w)
+		}
+		// The settle names the phase of a run the store holds open by its place (phaseAt).
+		if back, found := phaseAt(place); !found || back != p {
+			t.Errorf("phaseAt(%+v) = %s, %v, want %s, the phase whose step runs there", place, back, found, p)
 		}
 	}
 	for _, p := range []phase.Phase{phase.Admitted, phase.Held, phase.Done, phase.AwaitingPerson} {
@@ -42,8 +51,8 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 			t.Errorf("stepOf(%s) is a step; that phase runs none", p)
 		}
 	}
-	if len(want) != 7 {
-		t.Fatalf("the want table holds %d steps; phase.Order's seven run them", len(want))
+	if steps != len(want) {
+		t.Fatalf("phase.Order holds %d phases that run a step, and the want table %d: a phase of the table is no phase of the line", steps, len(want))
 	}
 }
 
