@@ -19,6 +19,9 @@ const ISSUE_COMMENTS = "/api/v1/issues/DSP-1/comments";
 /** A port nothing on this host listens on, so a connection to it is refused. */
 const REFUSED = "http://127.0.0.1:1";
 
+/** Dispatch's `/healthz` answer on a build that runs the keyed layer. */
+const KEYED_LAYER_HEALTH = { ok: true, db: true, nats: true, idempotency_keys: true };
+
 const comment = { body: "Shipped.", actor: { kind: "session" as const, id: "session-1" } };
 
 const opened: { stop(): void }[] = [];
@@ -100,7 +103,7 @@ function keyedDispatch(cut: Cut, health: Health) {
             headers: { "Content-Type": "text/html" },
           });
         }
-        return Response.json({ ok: true, db: true, nats: true, idempotency_keys: true });
+        return Response.json(KEYED_LAYER_HEALTH);
       }
       if (request.method !== "POST" || pathname !== ISSUE_COMMENTS) {
         return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
@@ -249,7 +252,9 @@ describe("a keyed write whose answer was lost after Dispatch stored it", () => {
  * its answer replaced by a gateway's 502 page; the second request, whatever its key, reaches the
  * older build, which has no route for it (`404 NOT_FOUND`, "no route for …") and stores nothing;
  * every later request reaches the newer build's keyed layer, which answers a key it holds with the
- * stored answer and stores a key it does not hold as a new comment.
+ * stored answer and stores a key it does not hold as a new comment. Its `/healthz` answers that
+ * the keyed layer runs, so a client that asks it before it resends after the 502 (as main's did)
+ * sends the write again and reaches the no-route retry, which is what the rows judge.
  */
 function rollingDispatch() {
   const { comments, posts, take } = keyedStore();
@@ -258,6 +263,7 @@ function rollingDispatch() {
     port: 0,
     async fetch(request) {
       const { pathname } = new URL(request.url);
+      if (pathname === "/healthz") return Response.json(KEYED_LAYER_HEALTH);
       if (request.method !== "POST" || pathname !== ISSUE_COMMENTS) {
         return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
       }
@@ -346,8 +352,8 @@ const ISSUE_ARTIFACTS = "/api/v1/issues/DSP-1/artifacts";
  * The same release rolling out, on the multipart upload route: the first upload under a key is
  * stored and answered with a gateway's 502 page, the second meets the older build's 404 with no
  * route, and every later one reaches the keyed layer, which replays the upload a key holds and
- * stores one it does not. Each attempt's bytes are kept, so a row tells one encoding of the form
- * from another.
+ * stores one it does not. Its `/healthz` answers that the keyed layer runs, as the comment rig's
+ * does. Each attempt's bytes are kept, so a row tells one encoding of the form from another.
  */
 function rollingUploads() {
   const posts: { key: string | null; stored: boolean; bytes: string }[] = [];
@@ -358,6 +364,7 @@ function rollingUploads() {
     port: 0,
     async fetch(request) {
       const { pathname } = new URL(request.url);
+      if (pathname === "/healthz") return Response.json(KEYED_LAYER_HEALTH);
       if (request.method !== "POST" || pathname !== ISSUE_ARTIFACTS) {
         return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
       }

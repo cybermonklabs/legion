@@ -515,7 +515,12 @@ again. Rolling it back brings the hazard back the other way: a tab still open, a
 `dispatch` client, which sends a failed write again under its key and asks nothing first, retry a
 write whose answer was lost against the earlier server, which runs it again. So fix it forward,
 as above; if you must roll back, stop this version first, knowing a write in flight at that
-moment may land twice. Once a
+moment may land twice. Rolling back to a build whose keyed layer passes a caller it cannot
+resolve on to the handler, rather than answering that caller itself, brings the double write back
+too, for as long as that build serves: a `dispatch` command that sends a failed write again
+without reading `/healthz` can have that build run it once with no key and again under its key.
+Once your sessions run such a command, do not roll back past the build whose keyed layer answers
+that caller itself; fix forward instead. Once a
 later release has dropped the broadcast send's old key table (migration `0141`), rolling back past
 this version also stops broadcasts: the earlier version's broadcast send reads and writes that
 table, so every broadcast send fails while the rest of that version keeps working. A tab opened
