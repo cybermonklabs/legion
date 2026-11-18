@@ -1,3 +1,5 @@
+//go:build linux
+
 package helper
 
 // waitRevokes returns once no revoke goRevoke fired off is in flight: at once when none is, and
