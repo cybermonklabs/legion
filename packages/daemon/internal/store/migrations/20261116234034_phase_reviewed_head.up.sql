@@ -30,9 +30,10 @@
 -- ` Review entry: <the row's entry>.`. A test holds the update's text to the function's
 -- (TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences in
 -- internal/workflow). It reads no task's text, and a row of another role, or a reviewer's row
--- that stores no task, is left as it is. Both statements run in store.apply's one transaction,
--- under its advisory lock: the add takes a short ACCESS EXCLUSIVE lock on phases and rewrites no
--- row, and the update writes the reviewer's rows that store a task.
+-- that stores no task, is left as it is. All three statements run in store.apply's one
+-- transaction, under its advisory lock: each of the two adds takes a short ACCESS EXCLUSIVE lock
+-- on its table, phases and pending_task_deliveries, and rewrites no row, and the update writes the
+-- reviewer's rows that store a task.
 --
 -- The two sentences are the last two of each task the reviewer is sent, whatever queued it, and a
 -- typed fact tells a task that holds them from one that does not, never the task's text: the start
