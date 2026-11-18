@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -300,7 +301,8 @@ func WithToken(token string) Option {
 // the file at path for the listener's audience and rewrites before it expires. Each call reads the
 // file when it is made, so the call after a rotation presents the new token, and judges the token
 // by its own exp before presenting it, so a token the kubelet did not rewrite in time is never
-// sent to earn a 401 (accountTokenFromFile). It replaces WithToken's bearer, and it is what lets a
+// sent to earn a 401 (accountTokenFromFile). It is presented in WithToken's bearer's place, which
+// is then presented only to a listener that refuses the account token (do), and it is what lets a
 // send carry its role mark (SendInput.Role).
 func WithAccountTokenFile(path string) Option {
 	return func(c *Client) { c.accountTokenFile = path }
@@ -390,9 +392,10 @@ func (c *Client) presentsIdentity() bool {
 }
 
 // authorize sets the bearer a call presents: the account token the file holds now, or the shared
-// token, or none. A failure is ErrAccountToken, and the call is not made.
-func (c *Client) authorize(request *http.Request) error {
-	if c.accountTokenFile != "" {
+// token, or none; the shared token alone when shared is set (do's fallback). A failure is
+// ErrAccountToken, and the call is not made.
+func (c *Client) authorize(request *http.Request, shared bool) error {
+	if c.accountTokenFile != "" && !shared {
 		token, err := accountTokenFromFile(c.accountTokenFile, time.Now())
 		if err != nil {
 			return err
@@ -404,6 +407,41 @@ func (c *Client) authorize(request *http.Request) error {
 		request.Header.Set("Authorization", "Bearer "+c.apiToken)
 	}
 	return nil
+}
+
+// do makes one listener call, the request build makes, authorized by authorize. A call on the
+// account token that the listener answers 401 is made once more on the shared token when the
+// client holds one too (WithToken beside WithAccountTokenFile), built with shared set, so a send
+// leaves its role mark out (Send): a listener that does not verify Dispatch's identity yet - one
+// of the release before it, still serving while a deploy rolls the listener and the app at once -
+// refuses the account token and takes the shared one, and would refuse the mark. A 401 is
+// answered before the listener's route runs (cmd/listener, apiAuth), so the first call did
+// nothing and the second is no repeat. The fallback is logged, since a listener that keeps
+// refusing Dispatch's identity past a roll is a deployment fault that costs every role mark. It
+// is no token refresh: the account token is read anew at every call (authorize) and never
+// because of a 401.
+func (c *Client) do(route string, build func(shared bool) (*http.Request, error)) (*http.Response, error) {
+	request, err := build(false)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.authorize(request, false); err != nil {
+		return nil, fmt.Errorf("%s: %w", route, err)
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusUnauthorized || !c.presentsIdentity() || c.apiToken == "" {
+		return response, err
+	}
+	_ = response.Body.Close()
+	slog.Warn("dispatch: the Envoy listener refused Dispatch's account token, so the call is made again on the shared token and carries no role mark",
+		"route", route)
+	if request, err = build(true); err != nil {
+		return nil, err
+	}
+	if err := c.authorize(request, true); err != nil {
+		return nil, fmt.Errorf("%s: %w", route, err)
+	}
+	return c.httpClient.Do(request)
 }
 
 // Sessions returns every session the listener holds a registration for, live and unresponsive
@@ -509,17 +547,19 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	if err != nil {
 		return nil, fmt.Errorf("encode POST /v1/interests/unsubscribe body: %w", err)
 	}
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
+	response, err := c.do("POST /v1/interests/unsubscribe", func(bool) (*http.Request, error) {
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		return request, nil
+	})
+	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+		return nil, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	if err := c.authorize(request); err != nil {
-		return nil, fmt.Errorf("POST /v1/interests/unsubscribe: %w", err)
-	}
-	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, err))
 	}
@@ -774,14 +814,16 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]Legio
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
 // both: no listener answered it (unreachable).
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+	response, err := c.do("GET "+route, func(bool) (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+		}
+		return request, nil
+	})
+	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+		return nil, err
 	}
-	if err := c.authorize(request); err != nil {
-		return nil, fmt.Errorf("GET %s: %w", route, err)
-	}
-	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
 	}
@@ -833,33 +875,34 @@ func (input SendInput) EnvelopeMessage() contracts.Message {
 // send gets, and is ErrUnavailable.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
 	message := input.EnvelopeMessage()
-	role := ""
-	if c.presentsIdentity() {
-		role = input.Role
-	}
-	body, err := json.Marshal(struct {
-		TargetSession  string                 `json:"target_session"`
-		Source         string                 `json:"source"`
-		Message        string                 `json:"message"`
-		Payload        string                 `json:"payload"`
-		IdempotencyKey string                 `json:"idempotency_key"`
-		Urgency        string                 `json:"urgency,omitempty"`
-		ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
-		ConnectedOnly  bool                   `json:"connected_only,omitempty"`
-		Role           string                 `json:"role,omitempty"`
-	}{
-		TargetSession:  input.TargetSession,
-		Source:         message.Source,
-		Message:        message.Text,
-		Payload:        *message.Payload,
-		IdempotencyKey: input.IdempotencyKey,
-		Urgency:        message.Urgency,
-		ExpectsReply:   message.ExpectsReply,
-		ConnectedOnly:  input.ConnectedOnly,
-		Role:           role,
-	})
-	if err != nil {
-		return SendResult{}, fmt.Errorf("encode POST /v1/messages/send body: %w", err)
+	// body is the send's body; shared is a send made again on the shared token (do), which
+	// carries no role mark, since the listener takes the mark from Dispatch's identity alone.
+	body := func(shared bool) ([]byte, error) {
+		role := ""
+		if c.presentsIdentity() && !shared {
+			role = input.Role
+		}
+		return json.Marshal(struct {
+			TargetSession  string                 `json:"target_session"`
+			Source         string                 `json:"source"`
+			Message        string                 `json:"message"`
+			Payload        string                 `json:"payload"`
+			IdempotencyKey string                 `json:"idempotency_key"`
+			Urgency        string                 `json:"urgency,omitempty"`
+			ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
+			ConnectedOnly  bool                   `json:"connected_only,omitempty"`
+			Role           string                 `json:"role,omitempty"`
+		}{
+			TargetSession:  input.TargetSession,
+			Source:         message.Source,
+			Message:        message.Text,
+			Payload:        *message.Payload,
+			IdempotencyKey: input.IdempotencyKey,
+			Urgency:        message.Urgency,
+			ExpectsReply:   message.ExpectsReply,
+			ConnectedOnly:  input.ConnectedOnly,
+			Role:           role,
+		})
 	}
 	// written records that this client finished putting the request on the wire, which is what
 	// separates a listener that went quiet (the envelope may be published) from a connection
@@ -868,17 +911,25 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
 	})
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(body),
-	)
-	if err != nil {
-		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+	response, err := c.do("POST /v1/messages/send", func(shared bool) (*http.Request, error) {
+		encoded, err := body(shared)
+		if err != nil {
+			return nil, fmt.Errorf("%w: encode POST /v1/messages/send body: %v", ErrUnavailable, err)
+		}
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		return request, nil
+	})
+	// A build or an authorization failure made no call (ErrUnavailable, ErrAccountToken); every
+	// other failure is the transport's.
+	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+		return SendResult{}, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	if err := c.authorize(request); err != nil {
-		return SendResult{}, fmt.Errorf("POST /v1/messages/send: %w", err)
-	}
-	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return SendResult{}, sendTransportError(err, written.Load())
 	}

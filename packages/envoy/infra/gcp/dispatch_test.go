@@ -939,7 +939,7 @@ func TestDispatchRegistersItsCloudResources(t *testing.T) {
 		"random:index/randomPassword:RandomPassword":        4,
 		"gcp:sql/database:Database":                         1,
 		"gcp:sql/user:User":                                 1,
-		"gcp:secretmanager/secretIamMember:SecretIamMember": 1,
+		"gcp:secretmanager/secretIamMember:SecretIamMember": 2,
 	}
 	got := map[string]int{}
 	for _, registration := range m.Registrations() {
@@ -950,34 +950,51 @@ func TestDispatchRegistersItsCloudResources(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-// The accessor's member is a principal in the cluster's Workload Identity pool, which Google
+// Each accessor's member is a principal in the cluster's Workload Identity pool, which Google
 // creates with the cluster; IAM may refuse a member of a pool that does not exist yet (unproven:
-// the plan's hardening ledger), so the grant waits for the cluster.
+// the plan's hardening ledger), so each grant waits for the cluster. There are two, one per
+// account that mounts the seed: the app's, <hostname>, and the listener's own,
+// <hostname>-listener.
 func TestDispatchSeedAccessorWaitsForTheCluster(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
-	member := m.One(t, "gcp:secretmanager/secretIamMember:SecretIamMember")
 	clusterURN := "urn:pulumi:s::p::" + dispatchType + "$gcp:container/cluster:Cluster::example-dispatch"
-	require.Contains(t, member.RPC.GetDependencies(), clusterURN,
-		"the seed accessor is granted after the cluster that creates its principal's pool")
-	require.Contains(t, member.RPC.GetPropertyDependencies()["member"].GetUrns(), clusterURN,
-		"the principal is built from the cluster's own Workload Identity pool, so it resolves only once the pool exists")
+	for name, account := range map[string]string{
+		"example-dispatch-nats-seed-accessor":          "example-dispatch",
+		"example-dispatch-listener-nats-seed-accessor": "example-dispatch-listener",
+	} {
+		member := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", name)
+		require.Contains(t, member.RPC.GetDependencies(), clusterURN,
+			"%s is granted after the cluster that creates its principal's pool", name)
+		require.Contains(t, member.RPC.GetPropertyDependencies()["member"].GetUrns(), clusterURN,
+			"the principal is built from the cluster's own Workload Identity pool, so it resolves only once the pool exists")
+		require.Equal(t, "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/dispatch/sa/"+account,
+			member.Inputs.Mappable()["member"], "%s grants the seed to the account %s alone", name, account)
+	}
 }
 
-// The app and the listener mount the NATS seed, which the pod can read only once the seed
-// accessor exists, so both Deployments register after it rather than racing IAM on the first
-// deployment. The front door mounts no seed and waits for no grant.
+// The app and the listener mount the NATS seed, which a pod can read only once its own account's
+// seed accessor exists, so each Deployment registers after its own grant rather than racing IAM on
+// the first deployment: the app after <hostname>'s, the listener after <hostname>-listener's. The
+// front door mounts no seed and waits for no grant.
 func TestDispatchSeedMountingDeploymentsWaitForTheSeedAccessor(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
-	accessorURN := "urn:pulumi:s::p::" + dispatchType + "$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor"
-	for _, deployment := range []string{"example-dispatch", "example-dispatch-listener"} {
-		require.Contains(t, m.Named(t, "kubernetes:apps/v1:Deployment", deployment).RPC.GetDependencies(), accessorURN,
+	accessor := func(name string) string {
+		return "urn:pulumi:s::p::" + dispatchType + "$gcp:secretmanager/secretIamMember:SecretIamMember::" + name
+	}
+	for deployment, grant := range map[string]string{
+		"example-dispatch":          "example-dispatch-nats-seed-accessor",
+		"example-dispatch-listener": "example-dispatch-listener-nats-seed-accessor",
+	} {
+		require.Contains(t, m.Named(t, "kubernetes:apps/v1:Deployment", deployment).RPC.GetDependencies(), accessor(grant),
 			"%s mounts the seed, so it registers after the grant that lets it", deployment)
 	}
-	require.NotContains(t, m.Named(t, "kubernetes:apps/v1:Deployment", "example-dispatch-tailnet").RPC.GetDependencies(), accessorURN)
+	for _, grant := range []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"} {
+		require.NotContains(t, m.Named(t, "kubernetes:apps/v1:Deployment", "example-dispatch-tailnet").RPC.GetDependencies(), accessor(grant))
+	}
 }
 
 // GKE accepts only the project's own pool, named <project id>.svc.id.goog.
@@ -1521,8 +1538,10 @@ func TestDispatchFrontDoorPodHostsTheTailscaleService(t *testing.T) {
 // The front door writes one object, its TLS Secret, through a Role that names that Secret alone,
 // grants get and patch alone (the claim gate's read and the scripts' merge patches; no update), and
 // binds the front door's own ServiceAccount alone; no Role lets any pod write a tailnet state
-// Secret, and no container names one. The app and the listener keep ServiceAccount <hostname>,
-// which the serviceAccountSubject output names (TestConstructOutputsTheServiceAccountIssuerAndSubject).
+// Secret, and no container names one. The app keeps ServiceAccount <hostname>, which the
+// serviceAccountSubject output names (TestConstructOutputsTheServiceAccountIssuerAndSubject), and
+// the listener runs as <hostname>-listener, so only the app's pods carry the account the listener
+// takes a send's role mark from.
 func TestDispatchFrontDoorAloneWritesItsTLSSecret(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
@@ -1547,13 +1566,10 @@ func TestDispatchFrontDoorAloneWritesItsTLSSecret(t *testing.T) {
 	for _, r := range registrationsOf(m, "kubernetes:core/v1:ServiceAccount") {
 		accounts = append(accounts, r.Name)
 	}
-	require.ElementsMatch(t, []string{"example-dispatch", "example-dispatch-tailnet"}, accounts)
+	require.ElementsMatch(t, []string{"example-dispatch", "example-dispatch-listener", "example-dispatch-tailnet"}, accounts)
 	for _, workload := range dispatchWorkloads {
-		want := "example-dispatch"
-		if workload.deployment == "example-dispatch-tailnet" {
-			want = "example-dispatch-tailnet"
-		}
-		require.Equal(t, want, deploymentPodTemplate(t, m, workload.deployment)["spec"].(map[string]any)["serviceAccountName"], workload.deployment)
+		require.Equal(t, workload.deployment, deploymentPodTemplate(t, m, workload.deployment)["spec"].(map[string]any)["serviceAccountName"],
+			"%s runs as the account of its own name", workload.deployment)
 		for _, container := range podProbes(t, m, workload.deployment) {
 			env, _ := container["env"].([]any)
 			for _, item := range env {
@@ -1564,6 +1580,49 @@ func TestDispatchFrontDoorAloneWritesItsTLSSecret(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The listener takes a send's role mark from the app's own account alone, and the app presents
+// that account's token: the listener verifies tokens of this cluster's issuer for its own URL,
+// admits on that branch the account the serviceAccountSubject output names and no other, and names
+// that account its Dispatch principal; the file the app's ENVOY_ACCOUNT_TOKEN_FILE names lies on a
+// projected service-account token minted for the very audience the listener verifies, rewritten by
+// the kubelet before its hour runs out. The app keeps the shared token beside it, presented only on
+// a call a listener of the release before refuses 401 on the account token.
+func TestDispatchListenerTakesTheRoleMarkFromTheAppsOwnAccountAlone(t *testing.T) {
+	m, err := runDispatch(t, dispatchArgs(), true)
+	require.NoError(t, err)
+	listener, app := listenerEnv(t, m), appEnv(t, m)
+	const subject = "system:serviceaccount:dispatch:example-dispatch"
+	require.Equal(t, "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-dispatch", listener["ENVOY_OIDC_ISSUER"])
+	require.Equal(t, app["ENVOY_URL"], listener["ENVOY_OIDC_AUDIENCE"], "the listener verifies tokens minted for its own URL")
+	require.Equal(t, subject, listener["ENVOY_OIDC_ACCOUNTS"])
+	require.Equal(t, subject, listener["ENVOY_DISPATCH_PRINCIPAL"])
+
+	file, ok := app["ENVOY_ACCOUNT_TOKEN_FILE"].(string)
+	require.True(t, ok, "the app presents its own account token")
+	require.NotNil(t, app["ENVOY_TOKEN"], "the app keeps the shared token for a listener that refuses its account token")
+	pod := deploymentPodTemplate(t, m, "example-dispatch")
+	var volume string
+	for _, item := range podContainer(t, pod, "envoy-dispatch")["volumeMounts"].([]any) {
+		mount := item.(map[string]any)
+		if dir := mount["mountPath"].(string); strings.HasPrefix(file, dir+"/") {
+			volume = mount["name"].(string)
+			require.Equal(t, true, mount["readOnly"])
+			file = strings.TrimPrefix(file, dir+"/")
+		}
+	}
+	require.NotEmpty(t, volume, "ENVOY_ACCOUNT_TOKEN_FILE lies on a mounted volume")
+	for _, item := range pod["spec"].(map[string]any)["volumes"].([]any) {
+		if v := item.(map[string]any); v["name"] == volume {
+			token := v["projected"].(map[string]any)["sources"].([]any)[0].(map[string]any)["serviceAccountToken"].(map[string]any)
+			require.Equal(t, listener["ENVOY_OIDC_AUDIENCE"], token["audience"])
+			require.Equal(t, file, token["path"])
+			require.Equal(t, float64(3600), token["expirationSeconds"])
+			return
+		}
+	}
+	t.Fatalf("the app's pod has no volume %s", volume)
 }
 
 // On a preview that creates the front door's TLS Role, its binding's roleRef name is unknown until
@@ -2412,6 +2471,15 @@ func registrationsOf(m *pulumitest.Mocks, typ string) []pulumitest.Registration 
 	return out
 }
 
+// registrationNames is the name of each of registrations, in order.
+func registrationNames(registrations []pulumitest.Registration) []string {
+	names := make([]string, 0, len(registrations))
+	for _, r := range registrations {
+		names = append(names, r.Name)
+	}
+	return names
+}
+
 // dispatchSecretData is the <hostname>-dispatch Secret's stringData as the mocks recorded it.
 func dispatchSecretData(t *testing.T, m *pulumitest.Mocks) resource.PropertyMap {
 	t.Helper()
@@ -2457,27 +2525,27 @@ func TestDispatchHoldsNoBrokerTokenOrAppKeyMaterial(t *testing.T) {
 	}
 }
 
-// Unset, neither pair leaves a trace: the Secret keeps exactly its four keys, the NATS seed's is
-// the one accessor, and TestDispatchPodMatchesGolden pins the pod template byte-identical to before
-// the inputs existed.
+// Unset, neither pair leaves a trace: the Secret keeps exactly its four keys, the NATS seed's two
+// accessors, the app's and the listener's, are the only ones, and TestDispatchPodMatchesGolden pins
+// the pod template.
 func TestDispatchSecretCarriesNoBrokerOrAppKeyUnset(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{
 		"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
 	}, secretDataKeys(dispatchSecretData(t, m)))
-	require.Len(t, registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember"), 1, "only the NATS seed's accessor exists")
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
 }
 
 // The broker relay stores no secret: Dispatch's token is projected by the kubelet, so with it set
-// the pods' principal gains no Secret Manager grant and the component no SecretProviderClass beyond
+// the pods' principals gain no Secret Manager grant and the component no SecretProviderClass beyond
 // the NATS seed's, and the Deployment waits on no grant beyond that seed's.
 func TestDispatchStoresNoBrokerTokenWhenSet(t *testing.T) {
 	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
 	require.NoError(t, err)
-	members := registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")
-	require.Len(t, members, 1)
-	require.Equal(t, "example-dispatch-nats-seed-accessor", members[0].Name)
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")))
 	var classes []string
 	for _, r := range m.Registrations() {
 		if r.Inputs["kind"].IsString() && r.Inputs["kind"].StringValue() == "SecretProviderClass" {
@@ -2638,7 +2706,7 @@ func TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm(t *testing.T) {
 	for _, r := range registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember") {
 		members = append(members, r.Name)
 	}
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-azure-embed-key-accessor"}, members)
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-azure-embed-key-accessor"}, members)
 	inputs := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-azure-embed-key-accessor").Inputs.Mappable()
 	require.Equal(t, azureEmbedKeySecret, inputs["secretId"])
 	require.Equal(t, "roles/secretmanager.secretAccessor", inputs["role"])
@@ -2656,7 +2724,8 @@ func TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm(t *testing.T) {
 	setAzureFederation(args)
 	m, err = runDispatch(t, args, true)
 	require.NoError(t, err)
-	require.Len(t, registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember"), 1, "only the NATS seed's accessor exists")
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
 }
 
 // The key's SecretProviderClass is its own: provider gke, the secret's path with /versions/latest,
@@ -2747,7 +2816,7 @@ func TestDispatchRegistersTheChatTokenSecretOnlyWithTheEndpointForm(t *testing.T
 	for _, r := range registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember") {
 		members = append(members, r.Name)
 	}
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-chat-token-accessor"}, members)
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-chat-token-accessor"}, members)
 	inputs := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-chat-token-accessor").Inputs.Mappable()
 	require.Equal(t, chatTokenSecret, inputs["secretId"])
 	require.Equal(t, "roles/secretmanager.secretAccessor", inputs["role"])
@@ -2761,7 +2830,8 @@ func TestDispatchRegistersTheChatTokenSecretOnlyWithTheEndpointForm(t *testing.T
 	setAzureChat(args)
 	m, err = runDispatch(t, args, true)
 	require.NoError(t, err)
-	require.Len(t, registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember"), 1, "only the NATS seed's accessor exists")
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
 	for _, r := range m.Registrations() {
 		require.NotEqual(t, "example-dispatch-chat-token", r.Name)
 	}

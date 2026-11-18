@@ -33,8 +33,10 @@ type dispatchCluster struct {
 }
 
 // dispatchDatabase is what the component's database resources give the rest of it: the Cloud SQL
-// instance, the generated secrets, and the pods' principal with the grants it holds. clusterOnly
-// registers none of them, so that mode builds no dispatchDatabase at all.
+// instance, the generated secrets, and the pods' principals with the grants they hold: the app's
+// (principal) and the listener's, each the Workload Identity principal of its own Kubernetes
+// ServiceAccount. clusterOnly registers none of them, so that mode builds no dispatchDatabase at
+// all.
 type dispatchDatabase struct {
 	instance *sql.DatabaseInstance
 	password *random.RandomPassword
@@ -46,6 +48,9 @@ type dispatchDatabase struct {
 	listenerToken *random.RandomPassword
 	principal     pulumi.StringOutput
 	seedAccessor  *secretmanager.SecretIamMember
+	// listenerSeedAccessor is the NATS seed's grant to the listener's own account,
+	// ServiceAccount <hostname>-listener, the one grant that account holds.
+	listenerSeedAccessor *secretmanager.SecretIamMember
 	// azureKeyAccessor is set only with azureEmbedKeySecret, and chatTokenAccessor only with
 	// chatTokenSecret: each is the per-secret grant that one feature's mounted secret needs.
 	azureKeyAccessor  *secretmanager.SecretIamMember
@@ -251,14 +256,25 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	// that wait needs roles/cloudsql.client already granted, so the consumer grants that role from
 	// the principal's known form, not from the output; whether IAM accepts it before the pool
 	// exists is the same unproven question.
-	principal := pulumi.All(project.Number(), cluster.WorkloadIdentityConfig.WorkloadPool()).ApplyT(func(values []interface{}) (string, error) {
-		parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/subject/ns/%s/sa/%s", parts[0], parts[1], s.namespace, s.hostname), nil
-	}).(pulumi.StringOutput)
+	principalOf := func(account string) pulumi.StringOutput {
+		return pulumi.All(project.Number(), cluster.WorkloadIdentityConfig.WorkloadPool()).ApplyT(func(values []interface{}) (string, error) {
+			parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/subject/ns/%s/sa/%s", parts[0], parts[1], s.namespace, account), nil
+		}).(pulumi.StringOutput)
+	}
+	principal := principalOf(s.hostname)
 	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
+	if err != nil {
+		return nil, err
+	}
+	// The listener runs as an account of its own, <hostname>-listener, so that no listener pod can
+	// project a token naming the app's account, the one principal the listener takes a send's role
+	// mark from (ENVOY_DISPATCH_PRINCIPAL). The NATS seed it mounts is granted to that account too,
+	// and nothing else is.
+	listenerSeedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-listener-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principalOf(s.hostname + "-listener")}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +299,7 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	return &dispatchDatabase{
 		instance: instance, password: password, signing: signing,
 		agentToken: agentToken, listenerToken: listenerToken,
-		principal: principal, seedAccessor: seedAccessor,
+		principal: principal, seedAccessor: seedAccessor, listenerSeedAccessor: listenerSeedAccessor,
 		azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,
 	}, nil
 }

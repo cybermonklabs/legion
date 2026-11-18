@@ -22,7 +22,9 @@ type roleRouteListener struct {
 	mu      sync.Mutex
 	holders map[string]string
 	lapsed  map[string]bool
-	server  *httptest.Server
+	// silent answers every role lookup 503, as a listener whose bus does not answer does.
+	silent bool
+	server *httptest.Server
 }
 
 func newRoleRouteListener(t *testing.T) *roleRouteListener {
@@ -52,6 +54,9 @@ func (l *roleRouteListener) serve(w http.ResponseWriter, r *http.Request) {
 		return map[string]any{"session_id": session, "title": session, "capabilities": []string{"btw", "steer", "aside"}, "state": state}
 	}
 	switch {
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/") && l.silent:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"envoy: the message bus did not answer: timeout"}`))
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 		role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
 		holder, claimed := l.holders[role]
@@ -339,4 +344,32 @@ func TestAReplyToARoleRouteAttemptComesFromTheRolesHolder(t *testing.T) {
 			t.Fatalf("the mention attempt after the refusals = %s with reply %v, want sent and unanswered", state, replyID)
 		}
 	})
+}
+
+// Whether a session the attempt does not name holds the role is the listener's to say, so a role
+// lookup the listener does not answer is a 503 ENVOY_UNAVAILABLE the reply's host can make again,
+// never a refusal that ends a reply the role's holder may well be entitled to. The session the
+// attempt names is answered as ever, with no lookup at all.
+func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
+	rig := newRoleRouteReplies(t)
+	const role = "reply-unanswered"
+	rig.listener.claim(role, "ses_role_a", true)
+	message := rig.message(t, role, "ses_role_a", "Is the cache warm?")
+	comment := rig.mention(t, role, "ses_role_a", "Is the queue drained?")
+	rig.listener.claim(role, "ses_role_b", true)
+	rig.listener.mu.Lock()
+	rig.listener.silent = true
+	rig.listener.mu.Unlock()
+
+	for what, response := range map[string]*httptest.ResponseRecorder{
+		"the message": rig.replyMessage(t, message, "ses_role_b", map[string]any{"body": "Warm."}, false),
+		"the mention": rig.replyComment(t, comment, "ses_role_b", map[string]any{"body": "Drained."}),
+	} {
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
+			t.Fatalf("the role's holder's reply to %s with the lookup unanswered: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", what, response.Code, response.Body.String())
+		}
+	}
+	if answered := rig.replyMessage(t, message, "ses_role_a", map[string]any{"body": "Warm, says A."}, false); answered.Code != http.StatusCreated {
+		t.Fatalf("the attempt's own session's reply with the lookup unanswered: status=%d body=%s, want 201", answered.Code, answered.Body.String())
+	}
 }

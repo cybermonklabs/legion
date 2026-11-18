@@ -566,9 +566,10 @@ func TestConstructRefusesASeedInAnAnswererInput(t *testing.T) {
 }
 
 // The issuer and subject an Azure federated credential trusts are outputs, so the Azure side reads
-// them rather than rebuilding them: the cluster's token issuer, and the pods' ServiceAccount
+// them rather than rebuilding them: the cluster's token issuer, and the app's ServiceAccount
 // <hostname> in the component's namespace. Neither is secret, and both are there with no Azure
-// input set.
+// input set. Only the app's pods run as that account: the listener's and the front door's run as
+// accounts of their own, so no other pod of the component can project a token the subject names.
 func TestConstructOutputsTheServiceAccountIssuerAndSubject(t *testing.T) {
 	for _, row := range []struct {
 		name, namespace, subject string
@@ -593,9 +594,9 @@ func TestConstructOutputsTheServiceAccountIssuerAndSubject(t *testing.T) {
 			require.Equal(t, row.subject, subject.AsString())
 
 			pod := deploymentPodTemplate(t, m, "example-dispatch")["spec"].(map[string]any)
-			require.Equal(t, "example-dispatch", pod["serviceAccountName"], "the subject names the pods' own ServiceAccount")
+			require.Equal(t, "example-dispatch", pod["serviceAccountName"], "the subject names the app's own ServiceAccount")
 			listener := deploymentPodTemplate(t, m, "example-dispatch-listener")["spec"].(map[string]any)
-			require.Equal(t, "example-dispatch", listener["serviceAccountName"], "the listener runs as the account the subject names")
+			require.Equal(t, "example-dispatch-listener", listener["serviceAccountName"], "the listener runs as an account the subject does not name")
 			frontDoor := deploymentPodTemplate(t, m, "example-dispatch-tailnet")["spec"].(map[string]any)
 			require.Equal(t, "example-dispatch-tailnet", frontDoor["serviceAccountName"], "the front door runs as an account the subject does not name")
 		})

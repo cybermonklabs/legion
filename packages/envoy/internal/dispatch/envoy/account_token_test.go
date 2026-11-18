@@ -171,3 +171,54 @@ func TestASendTheListenerKeptForTheRoleIsReadAsKept(t *testing.T) {
 		t.Fatalf("a kept send = %+v, want kept until 1800000000000 naming the kept copy", result)
 	}
 }
+
+// A listener of the release before Dispatch's identity existed verifies no account token: while a
+// deploy rolls the listener and the app at once, a new app pod can reach an old listener pod, which
+// refuses the account token 401 before its route runs. A client that holds the shared token too
+// makes that call once more on it, with no role mark, which the old listener takes, so no window
+// of the roll answers every send 401. A client holding no shared token reports the 401 as before.
+func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnTheSharedToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "listener-account-token")
+	account := accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour))
+	writeAccountToken(t, path, account)
+	type call struct {
+		authorization string
+		role          any
+	}
+	var mu sync.Mutex
+	var calls []call
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		calls = append(calls, call{authorization: r.Header.Get("Authorization"), role: body["role"]})
+		mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer shared" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1","state":"connected"}`))
+	}))
+	defer listener.Close()
+	input := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
+
+	if _, err := New(listener.URL, WithToken("shared"), WithAccountTokenFile(path)).Send(context.Background(), input); err != nil {
+		t.Fatalf("a send an old listener refuses on the account token, with the shared token held: %v", err)
+	}
+	mu.Lock()
+	got := append([]call(nil), calls...)
+	calls = nil
+	mu.Unlock()
+	if len(got) != 2 || got[0].authorization != "Bearer "+account || got[0].role != "reviewer" || got[1].authorization != "Bearer shared" || got[1].role != nil {
+		t.Fatalf("the listener was called %+v, want the account token with the role mark, then the shared token with none", got)
+	}
+	if _, err := New(listener.URL, WithAccountTokenFile(path)).Send(context.Background(), input); err == nil || !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("a send refused on the account token with no shared token held = %v, want the listener's 401", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("the client with no shared token called %d times, want one", len(calls))
+	}
+}

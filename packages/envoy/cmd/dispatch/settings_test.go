@@ -959,36 +959,43 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"ENVOY_ACCOUNT_TOKEN_FILE": func(t *testing.T) {
 			// The bearer the Envoy listener receives on GET /api/v1/agents's read of its sessions:
-			// what the file holds when the call is made, trimmed, in ENVOY_TOKEN's place. A boot
-			// that sets both is refused naming both, since one call presents one bearer.
-			sent := func(tokenFile string) string {
+			// what the file holds when the call is made, trimmed, in ENVOY_TOKEN's place; beside
+			// ENVOY_TOKEN, the file's token first, and the shared token only once the listener has
+			// refused the file's 401, as a listener of the release before refuses it.
+			sent := func(overrides map[string]string) []string {
 				t.Helper()
-				authorization := make(chan string, 1)
+				authorizations := make(chan string, 2)
 				listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					authorization <- r.Header.Get("Authorization")
+					authorizations <- r.Header.Get("Authorization")
+					if r.Header.Get("Authorization") == "Bearer account-token" && overrides["ENVOY_TOKEN"] != "" {
+						w.WriteHeader(http.StatusUnauthorized)
+						_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+						return
+					}
 					_, _ = w.Write([]byte("[]"))
 				}))
 				defer listener.Close()
-				boot := resolveWith(t, map[string]string{"ENVOY_URL": listener.URL, "ENVOY_ACCOUNT_TOKEN_FILE": " " + tokenFile + " "})
+				overrides["ENVOY_URL"] = listener.URL
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil), "alice")
 				response := httptest.NewRecorder()
-				routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
+				routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK {
 					t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
 				}
-				select {
-				case got := <-authorization:
-					return got
-				default:
-					t.Fatal("GET /api/v1/agents answered without calling the listener")
-					return ""
+				close(authorizations)
+				var got []string
+				for authorization := range authorizations {
+					got = append(got, authorization)
 				}
+				return got
 			}
 			tokenFile := writeFile(t, "listener-account-token", "account-token\n")
-			if got := sent(tokenFile); got != "Bearer account-token" {
-				t.Errorf("ENVOY_ACCOUNT_TOKEN_FILE: the listener received Authorization %q, want the file's token", got)
+			if got := sent(map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": " " + tokenFile + " "}); strings.Join(got, ",") != "Bearer account-token" {
+				t.Errorf("ENVOY_ACCOUNT_TOKEN_FILE: the listener received Authorization %q, want the file's token alone", got)
 			}
-			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile, "ENVOY_TOKEN": "listener-token"}, "ENVOY_ACCOUNT_TOKEN_FILE")
+			if got := sent(map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile, "ENVOY_TOKEN": "listener-token"}); strings.Join(got, ",") != "Bearer account-token,Bearer listener-token" {
+				t.Errorf("both set: the listener received Authorization %q, want the file's token, then on its 401 the shared token", got)
+			}
 		},
 		"DISPATCH_REPO_PROJECTS": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": " acme/widgets=WID "}); boot.RepoProjects != "acme/widgets=WID" {

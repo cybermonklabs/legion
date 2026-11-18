@@ -1235,9 +1235,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
-	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyToken != "" {
-		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_TOKEN are both set: a listener call presents one bearer, so set the account token file for Dispatch's own identity or ENVOY_TOKEN for the shared token, not both")
-	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
 	if strings.TrimSpace(agentTokens) == "" {
 		return bootConfig{}, errors.New("DISPATCH_AGENT_TOKEN required")

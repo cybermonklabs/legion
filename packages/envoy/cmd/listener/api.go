@@ -810,6 +810,14 @@ const senderStampReadTimeout = 1 * time.Second
 // (senderCharge.published): a copy the stream stored or may have stored costs one, a copy it
 // already held costs nothing, also after the wake, and a publish that sent nothing costs only the
 // wake, if one was reported.
+//
+// A send carrying role, the role a Dispatch send for a route to a role is sent for, is taken only
+// from Dispatch's own verified principal (roleMarkRefusal): any other caller carrying it is the
+// 403 naming the field, before anything is read. Taken, the mark rides the envelope, and the
+// role's claim is read before the target: a claim naming the target sends as above, and a claim
+// naming another session, or none, keeps the message for the role's next live holder and answers
+// 202 kept (keepRoleSend), so the role's message never lands on the subject of a session that no
+// longer holds the role. A claim read that did not answer is the bus-unavailable 503.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
