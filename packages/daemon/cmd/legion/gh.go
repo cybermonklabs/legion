@@ -895,32 +895,46 @@ func gitConfigKey(key string) string {
 // http.*proxy* key, generic or URL-scoped, but an http.*sslVerify that git reads as true, which
 // only keeps the check on; and any credential helper but none or `legion git-credential`
 // (workspace.GitHubCredentialHelper), the one a Legion clone names. git reads these before the
-// command line, but a URL-scoped `http.https://github.com/<owner>/.sslVerify=false`, or one an
-// `include.path` of the repository's config brings in, beats any command-line entry, and was
-// measured to hand a man-in-the-middle proxy the credential helper's token (git 2.43). It reads
-// what git reads (`git config --show-origin --null --get-regexp`, includes followed), leaves the
-// command line's own entries alone (their origin is "command line:", which no file's is), and
-// names the key and the file, never the value. It needs no --show-scope, which git 2.26 added, so
-// an older git reads the same; git has printed origins since 2.8. Outside a repository there is
-// nothing to read. With no git on PATH, nothing is read and nothing refused: gh finds its git on
-// the same PATH, so it runs none, and no configuration of one can send anything. Any other read
-// git cannot make is refused, since gh's git would then read a configuration this one could not
-// see.
+// command line, but a URL-scoped `http.https://github.com/<owner>/.sslVerify=false` beats any
+// command-line entry, and was measured to hand a man-in-the-middle proxy the credential helper's
+// token (git 2.43). It reads what git reads (`git config --show-origin --null --get-regexp`),
+// leaves the command line's own entries alone (their origin is "command line:", which no file's
+// is), and names the key and the file, never the value. It needs no --show-scope, which git 2.26
+// added, so an older git reads the same; git has printed origins since 2.8. Outside a repository
+// there is nothing to read. With no git on PATH, nothing is read and nothing refused: gh finds its
+// git on the same PATH, so it runs none, and no configuration of one can send anything. Any other
+// read git cannot make is refused, since gh's git would then read a configuration this one could
+// not see.
 //
-// It refuses as well an include whose condition the git gh runs can switch on after this read:
-// `includeIf.onbranch:<branch>`, which takes effect once that git checks out the branch (`pr
-// checkout`, `pr merge`, `repo sync` do), and `includeIf.hasconfig:remote.*.url:<url>`, which
-// takes effect once it adds a matching remote (`pr checkout` of a fork's branch, `repo fork`, a
-// fork's `repo clone` do). Measured with git 2.43: either one, naming a file with a URL-scoped
-// http.sslVerify=false, passed this read while inactive, and the fetch after the checkout or the
-// remote handed a man-in-the-middle proxy the token. No Legion clone names either.
+// It refuses as well every way the configuration a later git of gh's reads can differ from the one
+// this read sees, since this read is made once, here, and gh's git runs later, elsewhere in the
+// repository or after a checkout:
+//
+//   - any include, `include.path` or `includeIf.<condition>.path`, whatever its condition and
+//     whether or not its file is there: an include reads a file whose content, and whether it is
+//     read at all, can change during the call. Measured with git 2.43, each naming a file with a
+//     URL-scoped http.sslVerify=false and inactive or empty where this read ran, then active for
+//     the git gh runs after, handed a man-in-the-middle proxy the token: includeIf.onbranch, once
+//     that git checked out the branch; includeIf.hasconfig:remote.*.url, once it added the remote;
+//     includeIf.gitdir:**/worktrees/**, for `pr checkout --worktree`'s `git -C <worktree> fetch`;
+//     and include.path of a tracked file the branch lacks, for `pr merge --delete-branch`'s pull
+//     after it checks out the base branch. git lists an include's key whether or not it applies.
+//   - extensions.worktreeConfig on, which gives each worktree a configuration of its own
+//     (.git/worktrees/<name>/config.worktree) that a git run in another worktree reads and this
+//     read does not.
+//
+// With both refused, every worktree of the repository reads the configuration this read saw, so
+// `gh pr checkout --worktree` and `gh issue develop --worktree`, which reuse only a linked worktree
+// of the current repository (cli/cli v2.104.0 pkg/cmd/pr/shared/worktree.go:61-68: a path in
+// another repository is an error) or create one, need no read of their own. No Legion clone, pod
+// image or end-to-end fixture sets either.
 //
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
 func ghRepoGitConfigRefusal(env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^includeif\.(onbranch|hasconfig):`)
+	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^include\.path$|^includeif\..*\.path$|^extensions\.worktreeconfig$`)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -945,8 +959,10 @@ func ghRepoGitConfigRefusal(env []string) error {
 		key = gitConfigKey(key)
 		name := key[strings.LastIndex(key, ".")+1:]
 		switch {
-		case strings.HasPrefix(key, "includeif.onbranch:") || strings.HasPrefix(key, "includeif.hasconfig:"):
-			return fmt.Errorf("the repository's git configuration (%s) sets %s, an include that takes effect only once the git gh runs checks out the branch or adds the remote it names, after this call has read the configuration, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)
+		case (strings.HasPrefix(key, "include.") || strings.HasPrefix(key, "includeif.")) && name == "path":
+			return fmt.Errorf("the repository's git configuration (%s) sets %s, an include whose file, and whether git reads it, can change between this call's read and the git gh runs after it, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)
+		case key == "extensions.worktreeconfig" && gitConfigTrue(value, hasValue):
+			return fmt.Errorf("the repository's git configuration (%s) sets %s, which gives each worktree a configuration of its own that a git gh runs in another worktree reads and this call does not, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)
 		case strings.HasPrefix(key, "http.") && name == "sslverify" && gitConfigTrue(value, hasValue):
 		case strings.HasPrefix(key, "http.") && (strings.HasPrefix(name, "ssl") || strings.HasPrefix(name, "proxy")):
 			return fmt.Errorf("the repository's git configuration (%s) sets %s, which would let the git gh runs send its token past a certificate check or to a proxy this call cannot see, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)

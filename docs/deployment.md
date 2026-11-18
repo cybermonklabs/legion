@@ -188,13 +188,14 @@ whose `hosts.yml` or `config.yml` is no regular file
 reads without following a link or waiting on a pipe, or names `api_host` or `http_unix_socket`
 anywhere gh would read it as a key, a list's items among them; a `config.yml` that holds a `hosts`
 block or an alias named `help`, which gh would run on `legion gh help`; and a working directory
-whose repository configuration, or a file it includes, sets an `http` ssl or proxy key, generic
-or for a URL, but an `sslVerify` that is true, or a credential helper other than `legion
-git-credential`, since git reads it before the command line and a URL-scoped `sslVerify=false`
-there beats every entry the command line forces, or an `includeIf.onbranch:` or
-`includeIf.hasconfig:` include, which takes effect only once gh's git checks out that branch or
-adds that remote, after the check. With no `git` on `PATH` that check reads nothing, since gh then
-runs no git either.
+whose repository configuration sets an `http` ssl or proxy key, generic or for a URL, but an
+`sslVerify` that is true, or a credential helper other than `legion git-credential`, since git
+reads it before the command line and a URL-scoped `sslVerify=false` there beats every entry the
+command line forces; or any include (`include.path`, `includeIf.<condition>.path`, whatever its
+condition and whether or not its file is there), or `extensions.worktreeConfig` on, since a git
+gh runs later, after a checkout or in another worktree (`pr checkout --worktree`, `pr merge
+--delete-branch`), would read a configuration the check did not. With no `git` on `PATH` that
+check reads nothing, since gh then runs no git either.
 `legion gh` starts the real gh for a command's help only the first time:
 it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
 It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.

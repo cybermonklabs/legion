@@ -13,9 +13,10 @@ body: |-
     `fetch.recurseSubmodules` and `push.recurseSubmodules`): git's default fetch recursed on demand
     into a submodule whose own configuration no check read. A working directory whose repository
     configuration sets an `http` ssl or proxy key (but an `sslVerify` that is true), another
-    credential helper, or an `includeIf.onbranch:` or `includeIf.hasconfig:` include is refused,
-    since a URL-scoped `sslVerify=false` there beats the command line and such an include takes
-    effect only after gh's git checks out a branch or adds a remote. `--recurse-submodules`, and any
+    credential helper, any include (`include.path` or `includeIf.*.path`, whether or not its file
+    is there) or `extensions.worktreeConfig` is refused, since a URL-scoped `sslVerify=false` there
+    beats the command line and an include or a worktree's own configuration can be read by gh's git
+    after a checkout or in another worktree, where the check did not read. `--recurse-submodules`, and any
     git flag `gh repo clone`, `gh repo fork` or `gh gist clone` would hand git clone that is not on a
     short list of exact spellings (`--depth`, `--branch`, `--quiet` and the like), are refused: a
     clone's `-c` flags are its own configuration, and git takes them abbreviated. `--editor` (`-e`)

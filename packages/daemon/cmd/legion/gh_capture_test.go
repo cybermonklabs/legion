@@ -955,7 +955,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	rows = append(rows,
 		row{workspace([][]string{origin, {"config", "http.https://github.com/.sslVerify", "false"}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets http.https://github.com/.sslverify"},
 		row{workspace([][]string{origin, {"config", "http.proxy", "http://127.0.0.1:1"}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets http.proxy"},
-		row{workspace([][]string{origin, {"config", "include.path", included}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets http.sslcainfo"},
+		row{workspace([][]string{origin, {"config", "include.path", included}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets include.path, an include"},
 		row{workspace([][]string{origin, {"config", "credential.helper", "!/tmp/example-helper"}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets credential.helper to a helper other than"},
 		row{workspace([][]string{origin,
 			{"config", "credential.https://github.com.helper", ""},

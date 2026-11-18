@@ -238,13 +238,17 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 		{name: "an sslVerify with no value, which git reads as true", dir: valueless},
 		{name: "a proxy", dir: repositoryWith(t, []string{"http.proxy", "http://127.0.0.1:1"}), want: "sets http.proxy"},
 		{name: "a URL-scoped proxy", dir: repositoryWith(t, []string{"http.https://github.com/.proxy", "http://127.0.0.1:1"}), want: "sets http.https://github.com/.proxy"},
-		{name: "a CA an include names", dir: repositoryWith(t, []string{"include.path", included}), want: "(file:" + included + ") sets http.sslcainfo"},
+		{name: "an include of a file holding a CA", dir: repositoryWith(t, []string{"include.path", included}), want: "sets include.path, an include"},
+		{name: "an include whose file is not there", dir: repositoryWith(t, []string{"include.path", "../absent.gitconfig"}), want: "sets include.path, an include"},
 		{name: "another credential helper", dir: repositoryWith(t, []string{"credential.helper", "!/tmp/example-helper"}), want: "sets credential.helper to a helper other than"},
 		{name: "another helper for github.com", dir: repositoryWith(t, append(legion, []string{"--add", "credential.https://github.com.helper", "store"})...), want: "sets credential.https://github.com.helper to a helper other than"},
 		{name: "a configuration git cannot read", dir: broken, want: "cannot read the repository's git configuration"},
 		{name: "an include on a branch gh's git can check out", dir: repositoryWith(t, []string{"includeIf.onbranch:feature.path", included}), want: "sets includeif.onbranch:feature.path, an include"},
 		{name: "an include on a remote gh's git can add", dir: repositoryWith(t, []string{"includeIf.hasconfig:remote.*.url:https://github.com/acme/other**.path", included}), want: "sets includeif.hasconfig:remote.*.url:https://github.com/acme/other**.path, an include"},
-		{name: "an include on the git directory, which no git gh runs changes", dir: repositoryWith(t, []string{"includeIf.gitdir:/nonexistent/.path", included})},
+		{name: "an include on a git directory this one is not", dir: repositoryWith(t, []string{"includeIf.gitdir:/nonexistent/.path", included}), want: "sets includeif.gitdir:/nonexistent/.path, an include"},
+		{name: "an include on linked worktrees", dir: repositoryWith(t, []string{"includeIf.gitdir:**/worktrees/**.path", included}), want: "sets includeif.gitdir:**/worktrees/**.path, an include"},
+		{name: "a configuration for each worktree", dir: repositoryWith(t, []string{"extensions.worktreeConfig", "true"}), want: "sets extensions.worktreeconfig, which gives each worktree"},
+		{name: "no configuration for each worktree", dir: repositoryWith(t, []string{"extensions.worktreeConfig", "false"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Chdir(tc.dir)
@@ -509,6 +513,7 @@ func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
 			{[]string{"repo", "clone", "--", "acme/widgets", "widgets", "--bare", "-q", "--branch", "--recursive"}, ""},
 			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--depth", "1"}, ""},
 			{[]string{"gist", "clone", "0123456789abcdef", "notes", "--", "--quiet"}, ""},
+			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--worktree", "/tmp/example-worktree"}, ""},
 		} {
 			_, err := ghTargetOf(tc.argv, nil, help, noGitRepository, ownersOwnDirectories)
 			switch {
@@ -518,5 +523,133 @@ func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
 				t.Errorf("ghTargetOf(%q) at gh %s = %v, want a refusal containing %q", tc.argv, version, err, tc.refuse)
 			}
 		}
+	}
+}
+
+// The configuration a git of gh's reads later, in another worktree or after a checkout, is the one
+// ghRepoGitConfigRefusal read before gh ran, or the call is refused. Three routes the third side
+// review measured, each built here so that the check's own directory reads clean but for the key
+// that makes the later read differ, and each with its control: the route, run as gh's git runs it
+// (`legion gh`'s environment, gh's -c credential helper, the caller's proxy a man-in-the-middle
+// proxy whose CA nothing trusts), hands the proxy the token, so a refusal here is what stops it.
+//
+//   - W1: an includeIf.gitdir:**/worktrees/** in the repository's .git/config, inactive in the main
+//     worktree, where the check reads; `pr checkout --worktree <linked worktree>` runs `git -C
+//     <worktree> fetch`, where it applies.
+//   - I1: an include.path of a tracked file the checked-out branch lacks and the base branch
+//     holds; `pr merge --delete-branch` checks out the base branch, then pulls.
+//   - extensions.worktreeConfig, with a URL-scoped sslVerify=false in a linked worktree's own
+//     config.worktree, which the main worktree's read does not hold.
+func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on this machine")
+	}
+	proxy := startCaptureProxy(t)
+	scratch := t.TempDir()
+	helper := filepath.Join(scratch, "helper.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\n[ \"$1\" = get ] || exit 0\nprintf 'username=x-access-token\\npassword=ghs_later_read_fake\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	iso := []string{"PATH=" + filepath.Dir(git) + ":/usr/bin:/bin", "HOME=" + t.TempDir(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Legion test", "GIT_AUTHOR_EMAIL=legion-test@example.invalid", "GIT_COMMITTER_NAME=Legion test", "GIT_COMMITTER_EMAIL=legion-test@example.invalid"}
+	must := func(dir string, args ...string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(git, args...)
+		cmd.Dir, cmd.Env = dir, iso
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %q in %s: %v: %s", args, dir, err, out)
+		}
+	}
+	caller := append(append([]string{}, iso[:2]...), "HTTPS_PROXY="+proxy.url, "https_proxy="+proxy.url, "NO_PROXY=", "no_proxy=",
+		"GIT_AUTHOR_NAME=Legion test", "GIT_AUTHOR_EMAIL=legion-test@example.invalid", "GIT_COMMITTER_NAME=Legion test", "GIT_COMMITTER_EMAIL=legion-test@example.invalid")
+	env, err := withGitHubUseHTTPPath(ghChildEnviron(caller, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// asGh runs args in dir as gh's git runs them and says whether the proxy read a credential.
+	asGh := func(dir string, args ...string) (bool, string) {
+		proxy.take()
+		cmd := exec.Command(git, append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=" + helper, "-c", "credential.interactive=false"}, args...)...)
+		cmd.Dir, cmd.Env = dir, env
+		out, _ := cmd.CombinedOutput()
+		for _, r := range proxy.take() {
+			if r.auth != "" {
+				return true, string(out)
+			}
+		}
+		return false, string(out)
+	}
+	off := "[http \"https://github.com/\"]\n\tsslVerify = false\n"
+	for _, tc := range []struct {
+		name string
+		// build makes the repository and answers the directory `legion gh` reads in and the
+		// route, the git commands gh's git runs after it.
+		build func(root string) (string, [][]string)
+		want  string
+	}{
+		{"W1 an includeIf.gitdir on linked worktrees, then `git -C <worktree> fetch`", func(root string) (string, [][]string) {
+			repo, wt := filepath.Join(root, "main"), filepath.Join(root, "wt")
+			must(repo, "init", "-q", "-b", "main")
+			must(repo, "commit", "-q", "--allow-empty", "-m", "c1")
+			must(repo, "remote", "add", "origin", "https://github.com/acme/widgets")
+			must(repo, "worktree", "add", "-q", "-b", "wtb", wt)
+			evil := filepath.Join(root, "evil.gitconfig")
+			if err := os.WriteFile(evil, []byte(off), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			must(repo, "config", "includeIf.gitdir:**/worktrees/**.path", evil)
+			return repo, [][]string{{"-C", wt, "fetch", "origin", "refs/heads/main", "--no-tags"}}
+		}, "sets includeif.gitdir:**/worktrees/**.path, an include"},
+		{"I1 an include of a file only the base branch holds, then checkout and pull", func(root string) (string, [][]string) {
+			repo := filepath.Join(root, "repo")
+			must(repo, "init", "-q", "-b", "main")
+			if err := os.WriteFile(filepath.Join(repo, "evil.gitconfig"), []byte(off), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			must(repo, "add", "evil.gitconfig")
+			must(repo, "commit", "-q", "-m", "main holds the file")
+			must(repo, "remote", "add", "origin", "https://github.com/acme/widgets")
+			must(repo, "checkout", "-q", "-b", "feature")
+			must(repo, "rm", "-q", "evil.gitconfig")
+			must(repo, "commit", "-q", "-m", "feature lacks it")
+			must(repo, "config", "include.path", "../evil.gitconfig")
+			return repo, [][]string{{"checkout", "-q", "main"}, {"pull", "--ff-only", "origin", "main"}}
+		}, "sets include.path, an include"},
+		{"a linked worktree's own config.worktree, then `git -C <worktree> fetch`", func(root string) (string, [][]string) {
+			repo, wt := filepath.Join(root, "main"), filepath.Join(root, "wt")
+			must(repo, "init", "-q", "-b", "main")
+			must(repo, "commit", "-q", "--allow-empty", "-m", "c1")
+			must(repo, "remote", "add", "origin", "https://github.com/acme/widgets")
+			must(repo, "worktree", "add", "-q", "-b", "wtb", wt)
+			must(repo, "config", "core.repositoryFormatVersion", "1")
+			must(repo, "config", "extensions.worktreeConfig", "true")
+			must(wt, "config", "--worktree", "http.https://github.com/.sslVerify", "false")
+			return repo, [][]string{{"-C", wt, "fetch", "origin", "refs/heads/main", "--no-tags"}}
+		}, "sets extensions.worktreeconfig, which gives each worktree"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The control, in a repository of its own: the route hands the proxy the token.
+			control, route := tc.build(t.TempDir())
+			leaked := false
+			var said []string
+			for _, args := range route {
+				sent, out := asGh(control, args...)
+				leaked = leaked || sent
+				said = append(said, out)
+			}
+			if !leaked {
+				t.Fatalf("the control route %q sent the proxy no credential (%q): this fixture cannot show the route", route, said)
+			}
+			dir, _ := tc.build(t.TempDir())
+			t.Chdir(dir)
+			err := ghRepoGitConfigRefusal(ghChildEnviron(caller, nil))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ghRepoGitConfigRefusal in %s = %v, want a refusal containing %q, so gh's git never runs the route", dir, err, tc.want)
+			}
+		})
 	}
 }
