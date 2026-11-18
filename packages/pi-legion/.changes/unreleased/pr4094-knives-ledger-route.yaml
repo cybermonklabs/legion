@@ -1,9 +1,0 @@
-kind: Added
-body: |-
-  `skills/legion-worker/references/tools.md` has a section for a role that works on a fork with
-  knives in a pod. Every role of the pod links its knives config home to `/legion/knives`, so one
-  role's claim is refused to another owner in the same pod. The pod's ledger directory uses one
-  machine name per issue. After each knives write, the role runs `knives ledger sweep` and reads
-  its exit status and `unsent`, so each entry is in the fork's shared ledger before the role goes
-  on. The section also says how to finish a claim that another role of the pod took, and how to
-  release in the ledger a claim of an earlier pod. Measured with knives v3.2.6.
