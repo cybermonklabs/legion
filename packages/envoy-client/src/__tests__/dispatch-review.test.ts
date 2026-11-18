@@ -1,9 +1,13 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+// Every fake here stands for Dispatch, whose keyed layer names a write's key on its answer.
+import {
+  executeDispatchToolUnderKey as executeDispatchTool,
+  runDispatchCliUnderKey as runDispatchCli,
+} from "../../test/under-key";
 import { bearerCredential } from "../bearer";
-import { runDispatchCli } from "../dispatch-cli";
-import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
+import { resetAdviceMemory } from "../dispatch-execute";
 import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";

@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -18,12 +19,15 @@ import {
   appendResult,
   loadSessionMemory,
   pruneSessions,
+  readResendRecord,
   readResultsSince,
   readSessionTitle,
   recordOutcome,
   resultsEnd,
   saveSessionMemory,
   writePicture,
+  writeResendInput,
+  writeResendRecord,
 } from "../dispatch-session-state";
 
 const root = temporaryDirectories("dispatch-state");
@@ -87,6 +91,93 @@ describe("per-session state", () => {
     expect(a.path.endsWith(".png")).toBe(true);
     expect(readFileSync(a.path).subarray(0, 4).toString("hex")).toBe("89504e47");
   });
+
+  // A write that may have landed is sent again by a command the CLI prints. What it read from
+  // stdin, or a value too long to print, is kept here for that command to read, named by the key
+  // the command is sent with, its place, and its content: a later call under the same key never
+  // replaces a copy an earlier printed command reads.
+  test("a resend's input is kept whole and owner-only, by its key, place and content", () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s10");
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    const text = "line one\nEOF\n$HOME `pwd`\n";
+    const path = writeResendInput(dir, key, 2, text);
+    expect(path).toMatch(new RegExp(`/resend/${key}\\.2\\.[0-9a-f]{16}$`));
+    expect(readFileSync(path, "utf-8")).toBe(text);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(writeResendInput(dir, key, 2, text)).toBe(path);
+    const other = writeResendInput(dir, key, 2, "another text\n");
+    expect(other).not.toBe(path);
+    expect(readFileSync(path, "utf-8")).toBe(text);
+  });
+
+  // The requests a call whose write may have landed sent, by key: a call sent again under that key
+  // sends each as it was first sent. A record never changes what it holds; a later call adds only
+  // the writes it holds none of.
+  test("a call's requests are kept under its key, each as first sent", () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s11");
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    expect(readResendRecord(dir, key)).toEqual([]);
+    const message = {
+      key,
+      method: "POST",
+      path: "/api/v1/issues/DSP-1/messages",
+      type: "application/json",
+      content: '{"body":"as first sent"}',
+    };
+    const upload = {
+      key: `${key}.2`,
+      method: "POST",
+      path: "/api/v1/issues/DSP-1/artifacts",
+      type: "multipart/form-data; boundary=x",
+      content: new Uint8Array([0, 1, 255]),
+    };
+    writeResendRecord(dir, key, [message, upload]);
+    const third = { ...message, key: `${key}.3` };
+    writeResendRecord(dir, key, [{ ...message, content: '{"body":"another"}' }, third]);
+    expect(readResendRecord(dir, key)).toEqual([message, upload, third]);
+    expect(statSync(join(dir, "resend", `${key}.writes`, `${key}.json`)).mode & 0o777).toBe(0o600);
+  });
+
+  // Two calls under one key can keep their requests at the same moment (two resends run together):
+  // neither replaces a request the other kept, and each keeps the ones only it sent. Each write is
+  // a file of its own, made only when it is not there, so there is no read, merge and write to
+  // race.
+  test("two processes keeping requests under the same keys at once lose none", async () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s12");
+    const keys = Array.from({ length: 300 }, () => crypto.randomUUID());
+    const module = join(import.meta.dir, "..", "dispatch-session-state.ts");
+    // Both start writing at once: each says it is ready, then waits for the go file the test
+    // makes once both have said so.
+    const go = join(dir, "..", "go");
+    mkdirSync(join(dir, ".."), { recursive: true });
+    const writer = (body: string, extra: number) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `import { existsSync } from "node:fs";
+import { writeResendRecord } from ${JSON.stringify(module)};
+console.log("ready");
+while (!existsSync(${JSON.stringify(go)})) {}
+for (const key of ${JSON.stringify(keys)}) {
+  writeResendRecord(${JSON.stringify(dir)}, key, [
+    { key, method: "POST", path: "/m", type: "application/json", content: ${JSON.stringify(body)} },
+    { key: key + ".${extra}", method: "POST", path: "/m", type: "application/json", content: "x" },
+  ]);
+}`,
+        ],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+    const children = [writer("from A", 2), writer("from B", 3)];
+    for (const child of children) await child.stdout.getReader().read();
+    writeFileSync(go, "");
+    expect(await Promise.all(children.map((child) => child.exited))).toEqual([0, 0]);
+    const lost = keys.filter((key) => readResendRecord(dir, key).length !== 3);
+    expect(lost).toEqual([]);
+    for (const key of keys) {
+      expect(["from A", "from B"]).toContain(readResendRecord(dir, key)[0]?.content as string);
+    }
+  }, 60_000);
 
   test("pruning removes sessions idle for 14 days and keeps the rest", () => {
     const r = root();

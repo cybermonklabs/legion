@@ -6,9 +6,12 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
+  NO_ROUTE_MESSAGE_PREFIX,
+  NO_ROUTE_RETRY_DELAYS_MS,
 } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
 import {
+  CommandKey,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchGatewayError,
@@ -18,6 +21,7 @@ import {
   DispatchWriteUnsettledError,
   forgetKeyedLayerMemory,
   KEYED_LAYER_MEMORY_MS,
+  type SentWrite,
 } from "../dispatch-http";
 
 // Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
@@ -1047,6 +1051,523 @@ describe("DispatchClient's writes", () => {
       inFlightPauseMs: 3_000,
       inFlightWithinMs: 55_000,
     });
+  });
+
+  // A `dispatch` command's writes take their keys from the command's (`CommandKey`), so the
+  // command sent again under that key sends each write under the key it had the first time.
+  const KEY = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+
+  function commandClient(
+    fetchImpl: typeof fetch,
+    retry: DispatchWriteRetry,
+    signal?: AbortSignal,
+    recorded: readonly SentWrite[] = []
+  ) {
+    const commandKey = new CommandKey(KEY, recorded);
+    const dispatch = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      {
+        signal,
+        writeRetry: retry,
+        sleep: async () => undefined,
+        commandKey,
+      }
+    );
+    return { dispatch, commandKey };
+  }
+
+  // A call sent again under its key sends each write its first call sent as that call sent it:
+  // the same route under the same key carries the recorded body, whatever the command built this
+  // time (a value read afresh, a picture edited since). A write the record does not hold, or holds
+  // for another route, goes as built, and Dispatch judges it by its key.
+  test("a write the call's record holds for its route is sent as recorded", async () => {
+    const recorded: SentWrite = {
+      key: KEY,
+      method: "POST",
+      path: "/api/v1/issues/DSP-1/comments",
+      type: "application/json",
+      content: '{"body":"as first sent"}',
+    };
+    const elsewhere: SentWrite = {
+      ...recorded,
+      key: `${KEY}.2`,
+      path: "/api/v1/issues/DSP-2/comments",
+    };
+    const { fetchImpl, sent } = scripted([json(posted, 201), json(posted, 201), json(posted, 201)]);
+    const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry, undefined, [
+      recorded,
+      elsewhere,
+    ]);
+    await dispatch.comment("DSP-1", comment);
+    await dispatch.comment("DSP-1", comment);
+    await dispatch.comment("DSP-1", comment);
+    expect(sent.map((request) => request.body)).toEqual([
+      recorded.content,
+      expect.not.stringContaining("as first sent"),
+      expect.not.stringContaining("as first sent"),
+    ]);
+    const writes = commandKey.sentWrites();
+    expect(writes.map((write) => write.key)).toEqual([KEY, `${KEY}.2`, `${KEY}.3`]);
+    expect(writes.map((write): unknown => write.content)).toEqual(
+      sent.map((request): unknown => request.body)
+    );
+  });
+
+  // The sync of every source falls back to the older route only after no build had a route for
+  // it, which ran nothing: the fallback is that same write, so it takes the same key, and a
+  // resend under it on a newer Dispatch is refused as another request rather than run.
+  test("architecture sync's fallback route takes the key its first route was sent under", async () => {
+    const noRoute = () =>
+      refusal(
+        404,
+        "NOT_FOUND",
+        `${NO_ROUTE_MESSAGE_PREFIX}POST /api/v1/projects/DSP/architecture-sources/sync`
+      );
+    // Four attempts on the route (`NO_ROUTE_RETRY_DELAYS_MS`), then the older route's one.
+    const answers = [
+      ...Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, noRoute),
+      json({ repo: "a/b" }, 200),
+    ];
+    // No route was matched, so no keyed layer named the key; the older route's answer names it.
+    const { fetchImpl, sent } = scripted(answers, {
+      echo: (request) => request === answers.length,
+    });
+    const { dispatch } = commandClient(fetchImpl, pacing().retry);
+    await dispatch.syncArchitectureSources("DSP");
+    const keys = sent.map((request) => request.headers["Idempotency-Key"]);
+    expect(new Set(keys)).toEqual(new Set([KEY]));
+    expect(sent.at(-1)?.url).toEndWith("/architecture-source/sync");
+  });
+
+  test("a command's writes take its key in order; a read, a PUT and a POST that writes nothing take none of it", async () => {
+    const { fetchImpl, sent } = scripted(Array.from({ length: 7 }, () => json({ markdown: "" })));
+    const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+
+    await dispatch.comment("DSP-1", comment);
+    await dispatch.markdownRoundTrip("# Notes\n");
+    await dispatch.getIssue("DSP-1");
+    await dispatch.related("DSP", { title: "A title", text: "Some text." });
+    await dispatch.message("DSP-1", { body: "Shipped.", actor });
+    await dispatch.followAsk("ask-1", "session-1", actor);
+    await dispatch.updateIssue("DSP-1", { status: "testing", actor });
+
+    const keys = sent.map((request): string | undefined => request.headers["Idempotency-Key"]);
+    expect([keys[0], keys[2], keys[4], keys[5], keys[6]]).toEqual([
+      KEY,
+      undefined,
+      `${KEY}.2`,
+      undefined,
+      `${KEY}.3`,
+    ]);
+    for (const own of [keys[1], keys[3]]) {
+      expect(own).toMatch(IDEMPOTENCY_KEY_PATTERN);
+      expect(own?.startsWith(KEY)).toBe(false);
+    }
+    expect(commandKey.unsettled).toBe(false);
+  });
+
+  // A build that has no route for the write ran nothing, so the write asked again of the next
+  // build is the same write, under the same key, and the command's next write keeps its ordinal.
+  test("a command's write a build had no route for keeps its key on the next attempt", async () => {
+    const noRoute = refusal(
+      404,
+      "NOT_FOUND",
+      `${NO_ROUTE_MESSAGE_PREFIX} POST /api/v1/issues/DSP-1/comments`
+    );
+    const { fetchImpl, sent } = scripted([noRoute, json(posted, 201), json(posted, 201)]);
+    const { dispatch } = commandClient(fetchImpl, pacing().retry);
+
+    await dispatch.comment("DSP-1", comment);
+    await dispatch.message("DSP-1", { body: "Shipped.", actor });
+
+    expect(sent.map((request) => request.headers["Idempotency-Key"])).toEqual([
+      KEY,
+      KEY,
+      `${KEY}.2`,
+    ]);
+  });
+
+  const rateLimited = () =>
+    new Response("<html><body><h1>429 Too Many Requests</h1></body></html>", {
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: { "Content-Type": "text/html", "Retry-After": "3600" },
+    });
+  const lost = () => new TypeError("fetch failed");
+  const cutRefusal = () =>
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new TypeError("refusal body lost"));
+        },
+      }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+
+  // Each way a write can end, and whether it may have landed with its answer lost: every ending
+  // after an attempt that may have reached Dispatch tells the command, whatever it throws, and no
+  // ending that says the write never ran, or ran and answered, does.
+  const endings: readonly {
+    readonly name: string;
+    readonly answers: readonly Answer[];
+    readonly unsettled: boolean;
+    readonly call?: (dispatch: DispatchClient) => Promise<unknown>;
+    readonly echo?: boolean;
+  }[] = [
+    {
+      name: "every attempt lost in transport",
+      answers: Array.from({ length: 5 }, lost),
+      unsettled: true,
+    },
+    {
+      name: "lost in transport, then a gateway's rate limit",
+      answers: [lost(), rateLimited()],
+      unsettled: true,
+    },
+    {
+      name: "Dispatch's 503 on every attempt",
+      answers: Array.from({ length: 5 }, () => refusal(503, "UNAVAILABLE", "down")),
+      unsettled: true,
+    },
+    {
+      name: "the deadline while the attempt was out",
+      answers: [
+        () => {
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        },
+      ],
+      unsettled: true,
+    },
+    {
+      // The write ran (its 201 came back), and the connection broke before its body did.
+      name: "a 201 whose body was cut off",
+      answers: [
+        () =>
+          new Response(
+            new ReadableStream({
+              pull(controller) {
+                controller.error(new TypeError("socket closed before the body ended"));
+              },
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } }
+          ),
+      ],
+      unsettled: true,
+    },
+    {
+      name: "lost in transport, then a terminal refusal the keyed layer did not judge",
+      answers: [lost(), refusal(400, "INVALID", "refused before the keyed layer")],
+      echo: false,
+      unsettled: true,
+    },
+    {
+      name: "lost in transport, then a refusal the keyed layer judged",
+      answers: [lost(), refusal(400, "INVALID", "the original write was refused")],
+      unsettled: false,
+    },
+    {
+      name: "lost in transport, then a gateway's terminal refusal",
+      answers: [lost(), page(403, "Forbidden")],
+      unsettled: true,
+    },
+    {
+      name: "a refusal whose body was cut off before any write ran",
+      answers: [cutRefusal],
+      unsettled: false,
+    },
+    {
+      name: "lost in transport, then an unreadable unjudged refusal",
+      answers: [lost(), cutRefusal],
+      echo: false,
+      unsettled: true,
+    },
+    {
+      name: "lost in transport, then an unreadable judged refusal",
+      answers: [lost(), cutRefusal],
+      unsettled: false,
+    },
+    { name: "a 201", answers: [json(posted, 201)], unsettled: false },
+    {
+      // Nothing listened where the URL points: no attempt carried the request anywhere.
+      name: "a refused connection on every attempt",
+      answers: Array.from({ length: 5 }, () =>
+        Object.assign(new TypeError("ECONNREFUSED: Unable to connect."), { code: "ECONNREFUSED" })
+      ),
+      unsettled: false,
+    },
+    { name: "Dispatch's refusal", answers: [refusal(400, "INVALID", "bad")], unsettled: false },
+    {
+      name: "a gateway's rate limit before anything reached Dispatch",
+      answers: [rateLimited()],
+      unsettled: false,
+    },
+    {
+      name: "a landing whose answer is gone",
+      answers: [
+        refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
+      ],
+      unsettled: false,
+    },
+    {
+      name: "a POST that writes nothing, every attempt lost in transport",
+      answers: Array.from({ length: 5 }, lost),
+      unsettled: false,
+      call: (dispatch) => dispatch.related("DSP", { title: "A title", text: "Some text." }),
+    },
+    {
+      name: "a write under the caller's own key, every attempt lost in transport",
+      answers: Array.from({ length: 5 }, lost),
+      unsettled: false,
+      call: (dispatch) =>
+        dispatch.projectArtifact(
+          "DSP",
+          { name: "notes.md", content: "# Notes", actor },
+          "decisions-1"
+        ),
+    },
+  ];
+  for (const ending of endings) {
+    test(`a command's write ending with ${ending.name} ${ending.unsettled ? "may" : "cannot"} have landed unanswered`, async () => {
+      const { fetchImpl } = scripted(ending.answers, {
+        ...(ending.echo === undefined ? {} : { echo: ending.echo }),
+      });
+      const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+      await (ending.call ?? ((client) => client.comment("DSP-1", comment)))(dispatch).catch(
+        () => undefined
+      );
+      expect(commandKey.unsettled).toBe(ending.unsettled);
+    });
+  }
+
+  for (const prior of ["refused", "uncertain"] as const) {
+    test(`a credential failure before retry preserves an earlier ${prior} outcome`, async () => {
+      const { fetchImpl, sent } = scripted([
+        prior === "refused"
+          ? refusal(429, "RATE_LIMITED", "slow down")
+          : refusal(502, "UNAVAILABLE", "the answer was lost"),
+      ]);
+      const commandKey = new CommandKey(KEY);
+      let presentations = 0;
+      const dispatch = new DispatchClient(
+        "http://dispatch.test",
+        {
+          scheme: "Bearer",
+          secret: () => "secret",
+          headers: async () => {
+            if (++presentations > 1) throw new DOMException("login timed out", "TimeoutError");
+            return { Authorization: "Bearer secret" };
+          },
+        },
+        fetchImpl,
+        { writeRetry: pacing().retry, commandKey }
+      );
+
+      const error = await failure(dispatch.comment("DSP-1", comment));
+      expect(error.name).toBe(prior === "refused" ? "TimeoutError" : "DispatchWriteUnsettledError");
+      expect(sent).toHaveLength(1);
+      expect(commandKey.unsettled).toBe(prior === "uncertain");
+    });
+  }
+
+  test("a later landed write does not clear an earlier write's uncertainty", async () => {
+    const { fetchImpl } = scripted([
+      new TypeError("fetch failed"),
+      rateLimited(),
+      refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the second write landed"),
+    ]);
+    const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+    await failure(dispatch.comment("DSP-1", comment));
+    await failure(dispatch.message("DSP-1", { body: "Other write", actor }));
+    expect(commandKey.unsettled).toBe(true);
+  });
+
+  test("a successful no-route repeat resolves only its own uncertain write", async () => {
+    const { fetchImpl, sent } = scripted(
+      [
+        new TypeError("fetch failed"),
+        refusal(404, "NOT_FOUND", `${NO_ROUTE_MESSAGE_PREFIX} POST /api/v1/issues/DSP-1/comments`),
+        json(posted, 201),
+      ],
+      { echo: (request) => request !== 2 }
+    );
+    const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+    await expect(dispatch.comment("DSP-1", comment)).resolves.toEqual(posted);
+    expect(sent.map((request) => request.headers["Idempotency-Key"])).toEqual([KEY, KEY, KEY]);
+    expect(commandKey.unsettled).toBe(false);
+  });
+
+  test("a command's write whose every attempt is silent may have landed unanswered", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl } = scripted(Array.from({ length: 5 }, () => stall));
+    const { dispatch, commandKey } = commandClient(fetchImpl, retry);
+    expect(await failure(dispatch.comment("DSP-1", comment))).toBeInstanceOf(
+      DispatchWriteUnsettledError
+    );
+    expect(commandKey.unsettled).toBe(true);
+  });
+
+  // A write follows no redirect. A followed one would carry the write to another place, and a
+  // failure there (a refused connection) would read as though the write reached nothing, though
+  // the first place took it. The redirect is the answer, as Dispatch's own refusal is.
+  test("a command's write follows no redirect: the redirect is its answer", async () => {
+    let followed = 0;
+    const target = Bun.serve({
+      port: 0,
+      fetch: () => {
+        followed++;
+        return Response.json(posted, { status: 201 });
+      },
+    });
+    const redirecting = Bun.serve({
+      port: 0,
+      fetch: (request) =>
+        new Response(null, {
+          status: 307,
+          headers: { Location: `http://127.0.0.1:${target.port}${new URL(request.url).pathname}` },
+        }),
+    });
+    try {
+      const commandKey = new CommandKey(KEY);
+      const dispatch = new DispatchClient(
+        `http://127.0.0.1:${redirecting.port}`,
+        bearerCredential("secret"),
+        fetch,
+        { writeRetry: pacing().retry, sleep: async () => undefined, commandKey }
+      );
+      const failed = await failure(dispatch.comment("DSP-1", comment));
+      expect(failed).toBeInstanceOf(DispatchGatewayError);
+      expect((failed as DispatchGatewayError).status).toBe(307);
+      expect(followed).toBe(0);
+    } finally {
+      redirecting.stop(true);
+      target.stop(true);
+    }
+  });
+
+  // Dispatch's keyed layer names a write's key on every answer to it, so a 2xx without the key,
+  // from a Dispatch that keeps keys, came from something in Dispatch's place: whatever it holds
+  // (`{}`, `[]`, or an object of another shape: the reviewer's `{"unexpected":true}`, `[{}]`,
+  // `{"id":null}`), it is no answer of Dispatch's, so the write may have landed with its answer
+  // lost. A 2xx that names the key but whose body is no JSON object or list (`null`, JSON cut
+  // short, a page, nothing) is lost the same way.
+  test("a command's write answered 2xx without its key, or with no JSON object, may have landed unanswered", async () => {
+    for (const [text, echo] of [
+      ["{}", false],
+      ["[]", false],
+      ['{"unexpected":true}', false],
+      ["[{}]", false],
+      ['{"id":null}', false],
+      ["null", true],
+      ['{"id":', true],
+      ["<html>OK</html>", true],
+      ["", true],
+    ] as const) {
+      const answer = new Response(text, {
+        status: 201,
+        headers: { "Content-Type": text.startsWith("<") ? "text/html" : "application/json" },
+      });
+      const { fetchImpl } = scripted([answer], { echo });
+      const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+      const failed = await failure(dispatch.comment("DSP-1", comment));
+      expect({ text, echo, failed: failed instanceof Error }).toEqual({ text, echo, failed: true });
+      expect({ text, echo, unsettled: commandKey.unsettled }).toEqual({
+        text,
+        echo,
+        unsettled: true,
+      });
+    }
+  });
+
+  // The controls. An answer that names its key is Dispatch's whatever its shape, an empty list
+  // included: the key says whose answer it is, and a shape rule would read an answer Dispatch gave
+  // as lost on every resend under the key, which replays it. And a Dispatch whose /healthz says it
+  // keeps no keys (a build before the keyed layer) names none on any answer, so its 2xx is its
+  // answer.
+  test("a 2xx that names its key, or from a Dispatch that keeps no keys, is the write's answer", async () => {
+    const named = scripted([json([], 200)]);
+    const synced = commandClient(named.fetchImpl, pacing().retry);
+    expect(await synced.dispatch.syncArchitectureSources("DSP")).toEqual([]);
+    expect(synced.commandKey.unsettled).toBe(false);
+
+    forgetKeyedLayerMemory();
+    const old = scripted([json(posted, 201)], { echo: false, health: { ok: true, db: true } });
+    const before = commandClient(old.fetchImpl, pacing().retry);
+    expect(await before.dispatch.comment("DSP-1", comment)).toEqual(posted);
+    expect(before.commandKey.unsettled).toBe(false);
+
+    // A Dispatch whose /healthz cannot be read: nothing says the 2xx is Dispatch's.
+    forgetKeyedLayerMemory();
+    const unknown = scripted([json(posted, 201)], {
+      echo: false,
+      health: new Error("fetch failed"),
+    });
+    const unread = commandClient(unknown.fetchImpl, pacing().retry);
+    expect(await failure(unread.dispatch.comment("DSP-1", comment))).toBeInstanceOf(Error);
+    expect(unread.commandKey.unsettled).toBe(true);
+  });
+
+  // What such an answer says is quoted in the error, which the CLI prints and keeps in the
+  // session's ledger: an answer that names its key and holds no JSON object has the credential it
+  // echoes taken out, as a refusal's page has. A page that names no key is not Dispatch's, and the
+  // error quotes none of it.
+  test("an unusable 2xx's excerpt names no credential", async () => {
+    const echoed = new Response(JSON.stringify("Authorization: Bearer secret"), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    });
+    const page = new Response("<html>Authorization: Bearer secret</html>", {
+      status: 201,
+      headers: { "Content-Type": "text/html" },
+    });
+    for (const [answer, quoted] of [
+      [echoed, true],
+      [page, false],
+    ] as const) {
+      const { fetchImpl } = scripted([answer]);
+      const { dispatch } = commandClient(fetchImpl, pacing().retry);
+      const { message } = (await failure(dispatch.comment("DSP-1", comment))) as Error;
+      expect(message).not.toContain("secret");
+      expect({ quoted: message.includes("Authorization") }).toEqual({ quoted });
+    }
+  });
+
+  // A Dispatch whose /healthz answers its health (`healthzHandler`: `ok` and `db` on every build)
+  // and names no keyed layer would run a write sent again as a second write, which the command must
+  // not offer; a probe that tells nothing (it failed, or the JSON is no health answer of
+  // Dispatch's) leaves the command as it was.
+  test("what /healthz says of the keyed layer is told to the command", async () => {
+    for (const [health, layer] of [
+      [{ ok: true, db: true }, "absent"],
+      [{ ok: false, db: false }, "absent"],
+      [{ ok: true, db: true, idempotency_keys: true }, "runs"],
+      [{ status: "ok" }, "unknown"],
+      [{ error: "upstream down" }, "unknown"],
+      [new Error("fetch failed"), "unknown"],
+    ] as const) {
+      forgetKeyedLayerMemory();
+      const { fetchImpl } = scripted([lost()], { health, echo: false });
+      const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+      await dispatch.comment("DSP-1", comment).catch(() => undefined);
+      expect({ health, layer: commandKey.keyedLayer }).toEqual({ health, layer });
+      expect(commandKey.unsettled).toBe(true);
+    }
+  });
+
+  test("a command's write its caller cancels during a pause after a 502 may have landed unanswered", async () => {
+    const controller = new AbortController();
+    const { fetchImpl } = scripted([page(502, "Bad Gateway"), json(posted, 201)]);
+    const paused: DispatchWriteRetry = {
+      ...DISPATCH_WRITE_RETRY,
+      pause: (_ms, signal) => {
+        controller.abort(new DOMException("The operation was aborted.", "AbortError"));
+        return Promise.reject(signal.reason);
+      },
+    };
+    const { dispatch, commandKey } = commandClient(fetchImpl, paused, controller.signal);
+    expect((await failure(dispatch.comment("DSP-1", comment))).name).toBe("AbortError");
+    expect(commandKey.unsettled).toBe(true);
   });
 });
 

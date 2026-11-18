@@ -11,7 +11,7 @@ import type {
 } from "@legion/contracts";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import { type CommandKey, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
@@ -65,6 +65,10 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** The key of the `dispatch` command this call is (`CommandKey`): each of its writes takes its
+   *  key from it, and it hears of each that may have landed unanswered. Unset, each write mints
+   *  a key of its own. */
+  readonly commandKey?: CommandKey;
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
@@ -288,8 +292,10 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
 /**
  * The context every command starts from, built from the checked call. The fetch it hands the
  * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else. That message and every link name the server without the
- * user and password its URL may carry; the client's requests go to the URL as configured.
+ * reads that message and nothing else; the transport error stays its `cause`, so the client still
+ * tells a connection never made from one that may have carried the request. That message and every
+ * link name the server without the user and password its URL may carry; the client's requests go
+ * to the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -305,7 +311,8 @@ export function sessionContext(
       } catch (error) {
         if (error instanceof TypeError) {
           throw new Error(
-            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
+            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
+            { cause: error }
           );
         }
         throw error;
@@ -326,6 +333,7 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        commandKey: input.commandKey,
       }),
   };
 }

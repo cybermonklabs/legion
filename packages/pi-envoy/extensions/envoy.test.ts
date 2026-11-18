@@ -45,7 +45,6 @@ import type {
   DeliveryLedgerHost,
   DeliveryLedgerOptions,
 } from "@legion/envoy-client/delivery-ledger";
-import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
@@ -63,6 +62,11 @@ import {
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
+// Every Dispatch faked here stands for one whose keyed layer names a write's key on its answer.
+import {
+  runDispatchCliUnderKey as runDispatchCli,
+  underKey,
+} from "@legion/envoy-client/test/under-key";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
@@ -5895,7 +5899,9 @@ console.log(JSON.stringify(args));
           published.push(JSON.parse(line ?? "{}") as Record<string, unknown>);
         for (const wake of recordWaiters.splice(0)) wake();
       };
-      globalThis.fetch = async (input, init) => {
+      // It stands for Dispatch, whose keyed layer names a write's key on its answer: the
+      // recorder's writes carry keys of their own.
+      globalThis.fetch = underKey(async (input, init) => {
         const url = String(input instanceof Request ? input.url : input);
         const byName = /\/api\/v1\/projects\/INFRA\/artifacts\/(.+)$/.exec(url);
         if (byName !== null && (init?.method ?? "GET").toUpperCase() === "GET") {
@@ -5928,7 +5934,7 @@ console.log(JSON.stringify(args));
           return Response.json({ applied: body.ops?.length ?? 0 });
         }
         return other(input, init);
-      };
+      });
     };
     /**
      * Waits for `wanted` records to reach the stand-in Dispatch. An unmarked write's record runs

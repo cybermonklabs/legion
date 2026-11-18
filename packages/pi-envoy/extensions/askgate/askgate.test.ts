@@ -21,6 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { underKey } from "@legion/envoy-client/test/under-key";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -5982,7 +5983,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       stderr: () => {},
       readText: (file) => fs.readFileSync(path.resolve(work, file), "utf8"),
       cwd: work,
-      fetchImpl,
+      // The fake stands for Dispatch, whose keyed layer names a write's key on its answer.
+      fetchImpl: underKey(fetchImpl),
     });
     return { code, stdout, sent };
   }

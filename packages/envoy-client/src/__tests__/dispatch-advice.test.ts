@@ -10,9 +10,11 @@ import type {
   WriteAdvice,
   WriteSuggestion,
 } from "@legion/contracts";
+// Every fake here stands for Dispatch, whose keyed layer names a write's key on its answer.
+import { executeDispatchToolUnderKey as executeDispatchTool } from "../../test/under-key";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
-import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
+import { resetAdviceMemory } from "../dispatch-execute";
 
 /** A write's advice as the route table states it: an issue write answers `WriteAdvice`, a
  *  project document's write the decision-block half alone. */

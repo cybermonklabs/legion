@@ -6,46 +6,20 @@ import {
   commandHelp,
   commandLine,
   commandName,
+  dispatchLine,
   flagName,
+  keyNamedIn,
   parseCommand,
+  rerunWords,
   toolForCommand,
 } from "../dispatch-command";
+import { shellWords } from "./shell-words";
 
 const noFiles = {
   readText: (path: string): string => {
     throw new Error(`unexpected read ${path}`);
   },
 };
-
-function shellWords(line: string): string[] {
-  // Splits the POSIX single-quoted output of commandLine back into argv.
-  const words: string[] = [];
-  let current = "";
-  let quoted = false;
-  let inWord = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quoted) {
-      if (c === "'") quoted = false;
-      else current += c;
-    } else if (c === "'") {
-      quoted = true;
-      inWord = true;
-    } else if (c === "\\" && line[i + 1] === "'") {
-      current += "'";
-      i++;
-    } else if (c === " ") {
-      if (inWord) words.push(current);
-      current = "";
-      inWord = false;
-    } else {
-      current += c;
-      inWord = true;
-    }
-  }
-  if (inWord) words.push(current);
-  return words;
-}
 
 describe("the dispatch command surface", () => {
   test("every spec's example survives commandLine then parseCommand unchanged", () => {
@@ -66,6 +40,156 @@ describe("the dispatch command surface", () => {
     }
     expect(commandName("dispatch_issue_update")).toBe("issue-update");
     expect(flagName("reply_to_ask")).toBe("reply-to-ask");
+  });
+
+  // A write that may have landed names its key; the same command sent again with
+  // `--idempotency-key <key>` sends its writes under it. The key is the call's, not an argument
+  // of the tool, so the arguments are the ones the first call sent.
+  test("--idempotency-key takes the key a write that may have landed named, beside the arguments", () => {
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    const message = ["message", "--issue", "LEGION-2", "--body", "hi"];
+    const expected = {
+      kind: "call" as const,
+      tool: "dispatch_message",
+      args: { issue: "LEGION-2", body: "hi" },
+      dryRun: false,
+      idempotencyKey: key,
+    };
+    expect(parseCommand([...message, "--idempotency-key", key], noFiles)).toEqual(expected);
+    expect(parseCommand([...message, `--idempotency-key=${key}`], noFiles)).toEqual(expected);
+    expect(parseCommand(message, noFiles)).not.toHaveProperty("idempotencyKey");
+    for (const [extra, problem] of [
+      [["--idempotency-key", key, "--idempotency-key", key], "--idempotency-key is given twice"],
+      [["--idempotency-key"], "--idempotency-key needs a value"],
+      [
+        ["--idempotency-key", "retry-1"],
+        '--idempotency-key must be the key a write that exited 75 named, a lower-case UUID; got "retry-1"',
+      ],
+    ] as const) {
+      expect(parseCommand([...message, ...extra], noFiles)).toEqual({
+        kind: "refused",
+        tool: "dispatch_message",
+        problems: [problem],
+      });
+    }
+    expect(commandFlags("dispatch_message")).toContain("--idempotency-key");
+  });
+
+  // `--dry-run-out <file>` is a dry run whose JSON goes to the file the caller names.
+  test("--dry-run-out is a dry run that names the file its JSON goes to", () => {
+    const message = ["message", "--issue", "LEGION-2", "--body", "hi"];
+    expect(parseCommand([...message, "--dry-run-out", "out.json"], noFiles)).toEqual({
+      kind: "call",
+      tool: "dispatch_message",
+      args: { issue: "LEGION-2", body: "hi" },
+      dryRun: true,
+      dryRunOut: "out.json",
+    });
+    expect(parseCommand([...message, "--dry-run-out"], noFiles)).toEqual({
+      kind: "refused",
+      tool: "dispatch_message",
+      problems: ["--dry-run-out needs a value"],
+    });
+    expect(parseCommand([...message, "--dry-run-out=a", "--dry-run-out=b"], noFiles)).toEqual({
+      kind: "refused",
+      tool: "dispatch_message",
+      problems: ["--dry-run-out is given twice"],
+    });
+  });
+
+  // Whatever else a call's words hold, the CLI reads the key they name, so a refused call that
+  // names the key of a write an earlier call may have landed says that write may have landed:
+  // an unknown command or flag included. A value that is no key the CLI names is none.
+  test("keyNamedIn reads the key a call's words name, whether or not the call parses", () => {
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    expect(keyNamedIn(["nope", "--idempotency-key", key, "--bogus"])).toBe(key);
+    expect(keyNamedIn(["message", `--idempotency-key=${key}`])).toBe(key);
+    expect(keyNamedIn(["message", "--body", "--idempotency-key"])).toBeUndefined();
+    expect(keyNamedIn(["message", "--idempotency-key", "retry-1"])).toBeUndefined();
+    expect(keyNamedIn(["message", "--body", "hi"])).toBeUndefined();
+  });
+
+  test("dispatchLine quotes each word so the shell splits the line back into the same words", () => {
+    const words = ["message", "--body", "it's\ntwo lines", "--issue", "LEGION-2", "--x=--y", ""];
+    expect(shellWords(dispatchLine(words))).toEqual(["dispatch", ...words]);
+    expect(dispatchLine(["read", "LEGION-2"])).toBe("dispatch read LEGION-2");
+    // An apostrophe closes the single quotes and stands alone in double quotes: AskGate's literal
+    // grammar reads that, and refuses the backslash of `'\''`. A `!` stays in single quotes, where
+    // an interactive shell expands no history.
+    expect(dispatchLine(["message", "--body", "it's !done"])).toBe(
+      `dispatch message --body 'it'"'"'s !done'`
+    );
+    expect(dispatchLine(["message", "--body", "it's !done"])).not.toContain("\\");
+  });
+
+  // The command that sends a call again reads what the call read: each text a flag read from a
+  // file or from stdin comes from a copy, and a long value moves to a copy read through the flag's
+  // file twin. Everything else, the inline `--flag=value` form included, stays as written.
+  test("rerunWords reads every text the call read from a copy, and a long value from one", () => {
+    const kept: string[] = [];
+    const keep = (text: string, place: number): string => {
+      kept.push(text);
+      return `/copies/${place}`;
+    };
+    const read = new Map([
+      ["-", "from stdin\n"],
+      ["/tmp/ops.json", '[{"op":"delete","find":"x"}]'],
+    ]);
+    const long = "x".repeat(21);
+    expect(
+      rerunWords(
+        [
+          "doc-edit",
+          "LEGION-2",
+          "--artifact=spec",
+          "--summary-file",
+          "-",
+          "--ops-json-file=/tmp/ops.json",
+          "--precondition-json",
+          `{"blocks":[{"id":"${long}"}]}`,
+          "--idempotency-key",
+          "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71",
+        ],
+        read,
+        20,
+        keep
+      )
+    ).toEqual([
+      "doc-edit",
+      "LEGION-2",
+      "--artifact=spec",
+      "--summary-file",
+      "/copies/1",
+      "--ops-json-file",
+      "/copies/2",
+      "--precondition-json-file",
+      "/copies/3",
+      "--idempotency-key",
+      "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71",
+    ]);
+    expect(kept).toEqual([
+      "from stdin\n",
+      '[{"op":"delete","find":"x"}]',
+      `{"blocks":[{"id":"${long}"}]}`,
+    ]);
+    // A value at the bound, a flag with no file twin (a number), and words of no known command
+    // stay as they are.
+    expect(rerunWords(["issues", "--limit", "12345678901234567890123"], read, 20, keep)).toEqual([
+      "issues",
+      "--limit",
+      "12345678901234567890123",
+    ]);
+    expect(rerunWords(["message", "--body", "x".repeat(20)], read, 20, keep)).toEqual([
+      "message",
+      "--body",
+      "x".repeat(20),
+    ]);
+    expect(rerunWords(["nope", "--body-file", "-"], read, 20, keep)).toEqual([
+      "nope",
+      "--body-file",
+      "-",
+    ]);
+    expect(kept).toHaveLength(3);
   });
 
   // A flag that takes JSON lists the keys of its object, or of each item of its list, from the

@@ -10,7 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { answerUnderKey } from "../../test/under-key";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -33,46 +35,53 @@ interface Recorded {
 }
 
 const posts: Recorded[] = [];
+// It stands for Dispatch, whose keyed layer names a write's key on its answer (`answerUnderKey`):
+// the calls across processes below reach it with no fetch of this file's in between.
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
-    const { pathname } = new URL(request.url);
-    const ledgerFile = join(stateDir, "sessions", "ses-1", "results.jsonl");
-    const ledgerText = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf-8") : "";
-    const record = (sent?: unknown) =>
-      posts.push({ method: request.method, path: pathname, ledger: ledgerText, sent });
-    if (request.method === "POST" && pathname === ARTIFACTS) {
-      const file = (await request.formData()).get("file");
-      record(file instanceof Blob ? await file.text() : undefined);
-      return Response.json({
-        artifact: { id: "artifact-1", issue_key: "DSP-1", name: "brief.md", slug: "brief-md" },
-        version: { number: 1 },
-      });
-    }
-    // What the issue holds, which the upload reads to refuse a name that exists: this issue
-    // holds no document, so every upload below writes a first version.
-    if (request.method === "GET" && pathname === ARTIFACTS) {
-      return Response.json([]);
-    }
-    // The markdown the store would hold for inline text: this stub stores it as it stands, so
-    // no upload below is refused for its spelling.
-    if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
-      const asked: { markdown?: string } = await request.json();
-      return Response.json({ markdown: asked.markdown });
-    }
-    if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
-      record(await request.json());
-      return Response.json({
-        id: "message-1",
-        issue_key: "DSP-1",
-        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
-      });
-    }
-    record();
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    const answer = await answerTo(request);
+    return answerUnderKey(request.method, request.headers.get(IDEMPOTENCY_KEY_HEADER), answer);
   },
 });
 afterAll(() => server.stop(true));
+
+async function answerTo(request: Request): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  const ledgerFile = join(stateDir, "sessions", "ses-1", "results.jsonl");
+  const ledgerText = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf-8") : "";
+  const record = (sent?: unknown) =>
+    posts.push({ method: request.method, path: pathname, ledger: ledgerText, sent });
+  if (request.method === "POST" && pathname === ARTIFACTS) {
+    const file = (await request.formData()).get("file");
+    record(file instanceof Blob ? await file.text() : undefined);
+    return Response.json({
+      artifact: { id: "artifact-1", issue_key: "DSP-1", name: "brief.md", slug: "brief-md" },
+      version: { number: 1 },
+    });
+  }
+  // What the issue holds, which the upload reads to refuse a name that exists: this issue
+  // holds no document, so every upload below writes a first version.
+  if (request.method === "GET" && pathname === ARTIFACTS) {
+    return Response.json([]);
+  }
+  // The markdown the store would hold for inline text: this stub stores it as it stands, so
+  // no upload below is refused for its spelling.
+  if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
+    const asked: { markdown?: string } = await request.json();
+    return Response.json({ markdown: asked.markdown });
+  }
+  if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
+    record(await request.json());
+    return Response.json({
+      id: "message-1",
+      issue_key: "DSP-1",
+      advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
+    });
+  }
+  record();
+  return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+}
 
 const MESSAGES = "/api/v1/issues/DSP-1/messages";
 const COMMENTS = "/api/v1/issues/DSP-1/comments";

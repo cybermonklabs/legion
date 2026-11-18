@@ -9,7 +9,8 @@ An agent works in Dispatch through one shell command, `dispatch`. The Envoy plug
 agent's host (Oh My Pi or Claude Code) puts it on the agent's `PATH` and tells it which session
 it acts for. `dispatch --help` lists the commands, `dispatch <command> --help` gives a command's
 flags and an example, and `--dry-run` checks a command's arguments as the call would and prints
-them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref), sending nothing.
+them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref), sending nothing;
+`--dry-run-out <file>` writes that JSON to the file instead of printing it.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 
@@ -99,7 +100,21 @@ New epic waits for the create's answer before registering parent changes. Start 
 
 A command with several problems is refused once, with every problem listed, so the next run can
 fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
-exits 2 on a usage error, such as an unknown command or flags it refused before any request.
+exits 2 on a usage error, such as an unknown command or flags it refused before any request. It
+exits 75 when a write may have landed and its answer was lost: its last line names the write's
+idempotency key, the settings the command found Dispatch through, and the command that sends it
+again with `--idempotency-key <key>`. Send that command within 24 hours of the first call that
+used the key, from a shell where those settings are as they were, and not the first one again:
+under the key, Dispatch makes each write at most once, and a run without it may make the write
+twice. The command starts with `cd` to the directory the first one ran in and reads copies of
+anything the first one read from stdin or a file, so run it as printed, with no here-document; the
+session keeps each request the first call sent, so the resend
+sends each as it was first sent, and says so where what you built this time differs: your change
+was not sent. A command too long to print whole is not printed: send your own
+command again with `--idempotency-key <key>` added. Where Dispatch says it keeps no idempotency
+keys, the line prints no command, and where the command could not learn whether it does, the line
+says to read the write back first. If a resend is refused, the earlier write may still have
+landed, and the command says so: read the write back before you send anything new.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:

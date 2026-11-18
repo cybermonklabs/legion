@@ -1,13 +1,15 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { underKey } from "../../test/under-key";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
+import { shellWords } from "./shell-words";
 
 interface Recorded {
   readonly method: string;
@@ -561,7 +563,8 @@ async function run(
     },
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
-    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    // The fake stands for Dispatch, whose keyed layer names a write's key on its answer.
+    fetchImpl: underKey(fetchImpl ?? fetch),
   });
   return { code, stdout, stderr };
 }
@@ -1006,6 +1009,85 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // Claude Code shows the first 25,000 characters of a command's output. A dry run's JSON past that
+  // still goes to stdout whole, the JSON alone, and under Claude Code one line on stderr says how
+  // to read it whole: the same call with `--dry-run-out <file>`, which writes the JSON alone to
+  // the file the caller names and prints nothing. The dry run reads and writes no session state.
+  const claudeHost = { DISPATCH_HOST: "claude", CLAUDE_CODE_SESSION_ID: "ses-1" };
+  /** A dry run of a message whose body comes from a file, printing `size` characters in all. */
+  function longDryRun(size: number): string[] {
+    const overhead = `${JSON.stringify({ issue: "DSP-1", body: "" }, null, 2)}\n`.length;
+    const body = join(stateDir, "long-body.md");
+    writeFileSync(body, "x".repeat(size - overhead));
+    return ["message", "--issue", "DSP-1", "--body-file", body, "--dry-run"];
+  }
+
+  test("under Claude Code a dry run past 25,000 characters prints its JSON whole and how to read it on stderr", async () => {
+    const argv = longDryRun(26_946);
+    const { code, stdout, stderr } = await run(argv, claudeHost);
+    expect(code).toBe(0);
+    expect(stdout).toHaveLength(26_946);
+    expect(JSON.parse(stdout)).toEqual({
+      issue: "DSP-1",
+      body: readFileSync(argv[4] as string, "utf-8"),
+    });
+    const hint =
+      /^dispatch: warning: this dry run's JSON is 26,946 characters, past the 25,000 Claude Code shows; to read it whole, run: (dispatch .* --dry-run-out \S+)\n$/.exec(
+        stderr
+      );
+    expect(hint, stderr).not.toBeNull();
+    const words = shellWords(hint?.[1] ?? "");
+    expect(words.slice(0, -1)).toEqual(["dispatch", ...argv, "--dry-run-out"]);
+
+    // The command it names writes the same JSON, byte for byte, to that file, and prints nothing.
+    const out = words.at(-1) ?? "";
+    try {
+      const toFile = await run(words.slice(1), claudeHost);
+      expect(toFile).toEqual({ code: 0, stdout: "", stderr: "" });
+      expect(readFileSync(out, "utf-8")).toBe(stdout);
+    } finally {
+      rmSync(out, { force: true });
+    }
+    expect(existsSync(join(stateDir, "sessions"))).toBe(false);
+  });
+
+  test("--dry-run-out writes the dry run's JSON to the caller's file, prints nothing and sends nothing", async () => {
+    const argv = ["message", "--issue", "DSP-1", "--body", "hi"];
+    const printed = await run([...argv, "--dry-run"], omp);
+    const out = join(stateDir, "dry.json");
+    const written = await run([...argv, "--dry-run-out", out], omp);
+    expect(written).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readFileSync(out, "utf-8")).toBe(printed.stdout);
+    const unwritable = await run(
+      [...argv, "--dry-run-out", join(stateDir, "no", "such", "dir", "x")],
+      omp
+    );
+    expect(unwritable.code).toBe(2);
+    expect(unwritable.stdout).toStartWith("dispatch: the dry run's JSON could not be written to ");
+    expect(requests).toEqual([]);
+  });
+
+  // A dry run that read its text from stdin cannot be repeated by its words alone: stdin is spent.
+  // The hint says to send the call's own command again, its here-document included, with
+  // `--dry-run-out` added, rather than print a command that would read an empty stdin.
+  test("under Claude Code a long dry run of stdin text says to repeat its here-document", async () => {
+    const argv = ["message", "--issue", "DSP-1", "--body-file", "-", "--dry-run"];
+    const { code, stdout, stderr } = await run(argv, claudeHost, "y".repeat(26_100));
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).body).toHaveLength(26_100);
+    expect(stderr).toMatch(
+      /^dispatch: warning: this dry run's JSON is [\d,]+ characters, past the 25,000 Claude Code shows; to read it whole, run this call's own command again, its here-document included, with `--dry-run-out \S+` added\n$/
+    );
+  });
+
+  // The control: outside Claude Code the host shows the whole output, so there is no hint.
+  test("outside Claude Code a long dry run prints its JSON whole and no hint", async () => {
+    const { code, stdout, stderr } = await run(longDryRun(26_946), omp);
+    expect(code).toBe(0);
+    expect(stdout).toHaveLength(26_946);
+    expect(stderr).toBe("");
+  });
+
   test("the follow notice is printed once per ask across processes", async () => {
     const ask = ["ask", "--issue", "DSP-1", "--question", "Which way?", "--option", "A"];
     const first = await run(ask, omp);
@@ -1051,7 +1133,8 @@ describe("the dispatch CLI", () => {
   // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
   // within one. One older than that, one dated ahead of the clock, and anything that is not a
   // sighting say nothing, so the write asks /healthz and, with no yes from it, is reported rather
-  // than sent twice.
+  // than sent twice: its one attempt failed in transport and may have reached Dispatch, so the
+  // call exits 75, a write that may have landed, and never 1, which a caller reads as a refusal.
   test("a carried sighting of the keyed layer is trusted only while it is under five minutes old", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
@@ -1077,7 +1160,7 @@ describe("the dispatch CLI", () => {
       "garbage",
     ]) {
       expect(await call(keyedLayer), JSON.stringify(keyedLayer)).toEqual({
-        code: 1,
+        code: 75,
         posts: 1,
         probes: 1,
       });
@@ -1088,7 +1171,8 @@ describe("the dispatch CLI", () => {
   // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
   // again, and the call's save leaves the sighting out of state.json, so the next call trusts
   // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
-  // the test's 30 s bound lets that show as five posts rather than as a timeout.
+  // the test's 30 s bound lets that show as five posts rather than as a timeout. Dispatch's 5xx
+  // can come after it committed, so the call exits 75, a write that may have landed.
   test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const file = join(stateDir, "sessions", "ses-1", "state.json");
@@ -1117,7 +1201,7 @@ describe("the dispatch CLI", () => {
       "",
       fetchImpl
     );
-    expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
+    expect({ code, posts, probes }).toEqual({ code: 75, posts: 1, probes: 1 });
     expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
   }, 30_000);
 
@@ -2118,7 +2202,7 @@ describe("the dispatch CLI's subscription note", () => {
         stderr: () => {},
         readText: () => "",
         cwd: stateDir,
-        fetchImpl,
+        fetchImpl: underKey(fetchImpl),
       }
     );
     expect(code).toBe(0);

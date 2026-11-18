@@ -2,7 +2,8 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueAdvance, Priorities } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { runDispatchCli } from "../dispatch-cli";
+// Every fake here stands for Dispatch, whose keyed layer names a write's key on its answer.
+import { runDispatchCliUnderKey as runDispatchCli } from "../../test/under-key";
 import { commandFlags, fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory } from "../dispatch-http";

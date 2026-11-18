@@ -26,7 +26,8 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
- * Every command also takes `--help` and `--dry-run`.
+ * Every command also takes `--help`, `--dry-run`, `--dry-run-out <file>` and
+ * `--idempotency-key <key>`.
  */
 
 type ScalarArray = "string" | "number" | "number-or-null";
@@ -52,7 +53,9 @@ type FlagAction =
   | "true"
   | "false"
   | "help"
-  | "dry-run";
+  | "dry-run"
+  | "dry-run-out"
+  | "idempotency-key";
 
 interface FlagEntry {
   readonly field?: string;
@@ -84,6 +87,12 @@ export type ParsedCommand =
       readonly tool: string;
       readonly args: Record<string, unknown>;
       readonly dryRun: boolean;
+      /** The file the dry run writes its JSON to (`--dry-run-out`) instead of printing it; set
+       *  only with `dryRun`. */
+      readonly dryRunOut?: string;
+      /** The key a write that may have landed named (`--idempotency-key`), which the call sends
+       *  its writes under again; absent for a new call. */
+      readonly idempotencyKey?: string;
     }
   | { readonly kind: "help"; readonly tool?: string }
   | {
@@ -102,6 +111,8 @@ export interface CommandFlagRow {
 }
 
 const STDIN = "-";
+/** The key the CLI mints for a call and names when a write may have landed: a lower-case UUID. */
+const COMMAND_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const BARE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const OPTION_SEPARATOR = ": ";
 
@@ -131,7 +142,7 @@ export function toolForCommand(command: string): string | undefined {
   return toolsByCommand.get(command);
 }
 
-/** Every flag spelling the command accepts, `--help` and `--dry-run` included. */
+/** Every flag spelling the command accepts, `--help`, `--dry-run` and `--idempotency-key` included. */
 export function commandFlags(tool: string): readonly string[] {
   return [...surfaceFor(tool).flags.keys()];
 }
@@ -370,6 +381,16 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
     action: "dry-run",
     text: "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
+  add("--dry-run-out", {
+    action: "dry-run-out",
+    value: "<file>",
+    text: "A dry run (--dry-run) that writes the JSON to <file> instead of printing it, and prints nothing.",
+  });
+  add("--idempotency-key", {
+    action: "idempotency-key",
+    value: "<key>",
+    text: "Only to send again a write that exited 75: the key its message named. Dispatch then makes each write of the command at most once. Omit it for a new write.",
+  });
   return flags;
 }
 
@@ -397,6 +418,8 @@ export function parseCommand(
   const bareDashes = new Set<string>();
   let help = false;
   let dryRun = false;
+  let idempotencyKey: string | undefined;
+  let dryRunOut: string | undefined;
   let stdinFlag: string | undefined;
 
   const read = (flag: string, path: string): string | undefined => {
@@ -491,11 +514,11 @@ export function parseCommand(
       else if (field !== undefined && claim(field, flag, false)) args[field] = action === "true";
       continue;
     }
-    if (field === undefined) continue;
-    const info = surface.fields.get(field) as FieldInfo;
     if (action === "clear") {
       if (inline !== undefined) problems.push(`${flag} takes no value`);
-      else if (claim(field, flag, false)) args[field] = info.nullable ? null : [];
+      else if (field !== undefined && claim(field, flag, false)) {
+        args[field] = (surface.fields.get(field) as FieldInfo).nullable ? null : [];
+      }
       continue;
     }
     let value = inline;
@@ -510,6 +533,26 @@ export function parseCommand(
       value = next;
       index++;
     }
+    if (action === "dry-run-out") {
+      if (dryRunOut !== undefined) problems.push(`${flag} is given twice`);
+      else {
+        dryRunOut = value;
+        dryRun = true;
+      }
+      continue;
+    }
+    if (action === "idempotency-key") {
+      if (idempotencyKey !== undefined) problems.push(`${flag} is given twice`);
+      else if (COMMAND_KEY.test(value)) idempotencyKey = value;
+      else {
+        problems.push(
+          `${flag} must be the key a write that exited 75 named, a lower-case UUID; got ${JSON.stringify(value)}`
+        );
+      }
+      continue;
+    }
+    if (field === undefined) continue;
+    const info = surface.fields.get(field) as FieldInfo;
     switch (action) {
       case "set": {
         // Claimed whatever the value, so a repeat is named even after a value that did not parse.
@@ -563,7 +606,66 @@ export function parseCommand(
       ? { kind: "refused", tool, problems, aboutAFlag: false }
       : { kind: "refused", tool, problems };
   }
-  return { kind: "call", tool, args, dryRun };
+  return {
+    kind: "call",
+    tool,
+    args,
+    dryRun,
+    ...(dryRunOut === undefined ? {} : { dryRunOut }),
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+  };
+}
+
+/**
+ * The words that send `argv` (the words after `dispatch`) again so that it reads what it read the
+ * first time. A value a flag read from a file or from stdin (`--<field>-file`,
+ * `--<field>-json-file`; `read` holds each text by the path the flag named, `-` for stdin) is
+ * read instead from a copy `keep` writes, since stdin is gone and a file can change; a value
+ * longer than `longest` given to a flag that has a file-reading twin (`--body`, `--ops-json`) is
+ * moved to a copy `keep` writes and read through the twin (`--body-file`, `--ops-json-file`), so
+ * the command fits on a line. `keep` takes the text and its place among the copies, from 1, and
+ * answers the copy's path. Every other word stays as written.
+ */
+export function rerunWords(
+  argv: readonly string[],
+  read: ReadonlyMap<string, string>,
+  longest: number,
+  keep: (text: string, place: number) => string
+): string[] {
+  const [command, ...rest] = argv;
+  const tool = command === undefined ? undefined : toolForCommand(command);
+  if (command === undefined || tool === undefined) return [...argv];
+  const { flags } = surfaceFor(tool);
+  const words = [command];
+  let place = 0;
+  for (let index = 0; index < rest.length; index++) {
+    const word = rest[index] as string;
+    const eq = word.indexOf("=");
+    const flag = eq === -1 ? word : word.slice(0, eq);
+    const entry = word.startsWith("--") ? flags.get(flag) : undefined;
+    const inline = eq === -1 ? undefined : word.slice(eq + 1);
+    const value = entry?.value === undefined ? undefined : (inline ?? rest[index + 1]);
+    if (entry === undefined || value === undefined) {
+      words.push(word);
+      continue;
+    }
+    const given = inline === undefined ? [word, value] : [word];
+    if (inline === undefined) index++;
+    const text = read.get(value);
+    const twin = `${flag}-file`;
+    if ((entry.action === "file" || entry.action === "json-file") && text !== undefined) {
+      words.push(flag, keep(text, ++place));
+    } else if (
+      (entry.action === "set" || entry.action === "json") &&
+      value.length > longest &&
+      flags.has(twin)
+    ) {
+      words.push(twin, keep(value, ++place));
+    } else {
+      words.push(...given);
+    }
+  }
+  return words;
 }
 
 function appendedItem(
@@ -590,9 +692,15 @@ function appendedItem(
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
-/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */
+/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted, an apostrophe in it
+ *  closing the quotes and standing in double quotes alone (`'it'"'"'s'`): bash and zsh read the
+ *  same word, and so does AskGate's literal grammar, which refuses the backslash of `'\''`. A word
+ *  that opens with `=` is quoted too: zsh's EQUALS option reads a bare `=word` as the path of the
+ *  command `word`. */
 function quoteWord(value: string): string {
-  return BARE_WORD.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+  return BARE_WORD.test(value) && !value.startsWith("=")
+    ? value
+    : `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 /** `--flag value`, or `--flag=value` when the value itself starts with `--`. */
@@ -636,6 +744,36 @@ function optionText(option: unknown): string | undefined {
   return "description" in option && option.description !== undefined
     ? `${label}${OPTION_SEPARATOR}${scalarText(option.description)}`
     : label;
+}
+
+/** `dispatch` and `words` as a command line, each word POSIX single-quoted where it needs to be,
+ *  as `commandLine` quotes a value. */
+export function dispatchLine(words: readonly string[]): string {
+  return ["dispatch", ...words.map(quoteWord)].join(" ");
+}
+
+/** `line` run in `dir`: `cd <dir> && <line>`, the directory quoted as a word is. AskGate lets one
+ *  `cd <path> &&` stand before a Dispatch write, and a relative path the line holds reads there. */
+export function inDirectory(dir: string, line: string): string {
+  return `cd ${quoteWord(dir)} && ${line}`;
+}
+
+/**
+ * The key a call's words name with `--idempotency-key` (either form), when it is one the CLI
+ * names: the key of a write an earlier call may have landed. Read from the words alone, so a call
+ * the CLI refuses whatever it holds (an unknown command or flag) still says what that write may
+ * have done.
+ */
+export function keyNamedIn(argv: readonly string[]): string | undefined {
+  for (const [index, word] of argv.entries()) {
+    const value = word.startsWith("--idempotency-key=")
+      ? word.slice("--idempotency-key=".length)
+      : word === "--idempotency-key"
+        ? argv[index + 1]
+        : undefined;
+    if (value !== undefined && COMMAND_KEY.test(value)) return value;
+  }
+  return undefined;
 }
 
 /** The command line that sends `args`: `dispatch <command> <flags>`, POSIX single-quoted. */
@@ -684,7 +822,7 @@ export function commandsHelp(): string {
       return `  ${commandName(spec.name).padEnd(width)}  ${sentence}`;
     }),
     "",
-    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing.",
+    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, and --dry-run-out <file> writes them to <file> instead.",
     "",
   ].join("\n");
 }

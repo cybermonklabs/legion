@@ -1,4 +1,15 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import {
   askgateState,
   bytesDigest,
@@ -13,24 +24,31 @@ import {
   commandHelp,
   commandName,
   commandsHelp,
+  dispatchLine,
+  inDirectory,
+  keyNamedIn,
   type ParsedCommand,
   parseCommand,
+  rerunWords,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { CommandKey, DispatchWriteLandedError, type SentWrite } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
   loadSessionMemory,
   pruneSessions,
   type ResultInput,
+  readResendRecord,
   readSessionTitle,
   recordOutcome,
   writeLongOutput,
   writePicture,
+  writeResendInput,
+  writeResendRecord,
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
@@ -54,13 +72,26 @@ export interface DispatchCliIo {
   readonly fetchImpl?: typeof fetch;
 }
 
-/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
- *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
+/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, a usage error, and
+ *  a write that may have landed. REFUSED is a call Dispatch itself turned down (a near copy, an
+ *  AskGate block, a server refusal); an argument this CLI refuses before any request is USAGE,
+ *  whether the argv named a command or not. UNSETTLED (sysexits' EX_TEMPFAIL, as `envoy-send`
+ *  exits for a send it cannot confirm) is a call that failed after one of its writes ended with no
+ *  definitive answer while an attempt of it may have reached Dispatch (`CommandKey.unsettled`):
+ *  the write may have landed, so a caller that ran the call again under a new key could make it
+ *  twice, and the CLI names the call's key and the command that sends it again under that key. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
+const UNSETTLED = 75;
+type ExitCode = typeof OK | typeof REFUSED | typeof USAGE | typeof UNSETTLED;
+
+/** The longest value the command line that sends a call again carries as it was given; a longer
+ *  one is kept in a file it reads (`rerunWords`), so the line stays far under what a host shows. */
+const RESEND_VALUE_MAX = 500;
+/** The longest command that sends a call again the CLI prints: far under the 25,000 characters
+ *  Claude Code shows (CLAUDE_OUTPUT_MAX), so the whole line, key included, is shown. */
+const RESEND_COMMAND_MAX = 8_000;
 
 const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
 
@@ -80,6 +111,145 @@ function stateWriteFailed(problem: string): string {
   return `${STATE_WRITE_FAILED} could not be written: ${problem}`;
 }
 
+/** How the line opens that names the key and the resend command of a call that exited UNSETTLED. */
+const MAY_HAVE_LANDED = "dispatch: this write may have landed";
+
+/** How the line opens beside the refusal of a call sent again under a key an earlier call named:
+ *  this call wrote nothing, and the earlier call's write may still have landed. */
+const EARLIER_MAY_HAVE_LANDED = "dispatch: the earlier call's write may have landed";
+
+/** The settings beside the host and the session that a call may find its Dispatch, its login or
+ *  its request through (`settingsRead`): its Dispatch section and token, the issue it defaults
+ *  to, and what chooses the envoy.json it reads when `ENVOY_CONFIG_FILE` names none
+ *  (`envoyConfigPath`). */
+const CALL_SETTINGS = [
+  "ENVOY_CONFIG_FILE",
+  "DISPATCH_URL",
+  "DISPATCH_TOKEN",
+  "DISPATCH_TOKEN_FILE",
+  "DISPATCH_TOKEN_BROKER",
+  "LEGION_ISSUE",
+  "OMP_PROFILE",
+  "PI_CODING_AGENT_DIR",
+  "CLAUDE_CONFIG_DIR",
+  "XDG_CONFIG_HOME",
+  "HOME",
+] as const;
+
+/**
+ * The settings a call found its Dispatch, its login and its session through, by name: the host,
+ * the session's id, and each of CALL_SETTINGS the environment sets. A resend under the call's key
+ * must find them as they were, since Dispatch keeps a key for the login that sent it. They are
+ * named rather than spelled out: `DISPATCH_TOKEN` is a secret, and AskGate lets no command that
+ * opens with an assignment post.
+ */
+function settingsRead(
+  env: Readonly<Partial<Record<string, string>>>,
+  host: DispatchHost
+): string[] {
+  let session = "DISPATCH_SESSION_ID";
+  if (host === "claude") {
+    session = env.ENVOY_SESSION_ID === undefined ? "CLAUDE_CODE_SESSION_ID" : "ENVOY_SESSION_ID";
+  }
+  return [
+    env.DISPATCH_HOST === undefined ? "CLAUDE_CODE_CHILD_SESSION" : "DISPATCH_HOST",
+    session,
+    ...CALL_SETTINGS.filter((name) => env[name] !== undefined),
+  ];
+}
+
+/**
+ * What the CLI adds beside the refusal of a call that names the key of a write an earlier call
+ * may have landed: this call made no write, and its exit says nothing of the earlier call's.
+ */
+function earlierWriteLine(key: string, code: ExitCode): string {
+  return `${EARLIER_MAY_HAVE_LANDED}: this call named its idempotency key ${key} and ended without writing it (exit ${code}). Read the write back before you send it again; a run without the key may make it twice.`;
+}
+
+/** The most swapped requests the line names one by one; it counts the rest. */
+const SWAPPED_NAMED = 3;
+
+/**
+ * The one line that says the call sent `writes` as its first call sent them, in place of the
+ * different requests it built (`CommandKey.swappedWrites`), or undefined for none: what differs
+ * was not sent. It names three at most and counts the rest, so it stays short.
+ */
+function swappedLine(writes: readonly SentWrite[]): string | undefined {
+  const [only, ...more] = writes;
+  if (only === undefined) return undefined;
+  const named = (write: SentWrite): string =>
+    `${write.method} ${write.path} under idempotency key ${write.key}`;
+  if (more.length === 0) {
+    return `dispatch: warning: this call sent ${named(only)} as its first call sent it, not as this call built it, which differs (in its text, its files or the directory it ran in): Dispatch holds the first call's request, and what differs in this call was not sent.`;
+  }
+  const listed = writes.slice(0, SWAPPED_NAMED).map(named);
+  const rest = writes.length - listed.length;
+  return `dispatch: warning: this call sent ${writes.length} requests as its first call sent them, not as this call built them, which differ (in their text, their files or the directory it ran in): ${listed.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}. Dispatch holds the first call's requests, and what differs in this call was not sent.`;
+}
+
+/** What `unsettledLine` says how to send again a call whose write may have landed from. */
+interface Resend {
+  readonly commandKey: CommandKey;
+  readonly argv: readonly string[];
+  /** Whether the argv names the call's key already: a call sent again under it. */
+  readonly named: boolean;
+  /** Every text the call read, by the path it read it from (`-` for stdin). */
+  readonly read: ReadonlyMap<string, string>;
+  /** The settings the call found its Dispatch, its login and its session through (`settingsRead`). */
+  readonly settings: readonly string[];
+  /** The envoy.json the call would read Dispatch's settings from, and whether it was there. */
+  readonly configPath: string;
+  readonly configRead: boolean;
+  /** The directory the call ran in, where a relative path its words hold (a picture) reads. */
+  readonly cwd: string;
+  /** Keeps the `place`-th text the printed command reads, and answers its path; throws when it
+   *  cannot (`writeResendInput`). */
+  readonly keep: (text: string, place: number) => string;
+}
+
+/**
+ * The line, kept whole however the output is cut, that says a write of the call may have landed:
+ * the key of each such write, and how to send the call again under its key.
+ *
+ * Where Dispatch's `/healthz` said it keeps no keys, a resend under one may run the write again,
+ * so the line says to read the write back and gives no command. Where the call could not learn
+ * whether it keeps them, the line promises nothing and says to read the write back first. The
+ * command is the argv with every text it read moved to a kept copy (`rerunWords`) and the key
+ * added, run where the settings the call found Dispatch through are as they were, since Dispatch
+ * keeps a key for the login that sent it. A command over RESEND_COMMAND_MAX would be cut before its
+ * key, and one whose input could not be kept would not send it, so neither is printed: the line
+ * says to send the call's own command with the key added, under which Dispatch makes no write
+ * twice and refuses one whose request changed.
+ */
+function unsettledLine(resend: Resend): string {
+  const { commandKey } = resend;
+  const key = commandKey.key;
+  const lost = `${MAY_HAVE_LANDED} (idempotency key ${commandKey.unsettledKeys.join(", ")}); its answer was lost`;
+  if (commandKey.keyedLayer === "absent") {
+    return `${lost}, and this Dispatch says it keeps no idempotency keys, so sending it again may make it twice: read the write back before you send it again.`;
+  }
+  const within = `within ${IDEMPOTENCY_KEY_TTL_MS / 3_600_000} hours of the first call that used that key`;
+  const config = resend.configRead
+    ? `this call read Dispatch's settings from ${resend.configPath}`
+    : `this call read no envoy.json (none is at ${resend.configPath})`;
+  const where = `from a shell where these are set as they were for this call: ${resend.settings.join(", ")}; ${config}, and Dispatch keeps a key for the login that sent it`;
+  const send =
+    commandKey.keyedLayer === "runs"
+      ? `${lost}. Send the call again under its idempotency key ${key}, ${within}, and Dispatch makes each of its writes at most once; a run without the key may make them twice. Send it ${where}.`
+      : `${lost}, and this call could not confirm that this Dispatch keeps idempotency keys: read the write back first, and only if it is not there, send the call again under its idempotency key ${key}, ${within}, ${where}.`;
+  let why: string;
+  try {
+    const words = rerunWords(resend.argv, resend.read, RESEND_VALUE_MAX, resend.keep);
+    if (!resend.named) words.push("--idempotency-key", key);
+    const line = inDirectory(resend.cwd, dispatchLine(words));
+    if (line.length <= RESEND_COMMAND_MAX) return `${send} Run: ${line}`;
+    why = "it is too long to print whole";
+  } catch (error) {
+    why = `what the call read could not be kept (${messageFor(error)})`;
+  }
+  return `${send} The command is not printed here, because ${why}: in ${resend.cwd}, send this call's own command again with \`--idempotency-key ${key}\` added. Under the key Dispatch makes no write twice: from this session the call sends each request again as its first call sent it, and Dispatch refuses any other request under the key.`;
+}
+
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
 const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
@@ -90,11 +260,15 @@ const LITERAL_FORM =
  *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
  *  nothing: a result's warning
  *  (`dispatch: warning: `), the note that the session's state was not written
- *  (STATE_WRITE_FAILED), and the notice of a file that is not read, printed beside a result. */
+ *  (STATE_WRITE_FAILED), the notice of a file that is not read, printed beside a result, and the
+ *  lines that name a write that may have landed and its key (MAY_HAVE_LANDED,
+ *  EARLIER_MAY_HAVE_LANDED). */
 const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
 const NOT_A_REFUSAL = [
   "dispatch: warning: ",
   STATE_WRITE_FAILED,
+  MAY_HAVE_LANDED,
+  EARLIER_MAY_HAVE_LANDED,
   // readEnvoyConfig's warnings: the OpenCode-era `.opencode/envoy.json` beside a checkout.
   /^dispatch: \S+ is not read(?:: | for this profile| under | and is on another filesystem )/,
 ];
@@ -215,19 +389,24 @@ export async function runDispatchCli(
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
   const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+  // The key of a write an earlier call may have landed, which this call names to send it again:
+  // every refusal of such a call says that the earlier call's write may still have landed. It is
+  // read from the words alone (`keyNamedIn`), so a call refused whatever it holds says so too.
+  const namedKey = keyNamedIn(argv);
   const refuse = (
     text: string,
-    code: number,
+    code: ExitCode,
     tool?: string,
     askgate?: ResultInput["askgate"]
   ): number => {
-    print(text);
+    const printed = namedKey === undefined ? text : `${text}\n${earlierWriteLine(namedKey, code)}`;
+    print(printed);
     const sessionId = claudeSession ?? env.DISPATCH_SESSION_ID;
     if (sessionId !== undefined) {
       try {
         appendResult(sessionDirectory(env, sessionId), {
           tool: tool ?? "dispatch",
-          error: text.trimEnd(),
+          error: printed.trimEnd(),
           ...(askgate === undefined ? {} : { askgate }),
         });
       } catch {
@@ -237,9 +416,18 @@ export async function runDispatchCli(
     return code;
   };
 
+  // Every text the call read, by the path it read it from (`-` for stdin): a call sent again reads
+  // the same texts from copies (`rerunWords`), since stdin is gone and a file can change.
+  const read = new Map<string, string>();
   let parsed: ParsedCommand;
   try {
-    parsed = parseCommand(argv, io);
+    parsed = parseCommand(argv, {
+      readText: (path) => {
+        const text = io.readText(path);
+        read.set(path, text);
+        return text;
+      },
+    });
   } catch (error) {
     return refuse(`dispatch: ${messageFor(error)}`, USAGE);
   }
@@ -299,8 +487,13 @@ export async function runDispatchCli(
   if (parsed.dryRun) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone.
+    // a dry run does not read, and one that passes writes no state of the session's (a refusal is
+    // recorded in the ledger, as every refusal is). It runs with Dispatch off
+    // too, reading a dashboard-URL ref only against a server it knows. Its output is the JSON
+    // alone and whole: on standard output, or in the file `--dry-run-out` names, with standard
+    // output empty. Claude Code shows the first CLAUDE_OUTPUT_MAX characters of a command's
+    // output, so under it a JSON longer than that also gets one line on standard error naming
+    // its size and the same call with `--dry-run-out` and a file of the caller's to read it whole.
     const settings =
       file.path === null
         ? null
@@ -315,7 +508,33 @@ export async function runDispatchCli(
     if (problems.length > 0) {
       return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
     }
-    print(JSON.stringify(parsed.args, null, 2));
+    const json = `${JSON.stringify(parsed.args, null, 2)}\n`;
+    if (parsed.dryRunOut !== undefined) {
+      try {
+        writeFileSync(resolve(io.cwd, parsed.dryRunOut), json);
+      } catch (error) {
+        return refuse(
+          `dispatch: the dry run's JSON could not be written to ${parsed.dryRunOut}: ${messageFor(error)}`,
+          USAGE,
+          parsed.tool
+        );
+      }
+      return OK;
+    }
+    io.stdout(json);
+    if (host === "claude" && json.length > CLAUDE_OUTPUT_MAX) {
+      const out = join(tmpdir(), `dispatch-dry-run-${crypto.randomUUID()}.json`);
+      const again = dispatchLine([...argv, "--dry-run-out", out]);
+      // A call that read stdin cannot be repeated by its words alone: its stdin is spent.
+      const how = read.has("-")
+        ? `run this call's own command again, its here-document included, with \`--dry-run-out ${out}\` added`
+        : again.length <= RESEND_COMMAND_MAX
+          ? `run: ${again}`
+          : `run this call's own command again with \`--dry-run-out ${out}\` added`;
+      io.stderr(
+        `dispatch: warning: this dry run's JSON is ${json.length.toLocaleString("en-US")} characters, past the ${CLAUDE_OUTPUT_MAX.toLocaleString("en-US")} Claude Code shows; to read it whole, ${how}\n`
+      );
+    }
     return OK;
   }
   if (file.path === null) {
@@ -485,7 +704,25 @@ export async function runDispatchCli(
   const notes: string[] = [];
   const problems: string[] = [];
   let entry: ResultInput;
-  let code: number;
+  let code: ExitCode;
+  // The call's key: the one a write that may have landed named, sent again, else a new one. Each
+  // write the call makes takes its own key from it, and a call sent again under a key sends each
+  // write its first call sent as that call sent it, from the session's record (`CommandKey`).
+  let recorded: SentWrite[] = [];
+  if (parsed.idempotencyKey !== undefined) {
+    try {
+      recorded = readResendRecord(dir, parsed.idempotencyKey);
+    } catch (error) {
+      notes.push(
+        `dispatch: warning: ${messageFor(error)}: this call sends each write as it builds it`
+      );
+    }
+  }
+  const commandKey = new CommandKey(parsed.idempotencyKey ?? crypto.randomUUID(), recorded);
+  // The line that names the call's key, kept whole however the output is cut: how to send again a
+  // write that may have landed, or, beside the refusal of a call that sent one again, that the
+  // earlier call's write may still have landed.
+  let keyLine: string | undefined;
   try {
     const result = await executeDispatchTool({
       tool,
@@ -499,6 +736,7 @@ export async function runDispatchCli(
       env,
       ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
       subscriptions,
+      commandKey,
     });
     text = result.text;
     for (const warning of result.warnings ?? []) {
@@ -542,12 +780,57 @@ export async function runDispatchCli(
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
+  // A request the call sent as its first call sent it, in place of a different one it built (a
+  // body edited since): the agent is told its change was not sent, in one line however many such
+  // requests there are, so the lines that must stay whole always fit.
+  const swapped = swappedLine(commandKey.swappedWrites);
+  if (swapped !== undefined) notes.push(swapped);
+  const withLine = (line: string): ResultInput => ({
+    ...entry,
+    error: `${entry.error ?? text}\n${line}`,
+  });
+  if (commandKey.unsettled) {
+    // A write of the call ended with no definitive answer after an attempt of it may have reached
+    // Dispatch, so it may have landed, whatever the command then returned or threw: a near-copy
+    // refusal Dispatch's keyed layer did not judge is one. It is no refusal: a caller that read
+    // exit 1 would run the call again under a new key and could make the write twice. The session
+    // keeps every request the call sent, for the call sent again under its key to send each as it
+    // was first sent (`CommandKey`), and the line says how to send it (`unsettledLine`).
+    try {
+      writeResendRecord(dir, commandKey.key, commandKey.sentWrites());
+    } catch (error) {
+      problems.push(messageFor(error));
+    }
+    keyLine = unsettledLine({
+      commandKey,
+      argv,
+      named: parsed.idempotencyKey !== undefined,
+      read,
+      settings: settingsRead(env, host),
+      configPath: file.path,
+      configRead: existsSync(file.path),
+      cwd: io.cwd,
+      keep: (input, place) => writeResendInput(dir, commandKey.key, place, input),
+    });
+    entry = withLine(keyLine);
+    code = UNSETTLED;
+  } else if (namedKey !== undefined && (code === REFUSED || code === USAGE)) {
+    // A call that named the key of a write an earlier call may have landed, and was refused or
+    // failed: exit 1 or 2 alone would read as though nothing was written at all, so the line says
+    // so beside the refusal and in the ledger, whether the command threw or returned it.
+    keyLine = earlierWriteLine(namedKey, code);
+    entry = withLine(keyLine);
+  }
   try {
     recordOutcome(dir, sessionId, follows, entry);
   } catch (error) {
     problems.push(messageFor(error));
   }
-  const kept = [...notes, ...problems.map(stateWriteFailed)];
+  const kept = [
+    ...notes,
+    ...problems.map(stateWriteFailed),
+    ...(keyLine === undefined ? [] : [keyLine]),
+  ];
   const writeFull = (full: string): string => {
     try {
       return writeLongOutput(dir, full);

@@ -9,7 +9,7 @@ Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
-- Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
+- Exit 1 is a refusal, 2 a usage error, 75 a write that may have landed: resend with its key. A refusal lists every problem: fix all, call once.
 - Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks

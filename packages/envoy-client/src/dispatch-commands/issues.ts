@@ -300,14 +300,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     } catch (error) {
       if (error instanceof DispatchWriteLandedError) {
         throw new Error(
-          `${error.message} That was the closing reason, so the close was not sent: read the issue's messages for it, then close with a reason that points at it, since retrying this call posts its reason again.`,
+          `${error.message} That was the closing reason, so the close was not sent: read the issue's messages for it, then close with a reason that points at it, since running this call again under a new key posts its reason again.`,
           { cause: error }
         );
       }
       // The close's PATCH below follows the same rule: only an answer sent before the reason
       // could be stored proves it was not posted.
       const told = writeMayHaveLanded(error)
-        ? "the reason may or may not have been posted, and the close was not sent: read the issue's messages before retrying, since retrying this call posts its reason again"
+        ? "the reason may or may not have been posted, and the close was not sent: read the issue's messages before retrying, since running this call again under a new key posts its reason again"
         : "the reason was not posted, so the close was not sent";
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
       throw withAccount(error, told);
@@ -375,8 +375,8 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
         ? ""
         : "fix what refused the close, then ";
     const landed = writeMayHaveLanded(error)
-      ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
-      : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
+      ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since running this call again under a new key posts its reason again`
+      : `${posted} but the issue did not close. Running this call again under a new key posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
     if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
     throw withAccount(error, landed);
   }

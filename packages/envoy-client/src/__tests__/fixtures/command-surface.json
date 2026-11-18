@@ -121,8 +121,8 @@
       "text": [
         "dispatch ask was not called: 1 problem",
         "- artifact spec and anchor.artifact plan.md name two documents; name the document once",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --help, --dry-run",
-        "- Example: dispatch ask --issue DSP-1 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
+        "- Example: dispatch ask --issue DSP-1 --question 'Release 4.2 ships Friday. Tuesday'\"'\"'s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
     {
@@ -138,8 +138,8 @@
       "text": [
         "dispatch ask was not called: 1 problem",
         "- dispatch ask opens the ask on the issue unless anchor quotes a document, so artifact spec would be dropped: add --anchor-json '{\"artifact\":\"spec\",\"quote\":\"<exact text>\"}' to ask about a passage of it, or drop --artifact",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --help, --dry-run",
-        "- Example: dispatch ask --issue DSP-1 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
+        "- Example: dispatch ask --issue DSP-1 --question 'Release 4.2 ships Friday. Tuesday'\"'\"'s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
     {
@@ -247,7 +247,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment posts on the issue unless quote anchors it in a document, so document spec would be dropped: add --quote to comment on a passage of it, or name only the issue",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -264,7 +264,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- issue DSP-2 and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --issue DSP-2 alone acts on DSP-2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -281,7 +281,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- artifact is required when quote is supplied",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -299,7 +299,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to and reply_to_ask cannot both be set",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -316,7 +316,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1 names a block of an ask, but a comment reply answers a block of a comment (dispatch://KEY/comment/<id>#b-<block id>); answer it with dispatch comment --reply-to-ask 'dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -333,7 +333,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to_ask dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1 names a block of a comment, but reply_to_ask answers a part of the ask it names (dispatch://KEY/ask/<id>#b-<block id>); answer it with dispatch comment --reply-to 'dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -350,7 +350,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -409,7 +409,7 @@
       "text": [
         "dispatch doc-edit was not called: 1 problem",
         "- artifact plan.md and ref dispatch://DSP-1/artifact/spec name two documents; --ref dispatch://DSP-1/artifact/spec alone names spec, and --issue DSP-1 --artifact plan.md names plan.md",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch doc-edit --issue DSP-1 --artifact spec --ops-json '[{\"op\":\"delete_column\",\"block\":\"table-123\",\"index\":1}]' --precondition-json '{\"blocks\":[{\"id\":\"table-123\",\"token\":\"sha256:current-table-token\"}]}'"
       ]
     },
@@ -431,7 +431,7 @@
       "text": [
         "dispatch doc-edit was not called: 1 problem",
         "- dispatch doc-edit acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch doc-edit --issue DSP-1 --artifact spec --ops-json '[{\"op\":\"delete_column\",\"block\":\"table-123\",\"index\":1}]' --precondition-json '{\"blocks\":[{\"id\":\"table-123\",\"token\":\"sha256:current-table-token\"}]}'"
       ]
     },
@@ -522,7 +522,7 @@
       "text": [
         "dispatch doc-read was not called: 1 problem",
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --version, --blocks, --no-blocks, --ref, --ref-file, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --version, --blocks, --no-blocks, --ref, --ref-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch doc-read --issue DSP-1"
       ]
     },
@@ -538,7 +538,7 @@
       "text": [
         "dispatch doc-read was not called: 1 problem",
         "- version 3 and ref dispatch://DSP-1/artifact/spec@v2 name two versions; name the version once",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --version, --blocks, --no-blocks, --ref, --ref-file, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --version, --blocks, --no-blocks, --ref, --ref-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch doc-read --issue DSP-1"
       ]
     },
@@ -595,8 +595,8 @@
       "text": [
         "dispatch edit-ask was not called: 1 problem",
         "- dispatch://DSP-1/artifact/spec/ask/01234567-0000-4000-8000-000000000001 names an ask through its document, which Dispatch does not address; name it dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001",
-        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --help, --dry-run",
-        "- Example: dispatch edit-ask --ask 01234567-0000-4000-8000-000000000001 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
+        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --help, --dry-run, --dry-run-out, --idempotency-key",
+        "- Example: dispatch edit-ask --ask 01234567-0000-4000-8000-000000000001 --question 'Release 4.2 ships Friday. Tuesday'\"'\"'s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
     {
@@ -611,8 +611,8 @@
       "text": [
         "dispatch edit-ask was not called: 1 problem",
         "- ask must be a bare ask id or a dispatch://.../ask/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --help, --dry-run",
-        "- Example: dispatch edit-ask --ask 01234567-0000-4000-8000-000000000001 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
+        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --help, --dry-run, --dry-run-out, --idempotency-key",
+        "- Example: dispatch edit-ask --ask 01234567-0000-4000-8000-000000000001 --question 'Release 4.2 ships Friday. Tuesday'\"'\"'s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
     {
@@ -683,7 +683,7 @@
       "text": [
         "dispatch follow was not called: 1 problem",
         "- ask must be a bare ask id or a dispatch://.../ask/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --action, --action-file, --help, --dry-run",
+        "- Allowed flags: --ask, --ask-file, --action, --action-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001 --action follow"
       ]
     },
@@ -958,7 +958,7 @@
       "text": [
         "dispatch issues was not called: 1 problem",
         "- --all takes every matching issue in one unpaged read, so it cannot be combined with --limit or --offset: name --all on its own, or page with --limit and --offset",
-        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --help, --dry-run",
+        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch issues --project PROJ --limit 250 --offset 250"
       ]
     },
@@ -1028,7 +1028,7 @@
       "text": [
         "dispatch message was not called: 1 problem",
         "- in_reply_to dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1 names a block of an ask, but a message reply answers a block of a message (dispatch://KEY/message/<id>#b-<block id>); answer it with dispatch comment --reply-to-ask 'dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'"
       ]
     },
@@ -1045,7 +1045,7 @@
       "text": [
         "dispatch message was not called: 1 problem",
         "- in_reply_to must be a full message id (uuid), a dispatch://KEY/message/<id> reference, or a block of one (dispatch://KEY/message/<id>#b-<block id>)",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'"
       ]
     },
@@ -1257,7 +1257,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- ref dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001 names no document, so dispatch read would read it and drop artifact spec: drop --artifact to read the ref, or read the document with --issue DSP-1 --artifact spec",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1274,7 +1274,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- --events and --all-events both say how many events the read lists: name one, --events N for the last N or --all-events for every one",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1290,7 +1290,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- --events lists an issue's events, which dispatch read prints only for an issue or its dispatch://KEY/log, not for an ask: drop --events",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1305,7 +1305,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1321,7 +1321,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- project CORE and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --project CORE alone acts on that project document",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1336,7 +1336,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- dispatch read prints the live document's summary, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: read that version with dispatch doc-read --ref dispatch://DSP-1/artifact/spec@v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1519,7 +1519,7 @@
       "text": [
         "dispatch resolve-ask was not called: 1 problem",
         "- ask must be a bare ask id or a dispatch://.../ask/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --kind, --kind-file, --reason, --reason-file, --help, --dry-run",
+        "- Allowed flags: --ask, --ask-file, --kind, --kind-file, --reason, --reason-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch resolve-ask --ask 01234567-0000-4000-8000-000000000001 --kind retracted --reason 'A newer question supersedes this one.'"
       ]
     },
@@ -1572,7 +1572,7 @@
       "text": [
         "dispatch resolve-comment was not called: 1 problem",
         "- dispatch://DSP/artifact/plan-md@v2/comment/01234567-0000-4000-8000-000000000001 names a comment at a document version, which a comment does not have; name it dispatch://DSP/artifact/plan-md/comment/01234567-0000-4000-8000-000000000001",
-        "- Allowed flags: --comment, --comment-file, --help, --dry-run",
+        "- Allowed flags: --comment, --comment-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch resolve-comment --comment 01234567-0000-4000-8000-000000000001"
       ]
     },
@@ -1587,7 +1587,7 @@
       "text": [
         "dispatch resolve-comment was not called: 1 problem",
         "- comment must be a bare comment id or a dispatch://.../comment/<id> reference",
-        "- Allowed flags: --comment, --comment-file, --help, --dry-run",
+        "- Allowed flags: --comment, --comment-file, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch resolve-comment --comment 01234567-0000-4000-8000-000000000001"
       ]
     },
@@ -1796,7 +1796,7 @@
       "text": [
         "dispatch suggest was not called: 1 problem",
         "- dispatch suggest acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --replace-with, --replace-with-file, --body, --body-file, --occurrence, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --replace-with, --replace-with-file, --body, --body-file, --occurrence, --help, --dry-run, --dry-run-out, --idempotency-key",
         "- Example: dispatch suggest --issue DSP-1 --artifact spec --quote 'old wording' --replace-with 'new wording'"
       ]
     },

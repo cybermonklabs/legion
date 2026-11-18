@@ -1,0 +1,5 @@
+kind: Fixed
+body: The `dispatch` command exits 75, not 1, when a write may have landed with its answer lost. It prints the write's idempotency key, the settings it found Dispatch through, and the command that sends it again with `--idempotency-key <key>`, under which Dispatch makes each write at most once; a refused resend says the earlier write may still have landed. `--dry-run-out <file>` writes a dry run's JSON to a file, and under Claude Code a dry run longer than 25,000 characters says so on stderr.
+time: 2026-11-18T05:10:53.20115049Z
+custom:
+    Issue: pr4384
