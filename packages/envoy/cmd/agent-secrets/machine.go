@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -54,14 +55,17 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %s: %s\n", resp.Code, resp.Error)
 		return 1
 	}
-	fmt.Fprintf(stdout, "machine login code: %s\n", resp.Code)
+	// The code and the page are the broker's, as the helper relayed them, so each prints on
+	// one line (redact.OneLine): as it came, or Go-quoted where a control character in it
+	// would start a line of its own or rewrite this one.
+	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
 		// The page prints as internal/redact's URL prints it - whole when it is a plain http(s)
 		// URL, redact.NotPrinted otherwise - beside the setting that names its origin, which is
 		// where a person who pasted a credential in place of Dispatch's address finds it.
 		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", redact.URL(base+"/credentials/machine"))
 	} else if resp.VerificationURI != "" {
-		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", resp.VerificationURI)
+		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.OneLine(resp.VerificationURI))
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
@@ -136,13 +140,16 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	if resp.CredentialHeld || state == "issued" {
 		fmt.Fprintln(stdout, "issued")
 		const held = "the helper still holds the launcher credential an earlier login issued"
+		// The most recent login's code is the broker's, so it prints on one line as machine
+		// login prints it.
+		code := redact.OneLine(resp.Code)
 		switch state {
 		case "pending":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: a machine login is waiting for approval (code %s); %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: a machine login is waiting for approval (code %s); %s\n", code, held)
 		case "denied":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", code, held)
 		case "expired":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", code, held)
 		}
 		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now()))
 		return 0
@@ -150,7 +157,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, state)
 	reason := helper.NoCredentialReason(resp.LoginState, resp.LoginRefused, resp.CredentialDropped)
 	if state == "pending" {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, resp.Code)
+		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, redact.OneLine(resp.Code))
 	} else {
 		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; run: agent-secrets machine login\n", reason)
 	}
@@ -220,12 +227,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "CREDENTIAL_ID\tHOST\tAPPROVED_BY\tISSUED\tEXPIRES\tSTATE")
 	for _, m := range machines.Credentials {
-		state := "ok"
-		if m.Expired {
-			state = "expired"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.CredentialID, m.Host, orDash(m.ApprovedBy),
-			m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state)
+		fmt.Fprintln(tw, strings.Join(machineRow(m), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -238,6 +240,20 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "STATE expired: the login enrolls no more sessions, but sessions it enrolled still run until they end; revoking it ends them.")
 	}
 	return 0
+}
+
+// machineRow is one machine login's cells, in the table's column order: its credential id, its
+// host, who approved it ("-" for none), when it was issued and expires, and its state. The first
+// three are the broker's, so each prints on one line (redact.OneLine): as it came, or Go-quoted
+// where a control character in it, a tab among them, would start a line of its own or split the
+// cell.
+func machineRow(m OperatorMachine) []string {
+	state := "ok"
+	if m.Expired {
+		state = "expired"
+	}
+	return []string{redact.OneLine(m.CredentialID), redact.OneLine(m.Host), redact.OneLine(orDash(m.ApprovedBy)),
+		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 
 // cmdMachineRevoke implements "machine revoke CREDENTIAL_ID": it ends one of the operator's own

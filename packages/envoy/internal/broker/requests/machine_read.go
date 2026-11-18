@@ -190,10 +190,11 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 //
 // A granted name the airlock's rules name is released as placeholders instead of as its value:
 // its value is read or minted exactly as every other name's is, which is what says the value
-// exists and which slots it fills, and is then discarded. Such a name is left out of Values
-// altogether — a CLI from before the airlock finds it missing and runs nothing, rather than
-// running the command with a placeholder it does not understand — and what the session needs to
-// reach it is Release.Airlock.
+// exists and which slots it fills, and is then discarded, a minted one given back to its upstream
+// once the release is recorded (giveBack, heldBack), since the proxy mints a value of its own
+// (AirlockValues). Such a name is left out of Values altogether — a CLI from before the airlock
+// finds it missing and runs nothing, rather than running the command with a placeholder it does
+// not understand — and what the session needs to reach it is Release.Airlock.
 //
 // call is what the session says of this release: the command it starts and the reason its own
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
@@ -230,6 +231,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	release := Release{Values: values, Expires: checked.expires}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
+			m.giveBack(ctx, read)
 			return Release{}, err
 		}
 	}
@@ -241,8 +243,12 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	}
 	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
+		// The row is what says the values left the broker, and a release whose row failed hands
+		// nothing over, so what it minted is given back.
+		m.giveBack(ctx, read)
 		return Release{}, err
 	}
+	m.giveBack(ctx, heldBack(read))
 	return release, nil
 }
 
@@ -738,10 +744,12 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	return r, rows.Err()
 }
 
-func (m *Machine) OwnerOf(ctx context.Context, requestID string) (string, error) {
-	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select enrollment_id from requests where id=$1`, requestID).Scan(&owner)
-	return owner, err
+// OwnerAndState reads the enrollment that owns request id and its state, in one statement on the
+// requests row alone: what GET /v1/requests/{id} checks before it answers, and what its held read
+// reads again at each step while the request is pending. A request with no row is pgx.ErrNoRows.
+func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, err error) {
+	err = m.Store.Pool.QueryRow(ctx, `select enrollment_id, state from requests where id=$1`, requestID).Scan(&owner, &state)
+	return owner, state, err
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the
@@ -765,7 +773,7 @@ func (m *Machine) SessionID(ctx context.Context, id string) (string, error) {
 }
 
 // Grant is a live grant's public summary, for GET /v1/enrollments/self. It follows the same query
-// pattern as OwnerOf and enrollment above.
+// pattern as OwnerAndState and enrollment above.
 type Grant struct {
 	// The grant's id, which the values and revoke routes take.
 	ID string `json:"grant_id"`

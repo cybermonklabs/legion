@@ -27,7 +27,7 @@ func TestTheClientDecodesARefusalsDetail(t *testing.T) {
 		t.Fatalf("CreateRequest(DETAIL_DENIED) = %+v (detail %v), %v; want it denied with the detail %q",
 			refused, refused.Detail, err, refusedDetail)
 	}
-	read, _, err := c.GetRequest(ctx, signer, refused.RequestID)
+	read, _, err := c.GetRequest(ctx, signer, refused.RequestID, 0)
 	if err != nil || read.State != "denied" || read.Detail == nil || *read.Detail != refusedDetail {
 		t.Fatalf("GetRequest(%s) = %+v (detail %v), %v; want it denied with the detail %q",
 			refused.RequestID, read, read.Detail, err, refusedDetail)

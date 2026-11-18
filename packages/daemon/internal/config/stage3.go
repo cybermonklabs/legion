@@ -689,7 +689,7 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 		cfg.GitHubApps = *file.GitHubApps
 	}
 	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion start --check-config` never passes a file `legion start` refuses.
+	// here, so `legion config check` never passes a file `legion start` refuses.
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
 		case cfg.DispatchTokenFile == "":

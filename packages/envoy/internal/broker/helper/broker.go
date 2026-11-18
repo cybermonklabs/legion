@@ -271,14 +271,18 @@ type BrokerError struct {
 // not "broker 502 : ", and an unknown outcome's answer shows that text to an operator
 // (mayHaveReachedCause, server.go). With both fields set it reads "broker 403 SESSION_HELD: the
 // session … belongs to …", which nocredential_test.go matches as a prefix ("broker 401
-// LAUNCHER_INVALID"). A refusal whose text is withheld names no code.
+// LAUNCHER_INVALID"). A refusal whose text is withheld names no code. The code and the message are
+// the broker's, so each prints on one line (redact.OneLine): as it came where it holds no control
+// character, and Go-quoted where a line break or an escape sequence in it would start a line of
+// its own where this error prints. Message came through brokeraddr.Address.Words from do, under
+// that rule already, and from oauthBrokerError as the broker's OAuth answer held it.
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
 	if e.Code != "" && !e.withheld {
-		s += " " + e.Code
+		s += " " + redact.OneLine(e.Code)
 	}
 	if e.Message != "" {
-		s += ": " + e.Message
+		s += ": " + redact.OneLine(e.Message)
 	}
 	return s
 }
@@ -388,6 +392,10 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // beside an address that is not clean, and are empty beside a clean one. requestReach.settle
 // reads its status, so a 4xx refusal is reported as one and not as an unknown outcome. It reads
 // the broker's own answer (redact.BrokerAnswer), never errors.As: Class and Masked hold others'.
+// The redactor printed the answer whole exactly when its Cause, which is what it prints of the
+// failure without a call's operation and URL, is the answer's own text. That holds under a
+// caller's %w too, whose words it drops while it still prints the answer, which is why this asks
+// the text and not whether Error answered err itself.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
 	re, ok := redact.BrokerAnswer(err)
@@ -401,7 +409,7 @@ func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	if code, message, ok := strings.Cut(re.ErrorDescription, ": "); ok && re.ErrorCode == "invalid_request" {
 		be.Code, be.Message = code, message
 	}
-	if shown != err {
+	if addr.Cause(err).Error() != re.Error() {
 		if be.Status == 0 {
 			return shown
 		}

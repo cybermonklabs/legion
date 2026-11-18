@@ -300,7 +300,9 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 	// the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
-	fmt.Fprintln(stdout, enrollmentID)
+	// The enrollment is the broker's, so it prints on one line (redact.OneLine); the file
+	// above keeps it as it came.
+	fmt.Fprintln(stdout, redact.OneLine(enrollmentID))
 	return 0
 }
 
@@ -313,7 +315,8 @@ func podRefusal(prefix, what string, identity podIdentity, base brokeraddr.Addre
 	if errors.As(err, &refused) {
 		answered := fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
 		if !refused.withheld {
-			code := refused.Code
+			// The code is the broker's, so it prints on one line as Message does.
+			code := redact.OneLine(refused.Code)
 			if code == "" {
 				code = "UNKNOWN"
 			}
