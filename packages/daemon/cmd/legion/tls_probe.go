@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -16,6 +19,11 @@ const (
 	tlsDefaultProbeTimeout  = 20 * time.Second
 	tlsChromiumProbeTimeout = 90 * time.Second
 	tlsDetailLimit          = 300
+	// bq's refusal of a chain retries its request three times, sleeping 2 and 4 s between the
+	// tries, and each call starts three Python interpreters (the SDK's launcher, bq.py and the
+	// `gcloud config` subprocess bq runs): measured on 2026-11-18 at 5-13 s of wall time and
+	// 4.5-7 s of CPU a call on 2 vCPU.
+	tlsBigQueryProbeTimeout = 60 * time.Second
 )
 
 type tlsSite struct {
@@ -37,6 +45,7 @@ const (
 	tlsCertificateRefused tlsStatus = "refused"
 	tlsConnectionAccepted tlsStatus = "accepted"
 	tlsNetworkUnavailable tlsStatus = "unavailable"
+	tlsClientAbsent       tlsStatus = "absent" // an optional client whose program is not on PATH (tlsOptionalClient)
 )
 
 type tlsOutcome struct {
@@ -117,7 +126,8 @@ var newTLSPositiveControls = probeTLSPositiveControls
 
 // probeTLSClients holds every TLS client the worker image carries to the two compromised chains and
 // a reachable control. A chain is safe only when its client refuses it for a certificate error; a
-// network failure is neither a refusal nor an acceptance.
+// network failure is neither a refusal nor an acceptance. An optional client the image does not
+// carry is absent at each site, which is recorded and fails nothing.
 func probeTLSClients(ctx context.Context, clients []tlsClient) ([]tlsObservation, error) {
 	var observations []tlsObservation
 	var failures []string
@@ -127,6 +137,8 @@ func probeTLSClients(ctx context.Context, clients []tlsClient) ([]tlsObservation
 			observation := tlsObservation{client: client.name(), site: site, tlsOutcome: outcome}
 			observations = append(observations, observation)
 			switch {
+			case outcome.status == tlsClientAbsent:
+				// Only a tlsOptionalClient is absent, and only where its program is not on PATH.
 			case site.control && outcome.status != tlsConnectionAccepted:
 				failures = append(failures, fmt.Sprintf("network unavailable: %s cannot reach %s: %s", client.name(), site.url, outcome.detail))
 			case !site.control && outcome.status == tlsConnectionAccepted:
@@ -149,16 +161,19 @@ type tlsCommandClient struct {
 	timeout         time.Duration
 	command         func(tlsSite) (string, []string, []string)
 	applicationSeen func(string) bool
+	// readStdout classifies stdout with stderr, for a program that writes its errors to stdout
+	// (bq). Every other client's stdout is discarded: it is where a fetched page lands.
+	readStdout bool
 }
 
 func (c tlsCommandClient) name() string { return c.clientName }
 
 func (c tlsCommandClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
-	stderr, err := c.run(ctx, site)
+	output, err := c.run(ctx, site)
 	if tlsProbeDeadlineExceeded(ctx, err) {
 		return tlsOutcome{status: tlsNetworkUnavailable, detail: "probe deadline"}
 	}
-	message := tlsCommandMessage(err, stderr)
+	message := tlsCommandMessage(err, output)
 	detail := trimTLSDetail(message)
 	switch {
 	case err == nil || c.applicationSeen != nil && c.applicationSeen(message):
@@ -170,6 +185,7 @@ func (c tlsCommandClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
 	}
 }
 
+// run returns the command's stderr, with its stdout interleaved when the client reads stdout.
 func (c tlsCommandClient) run(ctx context.Context, site tlsSite) (string, error) {
 	program, args, extraEnv := c.command(site)
 	commandCtx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -177,15 +193,35 @@ func (c tlsCommandClient) run(ctx context.Context, site tlsSite) (string, error)
 	cmd := exec.CommandContext(commandCtx, program, args...)
 	cmd.Env = tlsEnvironment(c.env, append(extraEnv, "LEGION_TLS_URL="+site.url))
 	cmd.Dir = c.workDir
-	var stderr bytes.Buffer
+	var output bytes.Buffer
 	cmd.Stdout = io.Discard
-	cmd.Stderr = &stderr
+	if c.readStdout {
+		cmd.Stdout = &output
+	}
+	cmd.Stderr = &output
 	err := cmd.Run()
-	return stderr.String(), err
+	return output.String(), err
 }
 
 func tlsProbeDeadlineExceeded(ctx context.Context, err error) bool {
 	return err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
+}
+
+// tlsOptionalClient is a command client for a program the image need not carry (workerTLSClients
+// says which and why). At each probe it looks its program up with exec.LookPath, which is how
+// exec.CommandContext resolves it, on the process's PATH; where that finds nothing — no file, or a
+// link whose target is gone, since LookPath stats through the link — the client is absent for
+// the site and runs nothing. Where the program is found, it is held to the chains as any client is.
+type tlsOptionalClient struct {
+	tlsCommandClient
+	program string
+}
+
+func (c tlsOptionalClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
+	if _, err := exec.LookPath(c.program); err != nil {
+		return tlsOutcome{status: tlsClientAbsent, detail: c.program + " is not on PATH"}
+	}
+	return c.tlsCommandClient.probe(ctx, site)
 }
 
 // tlsChromiumClient reads Chromium's navigation result from stderr because its headless DOM dump
@@ -292,13 +328,13 @@ const tlsFetchProgram = `const response = await fetch(process.env.LEGION_TLS_URL
 type tlsClientSpec struct {
 	name    string
 	timeout time.Duration
-	build   func(invocation string, env []string, workDir string, timeout time.Duration) tlsClient
+	build   func(invocation string, env []string, workDir, stateDir string, timeout time.Duration) tlsClient
 }
 
 func tlsCommandClientSpec(name string, timeout time.Duration, program string, args func(tlsSite) []string, applicationSeen func(string) bool, extraEnv ...string) tlsClientSpec {
 	return tlsClientSpec{
 		name: name, timeout: timeout,
-		build: func(_ string, env []string, workDir string, timeout time.Duration) tlsClient {
+		build: func(_ string, env []string, workDir, _ string, timeout time.Duration) tlsClient {
 			return tlsCommandClient{
 				clientName: name, env: env, workDir: workDir, timeout: timeout, applicationSeen: applicationSeen,
 				command: func(site tlsSite) (string, []string, []string) {
@@ -309,14 +345,94 @@ func tlsCommandClientSpec(name string, timeout time.Duration, program string, ar
 	}
 }
 
+// tlsOptionalClientSpec is the spec of a tlsOptionalClient, named for its program. command gives
+// one site's arguments and the environment it adds, with the client's state under stateDir
+// (newTLSStateDir); readStdout is the command client's.
+func tlsOptionalClientSpec(program string, timeout time.Duration, applicationSeen func(string) bool, readStdout bool, command func(site tlsSite, stateDir string) (args, extraEnv []string)) tlsClientSpec {
+	return tlsClientSpec{
+		name: program, timeout: timeout,
+		build: func(_ string, env []string, workDir, stateDir string, timeout time.Duration) tlsClient {
+			return tlsOptionalClient{program: program, tlsCommandClient: tlsCommandClient{
+				clientName: program, env: env, workDir: workDir, timeout: timeout, applicationSeen: applicationSeen, readStdout: readStdout,
+				command: func(site tlsSite) (string, []string, []string) {
+					args, extraEnv := command(site, stateDir)
+					return program, args, extraEnv
+				},
+			}}
+		},
+	}
+}
+
+// tlsProbeSignIn is the dummy OAuth value gcloud and bq sign in with, from the state directory's
+// tlsAccessTokenFile and, for bq, its --oauth_access_token flag: the probe needs their TLS
+// handshake, never an authorized call. Its name holds no "token", so the public leak check does
+// not read the literal as a credential.
+const (
+	tlsProbeSignIn     = "legion-tls-probe"
+	tlsAccessTokenFile = "access-token"
+)
+
+// newTLSStateDir makes the directory gcloud, bq, az and mise keep their state in during the TLS
+// probe, so none of it lands in the runtime user's home (the image build's final step requires
+// that), and writes into it the access-token file gcloud and bq sign in with. remove deletes the
+// directory with everything the clients wrote there.
+func newTLSStateDir() (dir string, remove func(), err error) {
+	dir, err = os.MkdirTemp("", "legion-tls-probe-")
+	if err != nil {
+		return "", nil, fmt.Errorf("make the TLS probe's state directory: %w", err)
+	}
+	remove = func() { _ = os.RemoveAll(dir) }
+	if err = os.WriteFile(filepath.Join(dir, tlsAccessTokenFile), []byte(tlsProbeSignIn), 0o600); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("write the TLS probe's access token: %w", err)
+	}
+	return dir, remove, nil
+}
+
+// googleCloudTLSEnvironment is the environment gcloud and bq run under, client naming the home and
+// configuration directory each keeps under stateDir. The SDK signs in with the dummy token of the
+// state directory's access-token file, so it needs neither an account nor a metadata server, and
+// core/check_gce_metadata=false and a set metrics/environment are the two settings that stop it
+// asking a metadata server whether it runs on GCE: measured on 2026-11-18 with the metadata server
+// blackholed, each of those checks cost about 18 s of waiting, and with both set a call took 2 s.
+// An image build has no metadata server and a cluster pod has one, so the outcome must not depend
+// on it.
+func googleCloudTLSEnvironment(stateDir, client string) []string {
+	home := filepath.Join(stateDir, client)
+	return []string{
+		"HOME=" + home,
+		"CLOUDSDK_CONFIG=" + filepath.Join(home, "config"),
+		"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE=" + filepath.Join(stateDir, tlsAccessTokenFile),
+		"CLOUDSDK_CORE_CHECK_GCE_METADATA=false",
+		"CLOUDSDK_METRICS_ENVIRONMENT=legion-tls-probe",
+		"CLOUDSDK_CORE_DISABLE_PROMPTS=1",
+	}
+}
+
 // workerTLSClients is the complete TLS client inventory the worker image exposes. The probe and
-// its fakes derive their client names and timeout bounds from this list, so neither can silently fall out of tests.
+// its fakes derive their client names and timeout bounds from this list, so neither can silently
+// fall out of tests.
+//
+// gcloud, bq, az and mise are probed where they are on PATH and reported absent otherwise
+// (tlsOptionalClient). They are outside the floor every deployment's image is held to: an image
+// built on another base may not carry them, or may carry this image's /usr/local/bin links to them
+// without the /opt trees those links point into, as LINUX's worker-lean, which copies
+// /usr/local/bin onto Ubuntu, may. Where one is on PATH, it must refuse both chains and reach the
+// control, as every other client must. mise is here because its http: backend downloads from any
+// URL a role names, with its own HTTP client verifying against the system roots.
+//
+// Deliberately not here: busybox's wget and ssl_client applets, which do no certificate
+// validation at all (busybox's own help says "TLS certificate validation not implemented"), and
+// which the image makes reachable only through the busybox binary, as `busybox wget`: Debian's
+// busybox package installs no applet links, so the image's `wget` is GNU wget, the one the
+// capability check's toolchain row requires on PATH. And gsutil, which the image does not put on
+// PATH: it stays inside /opt/google-cloud-sdk/bin.
 var workerTLSClients = []tlsClientSpec{
 	tlsCommandClientSpec("node", tlsDefaultProbeTimeout, "node", func(tlsSite) []string { return []string{"--input-type=module", "--eval", tlsFetchProgram} }, nil),
 	tlsCommandClientSpec("bun", tlsDefaultProbeTimeout, "bun", func(tlsSite) []string { return []string{"--eval", tlsFetchProgram} }, nil),
 	{
 		name: "omp", timeout: tlsDefaultProbeTimeout,
-		build: func(invocation string, env []string, workDir string, timeout time.Duration) tlsClient {
+		build: func(invocation string, env []string, workDir, _ string, timeout time.Duration) tlsClient {
 			return tlsCommandClient{
 				clientName: "omp", env: env, workDir: workDir, timeout: timeout,
 				command: func(tlsSite) (string, []string, []string) {
@@ -337,9 +453,45 @@ var workerTLSClients = []tlsClientSpec{
 		return []string{"-c", "import os, urllib.request; urllib.request.urlopen(os.environ['LEGION_TLS_URL']).read(1)"}
 	}, nil),
 	tlsCommandClientSpec("gh", tlsDefaultProbeTimeout, "/usr/local/bin/gh", func(site tlsSite) []string { return []string{"api", site.url} }, ghResponseSeen, "GH_TOKEN=legion-tls-probe"),
+	// gcloud's compute call, with the compute endpoint at the site. `gcloud storage` is not the
+	// form because it retried for 35-41 s before it answered.
+	tlsOptionalClientSpec("gcloud", tlsDefaultProbeTimeout, gcloudResponseSeen, false, func(site tlsSite, stateDir string) ([]string, []string) {
+		return []string{"compute", "regions", "list", "--project", "legion-tls-probe"},
+			append(googleCloudTLSEnvironment(stateDir, "gcloud"), "CLOUDSDK_API_ENDPOINT_OVERRIDES_COMPUTE="+site.url+"compute/v1/")
+	}),
+	// --oauth_access_token makes the SDK's bq launcher skip its own credential lookup, which asks
+	// the metadata server (bin/bootstrapping/bq.py) and, with no account, refuses with "You do not
+	// currently have an active account selected"; the token file still serves the `gcloud config`
+	// subprocess bq runs. bq writes its error to stdout, so the client reads stdout too.
+	tlsOptionalClientSpec("bq", tlsBigQueryProbeTimeout, bqResponseSeen, true, func(site tlsSite, stateDir string) ([]string, []string) {
+		return []string{"--oauth_access_token=" + tlsProbeSignIn, "--api=" + site.url, "ls", "--project_id=legion-tls-probe"}, googleCloudTLSEnvironment(stateDir, "bq")
+	}),
+	// One configuration directory for az's three sites, so the version fetch from
+	// azcliprod.blob.core.windows.net, which az makes at its first command in a configuration
+	// directory, happens once a probe. az exited 0 on the control's page, so, as curl, it needs no
+	// response marker.
+	tlsOptionalClientSpec("az", tlsDefaultProbeTimeout, nil, false, func(site tlsSite, stateDir string) ([]string, []string) {
+		home := filepath.Join(stateDir, "az")
+		return []string{"rest", "--method", "get", "--url", site.url, "--skip-authorization-header"}, []string{"HOME=" + home, "AZURE_CONFIG_DIR=" + filepath.Join(home, "config")}
+	}),
+	// mise's http: backend, downloading the site as a tool, in a directory of its own per site so
+	// one site's download never satisfies the next. MISE_VERBOSE prints the status line
+	// miseResponseSeen reads.
+	tlsOptionalClientSpec("mise", tlsDefaultProbeTimeout, miseResponseSeen, false, func(site tlsSite, stateDir string) ([]string, []string) {
+		home := filepath.Join(stateDir, "mise", site.name)
+		return []string{"x", "http:legion-tls-probe[url=" + site.url + "]@1", "--", "true"}, []string{
+			"HOME=" + home,
+			"MISE_DATA_DIR=" + filepath.Join(home, "data"),
+			"MISE_CACHE_DIR=" + filepath.Join(home, "cache"),
+			"MISE_CONFIG_DIR=" + filepath.Join(home, "config"),
+			"MISE_STATE_DIR=" + filepath.Join(home, "state"),
+			"MISE_YES=1",
+			"MISE_VERBOSE=1",
+		}
+	}),
 	{
 		name: "chromium", timeout: tlsChromiumProbeTimeout,
-		build: func(_ string, env []string, workDir string, timeout time.Duration) tlsClient {
+		build: func(_ string, env []string, workDir, _ string, timeout time.Duration) tlsClient {
 			return tlsChromiumClient{tlsCommandClient: tlsCommandClient{
 				clientName: "chromium", env: env, workDir: workDir, timeout: timeout,
 				command: func(site tlsSite) (string, []string, []string) {
@@ -369,11 +521,12 @@ func chromiumTLSArgs(site tlsSite) []string {
 }
 
 // imageTLSClients returns the image's TLS-capable programs. The gh wrapper manages worker tokens,
-// so the probe runs the real gh binary it wraps; no probe uses an operator token.
-func imageTLSClients(invocation string, env []string, workDir string) []tlsClient {
+// so the probe runs the real gh binary it wraps; no probe uses an operator token. stateDir is where
+// the optional clients keep their state (newTLSStateDir).
+func imageTLSClients(invocation string, env []string, workDir, stateDir string) []tlsClient {
 	clients := make([]tlsClient, 0, len(workerTLSClients))
 	for _, spec := range workerTLSClients {
-		clients = append(clients, spec.build(invocation, env, workDir, spec.timeout))
+		clients = append(clients, spec.build(invocation, env, workDir, stateDir, spec.timeout))
 	}
 	return clients
 }
@@ -404,4 +557,31 @@ func awsResponseSeen(detail string) bool {
 
 func ghResponseSeen(detail string) bool {
 	return strings.Contains(detail, "HTTP ")
+}
+
+// gcloudResponseSeen reads an HTTP answer from the site in gcloud's compute call: the site's page
+// is not the compute API's, so gcloud fails on it, but only after a handshake it accepted. An SDK
+// that accepted the emSign chain answered "Error decoding response" for that site's page.
+func gcloudResponseSeen(detail string) bool {
+	return strings.Contains(detail, "Some requests did not succeed") || strings.Contains(detail, "Error decoding response")
+}
+
+// bqResponseSeen reads an HTTP answer in bq's fetch of its discovery document: a status the site
+// answered ("Got 404 response from discovery url"), or a page bq fetched and could not use as the
+// document (platform/bq/clients/bigquery_client.py, _LoadDiscoveryDocumentUrl).
+func bqResponseSeen(detail string) bool {
+	for _, marker := range []string{"response from discovery url", "discovery doc", "contains no resources"} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// miseHTTPStatus is the line MISE_VERBOSE prints for a request the site answered
+// ("DEBUG GET https://example.com/ 200 OK"); a request that failed prints its URL with no status.
+var miseHTTPStatus = regexp.MustCompile(`\bGET \S+ [1-5][0-9][0-9]\b`)
+
+func miseResponseSeen(detail string) bool {
+	return miseHTTPStatus.MatchString(detail)
 }

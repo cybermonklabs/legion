@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -19,7 +21,7 @@ func (c fakeTLSClient) probe(_ context.Context, site tlsSite) tlsOutcome {
 	return c.outcomes[site.name]
 }
 
-func passingImageTLSClients(string, []string, string) []tlsClient {
+func passingImageTLSClients(string, []string, string, string) []tlsClient {
 	outcomes := map[string]tlsOutcome{
 		emSignTLSSite.name:  {status: tlsCertificateRefused, detail: "CERT_REVOKED"},
 		aaaTLSSite.name:     {status: tlsCertificateRefused, detail: "CERT_REVOKED"},
@@ -155,21 +157,26 @@ func TestTLSCommandClientClassifiesApplicationErrorBeforeTruncatingDetail(t *tes
 }
 
 func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
-	clients := imageTLSClients("omp", nil, "")
+	clients := imageTLSClients("omp", nil, "", "")
 	want := []struct {
-		name    string
-		timeout time.Duration
+		name     string
+		timeout  time.Duration
+		optional bool
 	}{
-		{"node", tlsDefaultProbeTimeout},
-		{"bun", tlsDefaultProbeTimeout},
-		{"omp", tlsDefaultProbeTimeout},
-		{"codegraph-node", tlsDefaultProbeTimeout},
-		{"uv", tlsDefaultProbeTimeout},
-		{"aws", tlsDefaultProbeTimeout},
-		{"curl", tlsDefaultProbeTimeout},
-		{"python3", tlsDefaultProbeTimeout},
-		{"gh", tlsDefaultProbeTimeout},
-		{"chromium", tlsChromiumProbeTimeout},
+		{"node", tlsDefaultProbeTimeout, false},
+		{"bun", tlsDefaultProbeTimeout, false},
+		{"omp", tlsDefaultProbeTimeout, false},
+		{"codegraph-node", tlsDefaultProbeTimeout, false},
+		{"uv", tlsDefaultProbeTimeout, false},
+		{"aws", tlsDefaultProbeTimeout, false},
+		{"curl", tlsDefaultProbeTimeout, false},
+		{"python3", tlsDefaultProbeTimeout, false},
+		{"gh", tlsDefaultProbeTimeout, false},
+		{"gcloud", tlsDefaultProbeTimeout, true},
+		{"bq", tlsBigQueryProbeTimeout, true},
+		{"az", tlsDefaultProbeTimeout, true},
+		{"mise", tlsDefaultProbeTimeout, true},
+		{"chromium", tlsChromiumProbeTimeout, false},
 	}
 	if len(workerTLSClients) != len(want) || len(clients) != len(want) {
 		t.Fatalf("inventory has %d specifications and %d clients, want %d", len(workerTLSClients), len(clients), len(want))
@@ -180,9 +187,12 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 			t.Errorf("inventory client %d = (%q, %s, %q), want (%q, %s, %q)", index, spec.name, spec.timeout, clients[index].name(), expected.name, expected.timeout, expected.name)
 		}
 		var timeout time.Duration
+		optional := false
 		switch client := clients[index].(type) {
 		case tlsCommandClient:
 			timeout = client.timeout
+		case tlsOptionalClient:
+			timeout, optional = client.timeout, true
 		case tlsChromiumClient:
 			timeout = client.timeout
 		default:
@@ -192,9 +202,169 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 		if timeout != expected.timeout {
 			t.Errorf("image client %s timeout = %s, want inventory timeout %s", expected.name, timeout, expected.timeout)
 		}
+		// An optional client passes an image that lacks it, so a floor client must never be one.
+		if optional != expected.optional {
+			t.Errorf("image client %s optional = %v, want %v", expected.name, optional, expected.optional)
+		}
 	}
 	if workerTLSClients[len(workerTLSClients)-1].timeout <= tlsDefaultProbeTimeout {
 		t.Errorf("Chromium timeout %s must exceed the default %s", workerTLSClients[len(workerTLSClients)-1].timeout, tlsDefaultProbeTimeout)
+	}
+}
+
+// imageOptionalTLSClients returns the image's optional clients by name, each of gcloud, bq, az and
+// mise present.
+func imageOptionalTLSClients(t *testing.T, stateDir string) map[string]tlsOptionalClient {
+	t.Helper()
+	clients := map[string]tlsOptionalClient{}
+	for _, client := range imageTLSClients("omp", nil, "", stateDir) {
+		if optional, ok := client.(tlsOptionalClient); ok {
+			clients[optional.name()] = optional
+		}
+	}
+	for _, name := range []string{"gcloud", "bq", "az", "mise"} {
+		if _, ok := clients[name]; !ok {
+			t.Fatalf("imageTLSClients() has no optional %s client", name)
+		}
+	}
+	return clients
+}
+
+// Each optional client is classified from the output its program gave in an INFRA issue pod on
+// 2026-11-18 (gcloud 594.0.0, bq 2.1.42, azure-cli 2.93.0, mise 2026.8.12): a page the site
+// answered is an acceptance, a certificate refusal a refusal, and an error before any answer
+// neither. bq writes its error to stdout, so its stand-in does too.
+func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
+	clients := imageOptionalTLSClients(t, t.TempDir())
+	for _, testCase := range []struct {
+		client, name, stdout, stderr, exit string
+		want                               tlsStatus
+	}{
+		{client: "gcloud", name: "control page", exit: "1", want: tlsConnectionAccepted,
+			stderr: `ERROR: (gcloud.compute.regions.list) Some requests did not succeed: - <!doctype html><html lang=en>...Example Domain...`},
+		{client: "gcloud", name: "emSign page through an SDK that accepts the chain", exit: "1", want: tlsConnectionAccepted,
+			stderr: `Error decoding response "Your client successfully connected to the site. That's bad!"`},
+		{client: "gcloud", name: "refusal", exit: "1", want: tlsCertificateRefused,
+			stderr: `ERROR: gcloud crashed (SSLError): HTTPSConnectionPool(host='dv-g3b-emudhra.we-have-a-problem.com', port=443): Max retries exceeded with url: /compute/v1/projects/legion-tls-probe/regions?alt=json&maxResults=500 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1082)'))) gcloud's default CA certificates failed to verify your connection,`},
+		{client: "gcloud", name: "unresolved host", exit: "1", want: tlsNetworkUnavailable,
+			stderr: `ERROR: gcloud crashed (ConnectionError): HTTPSConnectionPool(host='example.invalid', port=443): Max retries exceeded with url: /compute/v1/projects/legion-tls-probe/regions?alt=json&maxResults=500 (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object>: Failed to resolve 'example.invalid' ([Errno -2] Name or service not known)"))`},
+		{client: "bq", name: "control 404", exit: "1", want: tlsConnectionAccepted,
+			stdout: `BigQuery error in ls operation: Got 404 response from discovery url: https://example.com/$discovery/rest?version=v2`},
+		{client: "bq", name: "corrupt discovery document", exit: "1", want: tlsConnectionAccepted,
+			stdout: `BigQuery error in ls operation: Received corrupt "bigquery" discovery doc`},
+		{client: "bq", name: "discovery document without resources", exit: "1", want: tlsConnectionAccepted,
+			stdout: `BigQuery error in ls operation: Discovery document from https://example.com/$discovery/rest?version=v2 for "bigquery" contains no resources.`},
+		{client: "bq", name: "refusal", exit: "1", want: tlsCertificateRefused,
+			stdout: `BigQuery error in ls operation: Cannot contact server. Please try again. Error: SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1082)')`,
+			stderr: `RequestsDependencyWarning: urllib3 (1.26.9) or chardet ... doesn't match a supported version!`},
+		{client: "bq", name: "no active account", exit: "1", want: tlsNetworkUnavailable,
+			stderr: `You do not currently have an active account selected.`},
+		{client: "az", name: "control page", exit: "0", want: tlsConnectionAccepted,
+			stdout: `<!doctype html><html lang="en"><head><title>Example Domain</title>`,
+			stderr: `WARNING: Not a json response, outputting to stdout. For binary data suggest use "--output-file" to write to a file`},
+		{client: "az", name: "refusal", exit: "1", want: tlsCertificateRefused,
+			stderr: `ERROR: HTTPSConnectionPool(host='dv-g3b-emudhra.we-have-a-problem.com', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)'))) Certificate verification failed. This typically happens when using Azure CLI behind a proxy`},
+		{client: "mise", name: "control 200", exit: "1", want: tlsConnectionAccepted,
+			stderr: `DEBUG Loaded 148 CA root certificates from the system DEBUG GET Downloading https://example.com/ to ~/data/downloads/http-legion-tls-probe/1/ DEBUG GET https://example.com/ DEBUG GET https://example.com/ 200 OK Error: 0: Failed to install http:legion-tls-probe@1: Not a directory (os error 20)`},
+		{client: "mise", name: "refusal", exit: "1", want: tlsCertificateRefused,
+			stderr: `DEBUG GET https://dv-g3b-emudhra.we-have-a-problem.com/ Error: 0: Failed to install http:legion-tls-probe@1: error sending request: client error (Connect): invalid peer certificate: UnknownIssuer`},
+		{client: "mise", name: "refusal without MISE_VERBOSE", exit: "1", want: tlsCertificateRefused,
+			stderr: `mise ERROR failed to verify TLS certificate: invalid peer certificate: UnknownIssuer`},
+		{client: "mise", name: "unresolved host", exit: "1", want: tlsNetworkUnavailable,
+			stderr: `DEBUG GET https://httpbin.invalid/ Error: 0: Failed to install http:legion-tls-probe@1: error sending request: client error (Connect): dns error: failed to lookup address information: Name or service not known`},
+	} {
+		t.Run(testCase.client+" "+testCase.name, func(t *testing.T) {
+			client := clients[testCase.client].tlsCommandClient
+			client.command = func(tlsSite) (string, []string, []string) {
+				return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2; exit "$3"`, "sh", testCase.stdout, testCase.stderr, testCase.exit}, nil
+			}
+
+			if outcome := client.probe(context.Background(), controlTLSSite); outcome.status != testCase.want {
+				t.Fatalf("%s probe = %+v, want status %q", testCase.client, outcome, testCase.want)
+			}
+		})
+	}
+}
+
+// An image built on another base may not carry an optional client, or may carry its link without
+// the tree the link points into. Either way the client is absent at every site and fails nothing;
+// on PATH, it is held to the chains as every client is.
+func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.Symlink(filepath.Join(bin, "gone"), filepath.Join(bin, "legion-tls-dangling")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	acceptingEverySite := func(program string) tlsClient {
+		return tlsOptionalClient{program: program, tlsCommandClient: tlsCommandClient{
+			clientName: "optional",
+			timeout:    tlsDefaultProbeTimeout,
+			command: func(tlsSite) (string, []string, []string) {
+				return program, []string{"-c", "exit 0"}, nil
+			},
+		}}
+	}
+
+	for _, program := range []string{"legion-tls-probe-no-such-program", "legion-tls-dangling"} {
+		observations, err := probeTLSClients(context.Background(), []tlsClient{acceptingEverySite(program)})
+		if err != nil {
+			t.Errorf("probeTLSClients() with %s off PATH = %v, want success", program, err)
+		}
+		if len(observations) != len(tlsSites) {
+			t.Fatalf("probeTLSClients() with %s off PATH returned %d observations, want one per site (%d)", program, len(observations), len(tlsSites))
+		}
+		for _, observation := range observations {
+			if observation.status != tlsClientAbsent || observation.detail != program+" is not on PATH" {
+				t.Errorf("%s at %s = %+v, want absent (%s is not on PATH)", program, observation.site.name, observation.tlsOutcome, program)
+			}
+		}
+	}
+
+	if _, err := probeTLSClients(context.Background(), []tlsClient{acceptingEverySite("sh")}); err == nil || !strings.Contains(err.Error(), "optional accepts the emSign chain") {
+		t.Fatalf("probeTLSClients() with the program on PATH accepting every chain = %v, want the emSign acceptance named", err)
+	}
+}
+
+// gcloud reaches each site as its compute endpoint with its configuration in the probe's state
+// directory, which holds the token it signs in with; every optional client keeps its home there,
+// so nothing lands in the runtime user's. mise names the site inside its one tool argument, and
+// keeps each site's download apart.
+func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T) {
+	stateDir, remove, err := newTLSStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remove)
+	clients := imageOptionalTLSClients(t, stateDir)
+	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
+	miseData := map[string]bool{}
+
+	for _, site := range tlsSites {
+		for name, client := range clients {
+			if _, _, env := client.command(site); !inStateDir(envValue(env, "HOME")) {
+				t.Errorf("%s at %s has HOME %q, want a directory under %s", name, site.name, envValue(env, "HOME"), stateDir)
+			}
+		}
+
+		_, _, env := clients["gcloud"].command(site)
+		if got, want := envValue(env, "CLOUDSDK_API_ENDPOINT_OVERRIDES_COMPUTE"), site.url+"compute/v1/"; got != want {
+			t.Errorf("gcloud at %s has compute endpoint %q, want %q", site.name, got, want)
+		}
+		if config := envValue(env, "CLOUDSDK_CONFIG"); !inStateDir(config) {
+			t.Errorf("gcloud at %s has CLOUDSDK_CONFIG %q, want a directory under %s", site.name, config, stateDir)
+		}
+		if token, err := os.ReadFile(envValue(env, "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE")); err != nil || len(token) == 0 {
+			t.Errorf("gcloud at %s reads its access token from %q: %q, %v; want a token the state directory holds", site.name, envValue(env, "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"), token, err)
+		}
+
+		_, args, env := clients["mise"].command(site)
+		if want := "http:legion-tls-probe[url=" + site.url + "]@1"; !slices.Contains(args, want) {
+			t.Errorf("mise at %s runs %q, want the tool argument %q", site.name, args, want)
+		}
+		miseData[envValue(env, "MISE_DATA_DIR")] = true
+	}
+	if len(miseData) != len(tlsSites) {
+		t.Errorf("mise keeps %d data directories for %d sites, want one per site: %v", len(miseData), len(tlsSites), miseData)
 	}
 }
 
@@ -203,7 +373,7 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 func TestImageChromiumResolvesOnlyTheProbedSite(t *testing.T) {
 	var chromium tlsChromiumClient
 	found := false
-	for _, client := range imageTLSClients("omp", nil, "") {
+	for _, client := range imageTLSClients("omp", nil, "", "") {
 		if client.name() == "chromium" {
 			chromium, found = client.(tlsChromiumClient)
 		}
@@ -348,7 +518,7 @@ func TestTLSChromiumClientClassifiesNavigationResult(t *testing.T) {
 // Chromium's first process in a probe pod needs more time than the other clients,
 // while each ordinary client keeps the short refusal bound.
 func TestImageTLSChromiumClientHasColdStartHeadroom(t *testing.T) {
-	clients := imageTLSClients("omp", nil, "")
+	clients := imageTLSClients("omp", nil, "", "")
 	chromium, ok := clients[len(clients)-1].(tlsChromiumClient)
 	if !ok {
 		t.Fatalf("last image TLS client = %T, want tlsChromiumClient", clients[len(clients)-1])

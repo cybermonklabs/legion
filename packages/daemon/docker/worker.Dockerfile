@@ -774,8 +774,10 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # the suite fails with "busybox is not on PATH". trixie's package (busybox 1:1.37.0-6+b9, read
 # 2026-11-18; the toolchain step prints its version) installs /usr/bin/busybox alone, with no applet
 # links, so `wget` and `sh` stay GNU wget and dash. Its `wget` and `ssl_client` applets do no
-# certificate validation (its own help says "TLS certificate validation not implemented"), which is
-# why the TLS probe holds the image's `wget`, never busybox's. It stays out of the probe's
+# certificate validation (its own help says "TLS certificate validation not implemented"), so a
+# busybox applet must never become the `wget` on PATH: the `wget` the capability check's
+# `toolchain` row asks for (packages/daemon/internal/capabilities/image.go) is GNU wget, and the
+# TLS probe runs no wget client to catch the difference. busybox stays out of that
 # `toolchain` capability row: that row is the floor every deployment's image is held to, and
 # LINUX's `worker-lean` image copies /usr/local/bin from this one, not /usr/bin.
 # tmux: the skill-scenario rig's panes (packages/pi-legion/scripts/skill-scenarios/rig.sh) and the
