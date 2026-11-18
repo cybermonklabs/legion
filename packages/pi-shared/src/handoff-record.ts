@@ -340,7 +340,8 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
     signal?.throwIfAborted();
     record = await input.latestHandoff(issue, handoff.word, signal);
   } catch (error) {
-    // The attempt this read is a step of was given up on: its reason is the read's whole answer.
+    // The agent aborted the call this read is a step of: the abort's reason is the read's whole
+    // answer.
     if (signal?.aborted) throw signal.reason;
     if (
       error instanceof DispatchServiceError &&
