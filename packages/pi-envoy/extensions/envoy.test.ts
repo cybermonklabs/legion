@@ -4256,6 +4256,54 @@ describe("envoy OMP extension", () => {
     expect(result.content[0]?.text).toContain("no live session ses_missing");
   });
 
+  test("envoy_send and envoy_publish show the listener's sentence when the sender is rate limited, after one request each", async () => {
+    const sentence =
+      "Your sending is rate limited. This message was not sent. This listener lets one session " +
+      "send 4 messages a minute and 2 at once. You can send it again after 15 seconds.";
+    const routes: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(input.toString()).pathname;
+      if (path !== "/v1/messages/send" && path !== "/v1/messages/publish") {
+        return responseWithRegistration(input, init, {});
+      }
+      routes.push(path);
+      // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
+      // packages/envoy/cmd/listener/sender_limit.go).
+      return new Response(
+        JSON.stringify({
+          error: sentence,
+          reason: "sender_rate_limited",
+          retry_after_seconds: 15,
+          messages_per_minute: 4,
+          burst: 2,
+        }),
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "15" } }
+      );
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?sender-rate-limited");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const send = fixture.tools.find((tool) => tool.name === "envoy_send");
+    const publish = fixture.tools.find((tool) => tool.name === "envoy_publish");
+    if (send === undefined || publish === undefined) {
+      throw new Error("envoy_send or envoy_publish was not registered");
+    }
+
+    const sent = await send.execute("", { session_id: "ses_target", message: "hello" });
+    const published = await publish.execute("", {
+      topic: "notifications.team.x",
+      message: "hello",
+    });
+
+    for (const result of [sent, published]) {
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toBe(`${sentence} (reason: sender_rate_limited)`);
+    }
+    // One request to each route: neither tool sends a refused message again.
+    expect(routes).toEqual(["/v1/messages/send", "/v1/messages/publish"]);
+  });
+
   // slack_post's broker and Slack, as the session's process meets them: the broker's client on
   // PATH (a stand-in that runs the poster with the granted token, as the exec form does once the
   // broker grants LEGION_SLACK_BOT_TOKEN), and a fake Slack Web API at SLACK_POST_API_URL.

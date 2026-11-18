@@ -223,6 +223,7 @@ test("three pending requests are approved by one click on Approve all 3 shown", 
     await page.getByRole("button", { exact: true, name: "Approve all 3 shown" }).click();
     const outcomes = page.locator(".outcomes li");
     await expect(outcomes).toHaveCount(3);
+    // The count of three above waited for every outcome line, so one read lists them all.
     for (const outcome of await outcomes.all()) {
       await expect(outcome).toContainText(
         `${aliceSecret}: granted (approved by ${aliceBrokerLogin} at`

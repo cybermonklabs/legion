@@ -1,11 +1,13 @@
 // The sidebar's Agents list (INFRA-812, R1), as a browser check reads it: the rows are the
 // person's pinned agents, oldest pin first, and below 1280 pixels the whole rail is a sheet
 // behind the Menu control rather than a column of the page. Every row that reads the rail goes
-// through here, so one place knows where the rail is at the width it is run at.
+// through here, so one place knows where the rail is at the width it is run at. The helpers that
+// open the rail, close it or ask whether it is a sheet first settle on the layout the shell drew
+// (`e2e/settled.ts`), because a page still reading the person's sign-in shows no rail at all.
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { LiveViewState } from "../web/src/features/agent-view/live-views";
-import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
+import { settledState } from "./settled";
 
 /** What the Agents heading's chevron folds (`PINNED_AGENTS_ID`, `features/sidebar/Sidebar.tsx`):
  *  the list of pinned agents, or the one line that stands in for it while the person has pinned
@@ -19,6 +21,25 @@ const VIEW_STATES: readonly LiveViewState[] = ["live", "live 30s", "asleep"];
 /** The sheet the rail is below 1280 pixels: the same navigation, in a dialog over the page. */
 function railSheet(page: Page): Locator {
   return page.getByRole("dialog", { name: "Navigation" });
+}
+
+/** The Menu control that opens the sheet. It stays visible under the open sheet. */
+function railMenu(page: Page): Locator {
+  return page.getByRole("button", { name: "Open navigation" });
+}
+
+/** The layout the shell drew the rail in, read once it has drawn one: the sheet open, the sheet
+ *  closed behind the Menu control, or the page's own column. The open sheet is read first,
+ *  since the Menu control still shows under it. The skeleton drawn while the person's sign-in is
+ *  read shows none of the three, so it is waited out; a page that still shows none when the
+ *  expect timeout ends, such as a wide page whose sidebar the person collapsed, fails here with a
+ *  message naming the three. */
+function railLayout(page: Page): Promise<"open sheet" | "closed sheet" | "column"> {
+  return settledState("the rail", [
+    ["open sheet", railSheet(page)],
+    ["closed sheet", railMenu(page)],
+    ["column", page.getByRole("complementary", { name: "Navigation" })],
+  ]);
 }
 
 /** Whatever the Agents heading folds right now: the `ul` of pinned agents, or the `p` saying
@@ -72,72 +93,44 @@ export async function expectRailViewState(
   }
 }
 
-/** Whether the rail is a sheet at the width this row runs at: below `COMPACT_VIEWPORT_WIDTH`
- *  (the shell's `COMPACT_VIEWPORT_QUERY`, `(max-width: 1279px)`, which `app.tsx` reads as
- *  `isCompactViewport`) the shell draws the Menu control and puts the rail in a sheet behind it,
- *  and from that width up the rail is the page's own column and there is no Menu control. It is
- *  read from the viewport the row set, never from the page: a page still painting its first
- *  frame shows neither the Menu control nor the sheet, so a read of the page could take the
- *  column's branch at a phone width. */
-export function railIsSheet(page: Page): boolean {
-  const width = page.viewportSize()?.width;
-  if (width === undefined) {
-    throw new Error("the rail helpers read the row's own viewport, and this page has none");
-  }
-  return width < COMPACT_VIEWPORT_WIDTH;
-}
-
-/** Opens the rail where it is a sheet behind the Menu control, and does nothing where it is the
- *  page's own column, once the page shows the control that width draws or the column it does
- *  not. A rail link closes the sheet behind it, so a row that uses the rail twice at a phone
- *  width opens it again. */
+/** Opens the rail where it is a sheet closed behind the Menu control, and does nothing where it
+ *  is an open sheet or the page's own column. It settles on the rail's layout first, so a page
+ *  still loading is waited for rather than read as one with no Menu control. A rail link closes
+ *  the sheet behind it, so a row that uses the rail twice at a phone width opens it again. */
 export async function openRail(page: Page): Promise<void> {
-  const menu = page.getByRole("button", { name: "Open navigation" });
-  if (!railIsSheet(page)) {
-    await expect(menu).toBeHidden();
-    return;
-  }
-  await expect(menu).toBeVisible();
-  const sheet = railSheet(page);
-  // Whether the sheet is open already is a read of a state the row's last rail step waited for:
-  // this helper waits for the sheet to show, `closeRail` for it to go, and a rail link for it to
-  // go behind the page it opens, so the read never meets the sheet half open or half closed.
-  if (await sheet.isVisible()) return;
-  await menu.click();
-  await expect(sheet).toBeVisible();
+  if ((await railLayout(page)) !== "closed sheet") return;
+  await railMenu(page).click();
+  await expect(railSheet(page)).toBeVisible();
 }
 
-/** Closes the rail where it is a sheet, so the page under it takes the next press; where the
- *  rail is the page's own column there is nothing to close. */
+/** Whether the rail is the phone's sheet, open or closed, rather than the page's column. It
+ *  settles on the rail's layout first, so a page still loading is not read as a column. */
+export async function railIsSheet(page: Page): Promise<boolean> {
+  const layout = await railLayout(page);
+  return layout === "open sheet" || layout === "closed sheet";
+}
+
+/** Closes the rail where it is an open sheet, so the page under it takes the next press; where
+ *  the rail is a closed sheet or the page's own column there is nothing to close. It settles on
+ *  the rail's layout first, so a sheet the page has not drawn yet is not read as closed. */
 export async function closeRail(page: Page): Promise<void> {
-  if (!railIsSheet(page)) return;
-  const sheet = railSheet(page);
-  // A sheet closed already takes no Escape, which would go to the page under it instead. The
-  // read can be trusted for the reason `openRail`'s can.
-  if (!(await sheet.isVisible())) return;
+  if ((await railLayout(page)) !== "open sheet") return;
   await page.keyboard.press("Escape");
-  await expect(sheet).toBeHidden();
-}
-
-/** Follows a link in the rail, and at a phone width waits for the sheet to go behind the page
- *  the link opens, so the row's next rail step starts from a closed sheet. */
-async function followRailLink(page: Page, link: Locator): Promise<void> {
-  await link.click();
-  if (railIsSheet(page)) await expect(railSheet(page)).toBeHidden();
+  await expect(railSheet(page)).toBeHidden();
 }
 
 /** Opens `sessionId`'s live view the way the person does it: the rail, then the row's name. */
 export async function openAgentFromRail(page: Page, sessionId: string): Promise<void> {
   await openRail(page);
-  await followRailLink(page, railAgentRow(page, sessionId).getByRole("link"));
+  await railAgentRow(page, sessionId).getByRole("link").click();
 }
 
 /** Leaves every live view for the Inbox, from the rail, as a reader does. */
 export async function openInboxFromRail(page: Page): Promise<void> {
   await openRail(page);
-  await followRailLink(
-    page,
-    page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: "Inbox" })
-  );
+  await page
+    .getByRole("navigation", { name: "Navigation" })
+    .getByRole("link", { name: "Inbox" })
+    .click();
   await expect(page).toHaveURL(/\/$/);
 }
