@@ -1,13 +1,10 @@
 kind: Added
 body: |-
     The launcher of the project controller's pod (`controller: daemon`), PID 1 of its container,
-    runs the memory guard that issue pods run. Near the pod's memory limit it ends with SIGKILL,
-    of the processes that are not the launcher, the shim, Oh My Pi or one of its helpers (the
-    JavaScript `eval` kernel excepted) or the secrets renewer, the process that grew the most over
-    its last few reads, else the largest one it has read at most once in its last two readings
-    near the limit, else the one that grew the most since the guard's first kill while the reading
-    stays near the limit, else the largest, a fork that still runs its parent's program counted by
-    what it holds over its parent, so a runaway command or `eval` cell ends alone and the
+    runs the memory guard that issue pods run. Near the pod's memory limit it ends with SIGKILL a
+    process that is not the launcher, the shim, Oh My Pi or one of its helpers (the JavaScript
+    `eval` kernel excepted) or the secrets renewer, the one that grows fastest first
+    (docs/kubernetes.md, "What it ends"), so a runaway command or `eval` cell ends alone and the
     controller's pod and turn go on. The daemon tells the controller of each kill as a
     `memory-guard-kill on <PROJECT>` notice, which names the program, its pid, its size, the pod's
     reading and the limit, and none of the program's arguments. The new block
