@@ -11,7 +11,7 @@ const RELATIVE_UNITS: Array<{ ms: number; unit: Intl.RelativeTimeFormatUnit }> =
   { ms: 60 * 1000, unit: "minute" },
 ];
 
-const TICK_INTERVAL_MS = 30_000;
+export const TICK_INTERVAL_MS = 30_000;
 
 // Every mounted <Timestamp> subscribes to one shared tick instead of running its own
 // setInterval, so a page with hundreds of timestamps (a long log, a comment thread) still

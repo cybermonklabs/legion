@@ -987,7 +987,7 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
 function staleAgent(): Agent {
   return {
     ...agents[1],
-    last_activity: new Date(ago(30 * 60_000)).toISOString(),
+    last_activity: minutesAgo(30),
     last_seen: ago(11 * 60_000),
     session_id: "stale-session",
     title: "Stale",
@@ -3594,7 +3594,7 @@ test("the header checkbox follows the filters and its count never hides a select
 test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
   // Planner spoke a minute before this row runs, so it is Active, outside the group it folds.
-  const planner: Agent = { ...agents[0], last_activity: new Date(ago(60_000)).toISOString() };
+  const planner: Agent = { ...agents[0], last_activity: minutesAgo(1) };
   // Seen half a minute ago and never heard from by Dispatch: Idle.
   const silent: Agent = {
     ...agents[0],
@@ -4061,7 +4061,7 @@ function deployerAgent(): Agent {
   return {
     ...agents[1],
     host: "deploy-host",
-    last_activity: new Date(ago(60_000)).toISOString(),
+    last_activity: minutesAgo(1),
     last_seen: ago(10_000),
     roles: ["deployer"],
     session_id: "deploy-session",

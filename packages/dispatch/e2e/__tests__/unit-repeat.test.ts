@@ -121,8 +121,8 @@ async function laneRun(
   };
 }
 
-function kinds(run: LaneRun): RowlessKind[] {
-  return summarise(run).rowlessFailures.map((failure) => failure.kind);
+function kinds(report: Report): RowlessKind[] {
+  return report.rowlessFailures.map((failure) => failure.kind);
 }
 
 test(
@@ -224,9 +224,10 @@ test(
     expect(root).toStartWith("<testsuites ");
     const empty = { ...run, junit: { text: `${declaration}\n${root}\n</testsuites>\n` } };
     expect(run.exitCode).toBe(0);
-    expect(kinds(empty)).toEqual(["no-testcase"]);
-    expect(summarise(empty).failingRows).toEqual([]);
-    expect(summarise(empty).exitCode).toBe(1);
+    const report = summarise(empty);
+    expect(kinds(report)).toEqual(["no-testcase"]);
+    expect(report.failingRows).toEqual([]);
+    expect(report.exitCode).toBe(1);
   },
   rowLimit("short")
 );
@@ -241,8 +242,9 @@ test(
     });
     expect(run.exitCode).toBe(0);
     expect("unreadable" in run.junit).toBe(true);
-    expect(kinds(run)).toEqual(["junit-unreadable"]);
-    expect(summarise(run).exitCode).toBe(1);
+    const report = summarise(run);
+    expect(kinds(report)).toEqual(["junit-unreadable"]);
+    expect(report.exitCode).toBe(1);
   },
   rowLimit("short")
 );
@@ -259,7 +261,7 @@ test(
     expect(run.exitCode).not.toBe(0);
     const report = summarise(run);
     expect(report.failingRows).toEqual([]);
-    expect(kinds(run)).toEqual(["bun-exit", "bun-errors"]);
+    expect(kinds(report)).toEqual(["bun-exit", "bun-errors"]);
     expect(report.bunLogTail.join("\n")).toContain("the file fails to load");
     expect(report.exitCode).toBe(1);
     const errors = annotations(report).filter((line) => line.startsWith("::error "));
@@ -279,8 +281,9 @@ test(
       "first-load-only.test.ts": `import { test } from "bun:test";\n\nconst counter = globalThis as { loads?: number };\ncounter.loads = (counter.loads ?? 0) + 1;\ntest("always here", () => {});\nif (counter.loads === 1) test("only on the first run", () => {});\n`,
     });
     expect(run.exitCode).toBe(0);
-    expect(kinds(run)).toEqual(["uneven-file"]);
-    expect(summarise(run).exitCode).toBe(1);
+    const report = summarise(run);
+    expect(kinds(report)).toEqual(["uneven-file"]);
+    expect(report.exitCode).toBe(1);
   },
   rowLimit("short")
 );

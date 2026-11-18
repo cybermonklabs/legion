@@ -42,10 +42,10 @@ name: Dispatch unit suite repeated
 # such module once: in the web lane that row fails only when the seed puts it first among the rows
 # of its file that need the module. The web-cold lane's preload,
 # packages/dispatch/web/src/__tests__/hold-lazy-loads.ts, holds back each load of every module
-# the web app loads by `import()` or `lazy()` for 1 s of real time, so every row that runs while a
-# module is held, not the first alone, finds it unloaded. A rerun of a file keeps the modules its
-# first run loaded, so reruns are warm and buy nothing here: each leg runs the lane once, and each
-# round's own seed is what varies which rows run first.
+# the web app loads by `import()` or `lazy()` once a test file's rows have begun, for 1 s of real
+# time, so every row that runs while a module is held, not the first alone, finds it unloaded. A
+# rerun of a file keeps the modules its first run loaded, so reruns are warm and buy nothing here:
+# each leg runs the lane once, and each round's own seed is what varies which rows run first.
 #
 # The measured legs. The first four runs of this workflow, on its pull request (runs 44023917835,
 # 44029914443, 44039247928 and 44050167605, at heads 1df8e22c, 8fcb4e6e, 60572142 and e7afe05d,
@@ -145,10 +145,6 @@ jobs:
             reruns: 20
             step_minutes: 14
             job_minutes: 15
-          # Measured by run 44339340132 on this pull request (2026-11-18, head 63424a25): its three
-          # web-cold legs' test steps took 84, 98 and 101 s, one run each of 281 files and 4,932
-          # rows with every lazy module held 1 s, and read 0 failing rows. By the test step's rule,
-          # 101 x 1.15 = 116 s, under the two-minute floor, so 2 minutes.
           - lane: web-cold
             reruns: 1
             step_minutes: 2
@@ -176,9 +172,7 @@ jobs:
       # server. Each reads LEGION_TEST_PG_DSN and skips without it. They need a login role that
       # may create databases: psql-session.test.ts and replace-blocks-guard.test.ts each make a
       # database of their own and drop it with e2e/psql.ts's dropDatabase, which needs no
-      # superuser: it ends the login's own sessions on that database and drops it without FORCE,
-      # since FORCE refuses a login that is not a superuser while an autovacuum worker is attached
-      # (dropDatabase's doc comment says why). They need a database the DSN names:
+      # superuser (dropDatabase's doc comment says why). They need a database the DSN names:
       # harness-stacks.test.ts runs `select 1` on it, and replace-blocks-guard.test.ts takes it
       # for the shared one its guard refuses. They need no extension, as psql-session.test.ts's
       # head says. psql is on the runner already.
@@ -235,7 +229,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dispatch-unit-repeat-${{ matrix.lane }}-${{ matrix.round }}-${{ github.run_attempt }}
+          name: >-
+            dispatch-unit-repeat-${{ matrix.lane }}-${{ matrix.round }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/unit-repeat
           if-no-files-found: error
           retention-days: 28

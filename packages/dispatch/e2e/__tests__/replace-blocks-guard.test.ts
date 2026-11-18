@@ -105,8 +105,7 @@ function withPassword(password: string, rest: string, authority = localAuthority
 
 /** A database on the shared server for one row alone, and the URL that reaches it:
  *  LEGION_TEST_PG_DSN with only its database changed. It is made by `create database` and dropped
- *  by `dropDatabase`, which ends this login's own sessions on it and then drops it without FORCE:
- *  CI's login is not a superuser, and FORCE refuses it while an autovacuum worker is attached. */
+ *  by `dropDatabase`. */
 async function withScratchDatabase(
   use: (scratch: { name: string; url: string }) => Promise<void>
 ): Promise<void> {

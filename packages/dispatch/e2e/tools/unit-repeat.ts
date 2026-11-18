@@ -8,10 +8,10 @@
  *
  *  The web lane is `bun run test:web web/src`. The web-cold lane is
  *  `bun run test:web:cold web/src`: the web lane with every module the web app loads lazily held
- *  back on each load (web/src/__tests__/hold-lazy-loads.ts). A rerun of a file keeps the modules
- *  its first run loaded, so only the first run of each file is cold: run that lane with
- *  `--reruns 1`. The harness lane is `bun run test:harness e2e/__tests__`. The tool runs the lane
- *  from this package's directory, whatever directory it starts in. It adds `--seed`,
+ *  back on each load once a file's rows begin (web/src/__tests__/hold-lazy-loads.ts). A rerun of a
+ *  file keeps the modules its first run loaded, so only the first run of each file is cold: run
+ *  that lane with `--reruns 1`. The harness lane is `bun run test:harness e2e/__tests__`. The tool
+ *  runs the lane from this package's directory, whatever directory it starts in. It adds `--seed`,
  *  `--rerun-each` and Bun's junit reporter. It prints the seed before the run starts, so a run
  *  killed midway still names its seed. During the run it prints only Bun's summary lines. Bun's
  *  whole output goes to `<out>/bun.log`.
@@ -286,13 +286,7 @@ function attributeOf(tag: Tag, name: string): string {
   return value;
 }
 
-interface OpenTestcase {
-  file: string;
-  describe: readonly string[];
-  name: string;
-  outcome: Outcome;
-  message: string;
-}
+type OpenTestcase = { -readonly [K in keyof Testcase]: Testcase[K] };
 
 /** The files and testcases of a junit file Bun 1.4.4 wrote. It throws on anything else: a tag in
  *  a place Bun puts none, a tag left open, or a file with no `<testsuites>`. */

@@ -1733,10 +1733,12 @@ a report of the rows that failed.
 `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` preloaded
 first, before `register-dom.ts`, so its plugin is registered before any module loads; it imports
 nothing that reads the DOM, so `register-dom.ts` still comes before every module that does.
-It holds back each load of every module the web app loads by `import()` or `lazy()` (the Markdown
-engine, each `lazy()` page) for `DISPATCH_COLD_HOLD_MS` milliseconds of real time, 1000 when
-unset: every row that runs while such a module is held finds it unloaded, not only the row that
-random order puts first in its file.
+It holds back each load, once the test file's rows have begun, of every module the web app loads
+by `import()` or `lazy()` (the Markdown engine, each `lazy()` page) for `DISPATCH_COLD_HOLD_MS`
+milliseconds of real time, 1000 when unset: every row that runs while such a module is held finds
+it unloaded, not only the row that random order puts first in its file.
+A module a test file imports itself is loaded before its rows begin, unheld, since no row can find
+it unloaded; a lazy load the file's own `beforeAll` starts is held.
 Run a file under it when a row of it reads lazily rendered text:
 `bun run test:web:cold web/src/<file> --seed=<n>`.
 A row that fails there and passes under `test:web` reads before it waits; a row that waits and
@@ -1794,7 +1796,8 @@ A row that reads a Markdown body or a lazily loaded part in the commit that moun
 for it (`warmMarkdownRenderer()` from `features/refs/markdown-engine.ts`, or a `findBy*` query),
 because the earlier row that loaded it may run after it in random order.
 A lazily loaded part is anything that renders from a module `import()` or `lazy()` loads: every
-such module, not the Markdown engine alone, and `test:web:cold` holds each of them back.
+such module, not the Markdown engine alone, and `test:web:cold` holds each of them back once a
+file's rows begin.
 
 The preload's act rule fails a row in which React printed one of its five act messages: an update
 outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component

@@ -1349,15 +1349,7 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
     "dispatch.project-table.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
   );
-  // Stubbed on Element, the prototype that owns the method: patching HTMLElement would leave an
-  // own property behind that shadows every later spy on Element.
-  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    const box = this.getAttribute("data-testid") === "issues-table-scroll";
-    return new DOMRect(0, 0, box ? 390 : 100, 40);
-  });
-  restores.push(() => rect.mockRestore());
+  stubScrollBoxWidth(390);
   table([issue("CORE-1")]);
   const header = await screen.findByRole("columnheader", { name: /Status/ });
   const handle = header.querySelector(".cursor-col-resize");
@@ -1412,10 +1404,10 @@ test("a stored width under an inherited name such as toString is dropped", () =>
   expect(readLayout("CORE", ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
 });
 
-/** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
- *  pinned cell is held at, or ->`, drawn with the scroll box `width` pixels wide. */
-async function headerLayout(width: number): Promise<string[]> {
-  // On Element, which owns the method, for the reason the phone resize above gives.
+/** Makes `getBoundingClientRect` report the List's scroll box `width` pixels wide and every other
+ *  element 100, each 40 high, until the row ends. The spy is on `Element.prototype`, which owns the
+ *  method: one on `HTMLElement` would leave an own copy behind that shadows every later spy. */
+function stubScrollBoxWidth(width: number): void {
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
@@ -1423,6 +1415,12 @@ async function headerLayout(width: number): Promise<string[]> {
     return new DOMRect(0, 0, box ? width : 100, 40);
   });
   restores.push(() => rect.mockRestore());
+}
+
+/** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
+ *  pinned cell is held at, or ->`, drawn with the scroll box `width` pixels wide. */
+async function headerLayout(width: number): Promise<string[]> {
+  stubScrollBoxWidth(width);
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const head = screen.getByRole("table", { name: "Project issues table" }).querySelector("thead");

@@ -9,14 +9,16 @@ import { afterAll, describe, jest, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import { type ComponentType, useState } from "react";
 
-import { relativeTimeLabel, resetTimestampTick, Timestamp } from "../features/refs/Timestamp";
+import {
+  relativeTimeLabel,
+  resetTimestampTick,
+  TICK_INTERVAL_MS,
+  Timestamp,
+} from "../features/refs/Timestamp";
 import { quietConsoleError } from "./act-warnings";
 
 /** What each row found at its start that an earlier row left, by the row's name. */
 const startedWith = new Map<string, string[]>();
-
-// The 30 s of the shared tick (`TICK_INTERVAL_MS` in `Timestamp.tsx`), and a millisecond past it.
-const PAST_ONE_TICK_MS = 30_001;
 
 /**
  * Whether a `<Timestamp>` mounted now ticks on a fake clock this installs: it shows a time 45 s
@@ -30,7 +32,7 @@ function freshTimestampTicks(): boolean {
   const view = render(<Timestamp at={at.toISOString()} />);
   try {
     act(() => {
-      jest.advanceTimersByTime(PAST_ONE_TICK_MS);
+      jest.advanceTimersByTime(TICK_INTERVAL_MS + 1);
     });
     return view.container.textContent === relativeTimeLabel(at, Date.now());
   } finally {

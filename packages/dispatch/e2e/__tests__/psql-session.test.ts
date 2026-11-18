@@ -75,10 +75,7 @@ afterAll(
     // of this process - a rerun of this file, or another file - from a database that is gone.
     resetSession();
     if (!live) return;
-    // `dropDatabase` first ends the test role's own sessions on that database, which that role
-    // may do, so the psql just killed cannot keep it if it has not left the server yet; then it
-    // drops it without FORCE: FORCE refuses a login that is not a superuser, as CI's is not, while
-    // an autovacuum worker is attached.
+    // The psql killed above may still be on the server; `dropDatabase` ends it (its doc says how).
     await dropDatabase(server, database);
   },
   // This hook drops that database with `dropDatabase`, whose psql is `sqlAt`'s, which two modules

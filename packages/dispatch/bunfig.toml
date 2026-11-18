@@ -1,6 +1,7 @@
 # Random order for every `bun test` started from packages/dispatch: `bun run test`,
-# `bun run test:web`, `bun run test:harness`, `bun run test:repeat`, CI's "Test dispatch dashboard"
-# step, the weekly repeated job, and a developer's own `bun test <file>` from this directory.
+# `bun run test:web`, `bun run test:web:cold`, `bun run test:harness`, `bun run test:repeat`, CI's
+# "Test dispatch dashboard" step, the weekly repeated job, and a developer's own `bun test <file>`
+# from this directory.
 # Bun reads bunfig.toml from the working directory only, not from a parent directory.
 # `bun run <script>` runs in this package's directory, so this file reaches every script from any
 # directory. It does not reach a `bun test` started from the repository root or from a
