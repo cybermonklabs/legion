@@ -473,7 +473,10 @@ func TestTheProxyRefusesTheBrokerClustersOwnRanges(t *testing.T) {
 		r.addresses["service.example.net"] = []netip.Addr{netip.MustParseAddr(clusterIPs[0])}
 		r.addresses["mixed-service.example.net"] = []netip.Addr{netip.MustParseAddr("93.184.216.40"), netip.MustParseAddr(clusterIPs[1])}
 		echo := r.dialTo[net.JoinHostPort(echoHost, "443")]
+		// Each address a refused row names is wired to the echo service, the zoned forms as the
+		// proxy would dial them, so a proxy that let one through opens a tunnel and answers 200.
 		for _, addr := range []string{clusterIPs[0], clusterIPs[1], clusterIPs[2], "34.118.224.0", "34.118.239.255", "2001:db8:5::10",
+			"2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x",
 			"34.118.240.0", "34.118.223.255", "2001:db8:6::10", "93.184.216.40"} {
 			r.dialTo[net.JoinHostPort(addr, "443")] = echo
 		}
@@ -518,6 +521,11 @@ func TestTheProxyRefusesTheBrokerClustersOwnRanges(t *testing.T) {
 		{"an address in an IPv6 range", "2001:db8:5::10", "IPv6"},
 		{"a name that resolves to a ClusterIP", "service.example.net", "IPv4"},
 		{"a name whose answer holds a ClusterIP beside a public address", "mixed-service.example.net", "IPv4"},
+		// A zone on a global IPv6 address names nothing a socket to it needs, and netip's
+		// Contains is false for any zoned address, so each of these is read without its zone.
+		{"a zoned IPv6 literal in a range (%25eth0)", "2001:db8:5::10%25eth0", "IPv6"},
+		{"a zoned IPv6 literal in a range (%250)", "2001:db8:5::10%250", "IPv6"},
+		{"a zoned IPv6 literal in a range (%25x)", "2001:db8:5::10%25x", "IPv6"},
 	} {
 		t.Run("refuses "+row.name, func(t *testing.T) { refused(t, r, row.host, row.family) })
 	}
@@ -543,7 +551,7 @@ func TestTheProxyRefusesTheBrokerClustersOwnRanges(t *testing.T) {
 // ClusterIP as a tunnel does, and the controls show each path still carries a public address.
 func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 	clusterIP := netip.MustParseAddr(clusterIPs[0])
-	options := Options{ClusterRanges: []netip.Prefix{serviceRange}}
+	options := Options{ClusterRanges: []netip.Prefix{serviceRange, netip.MustParsePrefix("2001:db8:5::/48")}}
 
 	t.Run("a bound host whose name resolves to a ClusterIP is refused at its CONNECT", func(t *testing.T) {
 		r := newRig(t, options)
@@ -604,7 +612,7 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 		}))
 		t.Cleanup(plain.Close)
 		r.addresses["service.example.net"] = []netip.Addr{clusterIP}
-		for _, addr := range []string{clusterIP.String(), "93.184.216.40"} {
+		for _, addr := range []string{clusterIP.String(), "93.184.216.40", "2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x"} {
 			r.dialTo[net.JoinHostPort(addr, "80")] = plain.Listener.Addr().String()
 		}
 		return r, &served
@@ -618,6 +626,18 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 			}
 			if r.dials.Load() != 0 || served.Load() != 0 {
 				t.Fatalf("the proxy dialled %d time(s) and the service answered %d request(s); want none", r.dials.Load(), served.Load())
+			}
+		})
+	}
+	for _, host := range []string{"[2001:db8:5::10%25eth0]", "[2001:db8:5::10%250]", "[2001:db8:5::10%25x]"} {
+		t.Run("a plain-HTTP request to the zoned literal "+host+" is refused", func(t *testing.T) {
+			r, served := plainRig(t)
+			answer, body := r.get(r.client(workerPlaceholder), "http://"+host+"/status")
+			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, clusterRangeRule) {
+				t.Fatalf("plain http to %s answered %d %q; want 403 naming %q", host, answer.StatusCode, body, clusterRangeRule)
+			}
+			if r.dials.Load() != 0 || served.Load() != 0 {
+				t.Fatalf("the proxy dialled %v and the service answered %d request(s); want none", r.dialedAddresses(), served.Load())
 			}
 		})
 	}
