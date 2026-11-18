@@ -62,10 +62,14 @@
 # and the license of every third-party piece of
 # all that at /usr/share/doc/legion/THIRD_PARTY_NOTICES (the notices stage; its Debian list comes from
 # the image's own dpkg database).
-# Four RUNs of the runtime stage gate the publish, each as the runtime user. The first downloads
-# the WebKit build of the Playwright packages/dispatch locks into a scratch directory and launches
-# it once, headless, through Playwright's own host validation, so a Playwright whose WebKit needs a
-# library the image lacks fails the build; the second checks every binary runs on the base, proves
+# Four RUNs of the runtime stage gate the publish. The first, as root, prints and checks the marker
+# of the webkit-check stage, which, as the runtime user, downloads the WebKit build of the
+# Playwright packages/dispatch locks into a scratch directory and launches it once, headless,
+# through Playwright's own host validation, so a Playwright whose WebKit needs a library the image
+# lacks fails the build. That download is checked against no hash, so it runs in a stage of its
+# own and only its one-line marker reaches the runtime stage, whose bind mount of it is what makes
+# BuildKit build that stage. The other three run as the runtime user: the second checks every
+# binary runs on the base, proves
 # jj accepts the image's git with a network-free `jj git clone` of a scratch repository, and links
 # the CodeGraph plugin into the profile, which extracts Oh My Pi's natives from its binary; the
 # third runs every toolchain command, the language servers', Python's and the browser's included;
@@ -248,13 +252,15 @@ COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/inte
 COPY docs/site/package.json docs/site/package.json
 RUN bun install --frozen-lockfile
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
-# the runtime stage's WebKit step launches this Playwright's WebKit. The install above uses Bun's
-# isolated linker, so playwright-core is not hoisted at /repo/node_modules. The RUN resolves it from
-# packages/dispatch along the chain @playwright/test, playwright, playwright-core, with Node's module
-# resolution, which answers with the real path, rather than assuming where it lies, so the check
-# follows the version that package locks; it prints that version and the directory it found.
-RUN set -eu; \
-    core="$(bun -e 'const { createRequire } = require("node:module"); let resolve = createRequire("/repo/packages/dispatch/package.json").resolve; let found = ""; for (const name of ["@playwright/test", "playwright", "playwright-core"]) { found = resolve(name + "/package.json"); resolve = createRequire(found).resolve; } console.log(require("node:path").dirname(found));')"; \
+# the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
+# linker, so playwright-core is not hoisted at /repo/node_modules. The RUN resolves it with
+# packages/daemon/docker/resolve-playwright-core.mjs, from packages/dispatch along the chain
+# @playwright/test, playwright, playwright-core, with Node's module resolution, which answers with
+# the real path, rather than assuming where it lies, so the check follows the version that package
+# locks; it prints that version and the directory it found.
+RUN --mount=type=bind,source=packages/daemon/docker/resolve-playwright-core.mjs,target=/tmp/resolve-playwright-core.mjs \
+    set -eu; \
+    core="$(bun /tmp/resolve-playwright-core.mjs /repo/packages/dispatch/package.json)"; \
     mkdir -p /out; cp -a "$core" /out/playwright-core; \
     echo "playwright-core: $(jq -r .version /out/playwright-core/package.json) from $core"
 # The Oh My Pi plugins the runtime stage links into the `legion` profile (its step 3), installed with
@@ -735,8 +741,8 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # `install-deps`. All 56 are named, not only the ones the image lacked, so the line states WebKit's
 # whole list and leans on no other package's dependencies. The `tools` group `install-deps` adds
 # for every browser (xvfb and fonts) is left out: it holds no library WebKit links or loads, and
-# Playwright's launch validation does not read it. The runtime stage's WebKit step fails the build
-# when a Playwright bump needs a library this list lacks.
+# Playwright's launch validation does not read it. The webkit-check stage fails the build when a
+# Playwright bump needs a library this list lacks.
 # postgresql-client (psql): `bun run e2e`, the Dispatch browser suite this deployment's
 # instructions require before a reader-facing Dispatch change merges, reaches psql through
 # packages/dispatch/e2e/psql.ts, which seed.ts calls for every spec's database reset; and the local
@@ -1053,26 +1059,28 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
       "pyright: the LICENSE of the typeshed stubs it bundles, /opt/language-servers/node_modules/pyright/dist/typeshed-fallback" /in/pyright-typeshed-LICENSE
 
 # ------------------------------------------------------------------------------------------------
-# runtime: the final stage, the image itself, on runtime-base.
-FROM runtime-base AS runtime
-LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
-# Pinned Bun: the binary the plugin stage packed with (the copy of oven/bun:${BUN_VERSION}-slim).
-COPY --from=plugin /usr/local/bin/bun /usr/local/bin/bun
-RUN ln -s bun /usr/local/bin/bunx
-# The WebKit step, the check R7 of dispatch://INFRA-3257 asks for: it downloads the WebKit build of
-# the Playwright packages/dispatch locks (about 90 MB, from Playwright's CDN) and launches it once,
-# headless, through Playwright's own host validation (packages/daemon/docker/webkit-launch.mjs), so
-# a pull request that moves packages/dispatch to a Playwright whose WebKit needs a library the
-# runtime-base apt line lacks fails this build: ci.yaml's worker-image job runs on bun.lock and
-# packages/dispatch/package.json, and gates ci-ok. It keeps nothing. It runs as the runtime user, as
-# a role does, and the stage returns to root after it. It reads Node from the toolchain stage's
-# /opt/node (the image's own copy comes in later, with the toolchain) and playwright-core from the
-# plugin stage's /out/playwright-core, both by bind mount, so the image carries no copy of
-# playwright-core, and HOME, TMPDIR and PLAYWRIGHT_BROWSERS_PATH point into a scratch directory the
-# step removes, so the browser is downloaded there. Its layer follows runtime-base, Bun and the bunx
-# link alone, and BuildKit reads a bind mount's source by content, so it reruns only when the base
-# or its packages, Bun, the Node pin, the locked Playwright or webkit-launch.mjs changes — never for
-# a change to the plugins, the skills, the toolchain step or `legion`.
+# webkit-check (build only): the check R7 of dispatch://INFRA-3257 asks for. It downloads the
+# WebKit build of the Playwright packages/dispatch locks (about 90 MB, from Playwright's CDN) and
+# launches it once, headless, through Playwright's own host validation
+# (packages/daemon/docker/webkit-launch.mjs), so a pull request that moves packages/dispatch to a
+# Playwright whose WebKit needs a library the runtime-base apt line lacks fails this build:
+# ci.yaml's worker-image job runs on bun.lock and packages/dispatch/package.json, and gates ci-ok.
+# It runs as the runtime user, as a role does. It is a stage of its own because Playwright 1.64.1
+# checks that download against no hash, so nothing it writes may reach the image: in the runtime
+# stage that user owns /home/legion, and a file the download wrote outside the scratch directory
+# would ship. Only the marker crosses: /out/webkit-check, the launch script's one line
+# (`webkit: Playwright <version> launched WebKit <version>`), in a directory root makes for the
+# runtime user before the switch; the RUN prints the line too. It reads Node from the toolchain
+# stage's /opt/node and playwright-core from the plugin stage's /out/playwright-core, both by bind
+# mount, and HOME, TMPDIR and PLAYWRIGHT_BROWSERS_PATH point into a scratch directory the step
+# removes, so the browser is downloaded there. BuildKit reads a bind mount's source by content, so
+# the stage reruns only when runtime-base or its packages, the Node pin, the locked Playwright or
+# webkit-launch.mjs changes — never for a change to the plugins, the skills, the toolchain step or
+# `legion`. BuildKit builds only the stages the target stage reaches, and the runtime stage's bind
+# mount of this /out is what reaches this one: that mount is what makes BuildKit build the stage at
+# all, so the gate stays as long as the mount does.
+FROM runtime-base AS webkit-check
+RUN install -d -m 0755 -o 1000 -g 1000 /out
 USER 1000:1000
 RUN --mount=type=bind,from=plugin,source=/out/playwright-core,target=/tmp/playwright-core \
     --mount=type=bind,from=toolchain,source=/opt/node,target=/opt/node \
@@ -1081,9 +1089,29 @@ RUN --mount=type=bind,from=plugin,source=/out/playwright-core,target=/tmp/playwr
     scratch="$(mktemp -d)"; \
     export HOME="$scratch" TMPDIR="$scratch" PLAYWRIGHT_BROWSERS_PATH="$scratch/browsers"; \
     /opt/node/bin/node /tmp/playwright-core/cli.js install webkit; \
-    /opt/node/bin/node /tmp/webkit-launch.mjs /tmp/playwright-core; \
+    /opt/node/bin/node /tmp/webkit-launch.mjs /tmp/playwright-core > /out/webkit-check; \
+    cat /out/webkit-check; \
     rm -rf "$scratch"
-USER root
+
+# ------------------------------------------------------------------------------------------------
+# runtime: the final stage, the image itself, on runtime-base.
+FROM runtime-base AS runtime
+LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
+# Pinned Bun: the binary the plugin stage packed with (the copy of oven/bun:${BUN_VERSION}-slim).
+COPY --from=plugin /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s bun /usr/local/bin/bunx
+# The webkit-check stage's marker, bound from that stage's /out: the RUN prints the launch line it
+# holds and fails unless the line starts `webkit: Playwright `. This mount is what makes BuildKit
+# build that stage at all, so it is the WebKit gate; the RUN writes nothing into the image. It
+# follows runtime-base, Bun and the bunx link alone, and BuildKit reads the mount by content, so a
+# rerun of that stage that prints the same line leaves this layer and every one after it cached.
+RUN --mount=type=bind,from=webkit-check,source=/out,target=/tmp/webkit-check \
+    set -eu; \
+    cat /tmp/webkit-check/webkit-check; \
+    case "$(cat /tmp/webkit-check/webkit-check)" in \
+      "webkit: Playwright "*) ;; \
+      *) echo "the webkit-check stage's marker does not start with 'webkit: Playwright '" >&2; exit 1 ;; \
+    esac
 COPY --from=tools /opt/omp /opt/omp
 COPY --from=tools /opt/tools/jj /usr/local/bin/jj
 COPY --from=tools /opt/tools/gh /usr/local/bin/gh

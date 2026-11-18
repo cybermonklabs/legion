@@ -1,5 +1,5 @@
-// The WebKit step of packages/daemon/docker/worker.Dockerfile's runtime stage runs this as the
-// image's runtime user, `node webkit-launch.mjs <playwright-core directory>`, once that step has
+// The webkit-check stage of packages/daemon/docker/worker.Dockerfile runs this as the image's
+// runtime user, `node webkit-launch.mjs <playwright-core directory>`, once that stage has
 // downloaded the WebKit build of the playwright-core it names: the Playwright packages/dispatch
 // locks. It launches that WebKit once, headless, through Playwright's own launch, which validates
 // the host before it starts the browser, so an image whose runtime-base apt line lacks a library

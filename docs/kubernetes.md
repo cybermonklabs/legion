@@ -420,6 +420,11 @@ the head `ghcr.io/cybermonklabs/legion-worker:sha-afa29128061f` (revision `afa29
 the other 23 layers carry the remaining 1,105 bytes between them, no single one of them differing by more than 3,164 bytes in either direction.
 Each size is read from that image's own manifest in the registry and each revision from its config blob;
 a layer rebuilt from the same content still compresses to a slightly different size, so read the figure as 7.9 MiB rather than as its last digits.
+dispatch://INFRA-3257 makes the image larger again, each size read from the image's manifest in the registry on 2026-11-18:
+`ghcr.io/cybermonklabs/legion-worker@sha256:25d2edfc2a8c1bb7c3cb83689456f8e2892d91a7fcd544f9cf6719528395c5fe`, the `sha-c665b75abc16` build of that issue's pull request, is 39 layers and 2,332,350,242 bytes compressed, where legion-v20.25.1's `sha256:fd41039d01eda098e66f0475b359ac298732c1f256e2e029f1be469a382cacbd` is 35 layers and 1,865,031,383 bytes
+— 467,318,859 bytes more, +25%.
+Among what the pull request adds are the Google Cloud SDK, azure-cli and WebKit's host libraries (the image's contents above); no figure for any one of them is recorded here.
+The pull of the larger image must still fit `worker_boot_timeout_seconds`, as the lines below explain.
 On EKS, how long a node takes to pull that is not recorded here: the stage 4a launch below is where it is measured.
 The pull must fit the launch's wait for the role's launcher before any init container runs:
 `worker_boot_timeout_seconds` (`packages/daemon/internal/config/config.go`;
@@ -657,10 +662,13 @@ and `dig -v` prints its version on stdout, measured in a pod of the image (`dig 
 The step checks `yq` with `--version` rather than `-v`, which is mikefarah's verbose flag:
 `-v` emits `level=DEBUG` lines and reads stdin rather than printing a version.
 It reruns only when the toolchain or an earlier layer changes, so a commit that only rebuilds `legion` needs no package registry.
-A WebKit step runs earlier, as `legion`, right after the runtime stage copies Bun in.
+A WebKit check runs in a build stage of its own, `webkit-check`, as `legion`, on the same base as the image.
 It downloads the WebKit build of the Playwright `packages/dispatch` locks, about 90 MB from Playwright's CDN, into a scratch directory it removes, and launches it once, headless, through Playwright's own host validation (`packages/daemon/docker/webkit-launch.mjs`).
 So a pull request that moves `packages/dispatch` to a Playwright whose WebKit needs a library the image lacks fails the `worker-image` job.
-It reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin stage by bind mount, and BuildKit reads a bind mount's source by content, so its layer reruns only when the base or its packages, Bun, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
+Playwright checks that download against no hash, so nothing it writes may reach the image:
+only the launch's one line, `webkit: Playwright <version> launched WebKit <version>`, crosses, as a marker file the runtime stage binds, prints and checks right after it copies Bun in.
+That bind is what makes BuildKit build the stage at all.
+The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin stage by bind mount, and BuildKit reads a bind mount's source by content, so it reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
 To check a published image's toolchain end to end, a project Python install included:
 
 ```sh
@@ -833,7 +841,10 @@ A layer that still installs them collides with the base's:
 an SDK unpacked at `/opt/google-cloud-sdk` writes over the base's tree, and a `gcloud`, `bq` or `az` linked into `/usr/local/bin` meets the base's link of that name, where `ln -s` without `-f` fails the build and a forced link or a copy replaces the base's program.
 The daemon's image probe then holds the layer's program to the compromised chains in the base's place.
 A stock SDK trusts the CA files it ships, which hold those roots: measured on 2026-11-18, gcloud 589.0.0 and bq 2.1.40 accepted the emSign chain, which fails the probe ([Worker image](#worker-image)).
-Drop such a step, or install the deployment's own copy under a prefix of its own and name it by its path.
+Drop such a step.
+A copy kept under a prefix of its own and run by its path is no way around the probe: the probe reads only `PATH`, so that copy is outside it, and nothing checks what it trusts.
+A deployment that needs its own copy of the SDK installs it in the base's place, `/opt/google-cloud-sdk`, with `core/custom_ca_certs_file` set to Debian's bundle, as `packages/daemon/docker/worker.Dockerfile` does, so the probe holds that copy to the chains.
+An `az` of its own goes in the base's place the same way, behind a wrapper that sets `REQUESTS_CA_BUNDLE` to that bundle, as the base's `/opt/azure-cli/bin/az` does.
 
 ### Entrypoint
 
