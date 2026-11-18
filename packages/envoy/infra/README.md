@@ -330,8 +330,9 @@ one per zone, held hard, with `minDomains` the lesser of `replicas` and 3. With
 
 The Deployment `<n>-listener` runs Envoy's session listener as a workload of its own, in one pod,
 rolled with `maxUnavailable: 0` and `maxSurge: 1`. The listener is declared once, as `listener`
-or as `tailnet.listener`, and the hub renders the same objects either way; below, `<l>` stands for
-the path it is declared at. The pod runs under the ServiceAccount
+or as `tailnet.listener`, and the hub renders the same objects either way but for the listener
+container's token check, which a listener declared as `listener` always carries (below); `<l>`
+stands for the path it is declared at. The pod runs under the ServiceAccount
 `<n>-listener`, which mounts no token, since the listener calls no Kubernetes API. It runs as uid
 999, the listener image's own user, with no privilege escalation and every Linux capability
 dropped, and with `priorityClassName` it names the class. Its one container, `listener`, runs

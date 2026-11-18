@@ -772,8 +772,9 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs) (*clusteredHubTailnet, e
 
 // clusteredHubListenerArgs is the session listener the hub runs, wherever it is declared, and the
 // path its refusals name: listener, the hub's own input, or tailnet.listener, the same listener
-// declared inside the tailnet entry, which renders the same objects. Nil and "" with neither. The
-// hub runs one listener, so the two are refused together.
+// declared inside the tailnet entry, which renders the same objects but for the listener
+// container's token check (clusteredHubListenerCredentialFor). Nil and "" with neither. The hub
+// runs one listener, so the two are refused together.
 func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListenerArgs, string, error) {
 	var inTailnet *ClusteredHubListenerArgs
 	if args.Tailnet != nil {
@@ -886,7 +887,8 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	}
 	// The listener serves on every address of its own pod: the tailnet hosts and the pods of
 	// clientNamespaces reach it through its cluster Service, which a NetworkPolicy admits their
-	// pods alone to, and those pods present the credential it requires.
+	// pods alone to. A listener with a credential admits only the callers that present it; the
+	// tailnet-only one admits every caller the policy lets through, with no credential.
 	if listener.env, err = (core.ListenerConfig{
 		MachineID:               machineID,
 		Port:                    core.DefaultListenerPort,

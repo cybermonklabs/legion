@@ -234,10 +234,12 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // Authorization header it did not know before this credential existed: the open listener serves
 // the request, and a listener that requires a bearer answers it the same 401 it always did.
 // That is what keeps the no-bearer listeners the GCP VMs and the clustered hub run serving the
-// clients that hold a broker route of their own. A VM's listener is on loopback and the
-// clustered hub's serves off loopback behind its NetworkPolicy, and neither takes a bearer. A
-// client sends Authorization: DPoP whenever it has a broker and an identity to trade and no
-// Envoy bearer is set, whatever the listener it is calling takes.
+// clients that hold a broker route of their own. A VM's listener is on loopback, and the clustered
+// hub's tailnet-only listener (a tailnet.listener with no clientNamespaces) serves off loopback
+// behind its NetworkPolicy; neither takes a bearer. A clustered hub listener that pods of the
+// cluster reach takes the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair, so a caller that presents
+// only DPoP gets its 401. A client sends Authorization: DPoP whenever it has a broker and an
+// identity to trade and no Envoy bearer is set, whatever the listener it is calling takes.
 //
 // Configuring it opens nothing and closes nothing. A request presenting no token is judged
 // exactly as it was before this credential existed — the open listener still serves it, the Host
