@@ -3057,7 +3057,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `memory_guard` that is not a mapping, or names a member but `issue_pods` and `controller_pod`;
   an `issue_pods` or a `controller_pod` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
   an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`, and `controller_pod`'s alike);
-  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`, and `controller_pod`'s alike);
+  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent` (50 to 90 under `controller_pod`), 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`, and `runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 90`);
 
 - `gateway`, removed with LEGION-270: a pod's model route is the operator's `pod`;
 
@@ -5686,6 +5686,7 @@ Where the reading at a kill is at or above the urgent share, the mark plus half 
 That holds at every reading it kills at: the first reading at or above the mark, a reading after a kill and a reading it decides on by its own sizes.
 Where nothing grew over the window it ends one process, as it does at every kill below the urgent share.
 The floor is read once, on all the processes it may end, before the first kill; one of the others that has ended or whose pid now names another process is skipped with no line, one whose kill fails is logged and counts unread as above while the others still go, and where the first is not killed none of them is, and the guard decides again as above.
+It sends every kill of the reading before it reads the cgroup's counter and `Shmem` and writes the kills' lines and reports, in the order of the kills, since a counter read can take about 18 ms under gVisor and the kills beside the first would otherwise wait behind it.
 It ends them all because near the limit one kill a reading cannot absorb a burst of several growers: at `8023d298`, in INFRA-3531's tester's run `4g-t4latepool-r2`, a reading came 148 ms late on a pod of 1.5 CPU, so six growers' first 64 MiB steps landed before the first reading at the mark, which read 93.88% of the limit, and one kill a reading then left the pod 2.8 MiB from the kill point (dispatch://INFRA-3531/comment/c8c0822e-4ee4-429b-ae24-a017d4a0d962, dispatch://INFRA-3531/artifact/tester-evidence-8023d298-2026-11-18-tar-gz).
 
 **After a kill: the rise rule.**
@@ -5792,7 +5793,7 @@ launcher: memory guard: kill failed pid=<pid> reason=<why>
 ```
 
 `started` comes once, with the first reading, and `settings` once for each change of the settings.
-`ended` comes once for each kill: `size` is the size the guard chose the process by, `counter` is the cgroup's counter at the kill, read once for all the kills of a reading, and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+`ended` comes once for each kill: `size` is the size the guard chose the process by, `counter` is the cgroup's counter just after the kill, read once for all the kills of a reading once every one of them has been sent, and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
 For a first kill chosen at the mark, `size` is the size the band's last reading read, unless the reading at the mark read that process's `smaps` again: then it is that read plus the memfds its descriptors held as the band's reading counted them.
 For a process started since the band's last reading it is the `smaps` the reading at the mark read, with no memfd its descriptors hold.
 `rule` names the rule of the order of ends ("What it ends", above) that put the process first:
@@ -6008,16 +6009,17 @@ runtime:
 ```
 
 Those are the defaults, and the guard is on in the controller's pod wherever the file says nothing.
-The block has the five members of `issue_pods`, with the same ranges and the same defaults but the wait, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 95`).
+The block has the five members of `issue_pods`, with the same ranges but `act_percent`'s and the same defaults but the wait, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 90`).
+`act_percent` goes up to 90 here, where an issue pod's goes up to 95, so that the urgent share, halfway from it to the limit, is at most 95% of the limit: at 95 it would be 97.5%, above the lowest kill point INFRA-3531's tester measured at 4 GiB, 96.88% of the limit, where the guard's kills of every grower at one reading could not come before the host ends the pod.
 The wait after a kill is 1 second here, where an issue pod's is 5.
-It is the most the guard waits: it decides at each reading once the killed process has exited, so the wait holds it back only while that process has not exited, and the wait bounds how long it reads on with no fall and no growth since the kill before it gives the rise up.
-In the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, and a wait of 1 second has the guard decide on the next process before such an end, also where the killed process has not exited.
+It is the most the guard waits: it decides at each reading once every process it killed at the reading of the kill has exited, one process below the urgent share and every process that grew at or above it, so the wait holds it back only while one of them has not exited, and the wait bounds how long it reads on with no fall and no growth since the kill before it gives the rise up.
+In the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, and a wait of 1 second has the guard decide on the next process before such an end, also where a killed process has not exited.
 Each block is settled from its own members and its own defaults: a value under `issue_pods` never moves the controller's pod, and a value under `controller_pod` never moves an issue pod.
 The daemon hands the controller pod's launcher this block alone, on its answer to each hello (`memoryGuard` in `launcher_hello_ack`, `launcherHelloAck` in `packages/daemon/internal/runtime/sandbox/launcher_auth.go`).
 So a change applies at the launcher's next connection, which every daemon restart gives it, and replaces no pod.
 Before the first answer the guard runs at these defaults, its wait of 1 second included, so the pod is guarded while the daemon is away.
 Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before this guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
-The launcher's own check of the ranges, the `settings` line, and the readings and hourly lines of a guard that is off are as "The settings" above says.
+The launcher's own check of the ranges, the `settings` line, and the readings and hourly lines of a guard that is off are as "The settings" above says; that check holds the wire's ranges, `act_percent` up to 95, since the loader is what holds this block to 90.
 
 **The lines.**
 The guard writes the lines of "The lines" above, and a line that names a role names `controller` (`role=controller`, `largest_role=controller`); its `stopped for this rise` line names the processes it could not read in `unread_processes`, as there.

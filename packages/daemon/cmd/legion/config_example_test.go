@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -273,30 +274,34 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	}
 }
 
-// The example's memory_guard block, uncommented with either pod kind's act_percent at 96, one
-// above the wire's range, is refused by the same check: exit 1 and one line naming that kind's
-// whole key and both ends of the range, which is what an operator who edits the shipped block past
-// that range reads. It checks the loader's refusal, not the range the block's own comment states.
-// The block stays commented in the file itself: its values are the defaults, which apply without
-// it.
+// The example's memory_guard block, uncommented with either pod kind's act_percent one above that
+// kind's range, 96 for issue pods past the wire's 95 and 91 for the controller's pod past its own
+// 90 (INFRA-3531 R4 of spec version 40), is refused by the same check: exit 1 and one line naming
+// that kind's whole key and both ends of its range, which is what an operator who edits the
+// shipped block past that range reads. It checks the loader's refusal, not the range the block's
+// own comment states. The block stays commented in the file itself: its values are the defaults,
+// which apply without it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
-	for _, kind := range []string{"issue_pods", "controller_pod"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, kind := range []struct {
+		name string
+		max  int
+	}{{"issue_pods", 95}, {"controller_pod", 90}} {
+		t.Run(kind.name, func(t *testing.T) {
 			config := stageShippedExample(t, func(example string) string {
 				example = uncommentExample(t, example, memoryGuardExampleLines...)
 				// The kind's own act_percent: the first after its key, since both kinds carry 85.
-				at := strings.Index(example, "\n      "+kind+":")
+				at := strings.Index(example, "\n      "+kind.name+":")
 				if at < 0 {
-					t.Fatalf("the uncommented example has no %s block", kind)
+					t.Fatalf("the uncommented example has no %s block", kind.name)
 				}
-				return example[:at] + strings.Replace(example[at:], "act_percent: 85", "act_percent: 96", 1)
+				return example[:at] + strings.Replace(example[at:], "act_percent: 85", fmt.Sprintf("act_percent: %d", kind.max+1), 1)
 			})
 
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 			t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
-			want := "legion config check: runtime.kubernetes.memory_guard." + kind + ".act_percent must be between 50 and 95\n"
+			want := fmt.Sprintf("legion config check: runtime.kubernetes.memory_guard.%s.act_percent must be between 50 and %d\n", kind.name, kind.max)
 			if code != 1 || out.Len() != 0 || errb.String() != want {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 			}

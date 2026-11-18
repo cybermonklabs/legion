@@ -244,6 +244,15 @@ type LauncherMemoryGuard struct {
 // `runtime.kubernetes.memory_guard.controller_pod`. It is below the 3.4 seconds this issue's tester
 // measured from a kill that freed nothing to the host's kill of a 4 GiB pod, so the controller's
 // guard decides on the next process before that kill comes.
+//
+// MemoryGuardControllerActMax is the controller pod's highest act share in place of
+// MemoryGuardActMax, an issue pod's (INFRA-3531, R4 of spec version 40): the daemon's loader
+// refuses a `runtime.kubernetes.memory_guard.controller_pod.act_percent` above it, so that the
+// urgent share, the mark plus half the distance from the mark to the limit, is at most 95% of the
+// limit and stays below the lowest kill point this issue's tester measured at 4 GiB, 96.88% on
+// 2026-11-18; at an act share of 95 the urgent share would be 97.5%, at or above that kill point.
+// The wire keeps MemoryGuardActMax, and Validate with it, since a daemon of this release never
+// sends the controller pod more than this.
 const (
 	MemoryGuardActMin      = 50
 	MemoryGuardActMax      = 95
@@ -260,6 +269,7 @@ const (
 	MemoryGuardIntervalDefault = 100
 
 	MemoryGuardControllerWaitDefault = 1
+	MemoryGuardControllerActMax      = 90
 )
 
 // LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:

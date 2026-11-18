@@ -411,8 +411,8 @@ runtime:
     #     wait_seconds: 1              # agent are never ended. After a kill it waits for the processes it killed
     #     interval_milliseconds: 100   # to exit, at most wait_seconds (1 to 60), and it reads every
     #                                  # interval_milliseconds (50 to 5000). controller_pod is the same guard in
-    #                                  # the controller's pod (controller: daemon), which waits at most 1 second
-    #                                  # after a kill.
+    #                                  # the controller's pod (controller: daemon), whose act_percent goes up to
+    #                                  # 90 and which waits at most 1 second after a kill.
     #                                  # These are the defaults, for each kind. enabled: false sends that kind's
     #                                  # launchers no settings, so each of their guards, which runs at these
     #                                  # defaults from the launcher's start, turns off at its first acknowledgement

@@ -10,13 +10,15 @@ import (
 
 // memoryGuardKinds are the two pod kinds runtime.kubernetes.memory_guard is keyed by, each with
 // the settled block of its own (block), so a test sets one kind's block of an expected
-// configuration and holds the other kind's at what it was.
+// configuration and holds the other kind's at what it was, and its highest act share (actMax):
+// the wire's for issue pods, 90 for the controller's pod (INFRA-3531 R4 of spec version 40).
 var memoryGuardKinds = []struct {
-	name  string
-	block func(*MemoryGuardConfig) *MemoryGuardPodConfig
+	name   string
+	block  func(*MemoryGuardConfig) *MemoryGuardPodConfig
+	actMax int
 }{
-	{"issue_pods", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.IssuePods }},
-	{"controller_pod", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.ControllerPod }},
+	{"issue_pods", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.IssuePods }, shimwire.MemoryGuardActMax},
+	{"controller_pod", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.ControllerPod }, shimwire.MemoryGuardControllerActMax},
 }
 
 // memoryGuardBlock is a runtime.kubernetes.memory_guard block holding one pod kind's members as
@@ -133,7 +135,7 @@ func TestMemoryGuardIssuePodsIsUnchangedByAnyControllerPodValue(t *testing.T) {
 		want          MemoryGuardPodConfig
 	}{
 		{"off", "enabled: false", MemoryGuardPodConfig{Enabled: false, ActPercent: 85, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 100}},
-		{"act_percent", "act_percent: 95", MemoryGuardPodConfig{Enabled: true, ActPercent: 95, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 100}},
+		{"act_percent", "act_percent: 90", MemoryGuardPodConfig{Enabled: true, ActPercent: 90, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 100}},
 		{"floor_percent", "floor_percent: 50", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 50, WaitSeconds: 1, IntervalMilliseconds: 100}},
 		{"wait_seconds", "wait_seconds: 60", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 60, IntervalMilliseconds: 100}},
 		{"interval_milliseconds", "interval_milliseconds: 5000", MemoryGuardPodConfig{Enabled: true, ActPercent: 85, FloorPercent: 10, WaitSeconds: 1, IntervalMilliseconds: 5000}},
@@ -175,9 +177,11 @@ func TestMemoryGuardEnabledFalseTurnsTheGuardOff(t *testing.T) {
 	}
 }
 
-// Each number of either pod kind is held to the wire's range: both ends load, one past either end
-// is refused naming the whole key and the range, so `legion config check` exits 1 saying
-// where to look.
+// Each number of either pod kind is held to the wire's range, and the controller pod's act share
+// to its own highest, 90, so that its urgent share stays at most 95% of the limit (INFRA-3531 R4
+// of spec version 40), while issue pods keep the wire's 95: both ends load, one past either end
+// is refused naming the whole key and the range, so `legion config check` exits 1 saying where to
+// look.
 func TestMemoryGuardRefusesEachNumberOutsideItsRangeNamingTheKey(t *testing.T) {
 	for _, kind := range memoryGuardKinds {
 		for _, number := range []struct {
@@ -185,7 +189,7 @@ func TestMemoryGuardRefusesEachNumberOutsideItsRangeNamingTheKey(t *testing.T) {
 			min, max int
 			get      func(MemoryGuardPodConfig) int
 		}{
-			{"act_percent", shimwire.MemoryGuardActMin, shimwire.MemoryGuardActMax, func(c MemoryGuardPodConfig) int { return c.ActPercent }},
+			{"act_percent", shimwire.MemoryGuardActMin, kind.actMax, func(c MemoryGuardPodConfig) int { return c.ActPercent }},
 			{"floor_percent", shimwire.MemoryGuardFloorMin, shimwire.MemoryGuardFloorMax, func(c MemoryGuardPodConfig) int { return c.FloorPercent }},
 			{"wait_seconds", shimwire.MemoryGuardWaitMin, shimwire.MemoryGuardWaitMax, func(c MemoryGuardPodConfig) int { return c.WaitSeconds }},
 			{"interval_milliseconds", shimwire.MemoryGuardIntervalMin, shimwire.MemoryGuardIntervalMax, func(c MemoryGuardPodConfig) int { return c.IntervalMilliseconds }},
