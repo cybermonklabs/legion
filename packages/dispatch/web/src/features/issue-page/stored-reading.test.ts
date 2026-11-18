@@ -200,6 +200,124 @@ test("a delimiter row that opens with a colon makes a table, read as the server 
   }
 });
 
+/** Whether `text`, a text the plain path takes (`isPlainText`), reads through it (`plainReading`)
+ *  as the parse reads it (`parsedReading`): to the same words, the same first block a node's line
+ *  is cut from, and the same words with each address written short. */
+function readsAsParsed(text: string): boolean {
+  const plain = plainReading(text);
+  const parsed = parsedReading(text);
+  return (
+    collapsed(wordsOf(plain)) === collapsed(wordsOf(parsed)) &&
+    lineWordsRaw({ text, tree: plain }) === lineWordsRaw({ text, tree: parsed }) &&
+    collapsed(wordsOf(withShortAddresses(plain))) === collapsed(wordsOf(withShortAddresses(parsed)))
+  );
+}
+
+/** Every ASCII character, the control characters among them. */
+const ASCII_CHARACTERS: readonly string[] = Array.from({ length: 0x80 }, (_, code) =>
+  String.fromCharCode(code)
+);
+
+/** The characters the character sweep writes into its shapes: every ASCII one, and past ASCII the
+ *  white space and invisible characters a parse could read apart from a word's letters, and the
+ *  replacement character the parse writes for NUL. */
+const SWEPT_CHARACTERS: readonly string[] = [
+  ...ASCII_CHARACTERS,
+  "\u00a0",
+  "\u2028",
+  "\u2029",
+  "\u3000",
+  "\ufeff",
+  "\u200b",
+  "\ufffd",
+];
+
+/** The short texts the character sweep reads, `c` standing for the swept character: alone, at a
+ *  word's edges and between words, repeated, opening a line under a paragraph line as a table's
+ *  delimiter row does, after spaces, after a blank line, after a digit, and ending a line. */
+const SWEPT_SHAPES: readonly string[] = [
+  "c",
+  "ca",
+  "c a",
+  "ac",
+  "acb",
+  "a c b",
+  "a cc b",
+  "ccc",
+  "a\nc",
+  "a\nccc",
+  "a\nc-",
+  "a\nc--",
+  "a\nc-c",
+  "a\n cb",
+  "  ca",
+  "a\n\nc",
+  "c\na",
+  "ac\nb",
+  "1c a",
+  "a\n1c",
+  "cac",
+  "a\ncac",
+];
+
+// The plain path must read every text it takes as the parse does, whatever character the text
+// holds where markup would stand. Each swept character is written into each short shape, and
+// every text the plain path takes must read as parsed; the texts that do not are listed. The
+// sweep must take a text holding each letter, so a plain path that took no text at all fails it.
+test("each character in each short shape the plain path takes reads as the parse reads it", () => {
+  const failing: string[] = [];
+  const taken = new Set<string>();
+  for (const character of SWEPT_CHARACTERS) {
+    for (const shape of SWEPT_SHAPES) {
+      const text = shape.split("c").join(character);
+      if (!isPlainText(text)) continue;
+      taken.add(character);
+      if (!readsAsParsed(text)) failing.push(JSON.stringify(text));
+    }
+  }
+  expect(failing).toEqual([]);
+  const letters = ASCII_CHARACTERS.filter((character) => /[A-Za-z]/u.test(character));
+  expect(letters.filter((letter) => !taken.has(letter))).toEqual([]);
+});
+
+/** A small seeded generator of numbers from 0 up to 1 (mulberry32), so the random sweep draws the
+ *  same texts on every run and a text it fails on fails again. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let mixed = Math.imul(state ^ (state >>> 15), state | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 2 ** 32;
+  };
+}
+
+/** The printable ASCII characters that are neither letters, digits nor white space. */
+const ASCII_MARKS = ASCII_CHARACTERS.filter((mark) => /[\p{P}\p{S}]/u.test(mark)).join("");
+
+/** What the random sweep draws its texts' characters from: two letters and a digit, a space, a
+ *  tab and a line feed, every printable ASCII mark, and a non-breaking space. */
+const RANDOM_ALPHABET = `ab1 \t\n${ASCII_MARKS}\u00a0`;
+
+// Characters drawn at random meet in ways no list of shapes names. Each of 3000 texts of 1 to 14
+// characters drawn from words, marks and white space that the plain path takes must read as the
+// parse reads it; the texts that do not are listed. The seed is fixed, so every run draws the
+// same texts, and it is one of the few under which a text drawn is a table of one column whose
+// delimiter row opens with a colon (`b;}` over `:-`): a plain path that took such a text fails
+// here, where under most seeds no text drawn holds one.
+test("random short texts the plain path takes read as the parse reads them", () => {
+  const random = seededRandom(180);
+  const failing: string[] = [];
+  for (let drawn = 0; drawn < 3000; drawn += 1) {
+    let text = "";
+    for (let left = 1 + Math.floor(random() * 14); left > 0; left -= 1) {
+      text += RANDOM_ALPHABET.charAt(Math.floor(random() * RANDOM_ALPHABET.length));
+    }
+    if (isPlainText(text) && !readsAsParsed(text)) failing.push(JSON.stringify(text));
+  }
+  expect(failing).toEqual([]);
+});
+
 // A parsed reading is remembered while any holder that asked for its text lives, and shared:
 // another holder, and a caller that names none, read the same reading rather than a parse of
 // their own.

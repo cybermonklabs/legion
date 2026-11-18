@@ -122,13 +122,14 @@ const LINE_FEED = /\r\n?|\n/gu;
  *   character reference; `|` a table; `~` strikethrough and a tilde fence; NUL, which the parse
  *   replaces with U+FFFD; a byte order mark, which the parse drops where a text opens with one,
  *   so the line after it can open a block.
- * - A line opening, past spaces and tabs, with `#`, `+`, `=` or `-`: a heading, a list, a setext
- *   underline, a thematic break or front matter; or with up to nine digits and `.` or `)`: an
- *   ordered list.
+ * - A line opening, past spaces and tabs, with `#`, `+`, `:`, `=` or `-`: a heading, a list, a
+ *   table's delimiter row, a setext underline, a thematic break or front matter; or with up to
+ *   nine digits and `.` or `)`: an ordered list. A delimiter row may open with the colon that
+ *   aligns its column, and needs no pipe, so `a` over `:--` is a table of one column.
  * - A line indented into code: a tab after at most three spaces, which reaches the fourth column,
  *   or four spaces.
  */
-const MARKUP = /[\\`*_[\]<>&|~\0\uFEFF]|^[ \t]*(?:[#+=-]|\d{1,9}[.)])|^ {0,3}\t|^ {4}/mu;
+const MARKUP = /[\\`*_[\]<>&|~\0\uFEFF]|^[ \t]*(?:[#+:=-]|\d{1,9}[.)])|^ {0,3}\t|^ {4}/mu;
 
 /** The spaces and tabs a line opens and ends with, which the parse leaves out of a paragraph's
  *  words; no other white space, which it keeps. */
