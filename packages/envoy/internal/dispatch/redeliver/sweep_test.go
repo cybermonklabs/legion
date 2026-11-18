@@ -697,7 +697,9 @@ func TestEachRunningSweepRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 	}
 
 	unconnected := h.sweeper()
-	unconnected.Open = func() (bus.KeyValue, error) { return bus.KeyValue{}, errors.New("NATS is not connected") }
+	unconnected.Open = func(context.Context) (bus.KeyValue, error) {
+		return bus.KeyValue{}, errors.New("NATS is not connected")
+	}
 	unconnected.GitHubReads = reads.record
 	runningSweep(unconnected)
 	if got := reads.take(); len(got) != 0 {
