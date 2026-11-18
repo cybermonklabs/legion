@@ -114,12 +114,12 @@ func isLifecycleWrite(ctx context.Context) bool {
 // settlement after the reopen indexes it as a new open ask.
 //
 // It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
-// row, as settlement holds it, so the writes are owner-verified: they reach a document whose room
-// is flagged closed, and one no room holds, while every other write to a closed issue's document
-// is refused. A write credits no one (withLifecycleWrite): it adds no pending author, leaves the
-// authors already pending and the document's latest edit source as they were, and writes no
-// version: the settlement it leaves owed versions it, and none whose markdown repeats the latest
-// version is written. A document it changes nothing in is written nothing.
+// owner lock (store.LockOwner), as settlement holds it, so the writes are owner-verified: they
+// reach a document whose room is flagged closed, and one no room holds, while every other write to
+// a closed issue's document is refused. A write credits no one (withLifecycleWrite): it adds no
+// pending author, leaves the authors already pending and the document's latest edit source as they
+// were, and writes no version: the settlement it leaves owed versions it, and none whose markdown
+// repeats the latest version is written. A document it changes nothing in is written nothing.
 func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {

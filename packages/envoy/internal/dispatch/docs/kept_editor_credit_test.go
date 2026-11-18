@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // keptEditorQuestion and keptEditorReword are the question keptEditorSpec's decision asks and the
@@ -87,7 +88,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 	}
 	if err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		if _, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(f.decision, closer)}, closer, true); err != nil {
