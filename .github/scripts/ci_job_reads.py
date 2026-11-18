@@ -528,6 +528,12 @@ RULES = {
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
                                "for phase_entry_migrations_doc_test.go:252 (shippedText)")),
+    # This test reads the roll forward's header through migrations.WayBack, whose embed is in the
+    # go list closure of the text-check run, as the row above says, so the guide is its one row.
+    f"{DAEMON}/internal/textcheck/step_records_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for step_records_way_back_doc_test.go:61 (shippedText) and :43 "
+                               "(wayBackBlockOfTheGuide, way_back_doc_test.go:132)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
