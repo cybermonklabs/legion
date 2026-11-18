@@ -405,10 +405,13 @@ result block; `--help` prints the usage, and a usage error exits 2.
 
 ## airlock-clients.sh
 
-Installs the clients checks `k6` and `k7` drive and that a Legion issue pod has not
-got — the Azure CLI, the Google Cloud CLI, Pulumi with the Tailscale provider, and
-boto3 — each at a pinned version whose SHA-256 is checked before anything of it runs,
-under `${TMPDIR:-/tmp}`, and prints the exports a check needs on stdout:
+Installs the clients checks `k6` and `k7` drive — the Azure CLI, the Google Cloud CLI,
+Pulumi with the Tailscale provider, and boto3 — each at a pinned version whose SHA-256
+is checked before anything of it runs, under `${TMPDIR:-/tmp}`, and prints the exports
+a check needs on stdout. A Legion issue pod has no Pulumi and no boto3, and a pod on a
+worker image from before dispatch://INFRA-3257 has no `az` and no `gcloud` either. An
+image since then carries both, and the script still installs its own, first on the
+`PATH` its exports set, so the checks drive the same versions on every digest:
 
 ```bash
 eval "$(packages/envoy/scripts/airlock-clients.sh)"

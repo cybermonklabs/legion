@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The tmux a Legion pod's tmux-runtime proofs need, built from source under $TMPDIR, because
-# `legion start` refuses to boot without tmux on PATH and a worker image carries no tmux, no root
-# and no package manager. Run, never sourced; it prints one line on stdout, the bin directory
-# holding the tmux it built, so a caller does
+# `legion start` refuses to boot without tmux on PATH and a worker image from before
+# dispatch://INFRA-3257 carries no tmux, no root and no package manager. An image from that change
+# on carries Debian's tmux, and scripts/e2e/clean-session-stop-tmux.sh, this script's one caller,
+# runs it only where no tmux is on PATH. Run, never sourced; it prints one line on stdout, the bin
+# directory holding the tmux it built, so a caller does
 #
 #   PATH="$(bash scripts/e2e/lib/build-tmux.sh):$PATH"
 #

@@ -105,6 +105,10 @@ It carries:
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
+- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
+  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
+  The image seeds no mise store, so the rig's first run in a fresh pod downloads the pin from GitHub into the role's own `MISE_DATA_DIR`, and mise reads `MISE_GITHUB_TOKEN` when it is set;
+
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
   a byte pipe that carries a connection over `kubectl exec` to a port the pod listens on at `127.0.0.1`, such as a dev server an agent runs (`kubectl -n legion exec -i <pod> -c roles -- socat - TCP:127.0.0.1:<port>`).
   `kubectl port-forward` reaches no listener in the pod under gVisor:
@@ -117,19 +121,36 @@ It carries:
   A role cannot install it in its pod either:
   the pod's `/usr/local/bin` and `/opt` are read-only, and `apt-get` cannot take dpkg's lock;
 
+- `busybox` from Debian trixie's archive, `/usr/bin/busybox` alone:
+  the `broker/` tests of theorem-labs/agent-infra run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
+  The package installs no applet links, so `wget` and `sh` stay GNU wget and dash, and a role runs an applet as `busybox <applet>`.
+  Its `wget` and `ssl_client` applets check no TLS certificate, so no applet may become the image's `wget`, and the TLS probe holds no busybox client ([Image size and pull time](#image-size-and-pull-time));
+
+- `tmux` from Debian trixie's archive, at `/usr/bin/tmux`:
+  the skill-scenario rig's panes need it, and without it in the image a role builds one from source after every pod replacement;
+
+- WebKit's host libraries:
+  the 56 Debian packages Playwright 1.64.1, the version `packages/dispatch` locks, names for WebKit on Debian 13, so a role runs the Dispatch browser suite's WebKit projects as the runtime user, which cannot run Playwright's `install-deps`.
+  The image carries the libraries and not the browser, which `bun run e2e:install` downloads.
+  The build launches that Playwright's WebKit once ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), so a Playwright bump whose WebKit needs a library the image lacks fails the `worker-image` job;
+
 - a generic toolchain for the repositories the workers work, specific to none of them:
   `uv` and `uvx`; `node`, `npm`, `npx` and `corepack` from Node 24 LTS, with `pnpm`, `pnpx`, `yarn` and `yarnpkg` linked to corepack's shims (the links `corepack enable` would write, which uid 1000 cannot);
   the Go toolchain at `go.work`'s version — `go` and `gofmt`, the tree at `/opt/go` (its `GOROOT`, which `go` finds by resolving the `/usr/local/bin/go` symlink;
   the image sets no `GOROOT`), with the warm module cache of the two modules `go.work` binds, which the second paragraph after this list places;
   the AWS CLI v2's `aws`;
+  the Google Cloud SDK 594.0.0's `gcloud` and `bq`, the SDK at `/opt/google-cloud-sdk` with `gsutil` left inside it and off `PATH`;
+  azure-cli 2.93.0's `az`, a virtual environment at `/opt/azure-cli` on a CPython 3.13 that uv installs beside it, so the tree runs in any image that copies it whole;
   mikefarah's `yq` 4, the YAML processor, fetched rather than installed from apt because Debian's `yq` is a different program (kislyuk's Python wrapper over `jq`, 3.4.3 in trixie);
   and `kubectl` 1.35, the minor version of the API server of the production cluster the workers run on, which Kubernetes' version skew policy requires within one minor of kubectl (a deployment whose cluster runs another minor layers its own `kubectl` on the image:
   [Per-deployment toolchains layer on top](#per-deployment-toolchains-layer-on-top)) — all at `/usr/local/bin`, which is on the image's `PATH` and every pod's.
   Each is a pinned release whose linux/amd64 download the build checks against a pinned SHA-256 before unpacking or installing it (the `ARG`s at the top of `worker.Dockerfile`;
   `kubectl`'s is the SHA-256 Kubernetes publishes beside the binary, taken once the binary's Sigstore signature verifies).
+  The Google Cloud SDK's pin is the SHA-256 of its versioned archive as it was downloaded on 2026-11-18, since Google publishes none for a versioned archive.
+  azure-cli installs from wheels alone, each held to the hash its lock, `packages/daemon/docker/azure-cli/requirements.txt`, names, and uv checks the CPython it runs on against the SHA-256 uv carries for that release.
   The image carries the client and no credential for it: what a worker reaches with `kubectl` is whatever Kubernetes identity the operator's pod gives it.
   A corepack shim runs the version a project's `packageManager` names, or else the default that corepack ships (the image sets `COREPACK_DEFAULT_TO_LATEST=0`, so never npm's newest release), fetched on first use into the user's corepack cache.
-  Node, Go and the AWS CLI keep their trees at `/opt/node`, `/opt/go` and `/opt/aws-cli`, outside `HOME`, so no volume a pod mounts under `HOME` shadows any of it;
+  Node, Go, the AWS CLI, the Google Cloud SDK and azure-cli keep their trees at `/opt/node`, `/opt/go`, `/opt/aws-cli`, `/opt/google-cloud-sdk` and `/opt/azure-cli`, outside `HOME`, so no volume a pod mounts under `HOME` shadows any of it;
 
 - what the capability check (`packages/daemon/internal/capabilities`, which `legion probe-image` runs
   — [the probe subsection](#the-image-is-probed-before-it-publishes)) requires of the image, each outside `HOME` for the same reason:
@@ -221,8 +242,19 @@ The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of th
 A role runs those gates on its own change, so an image without PyYAML fails every one of them.
 Debian's package is the route rather than `pip`, because the image installs system packages in one `apt` step and trixie marks its `python3` externally managed (PEP 668).
 
+`gcloud`, `bq` and `az` trust Debian's root bundle, `/etc/ssl/certs/ca-certificates.crt`, so they refuse the compromised chains the TLS probe holds every client to ([Image size and pull time](#image-size-and-pull-time)).
+As the SDK ships, `gcloud` and `bq` trust the CA files it bundles, which hold the compromised emSign and AAA roots.
+So the build sets the SDK's installation property `core/custom_ca_certs_file` to Debian's bundle, and turns off the SDK's update check and its usage reporting.
+A role's own gcloud configuration, or `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, overrides that property, as a role's `AWS_CA_BUNDLE` overrides the image's.
+`/usr/local/bin/az` is a link to a wrapper, `packages/daemon/docker/azure-cli/az`, which sets `REQUESTS_CA_BUNDLE` to Debian's bundle and `AZURE_CORE_COLLECT_TELEMETRY=no`, each only when it is unset or empty.
+The wrapper sets them rather than the image's `ENV`, because Oh My Pi's Python tool starts its kernel with an allowlisted environment, which an `ENV` default would not reach ([Per-deployment toolchains layer on top](#per-deployment-toolchains-layer-on-top)).
+azure-cli 2.93.0 has no setting that stops its version check:
+`az` reads `https://azcliprod.blob.core.windows.net/cli` at the first command in a configuration directory, at the first command after its own version changes, and at every `az version` and `az --version` (the wrapper's comment cites the source).
+
 It runs as user `legion` (uid 1000, declared numerically so `runAsNonRoot` can verify it from the image alone) with `HOME=/home/legion`, which must be writable (OMP writes logs and `models.db` under `~/.omp/profiles/legion`;
 every session is a row in the session database).
+The image sets `USER=legion` too, so a process that reads `USER` finds the runtime user's name there (the skill-scenario rig's scripts run under `set -u`).
+Like every variable the image's `ENV` sets, `runtime.kubernetes.pod.env` may not set `USER`: `legion start`, `--check-config` and the daemon's boot refuse it, whatever digest the deployment pins (`imageEnv`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
 Mount writable volumes below the profile directory, never at `/home/legion` itself:
 everything the image-time probe proved lives under `HOME` — the CodeGraph plugin's link and the lock at `~/.omp/profiles/legion/plugins`, the natives at `~/.omp/natives`, the warm Go module cache at `~/go/pkg/mod/cache/download` — and a volume at `HOME` (an `emptyDir`, or a `HOME` volume under `readOnlyRootFilesystem`) shadows all of it silently.
 It is `linux/amd64` only: the OMP fork release has no linux/arm64 build.
@@ -234,7 +266,7 @@ the CodeGraph CLI, the CodeGraph plugin, TypeScript and the two npm language ser
 ### The tools a role's own work needs
 
 The image carries the five clients above
-— `psql`, `redis-cli`, `sqlite3`, `nc` and `dig` — the PostgreSQL 18 server with `pgvector` and `/usr/local/bin/legion-testpg` ("A test database in the pod" below, where the roles container's launcher starts it), `unzip` and `yq` (the list above), and for everything the image does not carry the one documented step is the pinned form of the three package runners it already has:
+— `psql`, `redis-cli`, `sqlite3`, `nc` and `dig` — the PostgreSQL 18 server with `pgvector` and `/usr/local/bin/legion-testpg` ("A test database in the pod" below, where the roles container's launcher starts it), `unzip`, `yq`, `gcloud`, `bq`, `az`, `mise`, `tmux`, `busybox` and WebKit's host libraries (the list above), and for everything the image does not carry the one documented step is the pinned form of the three package runners it already has:
 `uvx`, `bunx` and `go run`, plus `uv run --with` where what a role needs is a library rather than a command.
 The two answer different halves of the question.
 The image answers the tools a role may not arrange for itself
@@ -400,7 +432,9 @@ each attempt's budget is `slow_command_timeout_seconds` (300 s by default), or, 
 From Sandbox creation through the probe container starting, the daemon allows a separate 300 s startup phase: the documented 213 s cold start fits that bound.
 Once it observes the probe container running, it starts the command phase for the attempt budget and gives `probe-image` a relative command budget 60 s shorter, leaving the command's deadline to report before the daemon collects its exit and log.
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
-The TLS clients each have their own 20 s bound except Chromium's 90 s cold-start bound.
+Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refusal of a chain retries three times and whose every call starts three Python interpreters, and 90 s for Chromium's cold start (`packages/daemon/cmd/legion/tls_probe.go`).
+The probe holds `gcloud`, `bq`, `az` and `mise` to the compromised chains only where each is on `PATH`.
+Where one is not, the probe reports it `absent` and fails nothing for it, because those four are outside the floor every deployment's image is held to.
 A command stopped by the aggregate budget is unavailable with `probe deadline`, so the image probe fails closed naming its client and site.
 The boot log names a derived bound when it applies, and so does `legion start --check-config`.
 Oh My Pi's boot after it fits the registration deadline, `worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals` (360 s by default).
@@ -575,8 +609,10 @@ that row reads `unchecked`, and the OK line carries `capabilities=browser-skippe
 The daemon's probe never passes the flag and refuses that line, so such an image runs only where no probe runs, under `runtime: tmux`.
 Oh My Pi downloads Chrome for Testing on first use when it finds no browser, so the deployment's own overlay must turn the browser off.
 A step of its own, before that final one, runs every toolchain command listed above as `legion`, from the image `PATH` — the language servers (`gopls version`, `typescript-language-server --version`, `tsc --version`, and `pyright --version` for `pyright-langserver`, which takes no `--version`), `go
-version` with `go env GOROOT` required to be `/opt/go`, `gcc --version` (Go's cgo, and so its race detector, needs it), `go env CGO_ENABLED` with `CGO_ENABLED` removed from the environment required to be `0` (so the build fails if `/opt/go/go.env`'s `CGO_ENABLED=0` line, the default a scrubbed environment depends on, is ever lost), `go env GOPROXY` read the same way and required to be the `file:///home/legion/go/pkg/mod/cache/download|https://proxy.golang.org|direct` that same `go.env` carries, with the cache it names held to the runtime user, to a writable download directory and to carrying no `@v/list` and no `@latest` file, `gofmt`, `kubectl version --client`, `yq --version`, and trixie's commands included
+version` with `go env GOROOT` required to be `/opt/go`, `gcc --version` (Go's cgo, and so its race detector, needs it), `go env CGO_ENABLED` with `CGO_ENABLED` removed from the environment required to be `0` (so the build fails if `/opt/go/go.env`'s `CGO_ENABLED=0` line, the default a scrubbed environment depends on, is ever lost), `go env GOPROXY` read the same way and required to be the `file:///home/legion/go/pkg/mod/cache/download|https://proxy.golang.org|direct` that same `go.env` carries, with the cache it names held to the runtime user, to a writable download directory and to carrying no `@v/list` and no `@latest` file, `gofmt`, `kubectl version --client`, `yq --version`, `gcloud --version`, `bq version`, `az version`, and trixie's commands included
 — the corepack shims fetching their shipped default pnpm and yarn into a scratch directory the step removes.
+`gcloud`, `bq` and `az` keep their configuration in that scratch directory too (`CLOUDSDK_CONFIG`, `AZURE_CONFIG_DIR`), so nothing of theirs lands in the runtime user's home.
+The step then reads the SDK's two installation properties back through `gcloud config get-value`, from a configuration directory that sets neither, and requires Debian's root bundle for `core/custom_ca_certs_file` and `true` for `component_manager/disable_update_check`.
 Trixie's commands are these:
 
 - `python3` with `python3 -c "import yaml"` for its PyYAML
@@ -605,14 +641,23 @@ Trixie's commands are these:
 
 - `socat -V`
 
+- `tmux -V`
+
+- `busybox --help`, its first line alone
+
 `ssh-keygen` takes no `--version`, so the step generates a throwaway ed25519 key in that scratch directory and fingerprints it with `ssh-keygen -l`.
 Two of the five clients are odd the same way:
 `nc` takes no `--version` either, so the step runs `nc -h`, which prints its usage and exits 0, under the `nc` name the alternatives system installs and never `nc.openbsd`;
 and `dig -v` prints its version on stdout, measured in a pod of the image (`dig -v
 2>/dev/null` prints `DiG 9.20.30-1~deb13u1-Debian`, `dig -v 2>&1 >/dev/null` prints nothing).
+`busybox` takes no `--version`: its `--help` exits 0 and names the version on its first line, so the step prints that line alone.
 The step checks `yq` with `--version` rather than `-v`, which is mikefarah's verbose flag:
 `-v` emits `level=DEBUG` lines and reads stdin rather than printing a version.
 It reruns only when the toolchain or an earlier layer changes, so a commit that only rebuilds `legion` needs no package registry.
+A WebKit step follows it.
+It downloads the WebKit build of the Playwright `packages/dispatch` locks, about 90 MB from Playwright's CDN, into a scratch directory it removes, and launches it once, headless, through Playwright's own host validation (`packages/daemon/docker/webkit-launch.mjs`).
+So a pull request that moves `packages/dispatch` to a Playwright whose WebKit needs a library the image lacks fails the `worker-image` job.
+Its layer reruns only when the base, the packages, the toolchain, the locked Playwright or `webkit-launch.mjs` changes, never for a change to `legion` alone.
 To check a published image's toolchain end to end, a project Python install included:
 
 ```sh
@@ -623,6 +668,10 @@ docker run --rm --entrypoint sh ghcr.io/cybermonklabs/legion-worker@sha256:… -
   aws --version &&
   kubectl version --client &&
   yq --version &&
+  gcloud --version &&
+  bq version &&
+  az version &&
+  mise --version &&
   go version &&
   go env GOPROXY &&
   gcc --version &&
@@ -637,6 +686,8 @@ docker run --rm --entrypoint sh ghcr.io/cybermonklabs/legion-worker@sha256:… -
   nc -h &&
   dig -v &&
   unzip -v &&
+  tmux -V &&
+  busybox --help >/dev/null &&
   ssh-keygen -t ed25519 -N "" -f /tmp/k &&
   chromium --version &&
   uv python install 3.13 &&
@@ -773,6 +824,13 @@ put the added commands in `/usr/local/bin` or `/usr/bin`, and outside `HOME`, wh
 Oh My Pi's Python tool also starts its kernel with an allowlisted environment (`PATH`, `HOME`, `USER`, `TMPDIR`, the `LC_`, `XDG_` and `PI_` prefixes and a few more), so any other `ENV` of the derived image (a toolchain home such as `ELAN_HOME`, a cache directory) is missing there and in everything it spawns, while the bash tool keeps it:
 when a command needs such a variable, install it as a wrapper in `/usr/local/bin` that sets the variable when it is unset.
 What the deployment adds churns on its own schedule, not Legion's release schedule, and the deployment's repo owns its reproducibility.
+
+From dispatch://INFRA-3257 on, the base image carries the Google Cloud SDK's `gcloud` and `bq` and azure-cli's `az`, so a deployment layer that installed them for its repositories no longer needs to.
+A layer that still installs them collides with the base's:
+an SDK unpacked at `/opt/google-cloud-sdk` writes over the base's tree, and a `gcloud`, `bq` or `az` linked into `/usr/local/bin` meets the base's link of that name, where `ln -s` without `-f` fails the build and a forced link or a copy replaces the base's program.
+The daemon's image probe then holds the layer's program to the compromised chains in the base's place.
+A stock SDK trusts the CA files it ships, which hold those roots: measured on 2026-11-18, gcloud 589.0.0 and bq 2.1.40 accepted the emSign chain, which fails the probe ([Worker image](#worker-image)).
+Drop such a step, or install the deployment's own copy under a prefix of its own and name it by its path.
 
 ### Entrypoint
 

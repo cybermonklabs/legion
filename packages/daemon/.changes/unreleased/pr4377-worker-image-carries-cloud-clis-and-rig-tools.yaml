@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+    The worker image carries the Google Cloud SDK 594.0.0 (`gcloud` and `bq` at `/usr/local/bin`,
+    the SDK at `/opt/google-cloud-sdk`) and azure-cli 2.93.0 (`az` at `/usr/local/bin`, a
+    self-contained tree at `/opt/azure-cli`), both held to Debian's root bundle by defaults a role
+    can override. It also carries trixie's `busybox` and `tmux`, the pinned `mise` at
+    `/usr/local/bin/mise`, `USER=legion`, and the 56 Debian packages Playwright 1.64.1 names for
+    WebKit on Debian 13. A build step launches the locked Playwright's WebKit, so a Playwright bump
+    whose WebKit needs a library the image lacks fails the image build. `legion probe-image` holds
+    `gcloud`, `bq`, `az` and `mise` to the compromised emSign and AAA chains where each is on
+    `PATH`, and reports it `absent` where it is not. Because the image sets `USER`,
+    `runtime.kubernetes.pod.env` may no longer set it: `legion start`, `--check-config` and the
+    daemon's boot refuse a configuration that does, whatever digest it pins.
+time: 2026-11-18T03:35:00Z
+custom:
+    Issue: pr4377
