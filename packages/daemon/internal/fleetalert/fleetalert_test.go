@@ -131,12 +131,12 @@ func TestClosingACaseThatIsNotOpenChangesNothing(t *testing.T) {
 	}
 }
 
-// Every case this package names is in the one list, Cases, which every case's declaration adds it
-// to (register), so a case added without a word or a sentence, or with a word another case
-// already uses, fails here rather than reaching the policy.
+// Every case this package names has a word and a sentence, and no two share a word, so none
+// reaches the policy unnamed or under another's word. The list is the test's own: a case the
+// package adds goes here too.
 func TestEveryCaseHasItsOwnWordAndASentence(t *testing.T) {
 	seen := map[string]bool{}
-	for _, c := range Cases() {
+	for _, c := range []Case{ControllerUnreachable, ControllerRelaunchRefused, NoLiveSession, SessionListUnreadable, NewerProcessRefused} {
 		if c.Word == "" || c.Sentence == "" {
 			t.Errorf("case %+v has no word or no sentence", c)
 		}
@@ -144,16 +144,6 @@ func TestEveryCaseHasItsOwnWordAndASentence(t *testing.T) {
 			t.Errorf("two cases share the word %q", c.Word)
 		}
 		seen[c.Word] = true
-	}
-	for _, named := range []Case{ControllerUnreachable, ControllerRelaunchRefused, NoLiveSession, SessionListUnreadable, NewerProcessRefused} {
-		if !seen[named.Word] {
-			t.Errorf("the case %q is declared but not in Cases()", named.Word)
-		}
-	}
-	listed := Cases()
-	listed[0] = Case{}
-	if Cases()[0] != ControllerUnreachable {
-		t.Error("a caller's change to the list Cases answered changed the package's own list")
 	}
 }
 

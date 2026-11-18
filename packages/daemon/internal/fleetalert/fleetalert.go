@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sync"
 	"time"
 
@@ -37,8 +36,7 @@ const Prefix = "LEGION FLEET ALERT"
 const ListSilentFor = 20 * time.Minute
 
 // Case is one of the cases a person is told of: Word is what the line's `case` field holds and
-// the policy's documentation names, and Sentence is what the line says after Prefix. Every case
-// is declared through register, so Cases is the one list of them.
+// the policy's documentation names, and Sentence is what the line says after Prefix.
 type Case struct {
 	Word     string
 	Sentence string
@@ -48,49 +46,35 @@ var (
 	// ControllerUnreachable is the controller still out of reach after the daemon's one relaunch
 	// of it, a relaunched controller that has not reached ready with its Envoy role 20 minutes
 	// after that relaunch included.
-	ControllerUnreachable = register(Case{
+	ControllerUnreachable = Case{
 		Word:     "controller_unreachable",
 		Sentence: "the project's controller is out of reach of Envoy and the daemon's relaunch of it did not bring it back; nobody else holds that role, so a person must start it",
-	})
+	}
 	// ControllerRelaunchRefused is the controller out of reach with the daemon's relaunch of it
 	// refused by the guard, or ended by a process that outlived its stop.
-	ControllerRelaunchRefused = register(Case{
+	ControllerRelaunchRefused = Case{
 		Word:     "controller_relaunch_refused",
 		Sentence: "the project's controller is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its process",
-	})
+	}
 	// NoLiveSession is Envoy's whole session list, Legion's sessions and every other, holding no
 	// live session for ListSilentFor.
-	NoLiveSession = register(Case{
+	NoLiveSession = Case{
 		Word:     "envoy_no_live_session",
 		Sentence: "Envoy has listed no live session for " + timewords.Words(ListSilentFor) + ", so no agent of the fleet can hear anything",
-	})
+	}
 	// SessionListUnreadable is the daemon's reads of Envoy's session list failing for
 	// ListSilentFor.
-	SessionListUnreadable = register(Case{
+	SessionListUnreadable = Case{
 		Word:     "envoy_session_list_unreadable",
 		Sentence: "the daemon has not read Envoy's session list for " + timewords.Words(ListSilentFor) + ", so it cannot tell which roles are out of reach",
-	})
+	}
 	// NewerProcessRefused is a claim's newer process still refused by the worker stream 5 minutes
 	// after its first hello, because an older connection will not close (R3).
-	NewerProcessRefused = register(Case{
+	NewerProcessRefused = Case{
 		Word:     "newer_process_refused",
 		Sentence: "a claim's current process is still locked out of its worker stream by an older process that will not stop; a person must end that process on its node",
-	})
+	}
 )
-
-// cases is every case register has declared, in the order the package declares them.
-var cases []Case
-
-// register adds c to the one list of cases (Cases) and answers it, so a case cannot be declared
-// without being listed.
-func register(c Case) Case {
-	cases = append(cases, c)
-	return c
-}
-
-// Cases is every case this package names, the one list a reader that lists them reads (the
-// policy's documentation, and this package's own test).
-func Cases() []Case { return slices.Clone(cases) }
 
 // Writer writes one line per open case of one project.
 type Writer struct {
