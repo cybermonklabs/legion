@@ -1,7 +1,10 @@
+//go:build !race
+
 package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -125,11 +128,21 @@ const (
 )
 
 // cmStep is one step of a run: its kind, the comment a commit, a try, its re-read or a sweep is
-// of, and the lane whose park a timer ends.
+// of, and whether the lane whose park a timer ends is a held lane (cmLane). It holds no pointer,
+// so the search's queue of runs to replay is memory the garbage collector does not scan.
 type cmStep struct {
 	kind    cmStepKind
 	comment int
-	lane    laneKey
+	held    bool
+}
+
+// cmLane is the model's one recipient's own lane, or its one owner's held lane.
+func cmLane(held bool) laneKey {
+	own := laneKey{recipient: "session:s1"}
+	if held {
+		return heldLane(own, "T-1")
+	}
+	return own
 }
 
 type cmVariant struct {
@@ -250,13 +263,16 @@ type cmRun struct {
 	refresh      *cmRefresh
 	// broke is every check the run has broken, in order, and fresh those its last step broke.
 	broke, fresh []string
-	trace        []string
+	// tracing has the run write its trace: a replay of a run the search found breaking a check,
+	// or failing the model, and no other, since the text is only read then.
+	tracing bool
+	trace   []string
 }
 
-func newCmRun(v cmVariant, periods int) *cmRun {
+func newCmRun(v cmVariant, periods int, tracing bool) *cmRun {
 	lifetime, stop := context.WithCancel(context.Background())
 	r := &cmRun{
-		v: v, slots: periods * cmSlots, stop: stop, done: make(chan struct{}),
+		v: v, slots: periods * cmSlots, stop: stop, done: make(chan struct{}), tracing: tracing,
 		arrivals: make(chan cmArrival, 16), timers: map[laneKey]cmTimer{}, tries: map[int]*cmTry{},
 	}
 	r.sender = newMentionSender(lifetime, 1000*time.Hour,
@@ -310,7 +326,9 @@ func (r *cmRun) shutdown() {
 }
 
 func (r *cmRun) log(format string, args ...any) {
-	r.trace = append(r.trace, fmt.Sprintf(format, args...))
+	if r.tracing {
+		r.trace = append(r.trace, fmt.Sprintf(format, args...))
+	}
 }
 
 // failModel records the model's own failure, the first one, which stops the run.
@@ -348,8 +366,12 @@ func (r *cmRun) mayHaveLapsed(claim time.Time) bool {
 	return claim.IsZero() || r.age(claim) >= cmLapseSlots
 }
 
+// name is claim as the trace writes it, and nothing when the run writes no trace.
 func (r *cmRun) name(claim time.Time) string {
-	if claim.IsZero() {
+	switch {
+	case !r.tracing:
+		return ""
+	case claim.IsZero():
 		return "none"
 	}
 	slot := int(claim.Sub(cmBase) / cmSlot)
@@ -357,6 +379,9 @@ func (r *cmRun) name(claim time.Time) string {
 }
 
 func (r *cmRun) names(claims []mentionClaim) string {
+	if !r.tracing {
+		return ""
+	}
 	var names []string
 	for _, claim := range claims {
 		names = append(names, fmt.Sprintf("%s %s", claim.key.comment, r.name(claim.claimedAt)))
@@ -379,14 +404,13 @@ func (r *cmRun) item(c int) mentionSend {
 
 // commit is comment c committing its attempt claimed and queuing its send (createCommentFor).
 func (r *cmRun) commit(c int) {
-	pre := r.lanes()
 	now := r.now()
 	r.rows[c] = cmRow{committed: true, pending: true, created: now, claim: now}
 	item := r.item(c)
 	item.claimed = now
 	r.log("%s commits its attempt claimed %s and queues its send", cmComments[c], r.name(now))
 	r.sender.enqueue(context.Background(), item)
-	r.settle(pre, nil)
+	r.settle(nil)
 }
 
 // deliver is s1 taking comment c, by road.
@@ -484,7 +508,6 @@ func (r *cmRun) owed(c int) bool {
 // sweep is the delivery sweep taking comment c's owed attempt (resumeOwedDelivery): it claims it,
 // and sends it, or hands it to the sender while the earlier event still owes s1 a send.
 func (r *cmRun) sweep(c int) {
-	pre := r.lanes()
 	row := &r.rows[c]
 	row.claim = r.now()
 	if r.published {
@@ -497,7 +520,7 @@ func (r *cmRun) sweep(c int) {
 	r.log("the delivery sweep claims %s's owed attempt %s, which waits behind the earlier event, and hands it to the sender",
 		cmComments[c], r.name(row.claim))
 	r.sender.enqueue(context.Background(), item)
-	r.settle(pre, nil)
+	r.settle(nil)
 }
 
 func (r *cmRun) lanes() map[laneKey][]mentionKey {
@@ -515,7 +538,7 @@ func (r *cmRun) lanes() map[laneKey][]mentionKey {
 // settle waits for every goroutine of the bubble to stop, then takes in what the step started: a
 // try or its re-read, the refresh's re-read or statement, and a park's timer. parked is the try
 // whose goroutine the step let go on with a send that waits, whose park starts the timer.
-func (r *cmRun) settle(pre map[laneKey][]mentionKey, parked *cmTry) {
+func (r *cmRun) settle(parked *cmTry) {
 	synctest.Wait()
 	var arrived *cmArrival
 collect:
@@ -560,6 +583,10 @@ collect:
 			return
 		}
 		lane := heldLane(parked.lane, parked.item.owner())
+		if lane != cmLane(lane.held) {
+			r.failModel("a park timer for lane %v, which is not one of the model's two", lane)
+			return
+		}
 		if _, waits := r.timers[lane]; waits {
 			r.failModel("a second timer for parked lane %v", lane)
 			return
@@ -610,7 +637,7 @@ collect:
 		delete(served, try.lane)
 	}
 	if len(served) != 1 {
-		r.failModel("the send of %s started on none or several of the lanes %v (lanes before %v)", item.comment.ID, served, pre)
+		r.failModel("the send of %s started on none or several of the lanes %v (lanes %v)", item.comment.ID, served, r.lanes())
 		return
 	}
 	try := &cmTry{began: r.slot}
@@ -641,7 +668,6 @@ func (r *cmRun) apply(s cmStep) {
 		return
 	}
 	r.fresh = nil
-	pre := r.lanes()
 	switch s.kind {
 	case cmCommit:
 		r.commit(s.comment)
@@ -669,7 +695,7 @@ func (r *cmRun) apply(s cmStep) {
 			parked = try
 		}
 		reply <- answer
-		r.settle(pre, parked)
+		r.settle(parked)
 	case cmTryRuns:
 		r.runTry(r.tries[s.comment])
 	case cmTryAnswers:
@@ -683,13 +709,14 @@ func (r *cmRun) apply(s cmStep) {
 			r.log("%s's try answers that it is done", cmComments[s.comment])
 		}
 		try.reply <- try.answer
-		r.settle(pre, parked)
+		r.settle(parked)
 	case cmTimerRuns:
-		timer := r.timers[s.lane]
-		delete(r.timers, s.lane)
-		r.log("the timer of the parked %s runs", cmLaneName(s.lane))
+		lane := cmLane(s.held)
+		timer := r.timers[lane]
+		delete(r.timers, lane)
+		r.log("the timer of the parked %s runs", cmLaneName(lane))
 		timer.run()
-		r.settle(pre, nil)
+		r.settle(nil)
 	case cmTimePasses:
 		r.slot++
 		if r.slot%cmSlots != 0 {
@@ -699,7 +726,7 @@ func (r *cmRun) apply(s cmStep) {
 		r.refreshing = true
 		r.log("period %d begins: the sender's loop starts a refresh", r.slot/cmSlots)
 		go r.sender.refreshHeldClaims(context.Background())
-		r.settle(pre, nil)
+		r.settle(nil)
 	case cmRefreshRereadRuns:
 		r.runRead(r.refresh.read)
 		r.log("the refresh's re-read finds %s", r.names(r.refresh.read.found))
@@ -715,7 +742,7 @@ func (r *cmRun) apply(s cmStep) {
 		r.refreshing = true
 		r.refresh.read.reply <- answer
 		r.refresh.read = nil
-		r.settle(pre, nil)
+		r.settle(nil)
 		if r.refresh != nil && r.refresh.reply == nil {
 			r.refresh = nil
 		}
@@ -747,7 +774,7 @@ func (r *cmRun) apply(s cmStep) {
 		r.refresh = nil
 		// A lost answer has the refresh re-read the claims it left unknown at once.
 		r.refreshing = true
-		r.settle(pre, nil)
+		r.settle(nil)
 		if r.refresh != nil {
 			r.refresh.began = began
 		}
@@ -822,14 +849,13 @@ func (r *cmRun) enabled() []cmStep {
 			steps = append(steps, cmStep{kind: cmTryAnswers, comment: c})
 		}
 	}
-	var parked []laneKey
-	for lane, timer := range r.timers {
-		parked = append(parked, lane)
+	for _, timer := range r.timers {
 		waits = waits || timer.began < r.slot
 	}
-	slices.SortFunc(parked, func(a, b laneKey) int { return strings.Compare(fmt.Sprint(a), fmt.Sprint(b)) })
-	for _, lane := range parked {
-		steps = append(steps, cmStep{kind: cmTimerRuns, lane: lane})
+	for _, held := range []bool{false, true} {
+		if _, parked := r.timers[cmLane(held)]; parked {
+			steps = append(steps, cmStep{kind: cmTimerRuns, held: held})
+		}
 	}
 	if f := r.refresh; f != nil {
 		switch {
@@ -1004,27 +1030,26 @@ func (r cmResult) String() string {
 		r.found["stale"], r.found["dropped"], r.found["order"], r.found["twice"], r.duration.Round(time.Millisecond))
 }
 
-// cmVisit is what replaying one run's steps came to: its state's key, the checks its last step
-// broke, the steps it may take next, the model's own fault, if any, and, with a check broken or a
-// fault, the run's trace.
+// cmVisit is what replaying one run's steps came to: the SHA-256 of its state's key, the checks
+// its last step broke, the steps it may take next, the model's own fault, if any, and, from a
+// replay with its trace on, the run's trace.
 type cmVisit struct {
-	key, fault   string
+	key          [sha256.Size]byte
+	fault        string
 	fresh, trace []string
 	enabled      []cmStep
 }
 
-// cmVisitOf replays steps in a bubble of its own.
-func cmVisitOf(t *testing.T, v cmVariant, periods int, steps []cmStep) (visit cmVisit) {
+// cmVisitOf replays steps in a bubble of its own, writing the run's trace when tracing.
+func cmVisitOf(t *testing.T, v cmVariant, periods int, steps []cmStep, tracing bool) (visit cmVisit) {
 	synctest.Test(t, func(*testing.T) {
-		r := newCmRun(v, periods)
+		r := newCmRun(v, periods, tracing)
 		defer r.shutdown()
 		for _, s := range steps {
 			r.apply(s)
 		}
-		visit = cmVisit{key: r.key(), fault: r.fault, fresh: r.fresh, enabled: r.enabled()}
-		if r.fault != "" || len(r.fresh) > 0 {
-			visit.trace = r.trace
-		}
+		visit = cmVisit{key: sha256.Sum256([]byte(r.key())), fault: r.fault, fresh: r.fresh, enabled: r.enabled(),
+			trace: r.trace}
 	})
 	return visit
 }
@@ -1032,10 +1057,20 @@ func cmVisitOf(t *testing.T, v cmVariant, periods int, steps []cmStep) (visit cm
 // cmExplore searches every state of v within periods breadth first, each run replayed from the
 // start in a bubble of its own and the runs of one depth spread over at most 16 workers, then
 // taken in order, so the first trace of each check is a shortest one and the same on every run.
+// The search keeps a state's SHA-256 rather than its key, and replays with its trace on only the
+// run that first breaks a check, or that fails the model; the replay must reach the same state.
 func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 	began := time.Now()
 	result := cmResult{variant: v, periods: periods, found: map[string]int{}, first: map[string][]string{}}
-	seen := map[string]bool{}
+	seen := map[[sha256.Size]byte]struct{}{}
+	traced := func(steps []cmStep, key [sha256.Size]byte) cmVisit {
+		visit := cmVisitOf(t, v, periods, steps, true)
+		if visit.key != key {
+			t.Fatalf("the model is not deterministic: a replay with its trace on reached another state, after:\n\t%s",
+				strings.Join(visit.trace, "\n\t"))
+		}
+		return visit
+	}
 	frontier := [][]cmStep{nil}
 	for depth := 0; len(frontier) > 0; depth++ {
 		visits := make([]cmVisit, len(frontier))
@@ -1044,7 +1079,7 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 		for range min(runtime.GOMAXPROCS(0), 16) {
 			workers.Go(func() {
 				for i := range work {
-					visits[i] = cmVisitOf(t, v, periods, frontier[i])
+					visits[i] = cmVisitOf(t, v, periods, frontier[i], false)
 				}
 			})
 		}
@@ -1056,18 +1091,19 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 		var next [][]cmStep
 		for i, visit := range visits {
 			if visit.fault != "" {
+				visit = traced(frontier[i], visit.key)
 				t.Fatalf("%s, after:\n\t%s", visit.fault, strings.Join(visit.trace, "\n\t"))
 			}
-			if seen[visit.key] {
+			if _, ok := seen[visit.key]; ok {
 				continue
 			}
-			seen[visit.key] = true
+			seen[visit.key] = struct{}{}
 			result.states++
 			result.depth = depth
 			for _, kind := range visit.fresh {
 				result.found[kind]++
 				if result.first[kind] == nil {
-					result.first[kind] = visit.trace
+					result.first[kind] = traced(frontier[i], visit.key).trace
 				}
 			}
 			for _, s := range visit.enabled {
