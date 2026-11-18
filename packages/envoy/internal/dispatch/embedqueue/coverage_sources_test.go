@@ -176,7 +176,7 @@ func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.
 			t.Errorf("after %s REDT-1's recorded source still matches, so the report would read the hash of the text before it", edit.name)
 		}
 		mains, heads := requireMainsAnswer(t, database, "after "+edit.name)
-		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the index-only text": heads} {
+		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the coverage statement": heads} {
 			if got := rows["issue"].current; got != edit.current {
 				t.Errorf("after %s %s counts %d issues current, want %d", edit.name, name, got, edit.current)
 			}

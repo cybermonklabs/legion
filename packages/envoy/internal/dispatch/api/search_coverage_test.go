@@ -212,11 +212,11 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 //
 // While the request waits, pg_stat_activity must show the statement running: that is the control
 // that a later count of 0 means the statement ended, not that the read cannot see it. The read
-// finds it by its opening, `with judged as (`, which both of its texts begin with, because
+// finds it by its opening, `with judged as (`, which the statement begins with, because
 // pg_stat_activity keeps only the first track_activity_query_size bytes of a statement (1 kB by
 // default), and the one table only the coverage statement and its record step name,
-// embedding_issue_sources, first appears past the first kilobyte of either text, so a read by
-// that name never sees the statement. The count reads this test's database alone, since another
+// embedding_issue_sources, first appears past the first kilobyte of the statement, so a read by
+// that name never sees it. The count reads this test's database alone, since another
 // test's database on the same server may run a coverage statement of its own, and a backend's
 // state can lag the answer by a moment, so it is read again for a while before it fails.
 func TestSearchCoverageRefusesAtItsBound(t *testing.T) {

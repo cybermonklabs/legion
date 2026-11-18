@@ -48,11 +48,11 @@
 -- from its own definition as the migrations left it (the two the coverage statement reads,
 -- embeddings_window_embedded and embeddings_window_unembedded, among them), which is faster than
 -- keeping each up to date row by row. VACUUM and ANALYZE are the caller's, since VACUUM cannot
--- run inside a transaction. A vacuum sets the visibility map, which the index-only scans of the
--- coverage statement's index-only text rely on (planCoverage chooses that text while most of
--- embeddings' pages are all-visible, and its bitmap text below that), only where every commit
--- near this one in the commit log is flushed, so TestCoverageStatementScale makes its databases
--- commit synchronously.
+-- run inside a transaction. A vacuum sets the visibility map, whose states
+-- TestCoverageStatementScale measures the coverage statement in (freshly vacuumed, and with the
+-- statistics recording pages all-visible that no longer are), only where every commit near this
+-- one in the commit log is flushed, so TestCoverageStatementScale makes its databases commit
+-- synchronously.
 
 begin;
 

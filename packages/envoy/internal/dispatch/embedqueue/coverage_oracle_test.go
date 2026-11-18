@@ -101,13 +101,12 @@ func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]stri
 	return rendered, byKind
 }
 
-// requireMainsAnswer reads mainCoverageQuery and both texts of the coverage statement
-// (coverageIndexOnlyQuery and coverageBitmapQuery) in one REPEATABLE READ, read-only transaction,
-// so all three read one snapshot and one now(), for the configured identity, for none ("") and for
-// another identity, and fails the test wherever a text's answer differs from main's as a set of
-// whole rows, printing both. Each text runs under its own plan's settings (planRowsOf), as
-// Coverage runs it. It answers the rows main's statement and the index-only text gave for the
-// configured identity, by kind; the bitmap text's equal them wherever the test has not failed.
+// requireMainsAnswer reads mainCoverageQuery and the coverage statement (coverageQuery), the
+// latter under planCoverage's settings as Coverage runs it (headRowsOf), in one REPEATABLE READ,
+// read-only transaction, so both read one snapshot and one now(), for the configured identity, for
+// none ("") and for another identity, and fails the test wherever the two answers differ as sets
+// of whole rows, printing both. It answers the rows each gave for the configured identity, by
+// kind.
 func requireMainsAnswer(t *testing.T, database *store.Store, stage string) (mains, heads map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
@@ -118,33 +117,33 @@ func requireMainsAnswer(t *testing.T, database *store.Store, stage string) (main
 	defer func() { _ = tx.Rollback(ctx) }()
 	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
 		mainRows, mainKinds := coverageRowsOf(t, tx, mainCoverageQuery, identity)
-		for _, plan := range []coveragePlan{coverageIndexOnly, coverageBitmap} {
-			headRows, headKinds := planRowsOf(t, tx, plan, identity)
-			if !slices.Equal(mainRows, headRows) {
-				t.Errorf("%s, identity %q: the %s text answers other rows than main's statement in one snapshot:\nmain's statement:\n  %s\nthe %s text:\n  %s",
-					stage, identity, plan.name, strings.Join(mainRows, "\n  "), plan.name, strings.Join(headRows, "\n  "))
-			}
-			if identity == configuredIdentity && plan.name == coverageIndexOnly.name {
-				mains, heads = mainKinds, headKinds
-			}
+		headRows, headKinds := headRowsOf(t, tx, identity)
+		if !slices.Equal(mainRows, headRows) {
+			t.Errorf("%s, identity %q: the coverage statement answers other rows than main's statement in one snapshot:\nmain's statement:\n  %s\nthe coverage statement:\n  %s",
+				stage, identity, strings.Join(mainRows, "\n  "), strings.Join(headRows, "\n  "))
+		}
+		if identity == configuredIdentity {
+			mains, heads = mainKinds, headKinds
 		}
 	}
 	return mains, heads
 }
 
-// planRowsOf reads plan's text for identity in tx under plan's settings, inside a savepoint that
-// it rolls back, which undoes those settings and leaves tx's snapshot as it was: a statement after
-// it plans as though plan had never been set.
-func planRowsOf(t *testing.T, tx pgx.Tx, plan coveragePlan, identity string) ([]string, map[string]coverageRow) {
+// headRowsOf reads the coverage statement for identity in tx as Coverage runs it, under the
+// settings planCoverage sets, inside a savepoint that it rolls back, which undoes those settings
+// and leaves tx's snapshot as it was: a statement after it plans as though they had never been
+// set.
+func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
 	savepoint, err := tx.Begin(ctx)
 	if err != nil {
-		t.Fatalf("open a savepoint for the %s text: %v", plan.name, err)
+		t.Fatalf("open a savepoint for the coverage statement: %v", err)
 	}
 	defer func() { _ = savepoint.Rollback(ctx) }()
-	if _, err := savepoint.Exec(ctx, plan.settings); err != nil {
-		t.Fatalf("set the %s plan's settings: %v", plan.name, err)
+	plan, err := planCoverage(ctx, savepoint)
+	if err != nil {
+		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
 	}
 	return coverageRowsOf(t, savepoint, plan.query, identity)
 }
@@ -328,13 +327,13 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 }
 
 // The coverage statement answers what main's statement (mainCoverageQuery) answered, row for row,
-// in both of its texts, each under its own plan's settings (requireMainsAnswer), over every state
-// an item can be in (seedEveryCoverageState), for the configured identity, for none and for
-// another, read in one snapshot: before any record run, when every issue builds and hashes its
-// text; once the record step has recorded every issue's source, when the report reads most
-// issues' hashes from their rows; and once every input an issue's text is built from has changed
-// after its source was recorded (changeInputsAfterRecording). This is the report unchanged
-// against the base on a seeded corpus, whichever text planCoverage chooses.
+// under planCoverage's settings (requireMainsAnswer), over every state an item can be in
+// (seedEveryCoverageState), for the configured identity, for none and for another, read in one
+// snapshot: before any record run, when every issue builds and hashes its text; once the record
+// step has recorded every issue's source, when the report reads most issues' hashes from their
+// rows; and once every input an issue's text is built from has changed after its source was
+// recorded (changeInputsAfterRecording). This is the report unchanged against the base on a
+// seeded corpus.
 //
 // The last stage is not vacuous: the two issues whose inputs changed with their triggers off still
 // hold a vector of the configured identity at their rows' content_hash, so a report that trusted a
@@ -346,7 +345,7 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	states := seedEveryCoverageState(t, database)
 	requireIssuesCurrent := func(stage string, mains, heads map[string]coverageRow, want int64) {
 		t.Helper()
-		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the index-only text": heads} {
+		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the coverage statement": heads} {
 			if got := rows["issue"].current; got != want {
 				t.Errorf("%s: %s counts %d issues current, want %d: %v", stage, name, got, want, rows["issue"])
 			}
@@ -378,55 +377,25 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireIssuesCurrent("after the inputs changed", mains, heads, trusted-stale)
 }
 
-// The coverage statement's index-only text (coverageIndexOnlyQuery) reads the window kinds from
-// the two indexes the migrations build for it, by index-only scans: each window arm
-// (windowEmbedded, windowUnembedded) repeats its index's predicate, so the planner proves the
-// index applies and reads kind, model, dead and pending_since from it with no window's text. This
-// fails the day the kinds, the regex or either half's predicate stop matching the migrations,
-// which would leave the answer right and the statement reading every window's text again.
-//
-// The table is vacuumed first, which sets the visibility map an index-only scan relies on, and
-// the plan is read under the index-only plan's own settings (coverageIndexOnly: sequential and
-// bitmap scans off), so that the plan of a few dozen rows is the plan of a corpus where the
-// indexes win on cost.
-func TestCoverageReadsTheWindowKindsFromTheirIndexes(t *testing.T) {
-	database := storetest.Open(t)
-	ctx := context.Background()
-	seedEveryCoverageState(t, database)
-	// VACUUM runs outside any transaction.
-	if _, err := database.Pool.Exec(ctx, `vacuum (analyze) embeddings`); err != nil {
-		t.Fatalf("vacuum embeddings: %v", err)
-	}
-	plan := explainPlanned(t, database, coverageIndexOnly)
-	scans := explaintest.IndexScans(t, plan)
-	for _, index := range []string{"embeddings_window_embedded", "embeddings_window_unembedded"} {
-		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
-			return scan.NodeType == "Index Only Scan" && scan.Index == index
-		}) {
-			t.Errorf("the index-only text's plan holds no Index Only Scan on %s:\n%s", index, plan)
-		}
-	}
-}
-
-// The coverage statement's bitmap text (coverageBitmapQuery), under its own plan's settings
-// (coverageBitmap: sequential scans off, index scans on), reads the window kinds by one Bitmap
-// Heap Scan of embeddings over a BitmapOr of the two window indexes: its one window arm ORs the
-// two indexes' predicates, each word for word, so the planner proves that the two indexes together
-// hold every row the arm selects. The blank test's regex is then in that scan's recheck alone,
-// which an exact bitmap never runs, and not in its filter, which runs on every row it reads. This
-// fails the day the OR stops matching the indexes' predicates, or the planner reads the arm
-// through another index, such as embeddings_window_owner or embeddings_pkey by their kind, with
-// the regex as a filter: either leaves the answer right and the statement testing every window's
-// text again.
+// The coverage statement (coverageQuery), under planCoverage's settings (sequential scans off,
+// index scans on), reads the window kinds by one Bitmap Heap Scan of embeddings over a BitmapOr of
+// the two window indexes: its one window arm ORs the two indexes' predicates, each word for word,
+// so the planner proves that the two indexes together hold every row the arm selects. The blank
+// test's regex is then in that scan's recheck alone, which an exact bitmap never runs, and not in
+// its filter, which runs on every row it reads. This fails the day the kinds, the regex or either
+// half's predicate stop matching the migrations' indexes, or the planner reads the arm through
+// another index, such as embeddings_window_owner or embeddings_pkey by their kind, with the regex
+// as a filter: either leaves the answer right and the statement testing every window's text
+// again.
 //
 // The plan is read over the scale test's corpus at 0.005 x production's size, as
 // TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible loads it, analyzed and not
-// vacuumed, as the table stands when planCoverage chooses this text. On a seeded table of a few
-// dozen rows the planner reads the arm through embeddings_window_owner instead, regex in the
-// filter, since there three bitmap index scans cost more than a filter over so few rows; it takes
-// the BitmapOr once the table holds thousands of windows, pricing the read of
-// embeddings_window_embedded at the half percent of the rows it takes that half for
-// (planCoverage). No sequential scan of embeddings may stand anywhere in the plan.
+// vacuumed. On a seeded table of a few dozen rows the planner reads the arm through
+// embeddings_window_owner instead, regex in the filter, since there three bitmap index scans cost
+// more than a filter over so few rows; it takes the BitmapOr once the table holds thousands of
+// windows, pricing the read of embeddings_window_embedded at the half percent of the rows it takes
+// that half for. That misestimate is the one choice of the plan planCoverage leaves the planner,
+// and this test is what holds it. No sequential scan of embeddings may stand anywhere in the plan.
 func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
@@ -435,13 +404,13 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 	}
 	loadCoverageCorpus(t, database.Pool.Config().ConnString(), coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
 	mustExec(t, database.Pool, `analyze embeddings`)
-	plan := explainPlanned(t, database, coverageBitmap)
+	plan := explainPlanned(t, database)
 	if explaintest.SeqScansRelation(t, plan, "embeddings") {
-		t.Errorf("the bitmap text's plan reads embeddings by a Seq Scan:\n%s", plan)
+		t.Errorf("the coverage statement's plan reads embeddings by a Seq Scan:\n%s", plan)
 	}
 	var root bitmapPlanNode
 	if err := json.Unmarshal(plan, &root); err != nil {
-		t.Fatalf("decode the bitmap text's plan: %v", err)
+		t.Fatalf("decode the coverage statement's plan: %v", err)
 	}
 	var windows []bitmapPlanNode
 	root.walk(func(node bitmapPlanNode) {
@@ -464,7 +433,7 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 		}
 	})
 	if len(windows) != 1 {
-		t.Fatalf("the bitmap text's plan holds %d Bitmap Heap Scans of embeddings over a BitmapOr of embeddings_window_embedded and embeddings_window_unembedded, want one:\n%s",
+		t.Fatalf("the coverage statement's plan holds %d Bitmap Heap Scans of embeddings over a BitmapOr of embeddings_window_embedded and embeddings_window_unembedded, want one:\n%s",
 			len(windows), plan)
 	}
 	if strings.Contains(windows[0].Filter, "~") {
@@ -491,23 +460,24 @@ func (node bitmapPlanNode) walk(visit func(bitmapPlanNode)) {
 	}
 }
 
-// explainPlanned explains plan's text for the configured identity in a read-only transaction
-// that has run plan's settings, as Coverage runs it once planCoverage has chosen it, and answers
-// the plan's one "Plan" node.
-func explainPlanned(t *testing.T, database *store.Store, plan coveragePlan) json.RawMessage {
+// explainPlanned explains the coverage statement for the configured identity in a read-only
+// transaction that planCoverage has planned, as Coverage runs it, and answers the plan's one
+// "Plan" node.
+func explainPlanned(t *testing.T, database *store.Store) json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		t.Fatalf("begin the %s text's transaction: %v", plan.name, err)
+		t.Fatalf("begin the coverage statement's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, plan.settings); err != nil {
-		t.Fatalf("set the %s plan's settings: %v", plan.name, err)
+	plan, err := planCoverage(ctx, tx)
+	if err != nil {
+		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
 	}
 	var raw []byte
 	if err := tx.QueryRow(ctx, `explain (format json) `+plan.query, configuredIdentity).Scan(&raw); err != nil {
-		t.Fatalf("explain the %s text: %v", plan.name, err)
+		t.Fatalf("explain the %s plan: %v", plan.name, err)
 	}
 	return explaintest.OnePlan(t, raw)
 }

@@ -1,6 +1,6 @@
 -- pgmigrate:non-transactional
 -- 20261118011208_embeddings_window_embedded.up.sql — the first of the two indexes the search
--- coverage statement reads the window kinds from, built concurrently.
+-- coverage statement reads the window kinds through, built concurrently.
 --
 -- Why it exists. GET /api/v1/search/coverage and the boot pass's log line count, for every row of
 -- a window kind whose text has something to embed, its kind, whether its vector is current,
@@ -11,14 +11,19 @@
 -- probe's 30 s limit (dispatch://INFRA-4241). Every such row is in exactly one of two halves,
 -- embedded at its current text (this index) or not (20261118011258_embeddings_window_unembedded),
 -- and the two predicates are each other's negation over those rows, content_hash being NOT NULL.
--- A row of this half is current exactly when its model is the configured identity, so model is
--- a key beside kind, and dead and pending_since are included: that is every column the
--- statement reads of such a row, so the statement reads this half from this index and the rows
--- it points to, testing no window's text: by an index-only scan while most of embeddings' pages
--- are all-visible, which reads no heap page the visibility map marks all-visible, and otherwise,
--- with the other half, by one bitmap heap scan over a BitmapOr of both indexes, which reads each
--- heap page holding window rows once. The planner cannot estimate the half (its predicate
--- compares two columns), so embedqueue's planCoverage chooses between the two.
+-- The statement reads this half by a bitmap index scan of this index, ORed with the other half's
+-- (a BitmapOr of both indexes), and one bitmap heap scan over the two then visits each heap page
+-- holding window rows once, whatever the visibility map holds, testing no window's text
+-- (embedqueue's planCoverage says why that is the plan always).
+--
+-- Why the key is kind alone and nothing is included. The bitmap heap scan reads every column the
+-- statement reads of a row (model, dead and pending_since) from the heap anyway, so a column
+-- carried here would save no read. kind is the smallest key there is, and btree deduplication
+-- stores each kind once for a run of row pointers: at 0.3 x production's size this index was
+-- 2,032 kB, where the covering shape an earlier version of this migration built, keyed on
+-- (kind, model) and including dead and pending_since, was 27 MB. And with no column included, an
+-- update of model or pending_since alone, columns no other index of embeddings holds, changes no
+-- column of this index, so the index does not keep that update from being HOT.
 --
 -- The predicate must stay the coverage statement's word for word. The statement repeats it
 -- (embedqueue's windowEmbedded, built from windowCoverageKinds and somethingToEmbed, the negation
@@ -31,9 +36,11 @@
 -- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
 -- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
 -- (packages/envoy/infra/README.md), so the old pod has stopped before this build starts and the
--- build's time is downtime. This build and 20261118011258's together took 4.5 s on a synthetic
--- corpus of 0.3 x production's size on a test Postgres, so about 15 s at production's size, an
--- estimate scaled from that measurement. At 0.3 x this index was 18 MB against a 405 MB heap.
+-- build's time is downtime. This build and 20261118011258's took 11.1 s together (the two builds
+-- 4.6 s and 6.5 s) on a synthetic corpus of 0.3 x production's size on a busy issue pod's test
+-- Postgres. TestCoverageStatementScale (embedqueue) drops both indexes and builds them again with
+-- these files' own statements at each scale it measures, and logs each build's time, so the Job
+-- scripts/coverage-scale.sh runs measures them at production's size and twice it.
 --
 -- Why it is exempt from the census's size limit. A migration whose first line is
 -- `-- pgmigrate:non-transactional` holding exactly one non-unique
@@ -62,5 +69,5 @@
 -- half-built index for good. A build that keeps failing is a lock or an old snapshot the boot's
 -- log names, not an index to drop by hand.
 create index concurrently if not exists embeddings_window_embedded
-    on embeddings (kind, model) include (dead, pending_since)
+    on embeddings (kind)
     where kind in ('document_block', 'comment_block', 'message_block', 'ask_part') and text_snapshot ~ '[^[:space:]]' and embedding is not null and embedded_hash = content_hash;
