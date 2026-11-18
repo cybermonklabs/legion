@@ -136,7 +136,9 @@ func (r *turnReports) turnEnded(refusal string) {
 // daemon made of it: the run of refused turns the claim's reports now end with, and whether this
 // one failed the claim, which is the one place the pane shows the count being made. A report the
 // daemon refuses, or one that found it not serving for the whole wait, is logged and nothing
-// else: the turn is over, and the bridge has nothing more to do about it.
+// else: the turn is over, and the bridge has nothing more to do about it. Its turn is then a gap
+// in the sequence, which ends the run the daemon counts there (supervise's RefusedRun). Each
+// report waits on its own, so through an outage they may land in any order.
 func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	body, err := json.Marshal(request)
 	if err != nil {
