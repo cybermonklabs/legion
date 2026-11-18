@@ -25,10 +25,12 @@ import (
 
 // fakeKubectl is a kubectl that answers from the files in $FAKE_KUBECTL_DIR, as the commands
 // Kubectl runs: `get statefulset`, `get pod <name>`, `port-forward pod/<name> ... :<port>`, which
-// prints the local port in port-<name>-<port> and then runs until killed, writing its PID to
-// pid-<name>-<port>, and `logs pod/<name> --container nats --timestamps`. It appends every
-// command line it is given to calls, and refuses any other. It cuts its arguments joined into one
-// string first, since bash, unlike dash, cuts ${*#...} from each argument apart.
+// writes its PID to pid-<name>-<port>, then prints the local port in port-<name>-<port> and runs
+// until killed, and `logs pod/<name> --container nats --timestamps`. It appends every command line
+// it is given to calls, and refuses any other. It cuts its arguments joined into one string first,
+// since bash, unlike dash, cuts ${*#...} from each argument apart. A forward writes its PID before
+// it prints its port, since Kubectl goes on once it reads the port and a test may then read the
+// PID; $FAKE_KUBECTL_FORWARD_DELAY, when set, is the seconds a forward waits between the two.
 const fakeKubectl = `#!/bin/sh
 dir="$FAKE_KUBECTL_DIR"
 args="$*"
@@ -38,9 +40,10 @@ case "$args" in
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
   port=$(cat "$dir/port-$pod-$remote") || exit 1
+  echo $$ > "$dir/pid-$pod-$remote"
+  [ -z "$FAKE_KUBECTL_FORWARD_DELAY" ] || sleep "$FAKE_KUBECTL_FORWARD_DELAY"
   echo "Forwarding from 127.0.0.1:$port -> $remote"
   echo "Forwarding from [::1]:$port -> $remote"
-  echo $$ > "$dir/pid-$pod-$remote"
   exec sleep 300 ;;
 *" logs pod/"*" --container nats --timestamps") pod=${args#* logs pod/}; pod=${pod%% *}; exec cat "$dir/log-$pod" ;;
 esac
@@ -257,6 +260,27 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
 		require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-0: password read: its log does not begin with the server's start line")
 	})
+}
+
+// A fake forward's PID file is there once Kubectl has read the forward's port, as
+// TestKubectlReadsTheHubThroughKubectl reads it then, even with 0.2 s between the PID and the
+// port. Control: the order before, the port printed first and the PID written after, fails this
+// test every time with the same wait, and failed that test 1 run in 600 under load.
+func TestKubectlForwardWritesItsPIDBeforeItListens(t *testing.T) {
+	t.Setenv("FAKE_KUBECTL_FORWARD_DELAY", "0.2")
+	h := cleanHub()
+	src, dir := fakeKubeHub(t, h)
+	defer src.Close()
+	_, err := src.Monitor(context.Background(), "envoy-nats-1", "/varz")
+	require.NoError(t, err)
+	_, _, err = src.RouteExchange(context.Background(), "envoy-nats-1", nil)
+	require.NoError(t, err)
+	for _, port := range []string{"8222", "6222"} {
+		pid, err := os.ReadFile(filepath.Join(dir, "pid-envoy-nats-1-"+port))
+		require.NoError(t, err, "the forward to :%s wrote its PID before it printed its port", port)
+		_, err = strconv.Atoi(strings.TrimSpace(string(pid)))
+		require.NoError(t, err)
+	}
 }
 
 // OpenKubectl refuses a kubectl it cannot find, naming it, before it runs anything.
