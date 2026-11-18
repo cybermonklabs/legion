@@ -959,7 +959,14 @@ type w1PortReservation struct {
 }
 
 func w1ReservePort(port int) (*w1PortReservation, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	// syscall has no SOCK_CLOEXEC on darwin. Under ForkLock no fork between the socket and
+	// CloseOnExec can hand the descriptor to a child, which is what the flag does on Linux.
+	syscall.ForkLock.RLock()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("socket: %w", err)
 	}
