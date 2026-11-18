@@ -1,0 +1,63 @@
+-- pgmigrate:non-transactional
+-- 20261118011208_embeddings_window_embedded.up.sql — the first of the two indexes the search
+-- coverage statement reads the window kinds from, built concurrently.
+--
+-- Why it exists. GET /api/v1/search/coverage and the boot pass's log line count, for every row of
+-- a window kind whose text has something to embed, its kind, whether its vector is current,
+-- whether it is dead and how long it has waited (internal/dispatch/embedqueue/coverage.go,
+-- coverageQuery). The statement before this one ran the blank test over every window's whole
+-- text, about 10 µs a row because the regex engine converts the whole string before it matches,
+-- and joined every window back to its own row: 10 to 30 s in production, past the coverage
+-- probe's 30 s limit (dispatch://INFRA-4241). Every such row is in exactly one of two halves,
+-- embedded at its current text (this index) or not (20261118011258_embeddings_window_unembedded),
+-- and the two predicates are each other's negation over those rows, content_hash being NOT NULL.
+-- A row of this half is current exactly when its model is the configured identity, so model is
+-- a key beside kind, and dead and pending_since are included: that is every column the
+-- statement reads of such a row, so the planner answers this half by an index-only scan. No
+-- window's text is read, and no heap page is read where the visibility map marks the page
+-- all-visible.
+--
+-- The predicate must stay the coverage statement's word for word. The statement repeats it
+-- (embedqueue's windowEmbedded, built from windowCoverageKinds and somethingToEmbed, the negation
+-- of nothingToEmbed, the one test of a text with nothing to embed) so that the planner can prove
+-- this index applies and drop those conditions from the scan. A predicate that drifts from the
+-- statement's - another kind list, another regex - leaves the answer right and the statement
+-- reading every window's text again. Postgres evaluates the regex at each insert and update of a
+-- row, not at each read, so the blank test stays exact.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md), so the old pod has stopped before this build starts and the
+-- build's time is downtime. This build and 20261118011258's together took 4.5 s on a synthetic
+-- corpus of 0.3 x production's size on a test Postgres, so about 15 s at production's size, an
+-- estimate scaled from that measurement. At 0.3 x this index was 18 MB against a 405 MB heap.
+--
+-- Why it is exempt from the census's size limit. A migration whose first line is
+-- `-- pgmigrate:non-transactional` holding exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction and
+-- is exempt from the size limit (pgmigrate/nontransactional.go, concurrentIndex, and
+-- pgmigrate/census.go, Census). What the build takes on embeddings is SHARE UPDATE EXCLUSIVE,
+-- which no ordinary read or write of the table waits on; what it costs instead is two passes
+-- over the table and a wait for every older snapshot between them.
+--
+-- What a failed build leaves, which a transactional one cannot leave at all. CREATE INDEX
+-- CONCURRENTLY commits its catalog rows before it scans, so a build that fails, is cancelled or
+-- is killed leaves an index of this name marked invalid: the planner ignores an invalid index
+-- for every query, while Postgres goes on maintaining it on each write once the build has
+-- reached its second phase, so it costs the writes and buys no read. The coverage statement
+-- loses no row over that: its conditions stand on the row itself, so it answers the same counts
+-- by reading this half's rows from the heap and running the regex over their text again, the cost
+-- this index exists to save, and may reach its own statement_timeout and answer 503 until the
+-- index is built.
+--
+-- Nothing has to be repaired by hand. The version is recorded only after a build that finished,
+-- so the next boot runs this migration again, and the runner drops an invalid index of this
+-- name on this table with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). IF NOT EXISTS alone
+-- would not cure it: Postgres skips the statement for any relation of that name, an invalid
+-- index included, and a boot that skipped it that way would record the version over a
+-- half-built index for good. A build that keeps failing is a lock or an old snapshot the boot's
+-- log names, not an index to drop by hand.
+create index concurrently if not exists embeddings_window_embedded
+    on embeddings (kind, model) include (dead, pending_since)
+    where kind in ('document_block', 'comment_block', 'message_block', 'ask_part') and text_snapshot ~ '[^[:space:]]' and embedding is not null and embedded_hash = content_hash;
