@@ -2057,9 +2057,10 @@ Left in place, the row would then publish the ask it was queued with, which name
 The roll forward does not need the row: it resets every pod round that the earlier release opened or kept open, as the first deploy did, and then asks again each role of such a round that has not answered.
 The `update` clears the ask mark (`update_tasked_at`) of every claim of a pod round that has not answered.
 The earlier release reads that mark as the moment it queued its own task, and it asks the role again only once its re-ask bound has passed since that moment, 1 hour by default (`askForUpdate` and `updateReaskDue` in `internal/supervise/table.go` on that release).
-This release writes the mark when it queues its Envoy ask, before the ask is published, so a role whose `update_ask` row the `delete from outbox` above removes was never asked.
+This release writes the mark only once its Envoy ask reached a session (`Machine.PublishUpdateAsk`), so a role whose `update_ask` row the `delete from outbox` above removes has no mark of that ask.
 With the mark cleared, the earlier release queues its task at once for each role of an open pod round that has not answered.
 A claim that has answered keeps its mark, and the earlier release asks no claim that has answered.
+A rollback to a release that writes the mark when it queues its ask (any release before migration `20261117200337`) asks once more each role whose ask of an open round is still queued at the rollback: that release reads such a claim as unasked and queues its own ask beside the row, so the role can read the ask twice.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `claims` is one table for all of them, with the project in a column of each row (`store/migrations/0002_claims.up.sql`).
@@ -2159,13 +2160,13 @@ For an operator-launched controller, stop `legion controller start` and run it a
 
 The daemon-launched controller's pod is in scope for the warning and in no round:
 it has no issue workspace and nothing to push, so `PodDrift` answers nothing for it (`internal/runtime/sandbox/drift.go`).
-Its pod is replaced by a launch: one that finds it not live — its Sandbox suspended, its pod ended, its init container failed, or its launcher binding lost
+Its pod is replaced by a launch: one that finds it not live — its Sandbox suspended, its pod ended, its init container failed, its launcher binding lost, or its pod never started by its node (`neverStarted`, `internal/runtime/sandbox/provisioning.go`: scheduled with `PodReadyToStartContainers=False`, created longer than the boot timeout ago, and scheduled longer than half the boot timeout or a minute ago, whichever is less)
 — and, since no round covers it, one that finds it drifted in any way, its image and pod shape included, unless that launch installs a stale-plugin pair (`roundCovers`, `shapeDrift`).
 So an operator moving the controller onto a new image suspends its claim and resumes it (`legion claims suspend`, then `legion claims resume`).
 
 A launch replaces a pod other roles of its issue still run in only when the pod cannot run the launching role as a pod created now would and no worker in it can be asked to push first (`movedInPod`, `internal/runtime/sandbox/addresses.go`):
 it runs the layout before one container, one launcher container per role, or its launchers dial a worker stream other than the one a pod created now is handed and never redial it.
-A pod the launch finds suspended, ended, with a failed init container, with a disk of the shape before the pod-owned disk, or whose launcher Secret no longer binds it is replaced too.
+A pod the launch finds suspended, ended, with a failed init container, never started by its node (scheduled with `PodReadyToStartContainers=False`, created longer than the boot timeout ago, and scheduled longer than half the boot timeout or a minute ago, whichever is less), with a disk of the shape before the pod-owned disk, or whose launcher Secret no longer binds it is replaced too.
 A pod running as a ServiceAccount other than the configured one is replaced by a launch only where no round covers that pod, the project controller's (`accountDrift`, `roundCovers`): the account is fixed for the pod's life, and no round will ever come for such a pod.
 Everything else a running pod cannot be changed to carry — its image, its pod kind's reservation, the operator's volumes and mounts, the disk size, a role's overlays, the secrets broker's enrollment and the session store, and the ServiceAccount it runs as wherever a round covers the pod
 — is drift, and the update round replaces the pod for it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
@@ -5773,13 +5774,13 @@ Every claim of the issue that has a session and has not retired is asked, since 
 The daemon publishes one message to each such role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
 it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it asks the role to push its work to the issue branch and answer `ready_for_update` with that id.
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
-Each role that has not answered is asked at most once per round, which its claim records (the `update_tasked_at` column), and nothing asks it again.
+Each role that has not answered is asked once per round by an ask that reaches its session: the daemon marks the claim asked (the `update_tasked_at` column) when the publish reached a session, an ask that finds no live session on the role's topic marks nothing, the next sweep that finds the role ready asks it again, and no sweep asks a role while an ask of the round still waits for it in the outbox.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or suspended has no live session on its role's topic, so the sweep asks it nothing and writes no mark on it.
 The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
-A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered.
+A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.

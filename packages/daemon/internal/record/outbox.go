@@ -1263,7 +1263,9 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
+// asked only once its row's publish reached a session, so an ask that finished undelivered is
+// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`

@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,8 +53,13 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 		return nil
 	}
 	item := GithubEnvelope(input)
-	if item.Topic == "" {
-		// Event should not be routed (e.g. push to non-heads/tags ref).
+	if item.Topic == "" || item.Payload == "" {
+		// The event is published nowhere: one the listener does not normalize, for which githubTopic
+		// names no topic and githubPayload no payload (a commit status, a branch created, a webhook's
+		// ping), or one it does that names no route (a push to a ref that is neither a branch nor a
+		// tag). An envelope with no payload would go on the bus with none, since Payload is
+		// omitempty, and every Legion daemon that hears the repository terminates such an envelope
+		// as poison.
 		return nil
 	}
 	if !githubCommentEvent(input.Event) {
@@ -365,9 +371,12 @@ func githubTopic(owner string, repo string, event string, body map[string]any) s
 		}
 		return GithubWorkflowSubject(owner, repo, filename, action)
 	}
+	kind := githubEventKinds[event]
+	if kind == "" {
+		return ""
+	}
 	num := githubNumber(event, body)
 	parent := githubParentKind(event, body)
-	kind := githubKind(event)
 	if num != "" && kind != parent {
 		// e.g., pr.7706.comment, pr.7706.review, issue.42.comment
 		return GithubSubject(owner, repo, parent+"."+num+"."+kind)
@@ -441,14 +450,7 @@ var githubEventParents = map[string]string{
 	"issue_comment":               "issue",
 }
 
-func githubKind(event string) string {
-	if kind, ok := githubEventKinds[event]; ok {
-		return kind
-	}
-	return githubDefaultKind
-}
-
-// githubEventKinds names each GitHub event's topic kind; any other event is githubDefaultKind.
+// githubEventKinds names the topic kind of each GitHub event the listener publishes.
 var githubEventKinds = map[string]string{
 	"pull_request":                "pr",
 	"issues":                      "issue",
@@ -462,8 +464,6 @@ var githubEventKinds = map[string]string{
 	"pull_request_review_comment": "comment",
 }
 
-const githubDefaultKind = "comment"
-
 // githubJobKind is the kind a finished Actions job on the default branch, of a run with no pull
 // request, is published under (githubActionsJob), and its payload's kind.
 const githubJobKind = "job"
@@ -473,13 +473,13 @@ const githubJobKind = "job"
 const githubMentionKind = "mention"
 
 // GithubTopicKinds are the tokens that follow a GitHub topic's owner and name, sorted: every kind
-// and parent kind the two tables name, githubDefaultKind, githubMentionKind and githubJobKind (the
-// push, workflow and checks topics begin `push`, `workflow` and `pr`). A token there that is none of
-// these is not a GitHub topic kind.
+// and parent kind the two tables name, githubMentionKind and githubJobKind (the push, workflow and
+// checks topics begin `push`, `workflow` and `pr`). A token there that is none of these is not a
+// GitHub topic kind.
 var GithubTopicKinds = githubTopicKinds()
 
 func githubTopicKinds() []string {
-	kinds := []string{githubDefaultKind, githubMentionKind, githubJobKind}
+	kinds := []string{githubMentionKind, githubJobKind}
 	for _, kind := range githubEventKinds {
 		kinds = append(kinds, kind)
 	}
@@ -544,6 +544,11 @@ func githubNumber(event string, body map[string]any) string {
 	case "issues":
 		return GithubPRNumber(nested(body, "issue", "number"))
 	case "sub_issues":
+		// GitHub delivers a sub-issue's change to each issue's repository: sub_issue_* to the
+		// parent's, parent_issue_* to the child's. The number is that repository's issue.
+		if strings.HasPrefix(stringValue(body["action"]), "parent_issue_") {
+			return GithubPRNumber(nested(body, "sub_issue", "number"))
+		}
 		return GithubPRNumber(nested(body, "parent_issue", "number"))
 	case "issue_comment":
 		return GithubPRNumber(nested(body, "issue", "number"))
@@ -792,6 +797,9 @@ func githubSummary(event string, body map[string]any) string {
 	return OneLineSummary(summary)
 }
 
+// githubPayload encodes, as one JSON object, the fields a consumer reads of an event the listener
+// normalizes. Every event githubEventKinds names has a case here but check_suite, and a check run
+// has one only as a finished Actions job: a pull request's CI folds into the CI store instead.
 func githubPayload(event string, body map[string]any) string {
 	repo := nestedString(body, "repository", "full_name")
 	if repo == "" {
@@ -912,6 +920,26 @@ func githubPayload(event string, body map[string]any) string {
 			"url":    nestedString(body, "issue", "html_url"),
 		}
 		addCappedBody(data, issueBody)
+	case "sub_issues":
+		// The event is published on the topic of the issue in the webhook's own repository
+		// (githubNumber), so number is that issue's. The two issues can be in two repositories:
+		// GitHub names the other in parent_issue_repo or sub_issue_repo, and each falls back to
+		// the webhook's own repository.
+		data = map[string]string{
+			"kind":             "sub_issue",
+			"action":           action,
+			"repo":             repo,
+			"number":           number,
+			"parent_number":    GithubPRNumber(nested(body, "parent_issue", "number")),
+			"parent_title":     nestedString(body, "parent_issue", "title"),
+			"parent_url":       nestedString(body, "parent_issue", "html_url"),
+			"parent_repo":      cmp.Or(nestedString(body, "parent_issue_repo", "full_name"), repo),
+			"sub_issue_number": GithubPRNumber(nested(body, "sub_issue", "number")),
+			"sub_issue_title":  nestedString(body, "sub_issue", "title"),
+			"sub_issue_url":    nestedString(body, "sub_issue", "html_url"),
+			"sub_issue_repo":   cmp.Or(nestedString(body, "sub_issue_repo", "full_name"), repo),
+			"sender":           nestedString(body, "sender", "login"),
+		}
 	case "push":
 		data = map[string]string{
 			"kind":   "push",

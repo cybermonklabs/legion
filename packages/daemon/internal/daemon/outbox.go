@@ -1738,7 +1738,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
-// holder, and the round ends at its bound whether or not the role answers.
+// holder, so its ask is lost as every ask that reached no session is (below), the sweep asks the
+// claim again once its agent is ready again, and the round ends at its bound whether or not the
+// role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -1746,10 +1748,27 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line. Every other
-// failure of the publish keeps the ordinary retry, as phaseEnded's does: a holder that did not
-// confirm in time, one that does not advertise the delivery mode, and a forward the listener's
-// own NATS grant denies can each go through on a later attempt.
+// The publish and the claim's ask mark are one step of the claim's machine
+// (supervise.Machine.PublishUpdateAsk), whose comment holds the order and why it neither loses an
+// ask nor gives one twice. In short: the machine's lock is taken without waiting, the claim is
+// read under it, the ask is published, and the claim is marked asked only once the publish
+// reached a session, all before the row can end. A machine whose lock is held is a wait: this
+// issue's role-message lane runs one row at a time (record.LaneKey), and a Sandbox relaunch holds
+// that lock for minutes, so waiting for it would hold every role message of this issue behind one
+// decision. The row keeps its place, nothing was published, and its next attempt is the first
+// publish. A claim an earlier ask of the round already reached is published nothing, so a second
+// row of one round asks no role twice.
+//
+// A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
+// nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
+// claim again (askRound). The round waits for every claim it asks until its bound, and a claim
+// the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
+// is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
+// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
+// keeps the ordinary retry, as phaseEnded's does: a holder that did not confirm in time, one that
+// does not advertise the delivery mode, and a forward the listener's own NATS grant denies can
+// each go through on a later attempt. A mark the store did not take keeps the row too, and the
+// next attempt writes it and publishes nothing.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -1761,34 +1780,72 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return err
 	}
-	if current := r.supervisedClaim(token).UpdateRound; current != payload.Round {
-		r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
-			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
+	machine, found := r.supervisor.Machine(token)
+	if current := r.supervisedClaim(token).UpdateRound; !found || current != payload.Round {
+		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	message := payload.Message(row.Issue)
-	err = r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrNoHolder) {
-		r.log.Info("outbox update ask finished undelivered: no live session holds the role", fields...)
-		return nil
-	}
-	if err != nil {
+	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
+		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
+			"outbox update ask finished undelivered: no live session holds the role", fields...)
+	})
+	switch {
+	case errors.Is(err, supervise.ErrMachineBusy):
+		return wait.Errorf("the ask of round %s for %s waits for its %s's machine, whose lock is held; nothing is published yet: %w",
+			payload.Round, row.Issue, payload.Role, err)
+	case err != nil && (outcome == supervise.UpdateAskDelivered || outcome == supervise.UpdateAskAlreadyDelivered):
+		return fmt.Errorf("the ask of round %s for %s reached its %s, and the claim write that marks it asked is not made yet: %w",
+			payload.Round, row.Issue, payload.Role, err)
+	case err != nil:
 		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
 	}
-	r.log.Info("outbox update ask published to the role topic", fields...)
+	switch outcome {
+	case supervise.UpdateAskDelivered:
+		r.log.Info("outbox update ask published to the role topic", fields...)
+	case supervise.UpdateAskAlreadyDelivered:
+		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
+	case supervise.UpdateAskOutOfRound:
+		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
+	}
 	return nil
 }
 
+// updateAskLeftRound is the one line of an update-ask row that finishes without a publish because
+// the claim no longer records the row's round, current being the round it records now.
+func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateAsk, token claim.Token, current string) {
+	r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
+		"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
+}
+
 // roleToken is the claim of role on the row's issue in project, whose Envoy topic a role message
-// of the row is published to (updateAsk and publishKeptToRole, under notify.RoleTopicPrefix).
+// of the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix).
 func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Token, error) {
 	token, err := claim.NewToken(project, row.Issue, role)
 	if err != nil {
 		return "", fmt.Errorf("the %s of %s: %w", role, row.Issue, err)
 	}
 	return token, nil
+}
+
+// publishToRole publishes message to topic, the Envoy topic of one role's claim
+// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
+// one delivery. It is updateAsk's publish, with keep: false; phaseEnded and hookPrompt publish
+// with keep through publishKeptToRole, which also says how each executor that publishes to a
+// role's topic answers the publisher.
+//
+// A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
+// fields, and the answer is false with no error. Every other failure is returned as the
+// publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
+// message.
+func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
+	err := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		r.log.Info(noHolder, fields...)
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
@@ -1819,9 +1876,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // registered, or one that failed — holds no row either: the row ends, and the kept copy is
 // dropped once its hour ends.
 //
-// Four other executors publish to a role's topic, each through its own call of the publisher and
-// with its own rules for what the publisher answers: updateAsk ends the row for a topic with no
-// holder and retries every other failure; deliverNotice, an architect's notice, holds the row for
+// Four other executors publish to a role's topic, each with its own rules for what the publisher
+// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
+// every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
 // roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
 // unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the

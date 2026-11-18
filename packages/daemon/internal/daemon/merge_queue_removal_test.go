@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -22,7 +23,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -39,15 +39,16 @@ import (
 // executors write them (workflow's dequeued and mergeQueueReadDone, the daemon's mergeQueueRead
 // and mergeQueueRemoval). dequeueReadLine is the start of every line the read executor writes for
 // a read it made, one per read, and of no other line: its line for a row it ends without reading
-// says `read finished`.
+// is dequeueReadFinished.
 const (
-	dequeueReadLine    = "outbox merge-queue read:"
-	dequeueReadQueued  = "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once"
-	dequeueReadDropped = "workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read"
-	dequeueMessageOwed = "workflow: the merger is owed word that its pull request left the merge queue"
-	dequeueLeftMerging = "outbox merge-queue removal finished undelivered: the issue left merging at that head"
-	dequeueMergerEnded = "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired"
-	dequeueDelivered   = "outbox merge-queue removal delivered to the merger"
+	dequeueReadLine     = "outbox merge-queue read:"
+	dequeueReadFinished = "outbox merge-queue read finished: the issue left merging at that head"
+	dequeueReadQueued   = "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once"
+	dequeueReadDropped  = "workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read"
+	dequeueMessageOwed  = "workflow: the merger is owed word that its pull request left the merge queue"
+	dequeueLeftMerging  = "outbox merge-queue removal finished undelivered: the issue left merging at that head"
+	dequeueMergerEnded  = "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired"
+	dequeueDelivered    = "outbox merge-queue removal delivered to the merger"
 )
 
 // dequeueWait bounds each wait of this test on the daemon's own work: an event through the
@@ -108,7 +109,8 @@ const dequeueRetry = 20 * time.Millisecond
 // any of them. Each case then holds the count to the read executor's own lines (one per read), so
 // a read anything else made would fail it.
 //
-// Each case has an issue of its own, each issue its own tree root, so the nine share one daemon:
+// Each case has an issue of its own, and each issue but the tenth's and the twelfth's is its own
+// tree root, so the sixteen share one daemon:
 //
 //  1. The removal R1 is about: the issue in merging, the event at the head the record holds,
 //     GitHub answering open, the merger's pod released. GitHub is read once; the merger's claim is
@@ -143,6 +145,29 @@ const dequeueRetry = 20 * time.Millisecond
 //     the gate closed, and woken by the message it could enqueue the pull request again against
 //     the gate. The row neither wakes it nor publishes while the gate is closed, and once the test
 //     opens the gate, the merger is woken and told once.
+//  10. The issue's tree lingers: its root has closed, and a linger leaves every member where it
+//     stood, so the issue still stands in merging, but the close suspended the tree's merger, and
+//     the workflow no longer works the phase. An issue that is its own root leaves merging when that
+//     root closes, so this case's issue is a member of a second root that is done and lingers. The
+//     removal reads nothing, owes nothing, publishes nothing and wakes nobody.
+//  11. The record does not show the pull request open: the same holds. The record shows it closed
+//     only after the boot, since the boot's start read reads every issue whose pull request the
+//     record shows open, and the boot waits for that read.
+//  12. The read row judges the issue again just before it reads GitHub, so a read the workflow
+//     queued while the issue merged reads nothing, owes nothing and publishes nothing once the
+//     issue's tree starts to linger before the read runs. The issue is a member of a second root,
+//     as in case 10, and that root closes and lingers after the read is queued. A role-message
+//     lane runs one row at a time, so GitHub holds the read of an earlier removal of the same pull
+//     request unanswered while the second removal queues its read and the root closes; that
+//     earlier read is the one GitHub counts, and the fact it applies finds the issue gone from
+//     merging too.
+//  13. The same holds when the record shows the pull request closed after the read is queued.
+//  14. An issue out of the workflow, at a Dispatch status that takes it out (record.OutOfWorkflow),
+//     reads nothing, owes nothing, publishes nothing and wakes nobody, its phase still merging.
+//  15. So does an issue whose pull request the record holds merged.
+//  16. A read queued before the record holds another pull request for the issue, at the same head,
+//     reads nothing, as case 12 holds it. No event reaches this rule: the record holds one pull
+//     request for each issue, and the event finds the issue by the number that pull request has.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -154,6 +179,13 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	retired := rig.seed(t, phase.Merging, supervise.StateRetired, false)
 	failed := rig.seed(t, phase.Merging, supervise.StateFailed, true)
 	gated := rig.seed(t, phase.Merging, supervise.StateSuspended, true)
+	lingering := rig.seedUnderSecondRoot(t, true)
+	closed := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	lingersLater := rig.seedUnderSecondRoot(t, false)
+	closedLater := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	outOfWorkflow := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	mergedRecord := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	renumbered := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	rig.boot(t)
 
 	t.Run("a released merger is woken and told once its session holds the role", func(t *testing.T) {
@@ -309,6 +341,39 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.readsWere(t, issue, reads, 1)
 		rig.wokenOnce(t, issue)
 	})
+
+	t.Run("an issue whose tree lingers reads nothing", func(t *testing.T) {
+		rig.dropped(t, lingering, lingering.head, "lingers")
+	})
+
+	t.Run("a pull request the record does not show open reads nothing", func(t *testing.T) {
+		rig.closePullRequest(t, closed)
+		rig.dropped(t, closed, closed.head, "the pull request is closed")
+	})
+
+	t.Run("a read queued before the tree lingers reads nothing", func(t *testing.T) {
+		rig.queuedBeforeItLeft(t, lingersLater, rig.closeTree, "lingers")
+	})
+
+	t.Run("a read queued before the record shows the pull request closed reads nothing", func(t *testing.T) {
+		rig.queuedBeforeItLeft(t, closedLater, rig.closePullRequest, "the pull request is closed")
+	})
+
+	t.Run("an issue out of the workflow reads nothing", func(t *testing.T) {
+		rig.leaveWorkflow(t, outOfWorkflow)
+		rig.dropped(t, outOfWorkflow, outOfWorkflow.head, "out of the workflow")
+	})
+
+	t.Run("a pull request the record holds merged reads nothing", func(t *testing.T) {
+		rig.recordPullRequest(t, mergedRecord, func(pr *record.PullRequest) { pr.State = record.PullRequestMerged })
+		rig.dropped(t, mergedRecord, mergedRecord.head, "the pull request is merged")
+	})
+
+	t.Run("a read queued before the record holds another pull request for the issue reads nothing", func(t *testing.T) {
+		rig.queuedBeforeItLeft(t, renumbered, func(t *testing.T, issue dequeueIssue) {
+			rig.recordPullRequest(t, issue, func(pr *record.PullRequest) { pr.Number += 1000 })
+		}, "the record holds pull request")
+	})
 }
 
 // dequeueRig is the daemon this test drives and the stand-ins it reads back from: GitHub, Envoy's
@@ -348,19 +413,19 @@ type dequeueIssue struct {
 func newDequeueRig(t *testing.T) *dequeueRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
+	recordOutboxWrites(t, pool)
 	natsURL := workflowNATS(t)
-	cfg := workflowConfig(t, natsURL)
+	cfg := workflowConfigOn(t, natsURL, startedAgainDispatch)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
 	// Room for every case's tree, so the cap holds no issue of the record back.
-	cfg.AdmissionCap = 16
+	cfg.AdmissionCap = 20
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rig := &dequeueRig{cfg: cfg, project: project, pool: pool, records: record.NewStore(), js: workflowJetStream(t, natsURL),
 		github: newDequeueGitHub(t), rt: fake.NewRuntime(), logs: &syncBuffer{}, engine: startedAgainEngine(cfg)}
-	rig.listener, rig.cfg.EnvoyURL = newDequeueListener(t)
+	rig.listener = newDequeueListener(t, &rig.cfg)
 	rig.rt.InPod = true
 	rig.o = fakeRuntime(rig.rt, &built{})
 	rig.o.workflowTokens = &workflowTokenRecorder{}
@@ -393,9 +458,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, startedAgainIssue(r.cfg, key, key, stands), claims...)
 	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
 		ctx := context.Background()
-		if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: startedAgainRepo,
-			Number: issue.number, Branch: claim.IssueBranch(key), Base: "main", HeadSHA: issue.head, Failing: []string{},
-			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {
+		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
 		if !gateClosed {
@@ -407,10 +470,118 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
 	}
+	return r.track(issue)
+}
+
+// seedUnderSecondRoot records, before the boot, one case's issue in merging as a member of a tree
+// whose root is another issue. The member carries what seed gives an issue: its released merger,
+// bound to the root's lifecycle, and the open pull request seed records. lingering records the
+// root closed and lingering already (closedAndLingering); otherwise the root stands open in merging
+// until a case closes it (closeTree).
+func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIssue {
+	t.Helper()
+	index := len(r.issues) + 1
+	key := r.cfg.Project + "-" + strconv.Itoa(index)
+	rootKey := r.cfg.Project + "-" + strconv.Itoa(100+index)
+	issue := dequeueIssue{key: key, number: 300 + index, head: dequeueHead(300 + index)}
+	merger := r.claim(t, key, claim.RoleMerger, supervise.StateSuspended)
+	merger.Tree = rootKey
+	issue.merger = merger.Token
+	issue.topic = notify.RoleTopicPrefix + string(issue.merger)
+
+	root := startedAgainIssue(r.cfg, rootKey, rootKey, phase.Merging)
+	if lingering {
+		root = closedAndLingering(root)
+	}
+	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
+	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
+	}); err != nil {
+		t.Fatalf("record the pull request of %s: %v", key, err)
+	}
+	return r.track(issue)
+}
+
+// closedAndLingering is root as its close leaves a tree that lingers: done, its linger deadline an
+// hour away, and every member left where it stood (record.TreeLingers).
+func closedAndLingering(root record.Issue) record.Issue {
+	until := time.Now().Add(time.Hour)
+	root.Phase, root.Status, root.DispatchStatus, root.LingerUntil = phase.Done, "done", "done", &until
+	return root
+}
+
+// closeTree records the root of issue's tree closed and lingering (closedAndLingering). A case
+// calls it after the boot, on an issue seedUnderSecondRoot gave a root that stands open.
+func (r *dequeueRig) closeTree(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	member := readIssue(t, r.pool, issue.key)
+	if member == nil || member.Tree == issue.key {
+		t.Fatalf("the record holds %+v for %s, want a member of another root", member, issue.key)
+	}
+	root := readIssue(t, r.pool, member.Tree)
+	if root == nil {
+		t.Fatalf("the record holds no root %s for %s", member.Tree, issue.key)
+	}
+	putOutboxIssue(t, r.pool, r.records, closedAndLingering(*root))
+}
+
+// openPullRequest is issue's pull request open at the issue's head on main, as GitHub last read
+// it mergeable and clean, so the boot's start read applies nothing.
+func openPullRequest(issue dequeueIssue) record.PullRequest {
+	return record.PullRequest{State: record.PullRequestOpen, Issue: issue.key, Repo: startedAgainRepo,
+		Number: issue.number, Branch: claim.IssueBranch(issue.key), Base: "main", HeadSHA: issue.head, Failing: []string{},
+		Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}
+}
+
+// track makes issue one of the cases: GitHub serves its pull request open, the listener answers
+// that no session holds its merger's topic, and the boot waits for its start read.
+func (r *dequeueRig) track(issue dequeueIssue) dequeueIssue {
 	r.github.serve(issue)
 	r.listener.unheld(issue.topic)
 	r.issues = append(r.issues, issue)
 	return issue
+}
+
+// closePullRequest records issue's pull request closed at its head, as the record holds it once
+// GitHub's closed is applied (recordPullRequest).
+func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	r.recordPullRequest(t, issue, func(pr *record.PullRequest) { pr.State = record.PullRequestClosed })
+}
+
+// recordPullRequest writes the record of issue's pull request as change leaves it. A case calls it
+// after the boot, since the boot waits for its start read of every issue whose pull request the
+// record shows open.
+func (r *dequeueRig) recordPullRequest(t *testing.T, issue dequeueIssue, change func(*record.PullRequest)) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		pr, err := r.records.PullRequest(ctx, tx, issue.key)
+		if err != nil {
+			return err
+		}
+		if pr == nil {
+			return fmt.Errorf("the record holds no pull request for %s", issue.key)
+		}
+		change(pr)
+		return r.records.PutPullRequest(ctx, tx, *pr)
+	}); err != nil {
+		t.Fatalf("record the pull request of %s: %v", issue.key, err)
+	}
+}
+
+// leaveWorkflow records issue at backlog, a Dispatch status that takes it out of the workflow
+// (record.OutOfWorkflow), with its phase left where it stands. A case calls it after the boot, as
+// it calls recordPullRequest.
+func (r *dequeueRig) leaveWorkflow(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	recorded := readIssue(t, r.pool, issue.key)
+	if recorded == nil {
+		t.Fatalf("the record holds no issue %s", issue.key)
+	}
+	recorded.Status, recorded.DispatchStatus = "backlog", "backlog"
+	putOutboxIssue(t, r.pool, r.records, *recorded)
 }
 
 // claim is role's claim on key standing in state, which for a suspended claim is the idle
@@ -469,6 +640,13 @@ func (r *dequeueRig) await(t *testing.T, what string, condition func() bool) {
 // mark the case's count of reads starts from.
 func (r *dequeueRig) publish(t *testing.T, issue dequeueIssue, head string) int {
 	t.Helper()
+	return r.publishAs(t, r.cfg.Project+"-dequeued-"+issue.key, issue, head)
+}
+
+// publishAs is publish under eventID, so a second removal of one pull request is an event of its
+// own rather than the first one delivered again.
+func (r *dequeueRig) publishAs(t *testing.T, eventID string, issue dequeueIssue, head string) int {
+	t.Helper()
 	reads := r.github.reads(issue.number)
 	payload, err := json.Marshal(map[string]string{
 		"kind": "pr", "action": "dequeued", "repo": startedAgainRepo, "number": strconv.Itoa(issue.number),
@@ -482,7 +660,7 @@ func (r *dequeueRig) publish(t *testing.T, issue dequeueIssue, head string) int 
 		t.Fatalf("encode the dequeued payload: %v", err)
 	}
 	subject := fmt.Sprintf("notifications.github.%s.pr.%d", strings.ReplaceAll(startedAgainRepo, "/", "."), issue.number)
-	publishDaemonGrantEnvelope(t, r.js, subject, "github", r.cfg.Project+"-dequeued-"+issue.key, string(payload))
+	publishDaemonGrantEnvelope(t, r.js, subject, "github", eventID, string(payload))
 	return reads
 }
 
@@ -504,6 +682,46 @@ func (r *dequeueRig) dropped(t *testing.T, issue dequeueIssue, head, why string)
 	r.readsWere(t, issue, reads, 0)
 	r.nothingOwed(t, issue)
 	r.nothingPublished(t, issue)
+	r.nobodyWoken(t, issue)
+}
+
+// queuedBeforeItLeft holds that a read the workflow queued while issue merged at its head reads
+// nothing from GitHub, owes the merger nothing and wakes nobody once leave, run after the read is
+// queued and before it runs, has taken the issue out of merging; the read row's line names why.
+// The read waits behind an earlier one, since the issue's role-message lane runs one row at a
+// time: GitHub holds the read of a first removal of the pull request unanswered while a second
+// removal, an event of its own, queues its read and leave runs, and then answers it open. That
+// first read is the one read GitHub counts.
+func (r *dequeueRig) queuedBeforeItLeft(t *testing.T, issue dequeueIssue, leave func(*testing.T, dequeueIssue), why string) {
+	t.Helper()
+	release := r.github.holdRead(issue.number)
+	t.Cleanup(release)
+	reads := r.publish(t, issue, issue.head)
+	r.await(t, "GitHub holding the read of the first removal", func() bool {
+		return r.github.heldReads(issue.number) == 1
+	})
+	r.publishAs(t, r.cfg.Project+"-dequeued-again-"+issue.key, issue, issue.head)
+	r.await(t, "the second removal's read queued behind the held one", func() bool {
+		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 2
+	})
+	leave(t, issue)
+	release()
+	r.await(t, "both reads' rows to finish", func() bool {
+		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+	})
+	r.readsWere(t, issue, reads, 1)
+	if ended := r.logged(t, dequeueReadFinished, issue.key); len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), why) {
+		t.Fatalf("the read row's lines %q = %v, want one naming %s", dequeueReadFinished, ended, why)
+	}
+	r.nothingOwed(t, issue)
+	r.nothingPublished(t, issue)
+	r.nobodyWoken(t, issue)
+}
+
+// nobodyWoken holds that the record keeps no resume of issue and the runtime was never asked to
+// resume its merger.
+func (r *dequeueRig) nobodyWoken(t *testing.T, issue dequeueIssue) {
+	t.Helper()
 	if resumed, resumes := podResumes(t, r.pool, issue.key), len(resumesOf(r.rt, issue.merger)); resumed != 0 || resumes != 0 {
 		t.Fatalf("%d resumes are recorded for %s and the runtime resumed its merger %d times, want neither", resumed, issue.key, resumes)
 	}
@@ -539,14 +757,15 @@ func (r *dequeueRig) readsWere(t *testing.T, issue dequeueIssue, mark, want int)
 }
 
 // nothingOwed holds that the workflow wrote issue's merger no message: no line of the row's write,
-// and no row.
+// and no row of it written (outboxWrites), whether the row would still wait in the outbox or would
+// have run already, as a row whose issue has left merging runs, and is deleted, within milliseconds.
 func (r *dequeueRig) nothingOwed(t *testing.T, issue dequeueIssue) {
 	t.Helper()
 	if owed := r.logged(t, dequeueMessageOwed, issue.key); len(owed) != 0 {
 		t.Fatalf("the workflow owed %s's merger a message %v, want none", issue.key, owed)
 	}
-	if rows := r.rows(t, issue.key, record.OutboxKindMergeQueueRemoval); rows != 0 {
-		t.Fatalf("the outbox holds %d merge-queue removal rows of %s, want none", rows, issue.key)
+	if written := outboxWrites(t, r.pool, issue.key, record.OutboxKindMergeQueueRemoval); written != 0 {
+		t.Fatalf("%d merge-queue removal rows of %s were written, want none", written, issue.key)
 	}
 }
 
@@ -685,138 +904,6 @@ func (r *dequeueRig) phase(t *testing.T, key string) phase.Phase {
 	return issue.Phase
 }
 
-// dequeueAnswer is how GitHub answers the read of one pull request: open at its head, which is
-// what every pull request answers until its case says otherwise; merged; or a 502, as GitHub
-// answers while it is unavailable.
-type dequeueAnswer string
-
-const (
-	dequeueOpen        dequeueAnswer = "open"
-	dequeueMerged      dequeueAnswer = "merged"
-	dequeueUnavailable dequeueAnswer = "unavailable"
-)
-
-// dequeueGitHub is GitHub's REST API for acme/widgets as this test's daemon reads it: each case's
-// pull request, answered as its case sets it and counted at every read, with its reviews as none;
-// its list of open pull requests as empty; and the repository, and any other a launch reads, with
-// main its default branch. Anything else is answered 404 and logged, so a read the test did not
-// foresee is named in its output rather than reaching github.com.
-type dequeueGitHub struct {
-	url   string
-	mu    sync.Mutex
-	pulls map[int]*dequeuePull
-}
-
-// dequeuePull is one pull request as dequeueGitHub holds it: the issue's branch and the head it
-// stands at, its answer, and the reads of it and of its reviews so far.
-type dequeuePull struct {
-	issue  dequeueIssue
-	answer dequeueAnswer
-	reads  int
-	// reviewReads counts the reads of its reviews, the per-issue read's last call (readReviews).
-	reviewReads int
-}
-
-func newDequeueGitHub(t *testing.T) *dequeueGitHub {
-	t.Helper()
-	g := &dequeueGitHub{pulls: map[int]*dequeuePull{}}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && g.answered(w, r.URL.Path) {
-			return
-		}
-		t.Logf("the GitHub stand-in has no answer for %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
-	}})
-	return g
-}
-
-// serve makes GitHub hold issue's pull request, open at the issue's head.
-func (g *dequeueGitHub) serve(issue dequeueIssue) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.pulls[issue.number] = &dequeuePull{issue: issue, answer: dequeueOpen}
-}
-
-// answer makes GitHub answer every later read of pull request number as answer says.
-func (g *dequeueGitHub) answer(number int, answer dequeueAnswer) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.pulls[number].answer = answer
-}
-
-// reads is how many times GitHub was asked for pull request number.
-func (g *dequeueGitHub) reads(number int) int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.pulls[number].reads
-}
-
-// startRead is whether the per-issue read has made both its calls of pull request number: the
-// pull request, and then its reviews.
-func (g *dequeueGitHub) startRead(number int) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	pull := g.pulls[number]
-	return pull.reads >= 1 && pull.reviewReads >= 1
-}
-
-// answered writes the stand-in's answer to a GET of path, and says whether it had one.
-func (g *dequeueGitHub) answered(w http.ResponseWriter, path string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	rest, ours := strings.CutPrefix(path, "/repos/"+startedAgainRepo)
-	if !ours {
-		other, isRepository := strings.CutPrefix(path, "/repos/")
-		if parts := strings.Split(other, "/"); !isRepository || len(parts) != 2 {
-			return false
-		}
-		return g.write(w, map[string]string{"full_name": other, "default_branch": "main"})
-	}
-	switch {
-	case rest == "":
-		return g.write(w, map[string]string{"full_name": startedAgainRepo, "default_branch": "main"})
-	case rest == "/pulls":
-		return g.write(w, []any{})
-	}
-	numbered, isPull := strings.CutPrefix(rest, "/pulls/")
-	number, tail, _ := strings.Cut(numbered, "/")
-	n, err := strconv.Atoi(number)
-	pull := g.pulls[n]
-	if !isPull || err != nil || pull == nil {
-		return false
-	}
-	switch tail {
-	case "reviews":
-		pull.reviewReads++
-		return g.write(w, []any{})
-	case "":
-		pull.reads++
-	default:
-		return false
-	}
-	answer := map[string]any{
-		"number": n, "state": "open", "merged": false, "html_url": fmt.Sprintf("https://github.com/%s/pull/%d", startedAgainRepo, n),
-		"mergeable": true, "mergeable_state": "clean", "base": map[string]string{"ref": "main"},
-		"head": map[string]string{"ref": claim.IssueBranch(pull.issue.key), "sha": pull.issue.head},
-	}
-	switch pull.answer {
-	case dequeueMerged:
-		answer["state"], answer["merged"], answer["merge_commit_sha"] = "closed", true, dequeueHead(7000+n)
-	case dequeueUnavailable:
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, `{"message":"Server Error"}`)
-		return true
-	}
-	return g.write(w, answer)
-}
-
-// write encodes value as the stand-in's answer, and says it answered.
-func (g *dequeueGitHub) write(w http.ResponseWriter, value any) bool {
-	_ = json.NewEncoder(w).Encode(value)
-	return true
-}
-
 // dequeueListener is the Envoy listener as this test's daemon reaches it: the package's
 // noticeListener, which takes every publish, with the 404 the listener answers for a role topic no
 // live session holds (writeRoleHolderError, packages/envoy/cmd/listener/api.go, which notify
@@ -830,14 +917,27 @@ type dequeueListener struct {
 	refusals map[string]int
 }
 
-// newDequeueListener starts the listener and returns it with its URL, which the daemon's
-// configuration names as Envoy's.
-func newDequeueListener(t *testing.T) (*dequeueListener, string) {
+// dequeueEnvoyToken is the bearer the daemon of newDequeueRig presents to its Envoy listener.
+const dequeueEnvoyToken = "envoy-test-token"
+
+// newDequeueListener starts the listener and names it in cfg as Envoy's, with dequeueEnvoyToken as
+// the bearer the daemon presents to it. A request without that bearer is another process's: it is
+// answered 404 and logged (fromTheDaemon), and the listener records nothing of it.
+func newDequeueListener(t *testing.T, cfg *config.Config) *dequeueListener {
 	t.Helper()
 	l := &dequeueListener{notices: newNoticeListener(), held: map[string]bool{}, refusals: map[string]int{}}
-	server := httptest.NewServer(l)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, dequeueEnvoyToken) {
+			l.ServeHTTP(w, r)
+		}
+	}))
 	t.Cleanup(server.Close)
-	return l, server.URL
+	cfg.EnvoyURL = server.URL
+	cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
+	if err := os.WriteFile(cfg.EnvoyTokenFile, []byte(dequeueEnvoyToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write the Envoy token: %v", err)
+	}
+	return l
 }
 
 // unheld makes the listener answer every publish to topic as it answers one to a role no live
