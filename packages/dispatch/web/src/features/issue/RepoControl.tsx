@@ -53,10 +53,11 @@ const CLEAR_EXPLAINS = "Clear it, and the issue inherits a repository again";
  *  row of Details draws in the box's place: the box as `AskCard`'s answer box draws them - the
  *  page's hairline rule, its paper and its ink, the repository the issue inherits (the
  *  placeholder) in the quiet grey, and `main`'s focus rule, the application's one focus indicator
- *  - the clear control, drawn on the box's paper, in the muted grey that turns ink under the
- *  pointer, "None" in the quiet grey every empty row of Details draws, which turns muted under the
- *  pointer as the page's quiet controls do, and the repository's text as the box draws it: the
- *  issue's own in the ink, and an inherited one in the quiet grey of the placeholder. */
+ *  - the clear control, drawn on the box's paper, or in a row of Details on the row's own ground
+ *  under the box, in the muted grey that turns ink under the pointer, "None" in the quiet grey
+ *  every empty row of Details draws, which turns muted under the pointer as the page's quiet
+ *  controls do, and the repository's text as the box draws it: the issue's own in the ink, and an
+ *  inherited one in the quiet grey of the placeholder. */
 const ON_PAGE = {
   box: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
   clear: `${pageMutedText} hover:text-page-ink`,
@@ -117,10 +118,15 @@ export function repoControlName(issueKey: string): string {
  * inherits (its placeholder) in the quiet grey; the clear control is the muted grey that turns
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
- * `main`'s 200 px, narrows to its line and is the full width of a row of Details, and the text a
- * row draws in its place breaks anywhere. Escape in the box is the box's alone there: marked
- * `defaultPrevented`, it passes by the dialog binding of a sheet around the box, as Details is on
- * a phone, which a second Escape, pressed outside the box, closes.
+ * `main`'s 200 px, narrows to its line, and the text a row draws in its place breaks anywhere. In
+ * a row of Details the box fills the row's value at every width and draws no datalist arrow, so a
+ * name that fits the value shows whole, and a longer one scrolls in the box as any one-line box
+ * does. Its clear control is drawn there on the line under the box, at the line's start, and not
+ * over the box's right end: below 1280 px `styles.css` sets every input in 16 px and gives every
+ * button a 44 px minimum width, which leaves a name that fits the value no room beside a control
+ * laid over the box. Escape in the box is the box's alone there: marked `defaultPrevented`, it
+ * passes by the dialog binding of a sheet around the box, as Details is on a phone, which a
+ * second Escape, pressed outside the box, closes.
  *
  * There a row of Details draws its value as text rather than in the box, as the other rows of
  * Details do: a text box holds its value on one line and cuts a long one at its width, while the
@@ -270,21 +276,56 @@ export function RepoControl({
       focusHeld.current = true;
     },
   };
-  // The width of the place the box is drawn in: `main`'s keeps its 200 px; inside `NoTooltips`
-  // nothing keeps its width, the box at most 200 px and narrowing to its line, and in a row of
-  // Details as wide as the row, or the repository's text as wide as its words.
-  const placeWidth =
+  // The place the box is drawn in, its width and its flow: `main`'s keeps its 200 px; inside
+  // `NoTooltips` nothing keeps its width, the box at most 200 px and narrowing to its line, and in
+  // a row of Details as wide as the row, or the repository's text as wide as its words. In a row
+  // of Details the place wraps, so the box's clear control, drawn after the box at the place's
+  // full width, goes onto the line under it.
+  const placeLayout =
+    page === null
+      ? "inline-flex shrink-0"
+      : showsText
+        ? "inline-flex min-w-0 max-w-full"
+        : inDetails
+          ? "flex w-full min-w-0 max-w-full flex-wrap gap-y-1"
+          : "inline-flex w-[200px] min-w-0 max-w-full";
+  // The line's layout: `main`'s keeps its width; inside `NoTooltips` it narrows to its row and
+  // wraps, and in a row of Details it is as wide as the row's value as well. That value is a flex
+  // row, in which a line of no width of its own is only as wide as what it holds, so the place's
+  // `w-full` and the box's would fill no more than that, and the box would fall back to a text
+  // box's own width, which cuts a name the value has room for.
+  const lineLayout =
     page === null
       ? "shrink-0"
-      : showsText
-        ? "min-w-0 max-w-full"
-        : inDetails
-          ? "w-full min-w-0 max-w-full"
-          : "w-[200px] min-w-0 max-w-full";
+      : inDetails
+        ? "w-full min-w-0 max-w-full flex-wrap"
+        : "min-w-0 max-w-full flex-wrap";
+  // The box's width, and in a row of Details the room it gives a name: `main`'s 200 px, and
+  // inside `NoTooltips` its place's width. In a row of Details the box draws no datalist arrow
+  // (Chromium's `::-webkit-calendar-picker-indicator`, some 22 px of a narrow row's box), so a
+  // name that fits the row's value shows whole; the list stays bound, and Chromium still opens
+  // its suggestions on a click in the box, on ArrowDown and as the reader types. Its padding is
+  // `pl-1.5 pr-1.5` there whether or not the issue has a repository of its own, since the clear
+  // control is on the line under it (`clearPlace`). Elsewhere the box keeps `pr-8` beside the
+  // clear control, which keeps the name off the × laid over the box's right end.
+  const boxWidth =
+    page === null
+      ? "w-[200px]"
+      : inDetails
+        ? "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden"
+        : "w-full min-w-0";
+  // Where the clear control is drawn: `main`'s, and the one outside a row of Details, over the
+  // box's right end, 32 px wide and as tall as the box. In a row of Details it is in the flow after
+  // the box, on the line under it at the line's start: below 1280 px `styles.css` sets every input
+  // in 16 px and gives every button a 44 px minimum width, so a control over the box takes 44 px
+  // of a row's box and leaves a name that fits the row's value no room beside it. There it keeps
+  // a 44 px target below `md`, as that minimum makes it anyway, and from `md` the size it has over
+  // the box: 32 px wide and the box's 28 px tall where that minimum no longer holds.
+  const clearPlace = inDetails
+    ? "inline-flex min-h-11 min-w-11 md:min-h-7 md:min-w-8"
+    : "absolute inset-y-0 right-0 inline-flex w-8";
   return (
-    <div
-      className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
-    >
+    <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
           {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
@@ -306,7 +347,7 @@ export function RepoControl({
         // `relative` is load-bearing: the description is `sr-only`, which is absolutely
         // positioned, and with no positioned ancestor it is laid out against the page and makes
         // it as wide as its own text at a phone width.
-        <span className={`relative inline-flex ${placeWidth} items-center`} ref={place}>
+        <span className={`relative ${placeLayout} items-center`} ref={place}>
           {showsText && resolvedRepo !== null ? (
             // The repository in the box's font, so that the box opened in its place shows it as
             // the text did, breaking anywhere so that a name with no space in it wraps too.
@@ -329,7 +370,7 @@ export function RepoControl({
                 aria-invalid={refused || undefined}
                 aria-label={repoControlName(issueKey)}
                 autoComplete="off"
-                className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
+                className={`min-h-11 ${boxWidth} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}
                 list={suggestionsId}
                 onBlur={(event) => {
@@ -388,7 +429,7 @@ export function RepoControl({
                 <button
                   aria-describedby={page === null ? undefined : clearDescriptionId}
                   aria-label={`Clear the repository of ${issueKey}`}
-                  className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
+                  className={`${clearPlace} items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
                   disabled={disabled}
                   // Inside `NoTooltips` the control holds the focus as the box does: a focus
                   // moved back into the box leaves both drawn, and one that leaves the box's

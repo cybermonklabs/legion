@@ -2,19 +2,38 @@ import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
 import {
-  borderTransparent,
-  dangerText,
-  inputClasses,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonText,
-  textMutedHoverToSecondary,
-  textSecondaryOnSurface,
+  focusBorder,
+  focusVisibleRing,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
 } from "../../theme/classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+
+/**
+ * The colours of each editor and its buttons, the new issue page's, which alone draws them, in a
+ * row of Details: the box as the page's other boxes in Details are drawn (`RepoControl.tsx`'s box,
+ * `AskCard.tsx`'s answer box) - the page's hairline rule, its paper and its ink, the placeholder in
+ * the quiet grey, and `main`'s focus rule, the application's one focus indicator - and the route's
+ * refusal in the failed red. Save is the page's bordered action (`ApprovalChip.tsx`'s): its rule,
+ * its paper and the muted grey, which turns ink under the pointer while Save takes a press and
+ * quiet while it refuses one. Cancel is the page's quiet act (`AskCard.tsx`'s): the quiet grey,
+ * which turns muted under the pointer while Cancel takes a press. `classes.ts` registers each
+ * pair of these in `CONTRAST_CHECKS`, which `shared-controls.tooltips.test.tsx` holds.
+ */
+const ON_PAGE = {
+  box: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  cancel: `${pageQuietText} not-refused:hover:text-page-muted`,
+  failure: pageFailedText,
+  save: `${pageLineBorder} ${pagePaperBg} ${pageMutedText} not-refused:hover:text-page-ink refused:text-page-quiet`,
+} as const;
 
 /**
  * A property of the issue the identity block opens an editor for, one editor at a time: the
@@ -61,13 +80,13 @@ export function IssueFieldForms({
   return null;
 }
 
-/** The buttons every editor of an issue's fields ends on: save, then cancel. The editors a later
- *  part adds share these, so every editor draws one pair of buttons and none can drift apart.
- *  `saveLabel` is the editor's own word for its save, drawn on Save whether or not a save is
- *  out: a save that is out only makes Save a button that refuses a press (`saving`). Each button
- *  that refuses is `aria-disabled` with its press ignored, never `disabled`: a `disabled` button
- *  drops the focus to the body in a browser, so a reader who pressed Save, or Enter in the box,
- *  would lose their place. */
+/** The buttons every editor of an issue's fields ends on: save, then cancel. Every editor draws
+ *  this one pair, so no two editors' buttons can drift apart. `saveLabel` is the editor's own word
+ *  for its save, drawn on Save whether or not a save is out: a save that is out only makes Save a
+ *  button that refuses a press (`saving`). Each button that refuses is `aria-disabled` with its
+ *  press ignored, never `disabled`: a `disabled` button drops the focus to the body in a browser,
+ *  so a reader who pressed Save, or Enter in the box, would lose their place. Each draws `main`'s
+ *  focus ring, the application's one focus indicator. */
 export function FormActions({
   cancel,
   saveLabel,
@@ -90,7 +109,7 @@ export function FormActions({
     <>
       <button
         aria-disabled={saving || undefined}
-        className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+        className={`min-h-11 rounded border px-2 py-1 text-sm font-medium outline-none refused:cursor-not-allowed focus-visible:ring-2 md:min-h-8 ${ON_PAGE.save} ${focusVisibleRing}`}
         onClick={(event) => {
           // A submit button: Enter in a field of the form clicks it too, and a click whose
           // default is prevented submits nothing.
@@ -103,7 +122,7 @@ export function FormActions({
       </button>
       <button
         aria-disabled={waiting || undefined}
-        className={`min-h-11 rounded border px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary} ${secondaryButtonDisabledText}`}
+        className={`min-h-11 rounded px-2 py-1 text-sm font-medium outline-none refused:cursor-not-allowed focus-visible:ring-2 md:min-h-8 ${ON_PAGE.cancel} ${focusVisibleRing}`}
         onClick={() => {
           if (!waiting) cancel();
         }}
@@ -116,8 +135,8 @@ export function FormActions({
   );
 }
 
-/** Where the issue's messages go. The sentence that says what a route is and what it is not was
- *  a tooltip: it is drawn here, where a reader is deciding what to set. */
+/** Where the issue's messages go: the box for the route, its buttons, and the words that say what
+ *  the box takes, drawn here, where a reader is deciding what to set. */
 function RouteForm({
   drafts,
   isClosed,
@@ -147,16 +166,14 @@ function RouteForm({
   };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
-      <label
-        className={`text-sm font-medium ${textSecondaryOnSurface}`}
-        htmlFor="issue-route"
-        {...pageChrome}
-      >
+      {/* The row of Details this editor is drawn in draws the property's label already, so this
+          one is for a screen reader alone: it names the box, and the row's words are drawn once. */}
+      <label className="sr-only" htmlFor="issue-route" {...pageChrome}>
         {PROPERTY_LABELS.route}
       </label>
       <input
         aria-describedby="issue-route-help"
-        className={`w-full rounded px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
+        className={`w-full min-w-0 rounded-sm border px-2 py-1 text-sm outline-none focus-visible:ring-2 ${ON_PAGE.box} ${focusVisibleRing}`}
         disabled={isClosed}
         id="issue-route"
         onChange={(event) => drafts.writeRoute(event.target.value)}
@@ -183,7 +200,7 @@ function RouteForm({
       {/* What the box takes, in words (`HELP_LINES.route_shape`): a refusal while the draft is
           one Dispatch would not take, and the box's description otherwise. */}
       <span
-        className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
+        className={drafts.routeIsValid ? "sr-only" : `text-sm ${ON_PAGE.failure}`}
         id="issue-route-help"
         {...pageChrome}
       >
@@ -223,16 +240,13 @@ function ParentForm({
   };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
-      <label
-        className={`text-sm font-medium ${textSecondaryOnSurface}`}
-        htmlFor="issue-parent"
-        {...pageChrome}
-      >
+      {/* Named for a screen reader alone, as the route box is: the row draws the label. */}
+      <label className="sr-only" htmlFor="issue-parent" {...pageChrome}>
         {PROPERTY_LABELS.parent}
       </label>
       <input
         aria-describedby="issue-parent-help"
-        className={`w-full rounded px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
+        className={`w-full min-w-0 rounded-sm border px-2 py-1 text-sm outline-none focus-visible:ring-2 ${ON_PAGE.box} ${focusVisibleRing}`}
         disabled={isClosed}
         id="issue-parent"
         onChange={(event) => drafts.writeParent(event.target.value)}

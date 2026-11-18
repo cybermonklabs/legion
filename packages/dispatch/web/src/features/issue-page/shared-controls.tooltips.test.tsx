@@ -2209,6 +2209,7 @@ const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",
 ] as const;
 
