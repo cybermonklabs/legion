@@ -259,6 +259,9 @@ func chromiumNavigationFailure(stderr string) string {
 	return ""
 }
 
+// tlsEnvironment is base with a client's additions applied: NAME=value sets NAME in place of base's
+// value, and a bare NAME drops NAME from base, for a variable that would send a credential of the
+// pod's to a test site (redis-cli's REDISCLI_AUTH).
 func tlsEnvironment(base, additions []string) []string {
 	out := make([]string, 0, len(base)+len(additions))
 	for _, pair := range base {
@@ -267,12 +270,17 @@ func tlsEnvironment(base, additions []string) []string {
 			out = append(out, pair)
 		}
 	}
-	return append(out, additions...)
+	for _, pair := range additions {
+		if strings.Contains(pair, "=") {
+			out = append(out, pair)
+		}
+	}
+	return out
 }
 
 func tlsEnvironmentOverrides(name string, additions []string) bool {
 	for _, pair := range additions {
-		if added, _, ok := strings.Cut(pair, "="); ok && added == name {
+		if added, _, _ := strings.Cut(pair, "="); added == name {
 			return true
 		}
 	}
@@ -437,53 +445,105 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 	}
 }
 
-// workerTLSClients is the complete TLS client inventory the worker image exposes. The probe and
-// its fakes derive their client names and timeout bounds from this list, so neither can silently
-// fall out of tests.
+// workerTLSClients is the worker image's TLS client inventory. It is complete by trust path, not
+// by program: for each pair of a TLS stack and the CA store it trusts that a program on a role's
+// PATH uses, at least one client here is held to the chains on every image. A program that carries
+// its own TLS stack or CA bundle is probed itself. Every other program that links a TLS stack is
+// named below under the probed client that shares its pair. The probe and its fakes derive their
+// client names and timeout bounds from this list, so neither can silently fall out of tests.
 //
-// wget, git, go and kubectl are floor clients, held to the chains on every image. wget, go and
-// kubectl are on the toolchain row of the floor every deployment's image is held to
-// (packages/daemon/internal/capabilities/image.go); git is on no row, but every issue pod runs
-// `legion workspace-init provision` on the image in its workspace-init container, and that command
-// needs git on PATH (provisioningTools). wget and git matter because they link GnuTLS, a TLS
-// library no other client here uses: GNU wget directly, and git through its https transport,
-// git-remote-https, which links libcurl's GnuTLS build where curl links OpenSSL. go and kubectl are
-// here because each reaches a URL a role names and verifies it through Go's crypto/x509 system
-// roots, the path gh takes: `go install <module>@<version>` and `go get` with GOPROXY=direct fetch
-// `https://<host>/<path>?go-get=1` from the module path's host, and `kubectl apply -f https://…`
-// and `kubectl --server` reach the host the role gives.
+// The census that finds them takes the first program of each name on a role's PATH,
+// /opt/legion/bin:/opt/legion/pi-envoy/bin:/opt/omp/bin:/opt/codegraph/bin:/usr/local/bin:/usr/bin:/bin,
+// resolves it through its links, and reads the file it reaches, as uid 1000:
+//
+//   - `ldd <file>` names a linked TLS library (libssl, libgnutls, libnss3);
+//   - `go version -m <file>` names a Go program, and
+//     `grep -a -F 'crypto/tls.(*Conn).Handshake' <file>` says whether it links Go's crypto/tls;
+//   - `grep -a -E 'rustls|BoringSSL|OpenSSL [0-9]' <file>` finds a statically linked stack;
+//   - a script runs its `#!` interpreter, which the census reads in its place.
+//
+// It ran on 2026-11-18 in a builds Job on the image of c665b75abc16,
+// ghcr.io/cybermonklabs/legion-worker@sha256:25d2edfc2a8c1bb7c3cb83689456f8e2892d91a7fcd544f9cf6719528395c5fe.
+// Perl has no TLS module in the image (IO::Socket::SSL, Net::SSLeay and LWP::Protocol::https are
+// absent), and the system python3 has no certifi, requests, urllib3 or httpx. So a Perl script on
+// PATH opens no TLS connection itself, and a Python script opens one only through python3's ssl
+// module: OpenSSL with OpenSSL's default store.
+//
+// The pairs, the clients probed for each, and the programs named under them:
+//
+//   - OpenSSL (libssl.so.3) with OpenSSL's default store, /usr/lib/ssl/cert.pem, which is Debian's
+//     bundle: curl, python3 and redis-cli on every image, and socat where it is on PATH. Named
+//     under them: redis-benchmark; the libpq programs pg_wrapper runs (psql, pg_dump, pg_dumpall,
+//     pg_restore, pg_basebackup, pg_isready, pg_receivewal, pg_recvlogical, pgbench, createdb,
+//     createuser, dropdb, dropuser, clusterdb, reindexdb, vacuumdb and vacuumlo), which verify
+//     against that store only where a role names sslrootcert=system (psql, below); and every
+//     Python script on PATH.
+//   - GnuTLS with Debian's bundle, /etc/ssl/certs/ca-certificates.crt: wget, and git, whose https
+//     transport, git-remote-https, links libcurl's GnuTLS build (curl itself links OpenSSL).
+//   - Go's crypto/tls with the system roots crypto/x509 reads: gh, go and kubectl. Named under
+//     them: legion, agent-secrets and gopls. yq and gofmt are Go programs that do not link
+//     crypto/tls.
+//   - A stack or a CA bundle of the program's own, so each of these is probed itself: node, and
+//     the CodeGraph runtime (/opt/codegraph/node, a link to the same Node), with Node's bundled
+//     stack and roots, the pair a `#!/usr/bin/env node` script uses too; bun, and omp, which is a
+//     Bun program, with BoringSSL and Bun's roots; uv and mise, which link rustls; the AWS CLI, which
+//     bundles its own Python and botocore's own CA bundle (awscli/botocore/cacert.pem in its dist
+//     tree); gcloud and bq, which bundle their own Python and are pointed at Debian's bundle; az,
+//     whose Python is its own and whose wrapper points requests at Debian's bundle; and Chromium,
+//     with NSS and its own root store.
+//
+// wget, git, go, kubectl and redis-cli are floor clients, held to the chains on every image.
+// wget, go, kubectl and redis-cli are on the toolchain row of the floor every deployment's image is
+// held to (packages/daemon/internal/capabilities/image.go); git is on no row, but every issue pod
+// runs `legion workspace-init provision` on the image in its workspace-init container, and that
+// command needs git on PATH (provisioningTools). go and kubectl are probed although gh holds their
+// pair, because each reaches a URL a role names: `go install <module>@<version>` and `go get` with
+// GOPROXY=direct fetch `https://<host>/<path>?go-get=1` from the module path's host, and
+// `kubectl apply -f https://…` and `kubectl --server` reach the host the role gives. redis-cli is
+// probed although curl and python3 hold its pair for the same reason: `redis-cli --tls` reaches the
+// host and port a role gives.
 //
 // gcloud, bq, az, mise and socat are probed where they are on PATH and reported absent otherwise
 // (tlsOptionalClient). None is on the floor, so an image built on another base may not carry it.
 // Such an image may also carry this image's /usr/local/bin links to gcloud, bq and az without the
 // /opt trees those links point into, as LINUX's worker-lean, which copies /usr/local/bin onto
-// Ubuntu, may; socat lives in /usr/bin, which worker-lean does not copy.
-// Where one is on PATH, it must refuse both chains and reach the control, as every other client
-// must. mise is here because its http: backend downloads from any URL a role names, with its own
-// HTTP client verifying against the system roots, and socat because its OPENSSL: address verifies
-// its peer against OpenSSL's default store.
+// Ubuntu, may; socat lives in /usr/bin, which worker-lean does not copy. Where one is on PATH, it
+// must refuse both chains and reach the control, as every other client must. mise is here because
+// its http: backend downloads from any URL a role names, with its own HTTP client verifying against
+// the system roots, and socat because its OPENSSL: address verifies its peer against OpenSSL's
+// default store.
 //
-// Deliberately not here: busybox's wget and ssl_client applets, which do no certificate
-// validation at all (busybox's own help says "TLS certificate validation not implemented"), and
-// which the image makes reachable only through the busybox binary, as `busybox wget`: Debian's
-// busybox package installs no applet links, so the image's `wget` is GNU wget, the one the
-// capability check's toolchain row requires on PATH, and an applet that became that `wget` would
-// accept the compromised chains and fail the probe. gsutil, which the image does not put on PATH:
-// it stays inside /opt/google-cloud-sdk/bin. psql (PostgreSQL 18.6's client, on the toolchain
-// row), which cannot reach a certificate verdict at an HTTPS site: its TLS starts after Postgres's
-// SSLRequest, which the sites answer as HTTP ("received invalid response to SSL negotiation" at the
-// emSign site and at example.com), and its direct mode (sslnegotiation=direct) needs the postgresql
-// ALPN protocol, which the emSign site refuses before any certificate check ("SSL error: unexpected
-// eof while reading") and example.com does not negotiate ("direct SSL connection was established
-// without ALPN protocol negotiation extension"). Its default sslmode=prefer verifies no
-// certificate, and its verify-ca and verify-full modes read ~/.postgresql/root.crt unless a role
-// names sslrootcert=system, which is OpenSSL's default store, the store curl, python3 and socat are
-// probed through. And openssl's CLI (OpenSSL 3.5.7, /usr/bin/openssl): `openssl s_client`
-// completes the handshake whatever its verification says and exits 0 (against the emSign site it
-// printed "Verify return code: 20 (unable to get local issuer certificate)" and exited 0), so it
-// refuses nothing a probe could read, and with -verify_return_error it reads OpenSSL's default
-// store, the one curl, python3 and socat are probed through. psql and openssl were measured on
-// 2026-11-18.
+// Deliberately not here, each with what was measured:
+//
+//   - busybox's wget and ssl_client applets, which do no certificate validation at all (busybox's
+//     own help says "TLS certificate validation not implemented"), and which the image makes
+//     reachable only through the busybox binary, as `busybox wget`: Debian's busybox package
+//     installs no applet links, so the image's `wget` is GNU wget, the one the capability check's
+//     toolchain row requires on PATH. An applet that became that `wget` would stop at --no-hsts,
+//     an option it does not know, so the probe would fail it as unable to verify a refusal; it
+//     never reaches the chains (measured on 2026-11-18).
+//   - gsutil, which the image does not put on PATH: it stays inside /opt/google-cloud-sdk/bin.
+//   - psql (PostgreSQL 18.6's client, on the toolchain row) and the other libpq programs above,
+//     which cannot reach a certificate verdict at an HTTPS site: libpq's TLS starts after
+//     Postgres's SSLRequest, which the sites answer as HTTP ("received invalid response to SSL
+//     negotiation" at the emSign site and at example.com), and its direct mode
+//     (sslnegotiation=direct) needs the postgresql ALPN protocol, which the emSign site refuses
+//     before any certificate check ("SSL error: unexpected eof while reading") and example.com
+//     does not negotiate ("direct SSL connection was established without ALPN protocol
+//     negotiation extension"). Its default sslmode=prefer verifies no certificate, and its
+//     verify-ca and verify-full modes read ~/.postgresql/root.crt unless a role names
+//     sslrootcert=system, which is OpenSSL's default store, the store curl, python3, redis-cli and
+//     socat are probed through. Measured with psql on 2026-11-18.
+//   - openssl's CLI (OpenSSL 3.5.7, /usr/bin/openssl): `openssl s_client` completes the handshake
+//     whatever its verification says and exits 0 (against the emSign site it printed "Verify
+//     return code: 20 (unable to get local issuer certificate)" and exited 0), so it refuses
+//     nothing a probe could read, and with -verify_return_error it reads OpenSSL's default store,
+//     the one curl, python3, redis-cli and socat are probed through. Measured on 2026-11-18.
+//   - BIND's dig, delv, host, nslookup, mdig and nsupdate, which link libssl for DNS over TLS and
+//     over HTTPS but give no verdict at the sites: `dig +https`, `+tls` and `+tls +tls-ca` each
+//     gave "end of file" or "communications error" at every site (measured on 2026-11-18).
+//   - redis-check-aof, redis-check-rdb and dnstap-read, which link libssl but read local files and
+//     open no connection.
 var workerTLSClients = []tlsClientSpec{
 	tlsCommandClientSpec("node", tlsDefaultProbeTimeout, "node", func(tlsSite) []string { return []string{"--input-type=module", "--eval", tlsFetchProgram} }, nil),
 	tlsCommandClientSpec("bun", tlsDefaultProbeTimeout, "bun", func(tlsSite) []string { return []string{"--eval", tlsFetchProgram} }, nil),
@@ -554,6 +614,16 @@ var workerTLSClients = []tlsClientSpec{
 			"KUBERNETES_SERVICE_PORT=",
 		}
 	}),
+	// redis-cli's TLS connection to the site's host and port, with the host as its SNI name, the
+	// way `redis-cli --tls -h <host> -p <port>` reaches a Redis server a role names. No site speaks
+	// Redis, so redis-cli fails at the control too, past the handshake; redisResponseSeen reads
+	// that answer. REDISCLI_AUTH is dropped from its environment: redis-cli sends that variable as
+	// AUTH to the server it reaches, here a test site (measured on 2026-11-18 at example.com with a
+	// dummy value set, redis-cli 8.0.2 printed "I/O error" for the AUTH before its protocol error).
+	tlsCommandClientSpec("redis-cli", tlsDefaultProbeTimeout, "redis-cli", func(site tlsSite) []string {
+		host, port := tlsSiteHostPort(site)
+		return []string{"--tls", "--sni", host, "-h", host, "-p", port, "PING"}
+	}, redisResponseSeen, "REDISCLI_AUTH"),
 	// gcloud's compute call, with the compute endpoint at the site. `gcloud storage` is not the
 	// form because it retried for 35-41 s before it answered.
 	tlsOptionalClientSpec("gcloud", tlsDefaultProbeTimeout, gcloudResponseSeen, false, func(site tlsSite, stateDir string) ([]string, []string) {
@@ -594,12 +664,8 @@ var workerTLSClients = []tlsClientSpec{
 	// it completes the handshake, sends nothing and exits. It exits 0 on the control, so, as curl,
 	// it needs no response marker, and it keeps no state.
 	tlsOptionalClientSpec("socat", tlsDefaultProbeTimeout, nil, false, func(site tlsSite, _ string) ([]string, []string) {
-		address := tlsSiteURL(site)
-		port := address.Port()
-		if port == "" {
-			port = "443"
-		}
-		return []string{"-u", "-", "OPENSSL:" + address.Hostname() + ":" + port}, nil
+		host, port := tlsSiteHostPort(site)
+		return []string{"-u", "-", "OPENSSL:" + host + ":" + port}, nil
 	}),
 	{
 		name: "chromium", timeout: tlsChromiumProbeTimeout,
@@ -635,6 +701,17 @@ func chromiumTLSArgs(site tlsSite) []string {
 func tlsSiteURL(site tlsSite) *url.URL {
 	parsed, _ := url.Parse(site.url)
 	return parsed
+}
+
+// tlsSiteHostPort is the host and port of site's URL, the port 443 where the URL names none, as
+// no tlsSites URL does.
+func tlsSiteHostPort(site tlsSite) (host, port string) {
+	address := tlsSiteURL(site)
+	port = address.Port()
+	if port == "" {
+		port = "443"
+	}
+	return address.Hostname(), port
 }
 
 // imageTLSClients returns the image's TLS-capable programs. The gh wrapper manages worker tokens,
@@ -726,4 +803,14 @@ var goGetAnswer = regexp.MustCompile(`go-get=1: (?:[1-5][0-9][0-9]\b|no go-impor
 
 func goResponseSeen(detail string) bool {
 	return goGetAnswer.MatchString(detail)
+}
+
+// redisResponseSeen reads an answer redis-cli got past the handshake. The control answers its
+// PING with HTTP, which redis-cli names a reply of no type it knows ("Error: Protocol error, got
+// "H" as reply type byte"), and a compromised site whose chain it accepted closes the connection
+// ("Error: Server closed the connection", measured on 2026-11-18 with --insecure). A refused chain
+// is "Could not connect to Redis at <host>:443: SSL_connect failed: certificate verify failed"
+// instead.
+func redisResponseSeen(detail string) bool {
+	return strings.Contains(detail, "Protocol error") || strings.Contains(detail, "Server closed the connection")
 }

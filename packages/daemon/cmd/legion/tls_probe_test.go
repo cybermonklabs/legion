@@ -240,6 +240,7 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 		{"git", tlsDefaultProbeTimeout, false},
 		{"go", tlsDefaultProbeTimeout, false},
 		{"kubectl", tlsDefaultProbeTimeout, false},
+		{"redis-cli", tlsDefaultProbeTimeout, false},
 		{"gcloud", tlsDefaultProbeTimeout, true},
 		{"bq", tlsBigQueryProbeTimeout, true},
 		{"az", tlsDefaultProbeTimeout, true},
@@ -348,7 +349,7 @@ func TestWorkerTLSInventoryHoldsRedisCLI(t *testing.T) {
 }
 
 // imageFloorTLSClients returns the image's command clients that are not optional, by name, each of
-// wget, git, go and kubectl present.
+// wget, git, go, kubectl and redis-cli present.
 func imageFloorTLSClients(t *testing.T, workDir, stateDir string) map[string]tlsCommandClient {
 	t.Helper()
 	clients := map[string]tlsCommandClient{}
@@ -357,7 +358,7 @@ func imageFloorTLSClients(t *testing.T, workDir, stateDir string) map[string]tls
 			clients[command.name()] = command
 		}
 	}
-	for _, name := range []string{"wget", "git", "go", "kubectl"} {
+	for _, name := range []string{"wget", "git", "go", "kubectl", "redis-cli"} {
 		if _, ok := clients[name]; !ok {
 			t.Fatalf("imageTLSClients() has no %s command client", name)
 		}
@@ -463,6 +464,24 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 			if got := envValue(env, name); got != "" {
 				t.Errorf("kubectl at %s has %s=%q, want it empty so client-go never takes the in-cluster configuration", site.name, name, got)
 			}
+		}
+	}
+}
+
+// redis-cli connects to the site's host, names that host in its SNI, and uses the https port,
+// since no site's URL names another; it sends PING, which no site answers as Redis. It sends
+// REDISCLI_AUTH as AUTH to the server it reaches, here a test site, so the pod's REDISCLI_AUTH must
+// not reach redis-cli; every other variable of the pod's does.
+func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
+	client := imageFloorTLSClients(t, "", t.TempDir())["redis-cli"]
+	pod := []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
+	for site, host := range tlsSiteHosts {
+		program, args, extraEnv := client.command(site)
+		if want := []string{"--tls", "--sni", host, "-h", host, "-p", "443", "PING"}; program != "redis-cli" || !slices.Equal(args, want) {
+			t.Errorf("redis-cli command for %s = %s %q, want redis-cli %q", site.name, program, args, want)
+		}
+		if env, want := tlsEnvironment(pod, extraEnv), []string{"HOME=/home/legion", "PATH=/usr/bin"}; !slices.Equal(env, want) {
+			t.Errorf("redis-cli environment at %s = %q, want %q: REDISCLI_AUTH dropped and nothing else", site.name, env, want)
 		}
 	}
 }

@@ -125,7 +125,8 @@ It carries:
   the `broker/` tests of theorem-labs/agent-infra run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
   The package installs no applet links, so `wget` and `sh` stay GNU wget and dash, and a role runs an applet as `busybox <applet>`.
   Its `wget` and `ssl_client` applets check no TLS certificate, so no applet may become the image's `wget`, and the TLS probe holds no busybox client.
-  The TLS probe's `wget` client holds GNU wget to the compromised chains, so an applet that became `wget` would fail the probe ([Image size and pull time](#image-size-and-pull-time));
+  The TLS probe's `wget` client holds GNU wget to the compromised chains, and an applet that became `wget` would fail the probe without reaching them:
+  the applet does not know the probe's `--no-hsts` option and stops there, so the probe cannot verify a refusal ([Image size and pull time](#image-size-and-pull-time));
 
 - `tmux` from Debian trixie's archive, at `/usr/bin/tmux`:
   the skill-scenario rig's panes need it, and without it in the image a role builds one from source after every pod replacement;

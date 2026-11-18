@@ -788,10 +788,11 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # certificate validation (its own help says "TLS certificate validation not implemented"), so a
 # busybox applet must never become the `wget` on PATH: the `wget` the capability check's
 # `toolchain` row asks for (packages/daemon/internal/capabilities/image.go) is GNU wget, and the
-# TLS probe holds the PATH's `wget` to the compromised chains, so an applet that became `wget`
-# would accept them and fail the build. busybox stays out of that
-# `toolchain` capability row: that row is the floor every deployment's image is held to, and
-# LINUX's `worker-lean` image copies /usr/local/bin from this one, not /usr/bin.
+# TLS probe holds the PATH's `wget` to the compromised chains. An applet that became `wget` would
+# stop at the probe's --no-hsts, an option it does not know, so the probe would fail it as unable
+# to verify a refusal and fail the build. busybox stays out of that `toolchain` capability row: that
+# row is the floor every deployment's image is held to, and LINUX's `worker-lean` image copies
+# /usr/local/bin from this one, not /usr/bin.
 # tmux: the skill-scenario rig's panes (packages/pi-legion/scripts/skill-scenarios/rig.sh) and the
 # tmux runtime's tests (packages/daemon/internal/runtime/tmux, whose real-tmux tests skip where
 # tmux is absent) need it, and without it in the image a role rebuilds it after every pod
@@ -1468,12 +1469,11 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # uv, kubectl, jq, ssh-keygen, flock, psql, redis-cli, sqlite3, nc and dig on PATH with `go version`
 # running, and the claude-code row's claude-envoy root and Claude Code pin as the lane held them
 # with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It then has node, bun,
-# omp's embedded bun,
-# CodeGraph's Node, uv, the AWS CLI, curl, Python, gh, GNU wget, git, go, kubectl and Chromium, and,
-# where each is on PATH, gcloud, bq, az, mise and socat, refuse each compromised chain while
-# reaching the control; a deployment image without one of those five is not refused for it (the
-# probe reports it `absent`), because those five are outside the floor every deployment's image is
-# held to. It
+# omp's embedded bun, CodeGraph's Node, uv, the AWS CLI, curl, Python, gh, GNU wget, git, go,
+# kubectl, redis-cli and Chromium, and, where each is on PATH, gcloud, bq, az, mise and socat,
+# refuse each compromised chain while reaching the control; a deployment image without one of
+# those five is not refused for it (the probe reports it `absent`), because those five are outside
+# the floor every deployment's image is held to. It
 # prints the table, one `probe-image: capability <name>: <status> (<detail>)` line per row, every TLS
 # decision, then `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
 # agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is
