@@ -141,11 +141,14 @@ func carryHeld(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolu
 // It goes through deliver, so a connection that cannot take it holds it as any other report is
 // held, and run sends it once the connection is up again (deliverLast): R2 has the trimmer hold
 // its report until that connection is up again, and this report is the one that tells the daemon
-// the pod's volume is no longer guarded. A panic here or in deliverLast ends the trimmer, and
-// this report is not tried again (run); a panic of the line that says the trimmer is off ends
-// nothing, since run drops it and still tries a held report (deliverLast). One in deliver gives
-// what the report carried back to the trimmer under deliver's rule, as any report's panic does,
-// and nothing carries it further: the trimmer makes no report after this one.
+// the pod's volume is no longer guarded. A panic here before deliver holds this report, or one in
+// deliverLast, ends the trimmer, and this report is not tried again (run). One once deliver holds
+// it, of the line that says so or of saidLeftOut's, which only the logger can raise, comes after
+// the send has answered and loses nothing: run writes it and still tries the held report
+// (deliverLast), as it does where the line that says the trimmer is off panics, which ends
+// nothing either, since run drops it. One in deliver gives what the report carried back to the
+// trimmer under deliver's rule, as any report's panic does, and nothing carries it further: the
+// trimmer makes no report after this one.
 //
 // A report the trimmer still holds goes into this one before deliver is given it, as a newer
 // report that cannot be sent takes a held one's place (replace), and is held no more. So the

@@ -20,11 +20,14 @@ import (
 
 // The cases of what a panic in the trimmer's own work costs it: the two rows its faults are
 // counted in (faultRow), the refused /proc reads a sweep met before it panicked, the rise a
-// reported sweep's start raises though the sweep then panicked, and what a line that panics
-// leaves standing: the pause after its sweep and its countdown, a refusal and the held report it
-// tries, the line of a volume that cannot be read, what a tick decided before its line, and the
-// switched-off trimmer's last report. The file builds only under Linux because its cases drive
-// volumetrim_test.go's fixture, which does.
+// reported sweep's start raises though the sweep then panicked, the clock a sweep that panicked
+// still has made again, the pause an interval spends whatever its reading did, a held report
+// whose resend panics in the wait for settings, tried once over one refusal, and what a line
+// that panics leaves standing: the pause after its sweep and its countdown, a refusal and the
+// held report it tries, the line of a volume that cannot be read, what a tick decided before its
+// line, and the switched-off trimmer's last report, whether the line that says it is off panics
+// or one written once that report is held. The file builds only under Linux because its cases
+// drive volumetrim_test.go's fixture, which does.
 
 // R1 has the trimmer switch itself off "after three in a row", and a reading run to its end ends
 // the reading row (faultRow, tick), so a pod whose reading panics now and then, with readings run
@@ -871,6 +874,77 @@ func TestARefusalWhoseLinePanicsIsWrittenAgainAndTriesTheHeldReport(t *testing.T
 	})
 }
 
+// Refused settings are remembered as said before the wait tries a held report (awaitSettings),
+// so a resend that panics, a fault of the sweep row (flush), is tried once over one refusal: run
+// starts the wait again at once, with no tick between, and the refusal is no longer news there,
+// so the report stays held for the first interval of settings the trimmer can run, as it does
+// where its send fails. The case holds a report through an outage, and every resend of it then
+// panics while the daemon sends settings the trimmer refuses, a low mark of 80 under a high one
+// of 70. Remembered after the resend, the reason would still be news in the wait run starts
+// again, which would try the report again, and its third panic would switch the trimmer off over
+// that one refusal (INFRA-2009, review 5954632411).
+func TestAHeldReportWhoseResendPanicsInTheWaitIsTriedOnceOverOneRefusal(t *testing.T) {
+	refused := *trimSettings()
+	refused.HighPercent, refused.LowPercent = 70, 80
+	const refusal = "refusing the settings: low_percent is 80 and high_percent is 70"
+	const fell = "the connection fell over resending the held report"
+	f := newTrimFixture(t, 25) // a hundred entries, ten points: the sweep ends above the low mark and reports
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	f.refuseSends(errors.New("no daemon connection is up to carry it"))
+	tr := f.trimmer()
+	var falling atomic.Bool
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if falling.Load() && !report.SwitchedOff {
+			panic(fell)
+		}
+		return f.send(report)
+	}
+	stop, done := f.start(tr)
+	f.tick("the sweep ended")
+	testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+		return f.logged("holding it for the next attempt") == 1
+	})
+
+	falling.Store(true)
+	f.refuseSends(nil)
+	f.setSettings(&refused)
+	f.tick("recovered a panic")
+	// The wait asks for its clock only once it has said why it waits and tried a held report,
+	// so a live clock is a wait that has done both or found it had nothing to say.
+	testwait.Eventually(t, "the trimmer to wait for settings again after the panic, or to end", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+		}
+		_, waiting := f.ticks.live(volumeSettingsWait)
+		return waiting
+	})
+	select {
+	case <-done:
+		t.Fatalf("the trimmer's loop returned, want it waiting for settings it can run: one refusal tries the held report once; it wrote %q", f.linesWritten())
+	default:
+	}
+	if faults := f.logged("recovered a panic"); faults != 1 || f.logged("(1 in a row of sweeps and reports)") != 1 {
+		t.Errorf("the trimmer recovered %d panics, want the one resend's, counted as the first of the sweep row: %q", faults, f.linesWritten())
+	}
+	if said := f.logged(refusal); said != 1 {
+		t.Errorf("the trimmer wrote %d lines holding %q, want the refusal written once: %q", said, refusal, f.linesWritten())
+	}
+	if f.logged("off for the life of this launcher process") != 0 {
+		t.Errorf("the trimmer switched itself off over one refusal: %q", f.linesWritten())
+	}
+	stop()
+	awaitClosed(t, done, "the trimmer's loop to return once the case stopped it")
+	if tr.held == nil {
+		t.Error("the trimmer holds no report, want the one whose resend panicked held for the first interval of settings it can run")
+	}
+	if sent := len(f.reports()); sent != 0 {
+		t.Errorf("the trimmer sent %d reports, want none: the one it holds panicked on its resend", sent)
+	}
+}
+
 // The line that says the trimmer is off is written once its last report has been sent or held
 // (run), so a panic of that line, which only the logger can raise, loses no report: R1 has the
 // trimmer that stops itself send "one last report saying so", and that report is what tells the
@@ -949,6 +1023,98 @@ func TestASwitchOffWhoseLinePanicsStillSendsTheLastReport(t *testing.T) {
 	}
 }
 
+// The switched-off trimmer's last report is held before deliver writes the lines that say so
+// (deliver), so a panic of one of them, which only the logger can raise, comes once the send has
+// answered and the report is held: run still tries it (deliverLast), since R2 has the trimmer
+// hold its report until the connection is up again, and this report is the one that tells the
+// daemon the pod's volume is no longer guarded. The case is the refused subtest of
+// TestASwitchOffWhoseLinePanicsStillSendsTheLastReport with one reading more: four readings
+// panic, with one run to its end after the first, so the last three switch the trimmer off and
+// its last report leaves out the oldest of the four faults, which has deliver write saidLeftOut's
+// line too; the connection refuses that report's first send. In the first subtest the line that
+// says the report is held panics once, and in the second saidLeftOut's line after it. At 2dc1f390
+// run tried the held report only where switchOff returned, so either panic ended the trimmer with
+// the report held and never sent (INFRA-2009, review 5954632411).
+func TestASwitchedOffReportWhoseLinePanicsOnceItIsHeldIsStillSent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string // what the format of the line that panics holds
+	}{
+		{"the line that holds it", "holding it for the next attempt"},
+		{"the line of what it leaves out", "leaves out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, 0)
+			f.setOnRead(func(call int) {
+				if call != 2 { // the second reading runs to its end, which ends the reading row
+					panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+				}
+			})
+			f.useVolume(steady(50))
+			f.setSettings(trimSettings())
+			f.refuseSends(errors.New("no daemon connection is up to carry it"))
+			tr := f.trimmer()
+			const fell = "the log fell over writing a line of the held last report"
+			var fallen atomic.Bool
+			tr.logf = func(format string, args ...any) {
+				if strings.Contains(format, tc.line) && fallen.CompareAndSwap(false, true) {
+					panic(fell)
+				}
+				f.log(format, args...)
+			}
+			_, done := f.start(tr)
+			f.tick("recovered a panic")
+			f.tick("nothing to sweep")
+			// Written out rather than read off volumeFaultLimit, as the other cases of the switch-off count them.
+			for range 3 {
+				f.tick("recovered a panic")
+			}
+			testwait.Eventually(t, "the line of the held last report to fall over, and the trimmer to wait to send that report or to end", func() bool {
+				if !fallen.Load() {
+					return false
+				}
+				select {
+				case <-done:
+					return true
+				default:
+				}
+				_, waiting := f.ticks.live(volumeSettingsWait)
+				return waiting
+			})
+			f.refuseSends(nil)
+			select {
+			case <-done:
+			default:
+				offerSettingsTick(t, f)
+			}
+			awaitClosed(t, done, "the trimmer's loop to return once its last report was sent")
+
+			sent := f.reports()
+			if len(sent) != 1 || tr.held != nil {
+				t.Fatalf("the trimmer ended with held=%t reports=%d, want held=false reports=1: the last report held before its line fell over is sent once the connection takes it; it wrote %q",
+					tr.held != nil, len(sent), f.linesWritten())
+			}
+			switch report := sent[0]; {
+			case !report.SwitchedOff:
+				t.Error("the last report does not say the trimmer switched itself off")
+			case !strings.Contains(report.StopReason, "3 panics in a row of readings"):
+				t.Errorf("the last report's stop reason is %q, want the three panics of the reading row that stopped it", report.StopReason)
+			case len(report.Faults) != 3 || report.FaultsOmitted != 1:
+				t.Errorf("the last report carries the faults %q and counts %d more, want the newest three of the four and the oldest counted", report.Faults, report.FaultsOmitted)
+			}
+			if f.logged("the report is still tried") != 1 || f.logged(fell) != 1 {
+				t.Errorf("the trimmer wrote %q, want one line saying the line of the held report fell over and the report is still tried", f.linesWritten())
+			}
+			if said := f.logged("ends here without trying it again"); said != 0 {
+				t.Errorf("the trimmer wrote %q, want no line ending it without trying the held report", f.linesWritten())
+			}
+			if said := f.logged("the last report of the switched-off trimmer was sent"); said != 1 {
+				t.Errorf("the trimmer wrote %d lines saying its last report was sent, want one: %q", said, f.linesWritten())
+			}
+		})
+	}
+}
+
 // The pause after a sweep that freed under a point is counted down before the line of a reading
 // inside it is written (intervalReading), so a panic of that line, which only the logger can
 // raise, still spends that reading of the pause: R1's pause is ten intervals, and a line that fell
@@ -1006,6 +1172,73 @@ func TestAPauseLineThatPanicsStillSpendsItsReading(t *testing.T) {
 	}
 }
 
+// The pause after a sweep that freed under a point is counted in intervals and not in readings
+// (intervalReading): R1's pause is ten intervals, counted from the end of that sweep, so an
+// interval whose statfs fails, or panics, spends one of them as an interval whose reading
+// answered does. The case's sweep frees nothing; in its pause the third and the fifth readings
+// fail and the seventh panics, and the eleventh interval after the sweep must still sweep. Each
+// line of the pause written still names the intervals left. At 2dc1f390 the pause was counted
+// down only once the statfs had answered, so those three intervals spent none of it and the
+// pause ran thirteen intervals (INFRA-2009, review 5954632411).
+func TestAPauseIsSpentByAnIntervalWhoseReadingFailsOrPanics(t *testing.T) {
+	const fell = "the volume reader fell over in the pause"
+	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and pauses
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	// The case calls tick itself, on its own goroutine, so these need no lock.
+	var failing error
+	panicking := false
+	f.setOnRead(func(int) {
+		if panicking {
+			panic(fell)
+		}
+	})
+	fixture := readVolumeUsage
+	readVolumeUsage = func(path string) (volumeUsage, error) {
+		if failing != nil {
+			return volumeUsage{}, failing
+		}
+		return fixture(path)
+	}
+	t.Cleanup(func() { readVolumeUsage = fixture })
+	tr := f.trimmer()
+	set := *trimSettings()
+	interval := func(what string) {
+		t.Helper()
+		if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+			t.Fatalf("%s ended the trimmer (%v), want it passed over at worst", what, ending)
+		}
+	}
+	interval("the sweep")
+	// Written out rather than read off volumeQuietIntervals: R1's ten intervals.
+	const pause = 10
+	for at := 1; at <= pause; at++ {
+		failing, panicking = nil, at == 7
+		if at == 3 || at == 5 {
+			failing = errors.New("launcher: statfs " + f.root + ": input/output error")
+		}
+		interval("an interval of the pause")
+		if f.logged("sweeping") != 1 {
+			t.Fatalf("interval %d after the sweep swept, want each of the %d intervals after it to pause: %q", at, pause, f.linesWritten())
+		}
+	}
+	failing, panicking = nil, false
+	if f.logged("could not be read") != 2 || f.logged("recovered a panic") != 1 || !strings.Contains(strings.Join(f.linesWritten(), "\n"), fell) {
+		t.Fatalf("the trimmer wrote %q, want the readings of two intervals of the pause failed and that of one fallen over and recovered", f.linesWritten())
+	}
+	interval("the eleventh interval after the sweep")
+	if f.logged("sweeping") != 2 {
+		t.Errorf("the eleventh interval after the sweep wrote %q, want it to sweep: the pause is ten intervals, the three whose reading failed or panicked among them", f.linesWritten())
+	}
+	// The lines written count the pause down as they did: 10 and 9, then 7, 5, 3, 2 and 1 after the
+	// intervals whose reading failed or panicked, which spent the 8, the 6 and the 4.
+	for _, left := range []int{10, 9, 7, 5, 3, 2, 1} {
+		if said := f.logged(fmt.Sprintf("no sweep for another %d intervals", left)); said != 1 {
+			t.Errorf("the trimmer wrote %d lines saying %d intervals of the pause are left, want one: %q", said, left, f.linesWritten())
+		}
+	}
+}
+
 // A volume this process cannot read is remembered as said only once its line is written
 // (intervalReading), so a panic of that line, which only the logger can raise, leaves the error
 // news: the next interval writes the line, once, and the one after writes none, as a standing
@@ -1050,10 +1283,17 @@ func TestAnUnreadableVolumesLineThatPanicsIsWrittenAtTheNextInterval(t *testing.
 // the ending as they stand: settings that changed are in force and a new period's clock is made
 // again, a sweep that returned has the clock made again so the next reading comes one interval
 // after it, and settings gone, before a sweep or in the middle of one, end the loop for the wait,
-// which deals with a held report as R2 has it (awaitSettings). Each subtest's line panics once.
+// which deals with a held report as R2 has it (awaitSettings). Each subtest's line panics once,
+// but the one of a sweep whose own reading panics, which is of no line (below).
 // At c322d6f7 each of these was decided after its line, so its panic left the settings unchanged
 // and the clock at the old period for one more interval, kept the clock a sweep had begun on, or
 // kept the loop on its clock for one more interval in place of the wait (INFRA-2009, round 39).
+//
+// In the subtest of a sweep whose own reading panics, a step other than the logger panics inside
+// the sweep, and the clock is made again all the same, since tick sets restart before the sweep.
+// At 2dc1f390 restart was set once the sweep had returned, so that panic kept the clock the sweep
+// began on, and a tick that came due while it ran was taken at once (INFRA-2009, review
+// 5954632411).
 func TestATickWhoseLinePanicsKeepsWhatItDecidedBeforeIt(t *testing.T) {
 	const fell = "the log fell over writing a line of the interval"
 	// falls has the trimmer's logger fall over once on the line whose format holds line.
@@ -1104,6 +1344,27 @@ func TestATickWhoseLinePanicsKeepsWhatItDecidedBeforeIt(t *testing.T) {
 		recovered(t, f, falling)
 		if ending != trimGoesOn || !restart {
 			t.Errorf("the interval whose sweep's line fell over answered restart %t and %v, want the clock made again: the next reading comes one interval after the sweep", restart, ending)
+		}
+	})
+
+	t.Run("a sweep whose own reading panics", func(t *testing.T) {
+		f := newTrimFixture(t, 3) // entries the sweep deletes, so it reads the volume after them
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+		const reader = "the volume reader fell over in the sweep"
+		f.setOnRead(func(call int) {
+			if call >= 2 { // the first reading is the interval's, every later one the sweep's own
+				panic(reader)
+			}
+		})
+		tr := f.trimmer()
+		set := *trimSettings()
+		restart, ending := tr.tick(context.Background(), &set)
+		if lines := strings.Join(f.linesWritten(), "\n"); f.logged("recovered a panic") != 1 || !strings.Contains(lines, reader) || !strings.Contains(lines, "(*trimmer).sweep(") {
+			t.Fatalf("the trimmer wrote %q, want the sweep's own reading fallen over inside the sweep and recovered", f.linesWritten())
+		}
+		if ending != trimGoesOn || !restart {
+			t.Errorf("the interval whose sweep's own reading panicked answered restart %t and %v, want the clock made again: the next reading comes one interval after the sweep, not on the clock it began on", restart, ending)
 		}
 	})
 
