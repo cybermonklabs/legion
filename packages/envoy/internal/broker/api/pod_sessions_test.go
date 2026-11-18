@@ -335,7 +335,10 @@ func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
 // TestARegistrationReplacingAKeyLogsTheKeyItReplaced: a write that binds the registration to
 // another key is logged as registered, naming the registrar and the thumbprint it replaced beside
 // what was sent and stored. A renewal naming the key the row holds, and a write naming no key,
-// which keeps it, replace nothing and name nothing replaced.
+// which keeps it, replace nothing and name nothing replaced. A write naming no key and no
+// generation that takes a key-bound row whole, here the row its registrar released, stores
+// neither, and is still logged naming the registrar beside the thumbprint it replaced, since the
+// line of a takeover is the one record of it.
 func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-relaunched")
@@ -357,6 +360,13 @@ func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 	rig.loggedOnly(t, "a write of implementer-g1 naming no key at generation 2", map[string]any{
 		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1", "registrar": daemonAccount,
 		"sent_thumbprint": "", "sent_generation": int64(2), "thumbprint": kB, "generation": int64(2),
+	})
+	rig.ts.releases(t, daemonAccount+"'s release of implementer-g1", rig.registrar, []string{"implementer-g1"}, 1, 1)
+	rig.register(t, map[string]any{"session": "implementer-g1"})
+	rig.loggedOnly(t, "a write of implementer-g1 naming no key and no generation, which takes the released row bound to kB whole", map[string]any{
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1", "registrar": daemonAccount,
+		"sent_thumbprint": "", "sent_generation": int64(0), "thumbprint": "", "generation": int64(0),
+		"replaced_thumbprint": kB,
 	})
 }
 

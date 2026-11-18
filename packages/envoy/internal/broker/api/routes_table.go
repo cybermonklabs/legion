@@ -214,9 +214,13 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
 // lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so the class
-// needs no new login. The login is all a release needs, since a release touches only the caller's
-// own registrations (releasePodSessions); a registration needs an entry of BROKER_POD_REGISTRARS
-// too (registerPodSession), since a session pod logs in as a service as well.
+// needs no new login. The login is all a release needs, and a registration needs an entry of
+// BROKER_POD_REGISTRARS too (registerPodSession), since a session pod logs in as a service as
+// well. A release is the login account's (releasePodSessions): it releases every registration
+// that account wrote of the names it sends, whichever of its pods wrote it. So every pod of an
+// account paired with itself in BROKER_POD_REGISTRARS logs in as that registrar and can release
+// every registration the account wrote, by session name alone, with no token of the pod whose
+// trade it ends; a deployment that wants its pods kept apart pairs no account with itself.
 func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)

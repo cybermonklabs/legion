@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -136,11 +138,13 @@ type podSessionResponse struct {
 // Each write is logged with what it did, since the registrar is the authority here and these
 // lines are the one record of who may write under which name. A write applied is logged at Info
 // as registered, naming the registrar and the thumbprint and generation it sent beside the ones
-// stored, and the thumbprint it replaced when it bound the row to another key; one that names no
-// key and no generation, of a row that names neither, logs the line it logged before either
-// existed (R9), the registrar included in neither. A write the generation rule refused changed
-// nothing, so it is not logged as registered: it logs a line of its own at Warn, naming the
-// registrar and what it sent beside the row it left as it was.
+// stored, and the thumbprint it replaced when it took a key off the row, by binding the row to
+// another key or by taking a released row, another registrar's lapsed row or a row of no
+// registrar whole; one that names no key and no generation, of a row that held no key and names
+// neither after it, logs the line it logged before either existed (R9), the registrar included
+// in neither. A write the generation rule refused changed nothing, so it is not logged as
+// registered: it logs a line of its own at Warn, naming the registrar and what it sent beside the
+// row it left as it was.
 func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
@@ -196,7 +200,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 		writeInternal(w, "register the pod's session name", err)
 	default:
 		attrs := []any{"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session}
-		if body.Thumbprint != "" || body.Generation != 0 || stored.JKT != "" || stored.Generation != 0 {
+		if body.Thumbprint != "" || body.Generation != 0 || stored.JKT != "" || stored.Generation != 0 || stored.Replaced != "" {
 			attrs = append(attrs, "registrar", registrar.Subject, "sent_thumbprint", body.Thumbprint, "sent_generation", body.Generation,
 				"thumbprint", stored.JKT, "generation", stored.Generation)
 		}
@@ -245,10 +249,50 @@ const maxReleasedSessions = 4096
 // podSessionReleaseBody is POST /v1/oauth/exchange/pod-sessions/release's exact shape.
 type podSessionReleaseBody struct {
 	// The session names whose registrations the caller releases: 1 to 4096 entries, counted as
-	// sent. Any string is a name: one the registration route could never have taken (empty, over
-	// 200 bytes, or with white space or an unprintable character) matches no registration, so it
-	// is released with nothing to release, and a name given twice counts once.
+	// sent, each a string, so a null entry is refused. Any string is a name: one the registration
+	// route could never have taken (empty, over 200 bytes, or with white space or an unprintable
+	// character, a NUL byte among them) matches no registration, so it is released with nothing
+	// to release, and a name given twice counts once. The broker drops such a name before it
+	// queries its store, which is also what keeps a NUL byte, which Postgres refuses in text,
+	// from failing the release.
 	Sessions []string `json:"sessions"`
+}
+
+// UnmarshalJSON reads a release's body as readJSON reads every body, one JSON value with no field
+// the body does not declare, and refuses a null entry of sessions, naming its index. Decoded into
+// a []string, as readJSON alone would, a null entry is the empty string, which is a name released
+// with nothing to release, so {"sessions": [null]} would be answered 200 for a body outside the
+// route's shape, where {"sessions": [1]} is refused. The refusal is a decode error, so readJSON
+// answers it 400 INVALID_REQUEST, as it answers an entry that is not a string. readJSON's own
+// DisallowUnknownFields does not reach a method of this kind, which decodes the bytes it is
+// handed itself, so the decoder here sets its own. A sessions that is absent or null, and a body
+// of null, which encoding/json hands this method too, leave Sessions nil, which the handler
+// refuses 400 SESSIONS_INVALID with the count.
+func (b *podSessionReleaseBody) UnmarshalJSON(data []byte) error {
+	var sent struct {
+		Sessions []*string `json:"sessions"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&sent); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return errors.New("body must contain one JSON value")
+	}
+	if sent.Sessions == nil {
+		b.Sessions = nil
+		return nil
+	}
+	sessions := make([]string, len(sent.Sessions))
+	for i, session := range sent.Sessions {
+		if session == nil {
+			return fmt.Errorf("sessions[%d] is null, and each session name is a string", i)
+		}
+		sessions[i] = *session
+	}
+	b.Sessions = sessions
+	return nil
 }
 
 // podSessionReleaseResponse is POST /v1/oauth/exchange/pod-sessions/release's answer: two counts,
@@ -272,17 +316,27 @@ type podSessionReleaseResponse struct {
 // audience, and nothing else. The class answers before the handler, as it does for the
 // registration: 401 for the token, 403 ACCOUNT_NOT_LISTED for an account the logins do not name,
 // and 429 with Retry-After from the account class's per-address bucket. BROKER_POD_REGISTRARS
-// does not gate it: a release touches only the caller's own registrations, so a registrar whose
-// entry was taken out still releases what it registered while it was listed. The caller stops
-// every write of the names it releases first, its renewal and any write in flight: a registration
-// write by the caller after the release makes that registration live again.
+// does not gate it, so a registrar whose entry was taken out still releases what it registered
+// while it was listed. A release is the registrar account's (registrar.Subject), not a pod's: it
+// releases every live registration of each named session that the account wrote, whichever pod of
+// the account logged in to write it. So every pod of an account paired with itself in
+// BROKER_POD_REGISTRARS, which BROKER_SERVICE_LOGINS lists so that the pair registers anything,
+// logs in as that registrar and can release every registration that account wrote, by session
+// name alone, with no token of the pod whose trade it ends; a deployment that wants its pods kept
+// apart pairs no account with itself. The caller stops every write of the names it releases
+// first, its renewal and any write in flight: a registration write by the caller after the
+// release makes that registration live again.
 //
 // The body is exactly {"sessions": [...]}, at most 1 MiB (413 REQUEST_TOO_LARGE above it); an
-// unknown field, or a body that is not JSON, is 400 INVALID_REQUEST. A list that is missing, null
-// or empty, a body of null included, or that holds more than maxReleasedSessions entries counted
-// as sent, is 400 SESSIONS_INVALID, naming the count. Any string is a name and none is refused:
-// one the registration route could never have taken matches no registration
-// (exchange.ValidSession), so it is released with nothing to release.
+// unknown field, a body that is not JSON, and an entry that is not a string are 400
+// INVALID_REQUEST, a null entry naming its index (podSessionReleaseBody.UnmarshalJSON). A list
+// that is missing, null or empty, a body of null included, or that holds more than
+// maxReleasedSessions entries counted as sent, is 400 SESSIONS_INVALID, naming the count. Any
+// string is a name and none is refused: one the registration route could never have taken
+// matches no registration (exchange.ValidSession), so it is released with nothing to release. The
+// store drops such a name before its query (oauthstore.Store.ReleasePodSessions), which is also
+// what keeps a NUL byte, which JSON's \u0000 carries and Postgres refuses in text, out of the
+// query, where it would fail the release as a 500.
 //
 // The release is one transaction (oauthstore.Store.ReleasePodSessions): every live registration of
 // each named session that the caller registered is marked released, once, so a repeat does not

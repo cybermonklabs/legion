@@ -605,7 +605,10 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 //
 // A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
 // is dropped as matching nothing rather than refused, and a name given twice matches the same
-// rows. With no name left it reads nothing and answers 0.
+// rows. With no name left it reads nothing and answers 0. The filter is also what keeps a NUL
+// byte out of the query: JSON's \u0000 decodes to one, ValidSession refuses it as unprintable,
+// and Postgres refuses it in text (invalid byte sequence for encoding "UTF8": 0x00), so without
+// the filter a release naming it would fail, and the route would answer 500.
 //
 // It is one transaction of its own, the update then the count, and takes no advisory lock: it
 // inserts no row, so it cannot race another registrar's first write of a name as two inserts can
@@ -622,6 +625,8 @@ func (s *Store) ReleasePodSessions(ctx context.Context, registrar string, sessio
 	}
 	names := make([]string, 0, len(sessions))
 	for _, session := range sessions {
+		// More than a shortcut: it keeps a NUL byte, which Postgres refuses in text, out of the
+		// query below, where it would fail the release.
 		if exchange.ValidSession(session) {
 			names = append(names, session)
 		}
