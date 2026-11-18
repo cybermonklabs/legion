@@ -173,7 +173,7 @@ func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T
 	rollForwardStepRecords(t, pool)
 	before := len(stepWrites(t, pool, "LEGION-208"))
 	if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-		Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+		Claim: reviewClaim, Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
 		t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
 	}
 	after := stepWrites(t, pool, "LEGION-208")[before:]
