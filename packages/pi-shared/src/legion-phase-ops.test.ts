@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
 import { z } from "zod";
-import { createLegionDaemonClient } from "./daemon-client";
+import { createLegionDaemonClient, DAEMON_ATTEMPT_LIMIT_MS } from "./daemon-client";
 import { daemonWaitMs, forgetDaemonWaitsForTests } from "./daemon-wait";
 import type { HandoffReport } from "./handoff-record";
 import {
@@ -346,6 +346,89 @@ test("a handoff report that runs past the attempt's limit is no daemon outage: i
   expect(lookups).toEqual(["implementing implementer"]);
   expect(routes).toEqual(["/legion/v1/state", "/legion/v1/grants", "/legion/v1/handoff/complete"]);
   expect(daemonWaitMs("toolu_legion", 0, clock)).toBe(0);
+});
+
+// The limit stops for the report read and starts again, whole, once the read is over: the
+// requests after the read are the daemon's, and a daemon that takes the grant and never answers
+// is still given up on at the attempt's limit, five minutes after the read and not five minutes
+// after the attempt began. A limit that did not start again would leave that grant open for as
+// long as the daemon held it.
+test("the attempt's limit starts again, whole, once the report read is over, so a grant the daemon then holds is given up on", async () => {
+  const routes: string[] = [];
+  const answers: Record<string, Record<string, unknown>> = {
+    "/legion/v1/state": daemonFixture("state.json"),
+    "/legion/v1/grants": daemonFixture("grant.json"),
+    "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+  };
+  const granting = Promise.withResolvers<void>();
+  const held = Promise.withResolvers<Response>();
+  // The first grant is taken and not answered until the case ends, whatever its signal does.
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    routes.push(route);
+    if (route === "/legion/v1/grants" && routes.filter((sent) => sent === route).length === 1) {
+      granting.resolve();
+      return held.promise;
+    }
+    return Response.json(answers[route] ?? {});
+  }) as typeof fetch;
+  const reading = Promise.withResolvers<void>();
+  const read = Promise.withResolvers<HandoffReport>();
+  let reads = 0;
+  const limits: { ms: number; answered: AbortSignal; runOut: () => void }[] = [];
+  const ops: PhaseOpRuntime = {
+    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    claim: implementer,
+    // The first attempt's read waits on the case; the next attempt's answers at once.
+    handoffReport: async () => {
+      reads += 1;
+      if (reads > 1) return REPORT;
+      reading.resolve();
+      return read.promise;
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+    restart: {
+      now: () => 0,
+      sleep: async () => undefined,
+      // Each limit armed runs out only when the case says so.
+      attemptLimit: (ms, answered) => {
+        const overdue = Promise.withResolvers<void>();
+        limits.push({ ms, answered, runOut: () => overdue.resolve() });
+        return overdue.promise;
+      },
+    },
+  };
+
+  const completing = executePhaseOp(ops, {
+    op: "handoff_complete",
+    summary: "Done.",
+    verdict: "pass",
+  });
+  await reading.promise;
+  // The limit armed with the state read is ended for the read, and no other runs meanwhile.
+  expect(limits).toHaveLength(1);
+  expect(limits[0]?.answered.aborted).toBe(true);
+  read.resolve(REPORT);
+  await granting.promise;
+
+  // Once the read is over, a whole limit times the grant.
+  expect(limits).toHaveLength(2);
+  expect(limits[1]?.ms).toBe(DAEMON_ATTEMPT_LIMIT_MS);
+  expect(limits[1]?.answered.aborted).toBe(false);
+  limits[1]?.runOut();
+
+  await expect(completing).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  held.resolve(Response.json(answers["/legion/v1/grants"]));
+  expect(routes).toEqual([
+    "/legion/v1/state",
+    "/legion/v1/grants",
+    "/legion/v1/state",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(reads).toBe(2);
 });
 
 // The report's own failure is the pane's answer, whatever it looks like: a Dispatch the pane
