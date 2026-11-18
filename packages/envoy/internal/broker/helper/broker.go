@@ -1352,13 +1352,16 @@ func (b *Broker) drop(cred *machineCredential, why string, attrs ...any) bool {
 	return true
 }
 
-// dropLeaves is what a drop leaves the machine, for its log line: no session enrols until the
-// credential comes back, and the hint of holding none (noCredentialFailure). In identity mode the
-// trade loop trades this machine's identity again on its own, so nobody is told to log in: the
-// credential it traded for lives an hour, and a broker that refuses trades for longer, for a
-// person Dispatch holds among others, lets it lapse with nothing for a person to do here.
+// dropLeaves is what a drop leaves the machine, for its log line: no session enrols under this
+// machine's credential until one comes back, and the hint of holding none (noCredentialFailure).
+// A person signed in on the machine still enrols sessions under their own sign-in, which the
+// helper tries first (signingAuthority), so the line names the machine's credential alone. In
+// identity mode the trade loop trades this machine's identity again on its own, so nobody is told
+// to log in: the credential it traded for lives an hour, and a broker that refuses trades for
+// longer, for a person Dispatch holds among others, lets it lapse with nothing for a person to do
+// here.
 func (b *Broker) dropLeaves() string {
-	return "no session can enroll; " + brokerclient.Hint(b.noCredentialFailure())
+	return "no session can enroll under this machine's credential; " + brokerclient.Hint(b.noCredentialFailure())
 }
 
 // logger is b.Log, or a logger that writes nowhere when there is none.

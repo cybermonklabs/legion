@@ -196,7 +196,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		// loop, and no machine login a human approves: the drop line, and the answer to a session
 		// that asks to enrol during the lapse.
 		const tradeLoop = "the helper's trade loop is trading this machine's identity for a new credential"
-		lapsed := waitForRecord(t, &out, dropExpired+"; cleared: no session can enroll; "+tradeLoop)
+		lapsed := waitForRecord(t, &out, dropExpired+"; cleared: no session can enroll under this machine's credential; "+tradeLoop)
 		if lapsed["level"] != "ERROR" || lapsed["credential_id"] != first.id {
 			t.Fatalf("the drop line in identity mode: %v; want an ERROR naming %s", lapsed, first.id)
 		}

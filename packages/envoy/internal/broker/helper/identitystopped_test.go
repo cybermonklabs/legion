@@ -161,22 +161,27 @@ func TestAStoppedTradeLoopSaysNothingTradesAgain(t *testing.T) {
 // it last traded for is still live, which is what a stop looks like for the hour it lasts. The
 // helper keeps serving sessions with that credential, and says so: sign-launcher signs, with
 // machine_identity and identity_stopped both set, and login-status is `issued` and exits 0, while
-// its line says nothing renews the credential and that no session enrols once it lapses. At its
-// expiry the drop line, the enrolment's error and login-status are the stopped state, and no
-// trade was made after the stop.
+// its line says nothing renews the credential and that no session enrols under this machine's
+// credential once it lapses. At its expiry the drop line, the enrolment's error and login-status
+// are the stopped state. The stopping trade is the one token request made from the moment the
+// test triggers it, at the stop and through the expiry.
 func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 	r := newStoppedLoopRig(t, nil)
 	first := r.helper.cred.Load()
 	if first == nil {
 		t.Fatal("the helper holds no credential, so this test proves nothing about a stop that holds one")
 	}
+	before := r.requests.Load()
 	r.refusal.Store(&stopAnswer{noCredential: true})
 	r.waits.fire(t, 0)
 	line := waitForRecord(t, r.out, stoppedLine)
 	if said, _ := line["error"].(string); !strings.Contains(said, "carries no credential_id") {
 		t.Fatalf("the stopped loop's line carries %v; want the answer's own words, which name no URL", line)
 	}
-	stoppedAt := r.requests.Load()
+	if at := r.requests.Load(); at != before+1 {
+		t.Fatalf("the helper made %d token requests from the stopping trade to its stop line; want one, the trade that stopped it", at-before)
+	}
+	stoppedAt := before + 1
 
 	signed := r.signLauncher(t)
 	if !signed.OK || signed.CredentialID != first.id || !signed.MachineIdentity || !signed.IdentityStopped {
@@ -193,7 +198,7 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 
 	r.expiry.fire(t, first, 0)
 	waitFor(t, func() bool { return !r.helper.HasCredential() })
-	waitForRecord(t, r.out, dropExpired+"; cleared: no session can enroll; "+brokerclient.Hint(brokerclient.FailureIdentityStopped))
+	waitForRecord(t, r.out, dropExpired+"; cleared: no session can enroll under this machine's credential; "+brokerclient.Hint(brokerclient.FailureIdentityStopped))
 	stopped := "no machine credential; " + brokerclient.Hint(brokerclient.FailureIdentityStopped)
 	if _, _, err := r.helper.EnrollSessionKey(context.Background(), "box-after-the-lapse", sessionThumbprint(t), nil); !errors.Is(err, errNoCredential) || err.Error() != stopped {
 		t.Fatalf("an enrolment after the lapse answered %v; want %q", err, stopped)
