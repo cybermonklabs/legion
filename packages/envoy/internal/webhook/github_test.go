@@ -121,6 +121,33 @@ func TestGitHubHandler(t *testing.T) {
 		"repository": {"name": "legion", "owner": {"login": "sjawhar"}, "full_name": "sjawhar/legion", "default_branch": "main"}
 	}`
 
+	// A commit status, as GitHub sends one for every status a repository's commits are given (a CI
+	// that reports through the statuses API, not through checks). It names no pull request.
+	commitStatus := `{
+		"id": 42147483647,
+		"sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+		"name": "sjawhar/legion",
+		"target_url": "https://example.invalid/ci/logs/6dcb09b5/library.log",
+		"context": "local/library",
+		"description": "The build succeeded",
+		"state": "success",
+		"commit": {"sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e", "commit": {"message": "Fix all the bugs"}},
+		"branches": [{"name": "main", "commit": {"sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e"}, "protected": true}],
+		"created_at": "2026-11-17T10:49:20Z",
+		"updated_at": "2026-11-17T10:49:20Z",
+		"sender": {"login": "octocat", "type": "User"},
+		"repository": {"name": "legion", "owner": {"login": "sjawhar"}, "full_name": "sjawhar/legion"}
+	}`
+
+	// The ping GitHub sends a webhook when it is created.
+	ping := `{
+		"zen": "Keep it logically awesome.",
+		"hook_id": 1,
+		"hook": {"type": "Repository", "id": 1, "events": ["*"], "active": true},
+		"sender": {"login": "octocat", "type": "User"},
+		"repository": {"name": "legion", "owner": {"login": "sjawhar"}, "full_name": "sjawhar/legion"}
+	}`
+
 	cases := []struct {
 		name           string
 		method         string
@@ -252,6 +279,29 @@ func TestGitHubHandler(t *testing.T) {
 			wantStatus:    200,
 			wantPublished: 1,
 			wantTopics:    []string{"notifications.github.sjawhar.legion.job.38230245571.completed"},
+		},
+		{
+			// A commit status is no event the listener normalizes, so it is published nowhere: it
+			// was published on the repository's comment topic with no payload, which the Legion
+			// daemon terminated as poison.
+			name:          "a commit status is answered 200 and published nowhere",
+			method:        "POST",
+			body:          commitStatus,
+			delivery:      "d-status",
+			event:         "status",
+			secret:        "s",
+			wantStatus:    200,
+			wantPublished: 0,
+		},
+		{
+			name:          "a webhook's ping is answered 200 and published nowhere",
+			method:        "POST",
+			body:          ping,
+			delivery:      "d-ping",
+			event:         "ping",
+			secret:        "s",
+			wantStatus:    200,
+			wantPublished: 0,
 		},
 		{
 			name:          "publish failure returns 503",
@@ -763,9 +813,9 @@ func TestGitHubHandlerSubIssuesFixture(t *testing.T) {
 }
 
 // TestGitHubHandlerMergeGroup asserts GitHub's merge-queue event is acknowledged with 200 and
-// neither published nor recorded: a merge group names no pull request head and nothing in
-// Legion routes on it (LEGION-99). The fixture is production-shaped from GitHub's documented
-// merge_group payload; the signature check still runs before the skip.
+// neither published nor recorded: a merge group names no pull request head, and it is no event
+// the listener normalizes, so it is published nowhere. The fixture is production-shaped from
+// GitHub's documented merge_group payload; the signature check still refuses it unsigned.
 func TestGitHubHandlerMergeGroup(t *testing.T) {
 	checksRequested, err := os.ReadFile(filepath.Join("testdata", "merge_group_checks_requested.json"))
 	if err != nil {

@@ -118,8 +118,10 @@ func TestAZonedLiteralOfABoundAddressIsThatBoundHost(t *testing.T) {
 			if err := leaf.CheckSignatureFrom(r.authority.Certificate()); err != nil {
 				t.Fatalf("CONNECT %s presented a certificate the proxy's authority did not sign: it was tunnelled, not read as the bound host %s", target, bound)
 			}
-			if len(leaf.IPAddresses) != 1 || !leaf.IPAddresses[0].Equal(net.ParseIP(bound)) {
-				t.Fatalf("the proxy's certificate names %v; want the bound address %s alone", leaf.IPAddresses, bound)
+			// The proxy's certificate names the bound host as a DNS name alone (ca.go), so the
+			// zoned literal's carries the address without its zone.
+			if len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != bound || len(leaf.IPAddresses) != 0 {
+				t.Fatalf("the proxy's certificate names DNS %v and IPs %v; want the bound host %s alone", leaf.DNSNames, leaf.IPAddresses, bound)
 			}
 		})
 	}

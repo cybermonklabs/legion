@@ -145,11 +145,11 @@ func TestAnApprovalWaitsWhileGitHubHasNotAnsweredForTheHead(t *testing.T) {
 // repository requires just as it does for one it would merge now, so the merge state is the only
 // answer that tells the two apart. An approval standing on a head GitHub answers for with a state
 // it would not merge from, every check reported on that head having concluded, moves nothing. So
-// the tree's architect is told, in the round's
-// review-stuck notice naming the pull request, the head and the state GitHub gave - once for that
-// head, however many facts ask the round again: the reviewer's completion after it, and every
-// further read of the same head that answers the same, tell nothing more. The notice names no role
-// topic: the decision is not the reviewer's to give.
+// the architect that owns the issue is told, in the round's review-stuck notice naming the pull
+// request, the head and the state GitHub gave - once for that head, however many facts ask the
+// round again: the reviewer's completion after it, and every further read of the same head that
+// answers the same, tell nothing more. The notice names no role topic: the decision is not the
+// reviewer's to give.
 func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)

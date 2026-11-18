@@ -42,7 +42,8 @@ test("a row wears its marks without overlap, shows its issue key whole, and the 
   await page.goto(INBOX);
   await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
 
-  // Every row starts with its kind's icon, at one left edge, before its title and its marks.
+  // Every row starts with its kind's icon, at one left edge, before its title and its marks. The
+  // count above waited for every seeded row, so the read measures each of them.
   const geometry = await page.locator("[data-inbox-row]").evaluateAll((nodes) =>
     nodes.map((node) => {
       const box = (element: Element | null) => element?.getBoundingClientRect() ?? null;
@@ -269,6 +270,8 @@ test("the divider resizes the two columns, the width survives a reload, and the 
   // Dragging the line left widens the pane and narrows the list.
   const divider = page.getByTestId("inbox-pane-divider");
   await expect(divider).toHaveAttribute("aria-label", "Resize reading pane");
+  await expect(divider).toBeVisible();
+  // The wait above drew the divider, and a drawn element has a box, so the box is there.
   const handle = await divider.boundingBox();
   if (handle === null) throw new Error("the divider drew no box");
   await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);

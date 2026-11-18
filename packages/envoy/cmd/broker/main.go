@@ -684,15 +684,16 @@ func main() {
 			// refuses to dial beside every private address. config.Load has already refused a
 			// start in a cluster whose ranges miss its Service range.
 			ClusterRanges: cfg.AirlockClusterRanges,
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
 	}
@@ -894,7 +895,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -917,6 +918,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -987,10 +989,17 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: airlock.Validate's
-// answer, which is the Lean model's, and then the two refusals that are this program's own and
-// not that model's — an entry whose name is not a name a session can ask for, and a host the
-// proxy never compares a request's host with (ruleHostRefusal).
+// that the boot and airlock-check refuse the same file in the same words: a host the proxy
+// never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
+// is the Lean model's, then an entry whose name is not a name a session can ask for. The hosts
+// come first because ruleHostRefusal names each host's reason and repeats no text of the file,
+// where Validate's refusal of a host HostShapeOK refuses quotes the host as written; and because
+// every host ruleHostRefusal accepts HostShapeOK accepts too, Validate then refuses no host. So a
+// file with two faults reports its first bad host ahead of any other fault Validate finds (a
+// repeated name, an entry with no host, a judge above 900 seconds, another kind). Two of the host
+// refusals are this program's own and not the Lean model's: a last label that is 0x and hex
+// digits (0x1f, a.0x7f000001), which HostShapeOK accepts as no all-digit label but clients read
+// as an IPv4 address, and a wildcard over one.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -999,17 +1008,19 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // in airlock.Validate because the airlock knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules airlock.Rules) error {
+	for i, s := range rules.Secrets {
+		for j, h := range s.Hosts {
+			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
+				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
+			}
+		}
+	}
 	if err := airlock.Validate(rules); err != nil {
 		return err
 	}
 	for i, s := range rules.Secrets {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
-		}
-		for j, h := range s.Hosts {
-			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
-				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
-			}
 		}
 	}
 	return nil
@@ -1018,37 +1029,42 @@ func validateRulesFile(rules airlock.Rules) error {
 // ruleHostRefusal is why validateRulesFile refuses one host of an entry, h as fold.ASCII writes
 // it, or "" for a host it serves.
 //
-// airlock.HostBound compares an entry's hosts with a request's host as text. The proxy takes a
-// CONNECT host's port and brackets off (net.SplitHostPort) and writes an IP address as
-// netaddr.Host writes it (airlockproxy's serveConnect and servePlain) before that comparison, so
-// a host the file writes as an address in any other form matches no request: the entry reads as
-// binding that address while the proxy tunnels a CONNECT to it unread. Each such form is refused
-// here: not netaddr.Host's form (2001:db8:7:0::1, 2001:0db8:7::1, ::ffff:93.184.216.34, an
-// embedded IPv4 part, a zone), in brackets, after a trailing dot, or with a port. A host that only
-// fold.ASCII changes (2001:DB8:7::1, API.GitHub.com) is no such form, because HostBound folds both
-// sides. The refusal of each names the form to write, netaddr.Host's answer for the address,
-// which netip writes and which holds no zone, so it repeats nothing of the host as written, whose
-// zone is any text. netip.ParseAddr only says whether what is left is an address; the form named
-// is netaddr.Host's, the proxy's own.
+// An IP address binds no secret in any spelling. In its canonical form the proxy decrypts a
+// CONNECT to it, but a TLS client sends no server name for an address (RFC 6066 section 3; Go's
+// crypto/tls and curl send none), so airlock.Decide refuses every such request "sni mismatch";
+// airlock.HostShapeOK refuses every address for that reason, in the Lean model's validation. In
+// any other spelling it matches no request at all, because the proxy takes a CONNECT host's port
+// and brackets off (net.SplitHostPort) and writes an address as netaddr.Host writes it before
+// airlock.HostBound compares (airlockproxy's serveConnect and servePlain): not netaddr.Host's
+// form (2001:db8:7:0::1, 2001:0db8:7::1, ::ffff:192.0.2.10, an embedded IPv4 part, a zone),
+// in brackets, after a trailing dot, or with a port. Each is refused with one reason, which
+// repeats nothing of the host as written, whose zone is any text, and names the service's host
+// name as what to write.
 //
 // A host name with a trailing dot (api.github.com.) is the name a client writes without one, and
 // matches only a request that writes the dot, so for the requests clients make it binds nothing:
 // it is refused naming the name without the dot, when that is plain host-name text, and naming
 // no form otherwise. An empty host names nothing a request can reach.
 //
-// The rest are hosts no request names that hold no address to name, each refused naming no form,
-// since all they hold is the file's own text: a host with a port; a bracket or a % around no
-// address; a colon in no address, which no host name holds; a last label that is a number, which
-// no host name has and which is an IPv4 address netip does not read (a leading zero, fewer than
-// four parts, a hex part), that one client reads as one address and the next as another or as a
-// name; and a wildcard over such a label, which HostBound would match against addresses by their
-// text.
+// The rest are hosts no request names, each refused naming no form, since all they hold is the
+// file's own text: a host with a scheme; a host with a port; a bracket or a % around no address;
+// a colon in no address, which no host name holds; a last label that is a number, which no host
+// name has and which is an IPv4 address netip does not read (a leading zero, fewer than four
+// parts, a hex part), that one client reads as one address and the next as another or as a name;
+// and a wildcard over such a label, which HostBound would match against addresses by their text.
+// Last, a host airlock.HostShapeOK refuses for any other reason (an empty label, a label opening
+// or closing with "-", a character no label holds, "*" anywhere but a leading "*.") is refused as
+// no DNS name, naming nothing of it, so no host this function accepts is one HostShapeOK refuses:
+// Validate, which runs after it, then refuses no host of a file this function passed.
 func ruleHostRefusal(h string) string {
-	if canonical := netaddr.Host(h); canonical != h {
-		return notCanonicalHost(canonical)
+	if strings.Contains(h, "://") {
+		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port"
+	}
+	if netaddr.Host(h) != h {
+		return ipAddressHost
 	}
 	if _, err := netip.ParseAddr(h); err == nil {
-		return ""
+		return ipAddressHost
 	}
 	bare, port := h, false
 	if host, _, err := net.SplitHostPort(h); err == nil {
@@ -1056,26 +1072,26 @@ func ruleHostRefusal(h string) string {
 	}
 	bare = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(bare, "["), "]"), ".")
 	if _, err := netip.ParseAddr(bare); err == nil {
-		return notCanonicalHost(netaddr.Host(bare))
+		return ipAddressHost
 	}
 	numeric := numericLabel(bare[strings.LastIndexByte(bare, '.')+1:])
 	switch {
 	case port:
-		return "holds a port, and the proxy compares a CONNECT's host without its port, so the host binds nothing; write the host alone"
+		return "holds a port, and the proxy compares a CONNECT's host without its port, so the host binds nothing; write the host name alone"
 	case strings.ContainsAny(h, "[]%"):
-		return "holds a bracket or a % and is no IP address without its brackets, so it matches no host the proxy compares and binds nothing; write a host name, or an IP address with no bracket and no zone"
+		return "holds a bracket or a % and is no IP address without its brackets, so it matches no host the proxy compares and binds nothing; write the service's host name"
 	case strings.Contains(bare, ":"):
-		return "holds a colon and is no IP address, and no host name holds one, so it matches no host the proxy compares and binds nothing; write a host name, or an IPv6 address netip reads"
+		return "holds a colon and is no IP address, and no host name holds one, so it matches no host the proxy compares and binds nothing; write the service's host name"
 	case numeric && strings.HasPrefix(bare, "*."):
-		return "is a wildcard whose last label is a number, which no host name has, so it would match addresses by their text; name each address on its own, written as four decimal numbers"
+		return "is a wildcard whose last label is a number, which no host name has, so it would match addresses by their text; name the service by its host name"
 	case numeric:
-		return "ends in a number but is no IP address of four decimal parts with no leading zero, the only IPv4 form netip reads and the proxy compares: clients read a leading zero, fewer parts or a hex part as different addresses, so the host binds nothing; write the address as four decimal numbers with no leading zero"
+		return "ends in a number, which no host name does, and is no IP address netip reads: clients read a leading zero, fewer than four parts or a hex part as different addresses, and an address binds no secret in any form, so the host binds nothing; write the service's host name"
 	case h == "":
-		return "is empty, so it names no host a request can reach and binds nothing; write a host name or an IP address"
-	case strings.HasSuffix(h, ".") && hostNameText(bare):
+		return "is empty, so it names no host a request can reach and binds nothing; write the service's host name"
+	case strings.HasSuffix(h, ".") && hostNameText(bare) && airlock.HostShapeOK(bare):
 		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write it as " + bare
-	case strings.HasSuffix(h, "."):
-		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write the name without the dot"
+	case !airlock.HostShapeOK(h):
+		return "is no DNS name: a host is labels of letters, digits and hyphens between single dots, none empty and none opening or closing with a hyphen, after an optional leading wildcard label, so the airlock binds it nowhere; write the service's host name"
 	}
 	return ""
 }
@@ -1097,11 +1113,8 @@ func hostNameText(name string) bool {
 	return true
 }
 
-// notCanonicalHost is ruleHostRefusal's refusal of an IP address written in a form the proxy
-// never compares, naming canonical, netaddr.Host's form of it.
-func notCanonicalHost(canonical string) string {
-	return "is an IP address not written in its canonical form, the only form the proxy compares a request's address in, so the host binds nothing; write it as " + canonical
-}
+// ipAddressHost is ruleHostRefusal's refusal of a host that is an IP address in any spelling.
+const ipAddressHost = "is an IP address, and an address binds no secret in any spelling: a client sends no TLS server name for one, so the proxy refuses every request to its canonical form \"sni mismatch\", and compares no other form at all; write the service's host name"
 
 // numericLabel reports whether one label of a host is a number as inet_aton reads one, decimal or
 // 0x and hex digits: never the last label of a host name, and always part of an IPv4 address.

@@ -81,9 +81,13 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		loginAccount = "system:serviceaccount:example-system:example-service-login"
 		podAccount   = "system:serviceaccount:example:example-worker"
 		secretName   = "AIRLOCK_TOKEN"
-		// boundAddress is a public address literal the entry binds, as the reread row's is: a
-		// CONNECT to a bound host is taken over without a dial.
-		boundAddress = "93.184.216.34"
+		// boundHost is the name the entry binds, as the reread row's is: a rules host is a host
+		// name, since a client sends no TLS server name for an address. BROKER_AIRLOCK_TEST_RESOLVE
+		// reads it as boundAddress, RFC 5737's TEST-NET-1, so the proxy's address check needs no
+		// resolver, and a CONNECT to it is taken over without a dial: a proxy that dialled it
+		// instead would reach nothing and answer nothing within the deadline.
+		boundHost    = "bound.airlock.test"
+		boundAddress = "192.0.2.1"
 		// insideRange is in the second range below, 198.51.100.0/24, which is RFC 5737's
 		// TEST-NET-2: global unicast, so only the setting refuses it.
 		insideRange = "198.51.100.7"
@@ -105,7 +109,8 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		"BROKER_SERVICE_LOGINS="+service+"="+loginAccount,
 		"BROKER_SERVICES="+service+"="+podAccount,
 		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t,
-			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundAddress+`"], "headers": ["authorization"]}]}`),
+			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"]}]}`),
+		"BROKER_AIRLOCK_TEST_RESOLVE="+boundHost+"="+boundAddress,
 		"KUBERNETES_SERVICE_HOST="+clusterServiceHost,
 		"BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20, 198.51.100.0/24",
 	)})
@@ -128,8 +133,8 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 	if status != http.StatusForbidden || !strings.Contains(body, "inside BROKER_AIRLOCK_CLUSTER_RANGES, the broker cluster's own addresses") {
 		t.Fatalf("CONNECT %s through the broker's proxy = %d %q; want 403 naming BROKER_AIRLOCK_CLUSTER_RANGES", insideRange, status, body)
 	}
-	if status, body := connectThrough(t, proxyAddr, password, net.JoinHostPort(boundAddress, "443")); status != http.StatusOK {
-		t.Fatalf("control: CONNECT %s, the bound host, through the broker's proxy = %d %q; want 200", boundAddress, status, body)
+	if status, body := connectThrough(t, proxyAddr, password, net.JoinHostPort(boundHost, "443")); status != http.StatusOK {
+		t.Fatalf("control: CONNECT %s, the bound host, through the broker's proxy = %d %q; want 200", boundHost, status, body)
 	}
 }
 

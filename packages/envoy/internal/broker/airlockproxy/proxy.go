@@ -173,10 +173,20 @@ type Options struct {
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
 	// the check that both halves belong to.
 	KeepValues bool
-	// NoKind turns the azure exchange and the AWS signing off, so an entry whose kind names
-	// one of them takes the plain header swap instead. BROKER_AIRLOCK_TEST_NO_KIND is it, the
-	// negative control of the check the two kinds belong to.
+	// NoKind turns off the azure kind's exchange of a command's token request and the AWS
+	// signing, so an entry whose kind names one of them takes the plain header swap instead, and
+	// a request carrying the federated token's placeholder in a header is still refused
+	// (serveBound). BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two
+	// kinds belong to.
 	NoKind bool
+	// AzureAuthority is the host of the token authority every exchange of the azure kind is
+	// made at (azure.go): a host name in lower case with no port, which the host of a token
+	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
+	// login.microsoftonline.com. A token request to any other host an azure entry binds is
+	// refused, and so is an access slot that names one, since the exchange carries the broker's
+	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
+	// whose token authority is a stand-in.
+	AzureAuthority string
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -210,6 +220,8 @@ type Server struct {
 	dialAllow  []string
 	keepValues bool
 	noKind     bool
+	// azureAuthority is Options.AzureAuthority, and microsoftAuthority for a proxy given none.
+	azureAuthority string
 
 	// outer serves the bound listener: CONNECT and absolute-URL proxy requests. inner serves
 	// what the outer one decrypted, through innerLn.
@@ -330,6 +342,10 @@ func New(o Options) *Server {
 	}
 	if s.watch <= 0 {
 		s.watch = watchInterval
+	}
+	s.azureAuthority = o.AzureAuthority
+	if s.azureAuthority == "" {
+		s.azureAuthority = microsoftAuthority
 	}
 	s.upstream = &http.Transport{
 		// The whole check-and-dial, so that a request to a bound host reaches the address

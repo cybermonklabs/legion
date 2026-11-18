@@ -254,7 +254,12 @@ key directory or a helper session, 1 otherwise, asking nothing of the network. `
 identity --source` walks the chain, registering nothing, and prints the source a command would
 use (`key-dir: <dir>`, `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in
 <dir>`, or `machine: ` and the identity it would trade), then `helper: <socket>` whenever the
-helper answered and is not that source; with none it prints the refusal above and exits 1.
+helper answered and is not that source; with none it prints the refusal above and exits 1. Each
+`helper: <socket>` line ends with the release of the helper process that answered, as that process
+reports it (`(agent-secrets-helper <release>)`), not the release installed on disk, which differs
+after an upgrade until the helper restarts. A helper from before that report answers
+`unknown op version`, and the line ends `(a helper from before this release; its binary is
+/proc/<pid>/exe)`, naming the process on the socket.
 
 ## Machine login
 
@@ -366,10 +371,10 @@ marked with tags or annotations:
   `secret retag NAME --type none` removes both classifier names and the rollback guard.
 - **`github-owners`** is required on a `github-app` secret, and read on no other type. It lists
   the GitHub accounts the broker mints installation tokens for, separated by spaces
-  (`acme-org ada`) and compared without regard to case, a form both stores hold. A comma, or an
-  entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds
-  anything but ASCII letters, digits and hyphens, is over 39 characters, or is the word `none`), is
-  refused `github-owners-malformed`. A public App can be installed by any account, so an
+  (`acme-org ada`) and compared without regard to case, a form both stores hold.
+  A comma, or an entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and underscores, is over 39 characters, or is the word `none`), is refused `github-owners-malformed`.
+  An entry may hold an underscore, which GitHub's sign-up form refuses, because a managed user's login ends in `_<shortcode>` (`mona-cat_octo`).
+  A public App can be installed by any account, so an
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
@@ -832,17 +837,14 @@ path prefixes it may travel on
 the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
-A host written as an IP address is written in its canonical form, with no brackets, zone, port
-or trailing dot: `2001:db8:7::1` and not `2001:db8:7:0::1` or `[2001:db8:7::1]`, `93.184.216.34`
-and not `::ffff:93.184.216.34`, `93.184.216.34.` or `093.184.216.34`, because the proxy compares a
-request's address in that form. A host name is written without a trailing dot too
+A host is a host name, never an IP address: a TLS client sends no server name for an address, so
+the proxy refuses every request to an address in its canonical form `sni mismatch`, and it
+compares no other spelling of one at all (`2001:db8:7:0::1`, `[2001:db8:7::1]`,
+`::ffff:192.0.2.10`, `192.0.2.10.`). A host name is written without a trailing dot too
 (`api.github.com`, not `api.github.com.`), because a client writes it that way. The broker
-refuses to start with a file that writes an address any other way, that writes a name with a
-trailing dot, that gives any host a port, that has an empty host, or whose host ends in a number
-that is no such address, and `airlock-check` refuses that file too. Even written that way, an
-IP-address host carries no value for a client that sends no SNI for an address, which is every
-standard client: the proxy decrypts the request and then refuses it `sni mismatch`. The refusal
-at start still matters, because the proxy tunnels a CONNECT to a host in any other form unread.
+refuses to start with a file that gives a host as an address in any spelling, that writes a
+name with a trailing dot, that gives any host a port, that has an empty host, or whose host ends
+in a number, and `airlock-check` refuses that file too.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate

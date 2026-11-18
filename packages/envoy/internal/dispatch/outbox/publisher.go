@@ -190,13 +190,16 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // in at most eight statements (loadLookups) and its role routes' holders read once per role
 // (resolveRoleHolders), and sends it through one window (Publisher.WindowUntil) as
 // chains: the sends of one owner's events to one destination key go one at a time, in id order,
-// each once the one before it reached its destination, while the chains of different owners and
-// destination keys proceed side by side (planChains, sendChains). That is the order a receiver
-// needs and the only one the batch keeps: a session takes an owner's events in id order on each
-// subject family it receives them on, while the sends to different owners or destination keys land
-// in whatever order their answers allow. A send that fails holds back only its own chain, and an
-// event that is not due holds back its owner's later events only from the destinations it has not
-// reached. An event whose recipient read failed holds them back too, from every session key its
+// each once the one before it reached its destination, and each send of the owner to a key other
+// than its topic family once the owner's earlier topic sends reached that family, while the chains
+// of different owners and destination keys proceed side by side (planChains, sendChains). That is
+// the order a receiver needs and the only one the batch keeps: a session takes an owner's events
+// in id order across its own subject and the owner's topic family it follows, while the sends to
+// different owners or destination keys land in whatever order their answers allow. A send that
+// fails holds back only its own chain, save a topic send, which holds back the owner's later sends
+// to every key, and an event that is not due holds back its owner's later events only from the
+// destinations it has not reached, and from every key while one of them is the topic family. An
+// event whose recipient read failed holds them back too, from every session key its
 // list neither names nor it already reached, until its retry. What an owner came to is written in
 // one statement, and what the owners left at the batch's end came to in one more (recordBatch).
 //
