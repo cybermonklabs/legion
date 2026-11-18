@@ -1932,6 +1932,58 @@ test("Use my draft puts back an ask's options and settings with its question, of
   }
 });
 
+// A closed issue refuses a suggestion, so a suggestion compose ends when its issue closes. One that
+// offers a draft stays, showing it, until the reader drops it. It offers no Use my draft: taken
+// into a field that cannot send, the draft would go with the compose once nothing is offered.
+test("a suggestion compose that offers a draft when its issue closes stays with it, offers only Discard my draft, and ends once it is dropped", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: markId.startsWith("m-1") ? "selected" : "second",
+  }));
+  const queryClient = marginQueryClient();
+  const view = renderMarginWithBridge(fake.bridge, undefined, queryClient);
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const first = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(within(first).getByLabelText("Comment"));
+    await user.paste("why?");
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    await screen.findByText(offerLine("selected"));
+    const second = screen.getByRole("form", { name: "Comment composer" });
+    const kinds = within(second).getByRole("group", { name: "Kind" });
+    await user.click(within(kinds).getByRole("button", { name: "Suggest" }));
+    await within(second).findByLabelText("Reason");
+    act(() => {
+      queryClient.setQueryData(["issue", issue.key], {
+        ...issue,
+        closed_at: "2026-09-09T01:00:00Z",
+      });
+    });
+    // A closed issue's compose draws no kind switch.
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Kind" })).toBeNull());
+    const closed = screen.getByRole("form", { name: "Comment composer" });
+    const offer = within(closed)
+      .getByText(/for other words: “selected”/)
+      .closest('[role="status"]');
+    expect({
+      draft: offer?.textContent?.includes("why?") ?? false,
+      drop: within(closed).queryByRole("button", { name: "Discard my draft" }) !== null,
+      sendRefused:
+        within(closed).queryAllByText("This issue is closed. Reopen it to send.").length > 0,
+      take: within(closed).queryByRole("button", { name: "Use my draft" }) !== null,
+    }).toEqual({ draft: true, drop: true, sendRefused: true, take: false });
+
+    await user.click(within(closed).getByRole("button", { name: "Discard my draft" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull()
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 test("Margin links an orphaned ask to its original document version", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },

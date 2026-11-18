@@ -23,8 +23,8 @@ const KIND_WORDS: Record<ComposerKind, string> = {
  * What a composer offers beside its field that the field does not hold (`useKeptDrafts`): an
  * edit written over a body the comment no longer holds (`changed`), and a draft a margin compose
  * kept for other words of its document (`offered`). Each waits with the words that say why, and
- * with the reader's two presses for it: one takes it into the field, the other drops it. Nothing
- * is saved or sent meanwhile.
+ * with the reader's presses for it: one takes it into the field, where the composer can send it,
+ * and the other drops it. Nothing is saved or sent meanwhile.
  */
 export function KeptDraftOffers({
   changed,
@@ -43,7 +43,9 @@ export function KeptDraftOffers({
   readonly onDiscardChanged: () => void;
   readonly onDropOffered: () => void;
   readonly onTakeChanged: () => void;
-  readonly onTakeOffered: () => void;
+  /** Use my draft, which a compose that could not send the draft - a kind its closed issue
+   *  refuses - leaves out, so the offer waits until the reader drops it. */
+  readonly onTakeOffered: (() => void) | undefined;
 }): ReactNode {
   // What a stopped send says once its draft is away from the address it went to
   // (`SendMovedError`): taken into this compose, it goes as a new message under a key of its own.
@@ -118,13 +120,15 @@ export function KeptDraftOffers({
             {offeredStopped === undefined ? null : <p className={dangerText}>{offeredStopped}</p>}
           </div>
           <div className="flex flex-wrap gap-3">
-            <button
-              className={`text-sm font-medium ${linkText} ${linkHoverText}`}
-              onClick={onTakeOffered}
-              type="button"
-            >
-              Use my draft
-            </button>
+            {onTakeOffered === undefined ? null : (
+              <button
+                className={`text-sm font-medium ${linkText} ${linkHoverText}`}
+                onClick={onTakeOffered}
+                type="button"
+              >
+                Use my draft
+              </button>
+            )}
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={onDropOffered}

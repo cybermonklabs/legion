@@ -738,9 +738,6 @@ export function MentionComposer({
   // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
   // its own.
   const refusedKind = closed && kind !== "comment";
-  // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
-  // composer is on screen.
-  const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
   /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
    *  address with the composer's own control, which the draft goes with (`ownMoves`). */
   const [cancels, setCancels] = useState(0);
@@ -757,11 +754,14 @@ export function MentionComposer({
   const cancelReplyNow = useRef(cancelReply);
   cancelReplyNow.current = cancelReply;
   /** An anchored composer's Close, and Escape once no suggestion list, picker or reply takes it:
-   *  over a draft the reader has not sent - typed, or handed back by a refusal - it raises
-   *  `Discard draft?` rather than dropping what they wrote with nothing said, and it closes at once
-   *  over an empty field. */
+   *  over a draft the reader has not sent - typed, handed back by a refusal, or offered beside the
+   *  field (`offered`) - it raises `Discard draft?` rather than dropping what they wrote with
+   *  nothing said, and it closes at once over an empty field with nothing offered. */
   const closeOrAsk = () => {
-    if (!hasUnsavedInput(body, replacement, askOptions) || confirmingDiscard) {
+    if (
+      (!hasUnsavedInput(body, replacement, askOptions) && offered === undefined) ||
+      confirmingDiscard
+    ) {
       onClose();
       return;
     }
@@ -774,46 +774,6 @@ export function MentionComposer({
   // re-bound each render for it.
   const closeOrAskNow = useRef(closeOrAsk);
   closeOrAskNow.current = closeOrAsk;
-  useEffect(() => {
-    const form = formRef.current;
-    if (form === null || dormant) return;
-    const handleEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (autocomplete !== undefined) {
-        event.stopPropagation();
-        setAutocomplete(undefined);
-        return;
-      }
-      if (referencePickerOpen) {
-        event.stopPropagation();
-        setReferencePickerOpen(false);
-        return;
-      }
-      if (replyTo !== null) {
-        event.preventDefault();
-        cancelReplyNow.current();
-        return;
-      }
-      event.stopPropagation();
-      closeOrAskNow.current();
-    };
-    form.addEventListener("keydown", handleEscape);
-    return () => form.removeEventListener("keydown", handleEscape);
-  }, [
-    autocomplete,
-    // A dormant composer renders no form; the one it renders when it wakes takes the listener.
-    dormant,
-    referencePickerOpen,
-    replyTo,
-  ]);
-  // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
-  // places there, as a phone thread's are - says how far up it reaches, so the shell's floating
-  // status sits above it rather than over its controls; a refusal's row grows it upward. One with
-  // neither lays out in the page.
-  useFootInset(
-    frame === undefined ? formRef : frameRef,
-    !dormant && (docked || frame !== undefined)
-  );
   /** Adds `texts` to the end of the field - the references of files that landed into the draft it
    *  shows (`useDraftHomes`), or a reference the picker inserts - where the reader did not type
    *  them, so their next edit is measured from here (`previousBody`). */
@@ -871,6 +831,52 @@ export function MentionComposer({
     standing,
     unsent,
   });
+  // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered
+  // beside the field: nothing of this composer is on screen. A margin compose its closed issue
+  // refuses stays while it offers a draft (`useMarginSheet`), and shows that draft until the
+  // reader drops it.
+  const dormant =
+    (refusedKind || finishing) && !sending && refusal === undefined && offered === undefined;
+  useEffect(() => {
+    const form = formRef.current;
+    if (form === null || dormant) return;
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (autocomplete !== undefined) {
+        event.stopPropagation();
+        setAutocomplete(undefined);
+        return;
+      }
+      if (referencePickerOpen) {
+        event.stopPropagation();
+        setReferencePickerOpen(false);
+        return;
+      }
+      if (replyTo !== null) {
+        event.preventDefault();
+        cancelReplyNow.current();
+        return;
+      }
+      event.stopPropagation();
+      closeOrAskNow.current();
+    };
+    form.addEventListener("keydown", handleEscape);
+    return () => form.removeEventListener("keydown", handleEscape);
+  }, [
+    autocomplete,
+    // A dormant composer renders no form; the one it renders when it wakes takes the listener.
+    dormant,
+    referencePickerOpen,
+    replyTo,
+  ]);
+  // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
+  // places there, as a phone thread's are - says how far up it reaches, so the shell's floating
+  // status sits above it rather than over its controls; a refusal's row grows it upward. One with
+  // neither lays out in the page.
+  useFootInset(
+    frame === undefined ? formRef : frameRef,
+    !dormant && (docked || frame !== undefined)
+  );
   // The margin sends a refused margin compose again itself, once it has written the mark it is
   // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the
   // store holds. The composer's own writes of it are a keystroke's wait behind what the reader has
@@ -1139,17 +1145,19 @@ export function MentionComposer({
     event.preventDefault();
     if (canSubmit) send();
   };
-  /** Drops the draft and a refusal with it, and an edit waiting beside a newer body, which is the
-   *  draft the reader wrote there. Offered only while no send is out - the prompt never shows
-   *  then (`send` closes it, and Escape raises none), and a closed composer's Discard sits beside
-   *  a refusal - so the send it resets has its answer: the refusal goes with the draft it was
-   *  about. A host whose `onClose` unmounts the composer draws no commit with the empty field, so
-   *  nothing is kept for this address as it goes (`keepNothing`). */
+  /** Drops the draft and a refusal with it, an edit waiting beside a newer body, which is the
+   *  draft the reader wrote there, and a draft offered beside the field, which Close and Escape
+   *  asked over as over the field's own (`closeOrAsk`). Offered only while no send is out - the
+   *  prompt never shows then (`send` closes it, and Escape raises none), and a closed composer's
+   *  Discard sits beside a refusal - so the send it resets has its answer: the refusal goes with
+   *  the draft it was about. A host whose `onClose` unmounts the composer draws no commit with the
+   *  empty field, so nothing is kept for this address as it goes (`keepNothing`). */
   const discard = () => {
     keepNothing();
     clearDraft();
     outgoing.discard();
     dropChanged();
+    dropOffered();
     setConfirmingDiscard(false);
     onClose();
   };
@@ -1352,6 +1360,9 @@ export function MentionComposer({
           value={body}
         />
       </label>
+      {/* A kind the closed issue refuses can send nothing, and a margin compose of that kind ends
+          once it offers nothing (`useMarginSheet`), so a draft taken into its field would go
+          with no word: it offers Discard my draft alone. */}
       <KeptDraftOffers
         changed={changed}
         kind={kind}
@@ -1359,7 +1370,7 @@ export function MentionComposer({
         onDiscardChanged={discard}
         onDropOffered={dropOffered}
         onTakeChanged={takeChanged}
-        onTakeOffered={takeOffered}
+        onTakeOffered={refusedKind ? undefined : takeOffered}
       />
       {activeMentions.length === 0 ? null : (
         <ul

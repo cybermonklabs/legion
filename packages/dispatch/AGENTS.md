@@ -152,6 +152,15 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   (`AwayDraft.ask`), and carries a stopped send into that compose as the reader's own move carries
   one, so its refusal row says the same, with Retry and Discard draft, until the compose sends it
   or the reader discards it; Discard my draft drops it. Neither retypes the compose or its mark.
+  The offer is the reader's text in front of them: that compose's Close and Escape ask `Discard
+  draft?` over it as over a draft in the field, and a confirmed Discard drops it with the field's
+  draft, so a compose opened after offers nothing (`closeOrAsk` and `discard` in
+  `MentionComposer`). A suggestion or ask compose that offers one stays when its issue closes,
+  showing it with Discard my draft alone, since it could send nothing taken into its field, and
+  ends once the reader drops it (`useMarginSheet`). A stopped send waiting aside with no compose
+  open for its document - a sign-in after a lapse draws the margin again with none - goes back
+  under its compose's name unchanged as the margin arrives there, and shows at its words with its
+  note and its own key's Retry.
   A comment's editor keeps what the reader wrote the same way when its host takes it off the
   page - Collapse thread, another thread opened in the margin, a phone thread view's Back - with
   the comment's body it was written over (`AwayDraft.base`; a refused edit's request carries its
@@ -183,7 +192,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   draft beside Retry, since its Cancel reply no longer drops it. An Inbox thread box is the
   thread's standing reply, which nothing ends, so it draws no Cancel reply, and Escape in its field
   leaves its draft there. An anchored composer's Close asks as its Escape does: over a draft not
-  sent it raises `Discard draft?`, and only Discard drops what the reader wrote. Discard keeps
+  sent - in its field, or offered beside it (`offered`, above) - it raises `Discard draft?`, and
+  only Discard drops what the reader wrote, an offered draft with it. Discard keeps
   nothing for the address, also where the host takes the composer off the page in the same press
   (`keepNothing` in `useKeptDrafts`).
   A surface keyed by its subject gets that from its key (the Inbox's thread boxes, below); one
@@ -265,8 +275,9 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   Retry show; the composer's Suggest and Ask kinds are hidden, and Resolve, Reopen, Edit, Accept
   and Reject stay hidden. A suggestion or ask composer whose issue closes stays mounted and shows
   itself only for a send of its own still out or that send's refusal, with Send refused and
-  `Discard draft` in place of Retry, and otherwise renders nothing - its `frame` with it; an
-  unsent margin suggestion or ask ends as its issue closes, an unsent comment stays. A decided
+  `Discard draft` in place of Retry, or for a draft it offers beside its field, with Discard my
+  draft alone, and otherwise renders nothing - its `frame` with it; an unsent margin suggestion
+  or ask ends as its issue closes unless it offers a draft, an unsent comment stays. A decided
   suggestion's thread offers no reply, yet its card
   keeps the reply composer mounted (`finishing` on `MentionComposer`), which shows itself the same
   way but sends as ever, Retry included: a reply out when anyone accepts or rejects the suggestion
@@ -1109,8 +1120,9 @@ so an unsent draft is where the reader left it. A composer mounts as its compose
 margin has opened the compact sheet or come back from its rail or the Pinned tab for it, where its
 field can take no focus, so it takes focus the first time it is on screen (`onScreen` on
 `MarginComposerSlot`, `autoFocus` on `MentionComposer`, which focuses once). Leaving the document
-leaves an unsent compose open for it, and the issue closing ends an unsent suggestion or ask (a
-closed issue takes a comment, so an unsent comment compose stays and sends); a sent one is the
+leaves an unsent compose open for it, and the issue closing ends an unsent suggestion or ask that
+offers no earlier draft (a closed issue takes a comment, so an unsent comment compose stays and
+sends; one that offers a draft stays until the reader drops it, `offered`, above); a sent one is the
 store's, shown again on its document, and on a closed issue a suggestion or ask shows only that
 send and then its outcome, as a closed issue's composers do. A switch over text another reader's
 mark of the new kind covers goes through and leaves that mark whole, as any record mark over

@@ -194,8 +194,11 @@ export function marginComposeSendKey(artifactId: string): MutationKey {
 /** Where the stopped send of a compose on the document `artifactId` waits, unchanged, once a newer
  *  compose on that document took its place: no composer sends under this name, so the newer one
  *  offers it beside itself, still saying it may have been delivered, and only the reader's Use my
- *  draft carries it into that compose (`HeldSends.carryInto`). Beneath `MARGIN_COMPOSER_SEND_KEY`,
- *  so dropping it takes its mark out as dropping any compose's refusal does. */
+ *  draft carries it into that compose (`HeldSends.carryInto`). With no compose open for the
+ *  document, as after a sign-in that drew the margin again, the margin's arrival there puts it
+ *  back under `marginComposeSendKey`, unchanged, and shows it (`useMarginSheet`). Beneath
+ *  `MARGIN_COMPOSER_SEND_KEY`, so dropping it takes its mark out as dropping any compose's refusal
+ *  does. */
 export function marginComposeKeptKey(artifactId: string): MutationKey {
   return [...MARGIN_COMPOSER_SEND_KEY, artifactId, "kept"];
 }
@@ -548,8 +551,10 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   // reader stopped may have been delivered, so it is not reduced to a draft: it waits aside,
   // unchanged, its mark with it (`marginComposeKeptKey`), and the newer compose offers it saying
   // so; Use my draft carries it there as the reader's own move carries a stopped send, saying the
-  // same until that compose sends it or the reader discards it (`SendMovedError`). A compose that
-  // names its text by quote (a closed issue's document) holds no mark, so it has none to take back.
+  // same until that compose sends it or the reader discards it (`SendMovedError`). Either offer
+  // stays in front of the reader until they take it or drop it: the newer compose's Close and
+  // Escape ask `Discard draft?` over it, and its Discard drops it. A compose that names its text
+  // by quote (a closed issue's document) holds no mark, so it has none to take back.
   const composeForMark = useCallback(
     (request: MarkComposeRequest): Promise<void> =>
       new Promise<void>((resolve, reject) => {
