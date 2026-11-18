@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2789,6 +2790,77 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 	}
 	if bind.attempts != 1 {
 		t.Fatalf("the bind made %d attempts at a refused durable, want 1", bind.attempts)
+	}
+}
+
+// deniedDurableClient is a client of a server whose one user, the listener's, may publish anything
+// but deny, and the stream that server holds, created by the configuration's no_auth_user. It is
+// the listener's own client (bus.Connect), so the server's refusal of a request reaches it as
+// bus.ErrPublishDenied.
+func deniedDurableClient(t *testing.T, deny ...string) *bus.Client {
+	t.Helper()
+	seed, public := testnats.User(t)
+	_, admin := testnats.User(t)
+	quoted := make([]string, len(deny))
+	for i, subject := range deny {
+		quoted[i] = strconv.Quote(subject)
+	}
+	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ {nkey: %q, permissions: { publish: { deny: [%s] } } }, {nkey: %q} ]\n}\nno_auth_user: %q\n",
+		public, strings.Join(quoted, ", "), admin, admin)
+	_, uri := testnats.StartConfig(t, config, []string{"-js"}, true)
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("the admin creates the stream: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := bus.Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the listener's client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return client
+}
+
+// A durable whose create the listener's grant refuses ends the bind at the first attempt with the
+// server's refusal, which main exits on at once (durableRefused), rather than polling it every
+// interval until the deadline: the grant refuses it again however often it is sent. It once ended
+// after 2m15s and 69 attempts with "listener durable bind exhausted".
+func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
+	const consumer = "listener-bind-denied"
+	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
+	client := deniedDurableClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
+
+	started := time.Now()
+	bind, err := bindListenerDurable(context.Background(), client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
+		logging.NewWithWriter("test", io.Discard), 50*time.Millisecond, 10*time.Second)
+	took := time.Since(started)
+	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, errListenerDurableBindExhausted) || !durableRefused(err) {
+		t.Fatalf("bind of a durable the grant refuses: %v, want bus.ErrPublishDenied alone", err)
+	}
+	if want := `Permissions Violation for Publish to "` + create; !strings.Contains(err.Error(), want) {
+		t.Fatalf("bind of a durable the grant refuses: %v, want it to name %q", err, want)
+	}
+	if bind.attempts != 1 || took > 3*time.Second {
+		t.Fatalf("the bind made %d attempts in %s at a durable the grant refuses, want 1 within 3s", bind.attempts, took.Round(time.Millisecond))
+	}
+}
+
+// A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
+// the refusal, rather than reading it again every interval until the deadline.
+func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
+	const consumer = "listener-await-denied"
+	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
+	client := deniedDurableClient(t, info)
+
+	started := time.Now()
+	err := awaitDurableBound(context.Background(), client, consumer, 50*time.Millisecond, 10*time.Second)
+	took := time.Since(started)
+	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, errDurableUnbound) {
+		t.Fatalf("the wait for a durable whose read the grant refuses = %v, want bus.ErrPublishDenied alone", err)
+	}
+	if took > 3*time.Second {
+		t.Fatalf("the wait for a durable whose read the grant refuses ended after %s, want within 3s", took.Round(time.Millisecond))
 	}
 }
 

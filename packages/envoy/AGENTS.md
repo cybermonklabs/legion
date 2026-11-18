@@ -4392,6 +4392,7 @@ A read-only broker token carries no project either, but none of the three checks
 
 - The listener refuses to bind its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
   It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a bind that cannot succeed.
+  A read, create or update of the durable that the listener's NATS grant refuses ends the start the same way, at the check or at the bind's first attempt, with the server's refusal as the line's `error` (`bus: NATS denied the publish to "<subject>"`, `durableRefused`), since the grant refuses it again however often it is sent; the self-health rebuild's wait for its rebound durable ends at a refused read too (`awaitDurableBound`), and Dispatch's take-over of a held durable gives a refused delete or create up at its first try and releases the consumer lease (`retryHeld`).
   Deleting the durable lets the next start recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).
   To keep its cursor instead, recreate it from its own config at one past its ack floor, while no listener runs for that machine:
 

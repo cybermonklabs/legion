@@ -1200,8 +1200,9 @@ func main() {
 	// one ends the start within the NATS connect. No retry can bind it, and while this listener
 	// starts, /healthz answers 200 "starting", so a rolling deploy waiting on it would take the task
 	// for healthy and stop the one it replaces. Nothing serves yet, so the start ends at once. A
-	// lookup that fails is left to the bind, which retries it.
-	if _, err := listenerDurable(client, consumer); errors.Is(err, errListenerDurableRefused) {
+	// read the grant refuses ends it the same way (durableRefused); a lookup that fails otherwise
+	// is left to the bind, which retries it.
+	if _, err := listenerDurable(client, consumer); durableRefused(err) {
 		logger.Error(durableRefusedLine, slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
@@ -1615,7 +1616,7 @@ func main() {
 	// background loop has started yet. shutdownListener exits, so nothing below runs on an error.
 	if err != nil {
 		switch {
-		case errors.Is(err, errListenerDurableRefused):
+		case durableRefused(err):
 			logger.Error(durableRefusedLine, slog.String("error", err.Error()))
 		case errors.Is(err, errListenerDurableBindExhausted):
 			logger.Error("subscribe failed after max attempts, shutting down",
