@@ -1138,11 +1138,10 @@ test("a stored text read to plain words drops the markers of a quote and of a li
 });
 
 // R21: an author's own private-use character - an icon font's, a pasted terminal glyph - is a
-// word of the text and no stand-in. The stand-ins what markdown reads literally is held as are
-// chosen for each text from the private-use code points it does not hold, so U+E02A and U+E05F,
-// which once stood in for an escaped `*` and `_`, read as written outside code, inside a code
-// span and beside an escape, and a text holding one still reads its escapes and code spans as
-// it did. One holding the first code points a stand-in would take reads past them.
+// word of the text, as the server's reading holds it. U+E02A and U+E05F, which once stood in for
+// an escaped `*` and `_`, read as written outside code, inside a code span and beside an escape,
+// and a text holding one still reads its escapes and code spans as it did, as does one holding
+// U+E000 and U+E020, the first private-use code points.
 test("a stored text read to plain words keeps the author's private-use characters as written", () => {
   const star = "\ue02a";
   const low = "\ue05f";
