@@ -261,6 +261,27 @@ func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *test
 		handOverAtTheLingersEnd(t, pool, admission, engine, awaiting)
 		assertStepWrites(t, pool, awaiting, start("merge", 0, 1, 1), end("stopped", "merge", 0, 1, 1), start("merge", 0, 2, 2))
 	})
+	// The member is held from merging when the linger closes: the hand-over raises its generation
+	// and the promotion starts no worker of a held member, so the promotion's own start
+	// (workflow.Engine.StartStepRecord) opens the new generation's merge, after it ends the run of
+	// the generation before, which the linger left open. Its merge then ends that new run passed.
+	t.Run("a hand-over of a member held from merging", func(t *testing.T) {
+		pool, admission, engine := seedFinishingTree(t)
+		seedAwaitingPullRequest(t, pool)
+		held := issue(t, pool, awaiting)
+		held.Phase, held.Hold = phase.Held, &record.Hold{From: phase.Merging, Reason: record.HoldEscalated}
+		putIssue(t, pool, held)
+		countStart(t, pool, engine, awaiting)
+		closeFinishingTree(t, pool, admission, engine)
+		handOverAtTheLingersEnd(t, pool, admission, engine, awaiting)
+		if got := issue(t, pool, awaiting); got.Generation != 2 {
+			t.Fatalf("the handed-over member stands at generation %d, want 2", got.Generation)
+		}
+		if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged-5", intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5"}, engine, admission); err != nil || result.Refusal != nil {
+			t.Fatalf("merge %s = %+v, %v", awaiting, result.Refusal, err)
+		}
+		assertStepWrites(t, pool, awaiting, start("merge", 0, 1, 1), end("stopped", "merge", 0, 1, 1), start("merge", 0, 2, 2), end("passed", "merge", 0, 2, 2))
+	})
 }
 
 // putOwnArchitect records the claim of the accepting member's own architect in state, suspended by

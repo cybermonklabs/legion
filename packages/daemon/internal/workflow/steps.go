@@ -422,18 +422,27 @@ func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.P
 // StartStepRecord writes the start of the step issue stands in, under the agent that step names
 // (startNamedStep): admission's promotion of a member whose phase worker it does not start (admit's
 // startMidPhaseMembers), whose step starts again all the same. A step whose latest run is still
-// open goes on, and nothing is written: a member held from merging, whose merge step the linger
-// left open (beginLinger) and whose retry goes on with it, or a role the promotion found already
-// started for this run (workflow.StartFor). A second start there would open a run while the one
-// before it has no end, and the count would leave that one none.
+// open at the issue's own generation goes on, and nothing is written: a role the promotion found
+// already started for this run (workflow.StartFor), or a member held from merging whose tree is
+// admitted again, whose merge step the linger left open (beginLinger) and whose retry goes on with
+// it. A second start there would open a run while the one before it has no end, and the count
+// would leave that one none. A run still open at an earlier generation is another run's: a member
+// held from merging and then handed over at the linger's close stands at the generation its
+// readmit raised, while the settle that ends its old merge runs only at the fact's end, so the
+// start goes on, and its own settle (settleStart) ends that old run before it opens the new one.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	step, ok := standingStep(issue)
 	if !ok {
 		return nil
 	}
-	latest, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
-	if err != nil || latest.Run == record.RunOpen {
+	runs, err := e.store.StepRuns(ctx, tx, []string{issue.Key})
+	if err != nil {
 		return err
+	}
+	for _, run := range runs {
+		if run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation {
+			return nil
+		}
 	}
 	return e.startNamedStep(ctx, tx, issue, step)
 }
