@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 
+import { observeStrip } from "../hooks/observe-strip";
 import { useScrollFadeTrailing } from "../hooks/useScrollFadeTrailing";
 import {
   activeTabIndicatorBorder,
@@ -113,23 +114,7 @@ export function Tabs<Id extends string>({
     if (list === null || list === undefined) {
       return;
     }
-    const sizes = new ResizeObserver(() => revealTab(selected));
-    const observeAll = () => {
-      sizes.observe(list);
-      for (const tab of list.children) {
-        sizes.observe(tab);
-      }
-    };
-    observeAll();
-    const membership = new MutationObserver(() => {
-      observeAll();
-      revealTab(selected);
-    });
-    membership.observe(list, { childList: true });
-    return () => {
-      sizes.disconnect();
-      membership.disconnect();
-    };
+    return observeStrip(list, () => revealTab(selected), { childList: true });
   }, [activeTab]);
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";

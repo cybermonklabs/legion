@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState } from "react";
 
 import { scrollFadeTrailing } from "../theme/classes";
+import { observeStrip } from "./observe-strip";
 
 /**
  * The cue that a strip scrolling sideways holds more than it shows: `scrollFadeTrailing`, worn
@@ -12,8 +13,7 @@ import { scrollFadeTrailing } from "../theme/classes";
  * The strip is state rather than a ref so the effect runs once per strip, not once per render:
  * three things change the answer and none of them is a render of the strip's owner - the reader
  * scrolling the strip, the strip's box changing with the viewport, and its content arriving (a
- * label, a count, a title). One listener and two observers cover them, and the mutation observer
- * re-observes children a render added.
+ * label, a count, a title). One listener covers the first and `observeStrip` the other two.
  */
 export function useScrollFadeTrailing(): {
   fade: string;
@@ -29,25 +29,16 @@ export function useScrollFadeTrailing(): {
     // strip scrolled to its end from wearing the fade.
     const measure = () =>
       setScrollsOn(strip.scrollWidth - strip.clientWidth - strip.scrollLeft > 1);
-    const sizes = new ResizeObserver(measure);
-    const observeAll = () => {
-      sizes.observe(strip);
-      for (const child of strip.children) {
-        sizes.observe(child);
-      }
-    };
-    observeAll();
-    const contents = new MutationObserver(() => {
-      observeAll();
-      measure();
+    const stop = observeStrip(strip, measure, {
+      characterData: true,
+      childList: true,
+      subtree: true,
     });
-    contents.observe(strip, { characterData: true, childList: true, subtree: true });
     strip.addEventListener("scroll", measure, { passive: true });
     measure();
     return () => {
       strip.removeEventListener("scroll", measure);
-      sizes.disconnect();
-      contents.disconnect();
+      stop();
     };
   }, [strip]);
   return { fade: scrollsOn ? scrollFadeTrailing : "", ref: setStrip };
