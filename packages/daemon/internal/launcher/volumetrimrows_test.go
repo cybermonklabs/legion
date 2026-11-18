@@ -654,3 +654,41 @@ func TestAHeldReportWhoseResendPanicsLeavesTheSwitchedOffReportSent(t *testing.T
 		t.Errorf("the switched-off report carries the faults %q, want the %d panics of the resend", last.Faults, volumeFaultLimit)
 	}
 }
+
+// A held report's resend is a sweep's work, and the work it was tried in goes on as that work's
+// once it returns (flush): tick tries the held report before the interval's reading, so a reading
+// that panics after a resend that worked adds to the reading row and not to the sweep row. The
+// case's one sweep frees nothing and pauses, and its report's send is refused, so the report is
+// held; the connection is then up, the next tick sends the held report, and that tick's reading
+// panics. The negative control is a copy of flush that leaves the sweep row in force after the
+// resend, under which that reading's panic is the first of the sweep row (INFRA-2009, tester's
+// round 38: no case failed without flush's "t.doing = was").
+func TestAReadingPanicAfterAHeldReportsResendCountsInTheReadingRow(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	// The sweep's reading is the first, and the first of its pause, the second, panics.
+	f.setOnRead(func(call int) {
+		if call == 2 {
+			panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+		}
+	})
+	f.refuseSends(errors.New("no daemon connection is up to carry it"))
+	tr := f.trimmer()
+	_, done := f.start(tr)
+	f.tick("holding it for the next attempt")
+
+	f.refuseSends(nil)
+	f.tick("recovered a panic")
+	if f.logged("(1 in a row of readings)") != 1 || f.logged("in a row of sweeps and reports") != 0 {
+		t.Fatalf("the trimmer wrote %q, want the reading's panic after the held report's resend counted as the first of the reading row", f.linesWritten())
+	}
+	if sent := len(f.reports()); sent != 1 {
+		t.Errorf("the trimmer sent %d reports, want the held one, sent before the reading", sent)
+	}
+	select {
+	case <-done:
+		t.Fatal("the trimmer's loop returned, want it still reading the volume")
+	default:
+	}
+}
