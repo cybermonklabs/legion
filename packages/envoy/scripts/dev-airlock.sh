@@ -50,6 +50,12 @@
 #     Legion issue pod's gVisor kernel does not have. The enrolment id is written beside the
 #     session key, so AGENT_SECRETS_KEY_DIR names the directory and `agent-secrets self` answers
 #     kind: pod.
+#   - That session's renewer, `agent-secrets renew --pod-token-file`, for as long as the stack
+#     runs, as the Legion worker shim runs one for each pod (internal/shim, startRenewer). The
+#     broker ends a session whose lease (BROKER_LEASE_SECONDS, 900 seconds by default) passes
+#     unrenewed, and every grant of it with it, so a check that holds a grant for longer would
+#     have its calls refused 407 midway. Each renewal sends the pod token dev-oidc-issuer
+#     rewrites in place, as a kubelet rewrites a projected token.
 #
 # Every bound host is a name of this stack's own (s.airlock.test and the rest), which no
 # resolver answers: BROKER_AIRLOCK_TEST_RESOLVE tells the proxy where each one is and
@@ -156,6 +162,7 @@ AZURE_TOKEN_FILE="$WORK_DIR/azure-identity-token"
 JUDGE_DISPATCH_TOKEN_FILE="$WORK_DIR/judge-dispatch-token"
 KEY_DIR="$WORK_DIR/session-key"
 ENROLL_JSON="$WORK_DIR/enrollment.json"
+RENEW_LOG="$WORK_DIR/renew.log"
 API_FRONT_JSON="$WORK_DIR/api-front.json"
 API_FRONT_LOG="$WORK_DIR/api-front.log"
 API_BACKENDS="$WORK_DIR/api-backends"
@@ -278,6 +285,7 @@ else
 fi
 
 DEV_BROKER_PID=""
+RENEW_PID=""
 STANDS_PID=""
 API_FRONT_PID=""
 PROXY_FRONT_PID=""
@@ -285,10 +293,11 @@ BROKER_PIDS=()
 CREATED_DB=false
 
 cleanup() {
-  # This stack's own processes first, then dev-broker.sh, whose own EXIT trap stops its broker
-  # and its issuer and drops its database.
+  # This stack's own processes first, the session's renewer before the brokers it renews at,
+  # then dev-broker.sh, whose own EXIT trap stops its broker and its issuer and drops its
+  # database.
   local pid
-  for pid in "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
+  for pid in "$RENEW_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -698,8 +707,19 @@ fi
 printf '%s' "$ENROLLMENT_ID" >"$KEY_DIR/enrollment"
 echo "dev-airlock: enrolled pod session $ENROLLMENT_ID (pod $POD_UID, service $SERVICE)" >&2
 
-# One banner line per broker, built here rather than substituted into the banner below: a
-# command substitution there would lose the last line's newline.
+# --- The session's renewer, for as long as this stack runs: the same command and the same token
+# file the Legion worker shim gives a pod's renewer, so the session's lease outlives any check
+# however long it holds a grant. It renews at once and then a third of the way through each
+# lease, retries what the broker refuses for now, and exits only on a refusal it can never get
+# past (76), which its log names. ---
+AGENT_SECRETS_URL="$API_FRONT_URL" AGENT_SECRETS_KEY_DIR="$KEY_DIR" \
+  "$AGENT_SECRETS_BIN" renew --pod-token-file "$POD_TOKEN_FILE" >"$RENEW_LOG" 2>&1 &
+RENEW_PID=$!
+echo "dev-airlock: renewing pod session $ENROLLMENT_ID's lease (agent-secrets renew, pid $RENEW_PID, log $RENEW_LOG)" >&2
+
+# One banner line per broker and one for the session's renewer, built here rather than
+# substituted into the banner below: a command substitution there would lose the last line's
+# newline.
 BROKER_BANNER=""
 for n in $(seq 1 "$BROKER_COUNT"); do
   if [ -n "$BROKER_BANNER" ]; then
@@ -707,6 +727,7 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   fi
   BROKER_BANNER+="  broker $n:            api ${BROKER_API_ADDRS[n]}, proxy ${BROKER_PROXY_ADDRS[n]}, pid ${BROKER_PIDS[n]}, log ${BROKER_LOGS[n]}"
 done
+BROKER_BANNER+=$'\n'"  session renewer:     pid $RENEW_PID, agent-secrets renew --pod-token-file $POD_TOKEN_FILE, log $RENEW_LOG"
 
 cat <<EOF
 

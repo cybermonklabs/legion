@@ -1228,8 +1228,8 @@ func (w *workflowRuntime) logUnservedRenames(accepted []mappedRepository) {
 // The two names are compared by the mapping's own equivalence (same: without case, and through a
 // configured rename), the one the stamping decision reads, so a configured name the mapping holds
 // only under the other name of a configured pair is said nothing about. It is said here, and
-// refuses nothing, because `legion start --check-config` reads no Dispatch at all — it runs
-// config.LoadForValidation and daemon.CheckStart and nothing else (checkStartConfig,
+// refuses nothing, because `legion config check` reads no Dispatch at all — it runs
+// config.LoadForValidation and daemon.CheckStart and nothing else (checkConfig,
 // cmd/legion/main.go) — so it can refuse only what the file alone decides, and a name mapped the
 // day after the file is written is no fault of the file.
 func (w *workflowRuntime) logUnmappedCommitIssueTrailerRepos(accepted []mappedRepository) {

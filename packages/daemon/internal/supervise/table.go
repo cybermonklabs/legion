@@ -2678,11 +2678,13 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // finished agent's claim never stays live, its secret still authenticating. A root's stop records
 // what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
 // retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
+// The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
+// returned, and none for a stop the runtime refused (stopForSuspension).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.endProcess(ctx, endSuspended(SuspendedByExit)); err != nil {
+		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
