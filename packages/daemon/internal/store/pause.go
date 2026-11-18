@@ -853,15 +853,20 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 	return owed, nil
 }
 
-// StoppingPause is the id of the pause that stopped claim token, and 0 where no pause did, in a
-// transaction of its own; see StoppingPauseTx. A role message a pause held reads it to tell a role
-// that pause stopped from one an idle release took (internal/daemon's outbox.roleMessage). project
-// is the project token, as the claim-keyed tables hold it.
-func (s *Store) StoppingPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
+// StoppedByAPause is the id of the pause whose stop is claim token's newest, where that stop ended
+// `stopped` after issue's newest pod release, whichever pause made it, and 0 otherwise, in a
+// transaction of its own. A role message a pause held reads it to tell a role a pause took from
+// one an idle release took (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759):
+// the message is owed to a role a pause stopped until the role's session holds its topic, and a
+// release recorded after the stop ends that debt. It reads no ready, as StoppingPauseTx does: a
+// woken agent says it is ready (supervise.SaidReady) before its plugin claims the role's Envoy
+// topic, and the message is still owed in that gap. project is the project token, as the
+// claim-keyed tables hold it.
+func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		pause, err = StoppingPauseTx(ctx, tx, project, issue, token)
+		pause, err = newestPauseStopTx(ctx, tx, project, issue, token, false)
 		return err
 	})
 	return pause, err
@@ -880,13 +885,21 @@ func (s *Store) StoppingPause(ctx context.Context, project, issue string, token 
 // `suspend` row) before its teardown records the release, and a wake taken in between is the
 // release's. project is the project token, as pod_releases holds it.
 func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
+	return newestPauseStopTx(ctx, tx, project, issue, token, true)
+}
+
+// newestPauseStopTx is the pause of claim token's newest stop, through tx, where that stop ended
+// `stopped` after issue's newest pod release and, when sinceReady, after the claim's last ready
+// (claims.last_ready), and 0 otherwise: the one statement StoppingPauseTx (sinceReady) and
+// StoppedByAPause (no ready) read. project is the project token, as pod_releases holds it.
+func newestPauseStopTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token, sinceReady bool) (int64, error) {
 	var pause int64
 	if err := tx.QueryRow(ctx, `select coalesce((select case when s.ended_as = $4
 			and s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
-			and s.ended_at > coalesce((select c.last_ready from claims c where c.token = $3), '-infinity'::timestamptz)
+			and (not $5::boolean or s.ended_at > coalesce((select c.last_ready from claims c where c.token = $3), '-infinity'::timestamptz))
 			then s.pause_id else 0 end
 		from project_pause_stops s where s.claim = $3 order by s.id desc limit 1), 0)`,
-		project, issue, string(token), string(PauseStopStopped)).Scan(&pause); err != nil {
+		project, issue, string(token), string(PauseStopStopped), sinceReady).Scan(&pause); err != nil {
 		return 0, fmt.Errorf("read the pause that stopped %s: %w", token, err)
 	}
 	return pause, nil
