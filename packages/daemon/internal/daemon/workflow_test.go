@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -44,7 +45,7 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 // loginTokens answers each App role's lease, and its login, with the bot login named for it.
 type loginTokens map[appauth.AppRole]string
 
-func (t loginTokens) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (t loginTokens) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: t[role]}}, nil
 }
 
@@ -56,11 +57,17 @@ func (loginTokens) InstalledOn(context.Context, appauth.AppRole, ghrepo.Reposito
 	return true, nil
 }
 
+// InstalledOwners answers no owner list: opening the workflow builds no gh bundle, and a test
+// that builds one names its owners itself.
+func (loginTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("loginTokens lists no owner accounts, which a gh bundle holds one directory per owner of")
+}
+
 // Forget drops nothing: every lease is minted afresh.
 func (loginTokens) Forget(appauth.AppRole, string) {}
 
-func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, ghrepo.Repository{})
+func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }

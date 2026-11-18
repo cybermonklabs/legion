@@ -556,24 +556,24 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 	}
 }
 
-// awaitAgentWake waits for the agent wake report naming sessionID on wakes, skipping every report
-// that names another, and fails the test when none arrives within the bound.
-func awaitAgentWake(t *testing.T, wakes *natsgo.Subscription, sessionID string) {
+// awaitWake waits on wakes for the wake report of kind naming name (wakeNamed), skipping every
+// other report, and fails the test when none arrives within the bound.
+func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		msg, err := wakes.NextMsg(time.Until(deadline))
 		if err != nil {
-			t.Fatalf("no wake report named %s: %v", sessionID, err)
+			t.Fatalf("no %s wake report named %s: %v", kind, name, err)
 		}
-		if wakeReportSession(t, msg) == sessionID {
+		if wakeNamed(wakeReportIn(t, msg), kind, name) {
 			return
 		}
 	}
 }
 
-// wakeReportSession is the session an agent wake report names, empty for any other report.
-func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
+// wakeReportIn is the wake report msg carries.
+func wakeReportIn(t *testing.T, msg *natsgo.Msg) wakeReport {
 	t.Helper()
 	var item contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -583,10 +583,22 @@ func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
 	if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
 		t.Fatalf("decode a wake report's payload %s: %v", item.Payload, err)
 	}
-	if report.Kind != wakeKindAgent {
-		return ""
+	return report
+}
+
+// wakeNamed reports whether report is of kind and names name in the field that kind names: the
+// session of an agent wake, and the role of a role wake. A report of any other kind names neither.
+func wakeNamed(report wakeReport, kind, name string) bool {
+	if report.Kind != kind {
+		return false
 	}
-	return report.Session
+	switch kind {
+	case wakeKindAgent:
+		return report.Session == name
+	case wakeKindRole:
+		return report.Role == name
+	}
+	return false
 }
 
 // A send to a session with no entry within the gone horizon raises the wake report, on the 200
@@ -630,7 +642,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if stopped.LastSeen != record.LastSeen {
 		t.Fatalf("the stopped answer's last_seen = %d, want the record's %d: %s", stopped.LastSeen, record.LastSeen, stopped.raw)
 	}
-	awaitAgentWake(t, wakes, cleanlyStopped)
+	awaitWake(t, wakes, wakeKindAgent, cleanlyStopped)
 
 	const pastHorizon = "ses_wake_past_horizon"
 	storeSessionHeartbeat(t, rig.harness.client, pastHorizon, time.Now().Add(-(session.GoneHorizon + time.Minute)))
@@ -643,7 +655,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if gone.LastSeen != horizonRecord.LastSeen {
 		t.Fatalf("the past-horizon answer's last_seen = %d, want the record's %d: %s", gone.LastSeen, horizonRecord.LastSeen, gone.raw)
 	}
-	awaitAgentWake(t, wakes, pastHorizon)
+	awaitWake(t, wakes, wakeKindAgent, pastHorizon)
 
 	// Every wake report the three sends raised has arrived by now: each is published off the
 	// route's path in the order the sends raised them, and the last two have been read. A report
@@ -656,7 +668,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if named := wakeReportSession(t, msg); named == unheld {
+		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, unheld) {
 			t.Fatalf("the send to the probe-stopped %s raised a wake report", unheld)
 		}
 	}

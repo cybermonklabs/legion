@@ -45,15 +45,16 @@ row reads **Ends with its machine login** instead:
 rather than that one row.
 
 ```console
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
 {"state":"revoked"}
 ```
 
 (That is the call Dispatch's server makes as its own ServiceAccount, the caller the broker lists
 in `BROKER_API_ACCOUNTS`; on the [local stack](/legion/broker/guides/run-locally/) you can make it
-yourself with the token in `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`. The broker takes the revoking
-person the body names on its caller's word, as it does for a machine login's decision: a revoke
-only takes power away, so unlike approving a secret request it needs no sign-in to the broker.)
+yourself with the token in `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`; `curl -H @-` reads the header from
+standard input, so the token is in no command line. The broker takes the revoking person the body
+names on its caller's word, as it does for a machine login's decision: a revoke only takes power
+away, so unlike approving a secret request it needs no sign-in to the broker.)
 
 ## Revoke a grant from your shell
 
@@ -270,9 +271,9 @@ daemon's token login is listed the same way with `approved_by` empty and `subjec
 ServiceAccount:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
 {"credentials":[{"credential_id":"d4187389-953c-4156-90c1-1dd937e9bf0b","host":"example-host-devbox","service":null,"subject":null,"approved_by":"ada@example.com","issued_at":"2026-10-10T14:56:01.121955Z","expires_at":"2026-10-17T14:56:01.122701Z","expired":false},{"credential_id":"8f4c8ae4-b73e-4a60-a591-725667480f1a","host":"example-host-cluster","service":"legion-daemon","subject":null,"approved_by":"bob@example.com","issued_at":"2026-10-10T14:55:59.906427Z","expires_at":"2026-10-17T14:55:59.9071Z","expired":false}]}
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
 {"state":"revoked"}
 ```
 

@@ -1,0 +1,60 @@
+kind: Changed
+body: |-
+  The GitHub App installation decides which repositories a project works in, and the project's
+  Dispatch repository mapping no longer does. Every role's GitHub credential bundle holds one
+  directory for each owner account the role's App is installed on, so a role reaches every
+  repository its App's installations cover. The daemon records an issue and runs it on any
+  repository both role Apps are installed on, whether or not the project maps it, and refuses a
+  repository only when a role App is not installed on it or its installation cannot be read. The
+  mapping still names the project's default repository and the repositories the daemon prepares
+  before an issue names one. On `GET /legion/v1/state`, `repositories.mapped` is every repository
+  the daemon serves, and each entry carries `apps`, which says whether each role App is installed
+  on it, at daemon API contract 152. Each entry of `repositories.refused` carries `apps` too
+  when GitHub answered both of that repository's installation reads, so `legion state` now
+  reports for each repository whether each role App is installed on it, on a refused repository
+  as well as a mapped one, and nobody has to read that out of the refusal's `reason`.
+
+  An installation whose GitHub login is no valid directory name is left out of the bundle, with
+  a WARN that names it; before, one such login failed every bundle of that App. It still fails
+  the bundle when that name is the bundle's default directory or the owner a controller asked
+  for. A directory's name now takes every login GitHub serves an account under, a managed
+  user's `_<shortcode>` included, so an issue whose own repository belongs to such an account is
+  launched with that owner's directory and its roles push with that owner's token; before, the
+  bundle of that issue was an error and no role of it started. The daemon also reads a release
+  of its `token_command` that names such an account, where it refused the release before. The daemon reads a suspended installation from the installation's own `suspended_at`, and
+  no longer from the words of a 403 to the token request, which is also the status of GitHub's
+  secondary rate limit. A suspended installation leaves its owner's directory out of the bundle,
+  and a message GitHub rewords can no longer turn it into a failure of every role's bundle.
+
+  `POST /legion/v1/controller/github-credential` refuses a default owner the review App is not
+  installed on with the code `DEFAULT_OWNER_NOT_INSTALLED`, which was
+  `DEFAULT_OWNER_OUTSIDE_PROJECT`, and the daemon's WARN line for that refusal carries the new
+  code. The project's mapping no longer limits which owner a controller may ask for, so the old
+  code stated a rule that is gone. The status is the same, 400. The MESSAGE is not: it read
+  "is not an owner of the project's repositories" and now reads "is no owner the controller's
+  App is installed on", because the rule behind it changed, so a filter matching the old text
+  matches nothing now either. Nothing in Legion reads the code; a log filter or alert that
+  matched the old code or the old message must match the new one.
+
+  The daemon lets go of a repository GitHub did not answer for once no unrecorded todo issue
+  names it, or once the mapping or the issues the daemon records answer for it. Before, it read
+  the whole mapping again and listed the whole project for that repository on its backoff, up to
+  every 10 minutes, for ever. Each tree whose `release_children` released a child that was never
+  recorded is told, in one `child-release-stalled` notice, that the daemon no longer waits for
+  GitHub to answer for that repository, with each such child's status in Dispatch. This is no new
+  notice kind. While admission is held, the daemon tells nobody and keeps reading the repository,
+  because the held listing is about to record the child; it lets the repository go once the hold
+  is released. A notice that cannot be written leaves the repository to be read again, and a
+  later pass tells it.
+
+  `legion state`'s `withoutWebhookApp` now also names a repository that only a live issue record
+  names, and the mapping does not, when Dispatch's GitHub App is not installed on it, with the
+  same reason a mapped repository gets. The daemon asks Dispatch about such a repository when an
+  issue is first recorded on it, once the boot is done, and after each read of the mapping, and
+  logs each one it finds without the App on a line of its own, `legion workflow checked
+  Dispatch's GitHub App on the repositories only a live record names`; the boot's `repositories`
+  line does not name them. The repository is served all the same: a missing Dispatch App refuses
+  no work, and is only reported.
+time: 2026-11-16T04:21:42Z
+custom:
+    Issue: pr3730

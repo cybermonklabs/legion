@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 )
 
@@ -58,7 +59,7 @@ func TestARefusalNamesTheBrokersAnswerID(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
-			_, err := newClient(row.base).do(context.Background(), http.MethodGet, row.base+row.path, nil, nil)
+			_, err := newClient(brokeraddr.New(row.base)).do(context.Background(), http.MethodGet, row.base+row.path, nil, nil)
 			var refusal *apiError
 			if !errors.As(err, &refusal) {
 				t.Fatalf("the refusal read as %v, want an *apiError", err)

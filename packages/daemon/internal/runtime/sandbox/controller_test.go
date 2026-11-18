@@ -127,9 +127,10 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 	want := []corev1.KeyToPath{
 		{Key: GitHubHostsKey("acme"), Path: "acme/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("acme"), Path: "acme/" + ghconfig.ConfigFile},
 		{Key: GitHubHostsKey("sjawhar"), Path: "sjawhar/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("sjawhar"), Path: "sjawhar/" + ghconfig.ConfigFile},
+		{Key: GitHubPairsKey, Path: ghconfig.PairsFile},
 	}
 	if gh == nil || gh.SecretName != roleSecretName(s.Name, claim.RoleController) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
-		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, read-only",
+		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, the bundle's pairs file in the root, read-only",
 			gh, roleSecretName(s.Name, claim.RoleController))
 	}
 	if mount := mountHolding(launcher, GHConfigDir); mount == nil || mount.Name != roleVolume(ghVolume, claim.RoleController) || mount.MountPath != GHConfigDir || !mount.ReadOnly {
@@ -243,8 +244,8 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 	if secret := g.secret(secretName(name)); secret != nil {
 		t.Errorf("the controller's launch wrote the provisioning Secret %s: %v", secretName(name), secret.Data)
 	}
-	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 2+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default and the review App's gh files of each owner, and nothing else", secret)
+	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 3+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner, and nothing else", secret)
 	}
 	for _, role := range claim.Roles {
 		if g.secret(roleSecretName(name, role)) != nil {
@@ -296,8 +297,8 @@ func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 	loc := g.spawn(spec)
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 2 || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token and the empty default alone", secret)
+	if secret == nil || len(secret.Data) != 3 || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the empty default and the empty renames alone", secret)
 	}
 	if def, ok := secret.Data[GitHubDefaultKey]; !ok || len(def) != 0 {
 		t.Fatalf("the controller's Secret records default %q (present: %t), want an empty one", def, ok)
