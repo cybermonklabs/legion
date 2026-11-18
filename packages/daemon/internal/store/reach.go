@@ -68,17 +68,6 @@ func putClaimReach(ctx context.Context, db execer, token claim.Token, reach supe
 	return tag.RowsAffected() == 1, nil
 }
 
-// relaunchGeneration is a relaunch's launch generation as its nullable column: 0 is a launch not
-// recorded yet, which SQL says as null. A generation fits a bigint, as putClaim checks of the
-// claim's own.
-func relaunchGeneration(generation uint64) *int64 {
-	if generation == 0 || generation > math.MaxInt64 {
-		return nil
-	}
-	g := int64(generation)
-	return &g
-}
-
 // ReachProjectNotice is the project's own record of one of the reach keeper's notices that speak
 // for no claim's reach record (R3, R5): the notice that Envoy lists no live session, one for the
 // project, and the notice of a claim's newer process locked out by an older one, one for each claim
