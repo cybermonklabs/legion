@@ -511,10 +511,11 @@ server ignores a write's `Idempotency-Key`, so while both run a write whose answ
 run once by each: the page and the `dispatch` command both retry such a write, and its retry can
 reach the other version. At one replica the Deployment's `Recreate` already stops the old pod
 first; above one replica, scale to zero before the new version starts. Releases after it roll
-again. Rolling it back brings the hazard back the other way: a tab still open, and a `dispatch`
-client that saw this version keep keys in the last five minutes, retry a write whose answer was
-lost against the earlier server, which runs it again. So fix it forward, as above; if you must roll
-back, stop this version first, knowing a write in flight at that moment may land twice. Once a
+again. Rolling it back brings the hazard back the other way: a tab still open, and every
+`dispatch` client, which sends a failed write again under its key and asks nothing first, retry a
+write whose answer was lost against the earlier server, which runs it again. So fix it forward,
+as above; if you must roll back, stop this version first, knowing a write in flight at that
+moment may land twice. Once a
 later release has dropped the broadcast send's old key table (migration `0141`), rolling back past
 this version also stops broadcasts: the earlier version's broadcast send reads and writes that
 table, so every broadcast send fails while the rest of that version keeps working. A tab opened

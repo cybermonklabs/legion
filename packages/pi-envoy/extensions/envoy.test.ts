@@ -47,7 +47,6 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
@@ -678,9 +677,6 @@ afterEach(async () => {
   if (originalEnvoyUrl === undefined) delete process.env.ENVOY_URL;
   else process.env.ENVOY_URL = originalEnvoyUrl;
   globalThis.fetch = originalFetch;
-  // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
-  // later suite in the same run (envoy-client's) would read it for the same origin.
-  forgetKeyedLayerMemory();
   if (originalDispatchUrl === undefined) delete process.env.DISPATCH_URL;
   else process.env.DISPATCH_URL = originalDispatchUrl;
   if (originalDispatchToken === undefined) delete process.env.DISPATCH_TOKEN;
@@ -1159,13 +1155,6 @@ async function bootDirectSession(
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
-    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back and its
-    // /healthz says so, so a failed accept is asked again under its key.
-    if (url.pathname === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok", idempotency_keys: true }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
     if (url.pathname.startsWith("/api/v1/messages/")) {
       const authorization = new Headers(init?.headers).get("Authorization");
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/accept")) {

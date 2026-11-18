@@ -5598,8 +5598,8 @@ migration `0138` indexes the pending attempts (`message_deliveries_pending`, `co
 one killed mid-handler (held there by the slow-write hook), the other answers `409 KEY_IN_FLIGHT` while the lease lasts, then makes the write once and replays it.
 
 Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor a request whose caller it could not resolve, nor one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
-Together they are how a client tells a Dispatch that runs this layer from one that ignores the header and would run a retried write a second time:
-the agents' client resends only against a Dispatch whose answer carried the echo, or whose `/healthz` said so, in the last five minutes (`packages/envoy-client/README.md`).
+Together they are how a check tells a Dispatch that runs this layer from one that ignores the header and would run a retried write a second time: the deploy check reads `/healthz` (`scripts/e2e/lib/dispatch-keyed-comment.ts`).
+The agents' client reads neither: every Dispatch it reaches runs this layer on every write route, so it sends a failed write again under its key and asks nothing first (`packages/envoy-client/README.md`).
 
 With `DISPATCH_TEST_HOOKS=1`, `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` (`slow_write_hook.go`) makes every keyed run of that method and exact path wait `delay_ms` on its handler's context once its key is claimed;
 a context that ends during the wait answers `503 SLOW_WRITE_CUT_OFF` and the handler never runs.

@@ -571,37 +571,18 @@ was made, since its 60 s deadline counts from there. The numbers come from the 3
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
-that. When the write ends with no definitive answer after this call saw the keyed layer judge
-it, the error says Dispatch finishes an attempt it received, and to read the write back before
-sending it again, since a new command sends it under a new key. The call's deadline and
-its cancellation end the write at once and are never retried. Any other answer - a 2xx, a replay,
-`422 KEY_REUSED`, another 4xx - is the answer, at once.
+that. When the write ends with no definitive answer, the error says Dispatch finishes an attempt it
+received, and to read the write back before sending it again, since a new command sends it under
+a new key. The call's deadline and its cancellation end the write at once and are never retried.
+Any other answer - a 2xx, a replay, `422 KEY_REUSED`, another 4xx - is the answer, at once.
 
-A write is asked again only against a Dispatch this process has lately seen run the keyed layer,
-since an earlier Dispatch ignores the header and would run a retried write a second time. A
-failing answer that echoes the request's key (`Idempotency-Key: <key>`) is that proof itself, so
-one of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent at once. A transport failure, a
-silence cut and a gateway's answer carry no echo, so they rely on what an echo, or a
-`GET /healthz` answering `idempotency_keys: true`, showed for that origin within the last five
-minutes (`KEYED_LAYER_MEMORY_MS`), and otherwise read `/healthz` before the first resend, bounded
-at 5 s. Its status is not read, since Dispatch answers 503 while its database or NATS is down and
-still says `idempotency_keys`; a probe that fails, times out, answers no JSON or lacks the field
-means no resend, and the attempt's own failure is the call's. Only a yes is remembered, and only
-for those five minutes, so a rollback to a Dispatch without the layer is noticed within that
-bound. Dispatch's own refusal that carries no echo says its layer did not judge the request, so
-it sets the memory aside and `/healthz` decides afresh. The probe runs only after a write has
-already failed, so the ordinary path makes no request of its own.
-
-The `dispatch` command runs each call in a process of its own, so it carries that memory in its
-session's `state.json` (`keyedLayer`: each origin with the wall-clock time of its last sighting,
-`keyedLayerMemory`), and the next call of the session takes in every sighting still under five
-minutes old (`rememberKeyedLayer`). Without it every call would know nothing and ask `/healthz`,
-which the load that stalled the write can keep from answering within 5 s, and the write would be
-reported as perhaps taken effect rather than asked again. A sighting the file dates more than five
-minutes back, ahead of the clock, or not as a time is passed over. The wall clock is the one clock
-calls share, so a clock set back between two calls stretches the five minutes by as much, and two
-calls racing in one session can bring back a sighting one of them set aside, which still ends
-five minutes after the answer that showed it.
+Every Dispatch the client reaches runs the keyed layer on every `POST` and `PATCH` route
+(`keyedWrites`, `packages/envoy/internal/dispatch/api/request_keys.go`), so a write is asked again
+whatever its failure says of that layer: a transport failure, a silence cut, a gateway's answer
+and Dispatch's own answer alike. Nothing is asked first: the client reads no `/healthz` and keeps
+no memory of which Dispatch runs the layer. A Dispatch older than the layer would run a retried
+write a second time, so a deployment moves its Dispatch to a build with the layer before its
+sessions take a client of this release.
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
@@ -864,8 +845,8 @@ be written, the result still prints, with one line saying so.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
-long-lived host remembered across calls (the triage lines and pictures already shown, the asks
-whose follow notice was printed, which Dispatch lately showed it runs the keyed layer), and
+long-lived host remembered across calls (the triage lines and pictures already shown, and the asks
+whose follow notice was printed), and
 `results.jsonl` gets one line per call with the tool's `details` or its refusal, a refusal the CLI
 made before the call reached Dispatch included, which pi-envoy's run-end check reads; a line that
 is not JSON is named (file and line number) and skipped. Directories idle for 14 days are removed,

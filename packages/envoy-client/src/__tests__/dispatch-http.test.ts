@@ -947,7 +947,9 @@ describe("DispatchClient", () => {
     expect(messages[5]).toBe(
       "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
-        "so it may or may not have taken effect: check whether it did before retrying it."
+        "so it may or may not have taken effect. Dispatch finishes an attempt it received " +
+        "whatever this command does, so read the write back before you send it again: a new " +
+        "command sends it under a new key."
     );
     for (const message of messages) {
       expect(message).not.toContain(user);

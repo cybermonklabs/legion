@@ -405,9 +405,9 @@ describe("executeDispatchTool", () => {
       "so the write may or may not have reached Dispatch: check whether it took effect before retrying it."
     );
     expect(write).not.toContain("a retry may succeed");
-    // Nothing here says this Dispatch runs the keyed layer: the gateway answers its /healthz too,
-    // so the write is asked once and reported, and the read goes once.
-    expect(requests).toEqual(["POST /api/v1/issues/DSP-1/messages", "GET /healthz"]);
+    // Every Dispatch runs the keyed layer, so the write is asked again under its key until its five
+    // attempts are spent, with no /healthz read, and the read goes once.
+    expect(requests).toEqual(Array.from({ length: 5 }, () => "POST /api/v1/issues/DSP-1/messages"));
     requests.length = 0;
 
     const read = await run("dispatch_read", { issue: "DSP-1" });
@@ -5145,8 +5145,7 @@ describe("executeDispatchTool", () => {
   /**
    * Records every request; the messages route and the PATCH answer with the given responses, and
    * the issue read before the update answers `closedAt` (null: the issue is open). This
-   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
-   * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
+   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key.
    */
   function closingServer(
     answers: { message: () => Response; patch: () => Response },
@@ -5156,7 +5155,6 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
       const method = init?.method ?? "GET";
-      if (pathname === "/healthz") return response({ status: "ok", idempotency_keys: true });
       requests.push({
         method,
         pathname,
@@ -5312,7 +5310,8 @@ describe("executeDispatchTool", () => {
       (request: string) =>
         `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
         "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it.",
+        "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
+        "the write back before you send it again: a new command sends it under a new key.",
       1,
     ],
     [
@@ -11654,7 +11653,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return new Response(page, { status, headers: { "content-type": "text/html" } });
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -11702,7 +11700,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
@@ -11753,9 +11750,6 @@ describe("executeDispatchTool", () => {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
-      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
-      // route is counted here.
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },

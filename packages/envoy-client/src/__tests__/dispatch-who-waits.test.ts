@@ -4,7 +4,6 @@ import { join, relative } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who a question reaches, from the command line and from the texts that state the rule.
 //
@@ -200,7 +199,6 @@ beforeEach(() => {
   projectDefault = DEFAULT_ASSIGNEE;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{

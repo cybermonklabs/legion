@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // `dispatch inbox` against a stub Dispatch: the four routes the Inbox page reads, answered as the
 // server answers them, so the test pins the lines the command prints rather than the renderer's
@@ -219,7 +218,6 @@ beforeEach(() => {
   repliesAnswer = LISTED;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function runInbox(): Promise<{ code: number; stdout: string; stderr: string }> {

@@ -73,7 +73,8 @@ import (
 //     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
-//     it, so a client retries a 5xx under its key only where the echo says the key was judged.
+//     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
+//     client reads neither the echo nor /healthz: every Dispatch it reaches runs this layer.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
 // test and the Legion daemon's outbox send writes that name no intent, and are expected to.
@@ -308,9 +309,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		r.Body = io.NopCloser(replayable)
 
 		// Every answer from here on - run, replayed or refused, stored or not, a 5xx included - names
-		// the key back, so a client can tell a Dispatch that judged its key from one that ignored the
-		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
-		// run the write again.
+		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
+		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
 		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
 		if answered {
