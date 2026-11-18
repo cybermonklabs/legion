@@ -475,7 +475,10 @@ test("a session retraction leaves its reason on the card and removes the human's
   await expect(margin.getByTestId(`ask-${ask.id}`)).toContainText(
     "Retracted by session:e2e-sess… - A newer question supersedes this one."
   );
-  await expect(margin.getByRole("button", { name: "Reply" })).toHaveCount(0);
+  // The conversation under it goes on: its thread keeps the reply composer (`takesReply`).
+  await expect(
+    margin.locator(`[data-margin-item="${ask.id}"]`).getByRole("textbox", { name: "Reply" })
+  ).toBeVisible();
   await issuePage.screenshot({
     fullPage: true,
     path: testInfo.outputPath("ask-retraction-thread.png"),
