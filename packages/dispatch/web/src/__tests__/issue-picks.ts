@@ -1,7 +1,9 @@
 /** What the unit rows of an issue's picks share (`issue-field-writes.test.tsx`,
  *  `assignee-repo-picks.test.tsx`): the issue picked and its detail, the page's query client
- *  signed in, and what each save Dispatch received carried. */
+ *  signed in, what each save Dispatch received carried, and the repository box's suggestions
+ *  and picks. */
 import type { QueryKey } from "@tanstack/react-query";
+import type { UserEvent } from "@testing-library/user-event";
 
 import { DispatchQueryClient } from "../api/query-client";
 import type { Issue, IssueDetails } from "../api/types";
@@ -71,4 +73,23 @@ export function signedInHolding(
 /** What each save Dispatch received carried. */
 export function bodies(patchIssue: { mock: { calls: unknown[][] } }): unknown[] {
   return patchIssue.mock.calls.map((call) => call[1]);
+}
+
+/** The repositories `box` suggests: its `<datalist>`'s option values, in the box's order. */
+export function repoSuggestions(box: HTMLInputElement): string[] {
+  return Array.from(box.list?.options ?? [], (option) => option.value);
+}
+
+/** Empties `box`, types `repo` and presses Enter, which writes it; `""` is an Inherit pick. */
+export async function typeRepo(
+  user: UserEvent,
+  box: () => HTMLInputElement,
+  repo: string
+): Promise<void> {
+  await user.clear(box());
+  if (repo !== "") {
+    await user.click(box());
+    await user.paste(repo);
+  }
+  await user.keyboard("{Enter}");
 }

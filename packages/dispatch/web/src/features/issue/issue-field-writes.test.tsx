@@ -13,7 +13,14 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { bodies, details, issue, signedInHolding } from "../../__tests__/issue-picks";
+import {
+  bodies,
+  details,
+  issue,
+  repoSuggestions,
+  signedInHolding,
+  typeRepo,
+} from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -2468,7 +2475,8 @@ const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => (
 
 /** A repository picker on CORE-1, whose own repository is `repo` and which resolves to
  *  `resolved`, with the project's mappings read once the reader reaches for it. The picker is a
- *  box: what is typed into it is written as Enter is pressed, and an emptied box is Inherit. */
+ *  box: what is typed into it is written as Enter is pressed, and an emptied box is an Inherit
+ *  pick: the issue inherits a repository again. */
 function renderRepo(repo: string | null, resolved: string | null) {
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
   // The issue's read, which the test seeds: the one asked of it is the issue read again.
@@ -2498,7 +2506,7 @@ function renderRepo(repo: string | null, resolved: string | null) {
   const box = () =>
     screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
   /** The repositories the box suggests, its datalist's. */
-  const suggestions = () => Array.from(box().list?.options ?? [], (option) => option.value);
+  const suggestions = () => repoSuggestions(box());
   /** What the box says it stands for, which names a repository that is not the issue's own. */
   const described = () =>
     document.getElementById(box().getAttribute("aria-describedby") ?? "")?.textContent;
@@ -2517,7 +2525,10 @@ function renderRepo(repo: string | null, resolved: string | null) {
 
 test("a refused repository pick puts back the repository Dispatch last confirmed and shows its reason with Retry", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValueOnce(
-    new ApiError(400, { code: "REPO_NOT_MAPPED", error: "acme/gadgets is not mapped to CORE" })
+    new ApiError(400, {
+      code: "INVALID_ISSUE",
+      error: "acme/gadgets cannot be the repository of CORE-1",
+    })
   );
   const { box, client, described, detailRead, suggestions, unmount } = renderRepo(
     null,
@@ -2526,12 +2537,10 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
   const user = userEvent.setup();
   try {
     await user.hover(box());
-    await waitFor(() => expect(suggestions().sort()).toEqual(["acme/gadgets", "acme/widgets"]));
-    await user.click(box());
-    await user.paste("acme/gadgets");
-    await user.keyboard("{Enter}");
+    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await typeRepo(user, box, "acme/gadgets");
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("acme/gadgets is not mapped to CORE");
+    expect(alert).toHaveTextContent("acme/gadgets cannot be the repository of CORE-1");
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(box().value).toBe("");
     expect(described()).toBe("acme/widgets, inherited or the project's default");
@@ -2553,9 +2562,8 @@ test("an Inherit pick of the repository shows the repository the issue showed be
   try {
     expect(described()).toBe("acme/gadgets");
     await user.hover(box());
-    await waitFor(() => expect(suggestions().sort()).toEqual(["acme/gadgets", "acme/widgets"]));
-    await user.clear(box());
-    await user.keyboard("{Enter}");
+    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await typeRepo(user, box, "");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ repo: null }]));
     expect(described()).toBe("acme/gadgets, inherited or the project's default");
 

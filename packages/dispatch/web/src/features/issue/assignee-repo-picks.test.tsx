@@ -8,7 +8,9 @@ import {
   bodies,
   details as issueDetails,
   issue as pickedIssue,
+  repoSuggestions,
   signedInHolding,
+  typeRepo,
 } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -120,11 +122,7 @@ async function renderPicker(field: "assignee" | "repo") {
   } else {
     await user.hover(box());
     await waitFor(() =>
-      expect(Array.from(box().list?.options ?? [], (option) => option.value).sort()).toEqual([
-        "acme/gadgets",
-        "acme/tools",
-        "acme/widgets",
-      ])
+      expect(repoSuggestions(box())).toEqual(["acme/gadgets", "acme/tools", "acme/widgets"])
     );
   }
   return {
@@ -137,12 +135,7 @@ async function renderPicker(field: "assignee" | "repo") {
     pick:
       field === "assignee"
         ? (value: string) => user.selectOptions(select(), value)
-        : async (value: string) => {
-            await user.clear(box());
-            await user.click(box());
-            await user.paste(value);
-            await user.keyboard("{Enter}");
-          },
+        : (value: string) => typeRepo(user, box, value),
     unmount: () => {
       view.unmount();
       server.patchIssue.mockRestore();

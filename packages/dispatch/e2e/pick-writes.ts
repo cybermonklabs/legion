@@ -18,6 +18,7 @@ import type { IssueField } from "../web/src/features/issue/issue-field-writes";
 import { getIssueEvents } from "./api";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { keptWrites, pendingWrites } from "./keyed-writes";
+import { settledState } from "./settled";
 
 /** At least how long `holdIssuePatches` holds each save: long enough for a row to make its next
  *  pick, reload, or have a read sent and answered while the save is out, as a slow network would. */
@@ -238,17 +239,21 @@ export function pagePicker(page: Page, name: string): Locator {
 /**
  * Brings the issue page's own picker named `name` into view, as a reader does: the issue page
  * with the sidebar draws it in `main`; that of dispatch://INFRA-1196 keeps the repository in
- * Details, which the Details control in the issue's header opens. Waits for whichever of the two
- * the page draws, presses Details only where the picker is behind it, and returns once the picker
- * is visible.
+ * Details, which the Details control in the issue's header opens. Settles on which of the two
+ * the page draws (`settledState`), the picker first, since a picker that shows needs no press
+ * even where the Details control shows beside it; presses Details only where the control showed
+ * and the picker did not, and returns once the picker is visible.
  */
 export async function revealPagePicker(page: Page, name: string): Promise<void> {
   const picker = pagePicker(page, name);
   const details = page
     .locator("header[data-issue-header]")
     .getByRole("button", { exact: true, name: "Details" });
-  await expect(picker.or(details).first()).toBeVisible();
-  if (!(await picker.isVisible())) await details.click();
+  const shown = await settledState(`the picker ${name}`, [
+    ["picker", picker],
+    ["Details", details],
+  ]);
+  if (shown === "Details") await details.click();
   await expect(picker).toBeVisible();
 }
 
@@ -256,16 +261,21 @@ export async function revealPagePicker(page: Page, name: string): Promise<void> 
  * Opens the Inbox drawer over the page through the control the page draws for it, as a reader
  * does: the sidebar's Peek beside its Inbox (`peekTrigger`); or, on the issue page of
  * dispatch://INFRA-1196, which draws the icon rail in place of the sidebar, the rail's Open
- * navigation, then the Peek in the navigation it opens over the page. Either way it is the same
- * drawer over the same page.
+ * navigation, then the Peek in the navigation it opens over the page. Settles on which of the two
+ * the page draws (`settledState`), the Peek first, since a Peek that shows needs no navigation
+ * opened; presses Open navigation only where it showed and the Peek did not. Either way it is the
+ * same drawer over the same page.
  */
 export async function openInboxDrawer(page: Page): Promise<void> {
   const peek = peekTrigger(page);
   const openNavigation = page
     .getByRole("navigation", { name: "App" })
     .getByRole("button", { exact: true, name: "Open navigation" });
-  await expect(peek.or(openNavigation).first()).toBeVisible();
-  if (!(await peek.isVisible())) await openNavigation.click();
+  const shown = await settledState("the control that opens the Inbox drawer", [
+    ["Peek", peek],
+    ["Open navigation", openNavigation],
+  ]);
+  if (shown === "Open navigation") await openNavigation.click();
   await peek.click();
   await expect(drawer(page)).toBeVisible();
 }
