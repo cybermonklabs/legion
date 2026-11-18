@@ -24,19 +24,21 @@ const REASONS = {
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
-  ...answers("ThreadTurns | MentionComposer | conditional | (composerFirst) ? …", {
-    reason: REASONS[8],
-  }),
-  ...answers("ThreadTurns | MentionComposer | conditional | !(composerFirst) ? …", {
-    reason: REASONS[8],
-  }),
+  ...answers(
+    "ThreadTurns | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | (composerFirst) ? …",
+    { reason: REASONS[8] }
+  ),
+  ...answers(
+    "ThreadTurns | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(composerFirst) ? …",
+    { reason: REASONS[8] }
+  ),
   ...answers(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the key holds the expression's own source text, whose template literal this is.
-    "MessageThreadBody | MentionComposer | key | key={`composer:${thread.thread_id}`}",
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | key | key={`composer:${thread.thread_id}`}",
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "MessageThreadBody | MentionComposer | address prop | mutationKey={threadSendKey(thread.thread_id)}",
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | address prop | mutationKey={threadSendKey(thread.thread_id)}",
     cells(`${HOST} · the column moves to another row, then back`),
     { row: `${HOST} · Close, then Discard draft? · cannot make: the box draws no Close` },
     { reason: REASONS[1] },
@@ -45,25 +47,26 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[6] }
   ),
   ...answers(
-    'MessageThreadBody | MentionComposer | address prop | owner={{ issueKey, kind: "issue" }}',
+    'MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | address prop | owner={{ issueKey, kind: "issue" }}',
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    'MessageThreadBody | MentionComposer | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "message", ...(target === null || target === undefined ? {} : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }), }}',
+    'MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "message", ...(target === null || target === undefined ? {} : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }), }}',
     cells(`${HOST} · Escape in the field`),
     { row: `${HOST} · Cancel reply · cannot make: a standing box draws no Cancel reply` },
     { reason: REASONS[2] },
     { reason: REASONS[4] }
   ),
-  ...answers("MessageThreadBody | MentionComposer | conditional | !(root === undefined) ? …", {
-    reason: REASONS[10],
-  }),
   ...answers(
-    "MessageThreadBody | MentionComposer | early return | if (messages.isPending) return …",
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(root === undefined) ? …",
+    { reason: REASONS[10] }
+  ),
+  ...answers(
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | early return | if (messages.isPending) return …",
     { reason: REASONS[7] }
   ),
   ...answers(
-    "MessageThreadBody | MentionComposer | early return | if (messages.isError) return …",
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | early return | if (messages.isError) return …",
     { reason: REASONS[7] }
   ),
   ...answers("Inbox | ReadingPane | conditional | (paneShown) ? …", { reason: REASONS[9] }),
@@ -99,7 +102,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | ThreadCardRow | form | if (paneShown) return …", { reason: REASONS[11] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[11] }),
   ...answers(
-    "MessageThreadBody | MentionComposer | lifetime | <MentionComposer mutationKey={threadSendKey(thread.thread_id)}>",
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | lifetime | <MentionComposer mutationKey={threadSendKey(thread.thread_id)}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

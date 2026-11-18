@@ -22,7 +22,7 @@ const REASONS = {
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
-    "AgentMessageComposer | MentionComposer | address prop | mutationKey={sendKey}",
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | address prop | mutationKey={sendKey}",
     {
       row: `${HOST} · Close, then Discard draft? · cannot make: the row's composer draws no Close`,
     },
@@ -31,15 +31,15 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[6] }
   ),
   ...answers(
-    "AgentMessageComposer | MentionComposer | address prop | ownMoves={commits}",
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | address prop | ownMoves={commits}",
     cells(`${HOST} · Agents pick`)
   ),
   ...answers(
-    "AgentMessageComposer | MentionComposer | address prop | owner={composerOwner}",
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | address prop | owner={composerOwner}",
     cells(`${HOST} · Agents pick`)
   ),
   ...answers(
-    "AgentMessageComposer | MentionComposer | address prop | replyTo={replyTo?.target ?? null}",
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | address prop | replyTo={replyTo?.target ?? null}",
     cells(`${HOST} · Reply on another message, then back`),
     cells(`${HOST} · host moves it over a refusal (elsewhere), then back`, ["refused", "stopped"]),
     {
@@ -52,7 +52,7 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the key holds the expression's own source text, whose template literal this is.
-    "AgentMessageComposer | MentionComposer | address prop | seedMentions={ useDirectChannel ? undefined : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }] }",
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | address prop | seedMentions={ useDirectChannel ? undefined : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }] }",
     cells(`${HOST} · Agents pick`)
   ),
   ...answers(
@@ -133,7 +133,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("AgentsPage | AgentRow | form | mdViewport={mdViewport}", { reason: REASONS[8] }),
   ...answers("AgentRow | - | form | (mdViewport) ? …", { reason: REASONS[8] }),
   ...answers(
-    "AgentMessageComposer | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

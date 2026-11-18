@@ -23,21 +23,23 @@ const REASONS = {
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
-    "ConversationTab | MentionComposer | address prop | intake={phone.dockedIntake}",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | address prop | intake={phone.dockedIntake}",
     cells(`${HOST} · Cancel reply`)
   ),
   ...answers(
-    'ConversationTab | MentionComposer | address prop | owner={{ issueKey, kind: "issue" }}',
+    'ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | address prop | owner={{ issueKey, kind: "issue" }}',
     { reason: REASONS[5] }
   ),
-  ...answers("ConversationTab | MentionComposer | early return | if (loading) return …", {
-    reason: REASONS[7],
-  }),
-  ...answers("ConversationTab | MentionComposer | early return | if (failed) return …", {
-    reason: REASONS[7],
-  }),
   ...answers(
-    "ConversationTab | MentionComposer | address prop | mutationKey={phone.composerKey}",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | early return | if (loading) return …",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | early return | if (failed) return …",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | address prop | mutationKey={phone.composerKey}",
     {
       row: `${HOST} · Close, then Discard draft? · cannot make: the thread composer draws no Close`,
     },
@@ -46,7 +48,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[5] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | address prop | replyTo={phone.replyTo}",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | address prop | replyTo={phone.replyTo}",
     cells(`${HOST} · Back, then back`),
     cells(`${HOST} · Reply on another comment, then back`),
     cells(`${HOST} · Cancel reply`),
@@ -54,39 +56,52 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[1] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | conditional | <div hidden={!phoneReplyTargetsThread}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | conditional | <div hidden={!phoneReplyTargetsThread}>",
     { reason: REASONS[6] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | conditional | !(phone.replyTo === null) ? …",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | conditional | !(phone.replyTo === null) ? …",
     cells(`${HOST} · Cancel reply`),
     { reason: REASONS[8] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | conditional | <section hidden={phoneThread === undefined}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | conditional | <section hidden={phoneThread === undefined}>",
     cells(`${HOST} · Back, then back`)
   ),
   ...answers(
-    "ConversationTab | MentionComposer | conditional | !(phoneThread === undefined && phone.replyTo === null) ? …",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | conditional | !(phoneThread === undefined && phone.replyTo === null) ? …",
     cells(`${HOST} · Back, then back`),
     { reason: REASONS[9] }
   ),
   ...answers("ConversationTab | CommentTurn | address prop | forceExpanded", {
     reason: REASONS[2],
   }),
-  ...answers("ConversationTab | MentionComposer | form | <div hidden={!phoneReplyTargetsThread}>", {
-    reason: REASONS[6],
-  }),
   ...answers(
-    "ConversationTab | MentionComposer | form | <section ref>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | form | <div hidden={!phoneReplyTargetsThread}>",
+    { reason: REASONS[6] }
+  ),
+  ...answers(
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | form | <section ref>",
     cells(`${HOST} · Back, then back`)
   ),
   ...answers(
-    "ConversationTab | MentionComposer | form | <section hidden={phoneThread === undefined}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | form | <section hidden={phoneThread === undefined}>",
     cells(`${HOST} · Back, then back`)
   ),
   ...answers(
-    "ConversationTab | MentionComposer | form | !(phoneThread === undefined && phone.replyTo === null) ? …",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | form | !(phoneThread === undefined && phone.replyTo === null) ? …",
+    { reason: REASONS[9] }
+  ),
+  ...answers(
+    "ConversationTab | CommentTurn | form | <section ref>",
+    cells(`${HOST} · Back, then back`)
+  ),
+  ...answers(
+    "ConversationTab | CommentTurn | form | <section hidden={phoneThread === undefined}>",
+    cells(`${HOST} · Back, then back`)
+  ),
+  ...answers(
+    "ConversationTab | CommentTurn | form | !(phoneThread === undefined && phone.replyTo === null) ? …",
     { reason: REASONS[9] }
   ),
   ...answers("ConversationTab | - | form | (phone.id === undefined) ? …", { reason: REASONS[9] }),
@@ -104,7 +119,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[9] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | lifetime | <MentionComposer mutationKey={phone.composerKey}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | lifetime | <MentionComposer mutationKey={phone.composerKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

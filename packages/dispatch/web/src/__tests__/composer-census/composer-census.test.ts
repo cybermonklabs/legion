@@ -4,7 +4,8 @@
  * that file or one of its numbered reasons; every entry names an item the census still finds; a
  * row names a test of its file; and a reason has words. So a host that adds a conditional above
  * its composer, a new mount, or a new form of the layout fails here until a matrix file answers
- * for it.
+ * for it. The census fails closed: a mount it cannot place, or an element, a helper or a slot
+ * between a mount and the routes it cannot read, fails here too, by where it is.
  *
  * The census reads the `web/src` this file is in, or the copy of it `COMPOSER_CENSUS_ROOT`
  * names, so that a change planted in a scratch copy is censused with this test unchanged. The
@@ -43,15 +44,16 @@ const MATRIX: readonly { readonly file: string; readonly entries: readonly Cover
   { entries: margin, file: "features/margin/draft-matrix.margin.test.tsx" },
 ];
 
-const items = composerCensus(process.env.COMPOSER_CENSUS_ROOT ?? WEB_SRC);
+const { items, unread } = composerCensus(process.env.COMPOSER_CENSUS_ROOT ?? WEB_SRC);
 const byKey = new Map(items.map((item) => [item.key, item]));
 
 const listOf = (file: string) => file.replace(/\.test\.tsx$/, ".coverage.ts");
 
-/** An item as a failure names it: its host, kind and expression, and where it is. */
+/** An item as a failure names it: its host, the mount or component it is about, its kind and
+ *  expression, and where it is. */
 function named(item: CensusItem): string {
   const detail = item.detail === "" ? "" : `; ${item.detail}`;
-  return `${item.host} · ${item.kind} · ${item.expression} (${item.at.join(", ")}${detail})`;
+  return `${item.host} · ${item.mount} · ${item.kind} · ${item.expression} (${item.at.join(", ")}${detail})`;
 }
 
 /** The matrix files an item belongs in. A file answers for a mount where it answers for that
@@ -78,9 +80,13 @@ function homesOf(item: CensusItem): string[] {
 
 /** An entry's item as a failure names it, read back from its key. */
 function entryNamed(entry: CoverageEntry): string {
-  const { expression, host, kind } = keyParts(entry.key);
-  return `${host} · ${kind} · ${expression}`;
+  const { expression, host, kind, mount } = keyParts(entry.key);
+  return `${host} · ${mount} · ${kind} · ${expression}`;
 }
+
+test("the composer census places every mount and reads everything between a mount and the routes", () => {
+  expect(unread).toEqual([]);
+});
 
 test("every item the composer census finds has a draft matrix row or a numbered reason", () => {
   const answered = new Set(MATRIX.flatMap(({ entries }) => entries.map((entry) => entry.key)));

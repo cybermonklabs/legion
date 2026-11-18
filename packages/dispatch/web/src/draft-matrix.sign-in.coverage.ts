@@ -59,6 +59,7 @@ export const coverage: readonly CoverageEntry[] = [
     { row: "the same person's sign-in from another tab keeps the shell and the words typed in it" }
   ),
   ...answers("AppShell | InboxDrawer | form | <div className>", { reason: REASONS[4] }),
+  ...answers("AppShell | MarginColumn | form | <div className>", { reason: REASONS[4] }),
   ...answers("AppShell | - | form | (isCompactViewport) ? …", { reason: REASONS[4] }),
   ...answers("AppShell | - | form | (isCompactViewport && navigationOpen) ? …", {
     reason: REASONS[4],

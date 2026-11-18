@@ -110,6 +110,10 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   holds the matrix to the code: it lists every `MentionComposer` mount, every way its address or
   its tree moves and every layout form, and fails on an item with neither a row nor a numbered
   reason in its file's `*.coverage.ts`, so a new conditional above a composer is a red test.
+  It fails closed: a `MentionComposer` drawn in no component it reads, and a component element,
+  helper or slot between a mount and the routes it cannot follow, fail it where they are.
+  An item's key names the mount it is about, so an expression repeated above a second mount is a
+  new item, which the file answering for that mount must answer.
   The reader's own controls move the draft with the address: Cancel reply (and Escape, which ends
   a reply as it does), and a control the host draws for the composer and counts in the press that
   makes the move (`ownMoves`, an Agents row's issue picker).

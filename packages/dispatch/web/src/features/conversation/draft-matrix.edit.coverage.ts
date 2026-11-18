@@ -68,7 +68,7 @@ const REASONS = {
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
-    "ThreadCard | MentionComposer | address prop | edit={{ body: comment.body, id: comment.id }}",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | address prop | edit={{ body: comment.body, id: comment.id }}",
     away(CONVERSATION_CARD),
     away(CONVERSATION_PHONE),
     away(MARGIN_CARD),
@@ -80,41 +80,52 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[1] }
   ),
   ...answers(
-    "ThreadCard | MentionComposer | address prop | mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | address prop | mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}",
     { reason: REASONS[1] }
   ),
   ...answers(
-    "ThreadCard | MentionComposer | conditional | (editing(root)) ? …",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | address prop | owner={composerOwner(owner)}",
+    { reason: REASONS[1] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | conditional | (editing(root)) ? …",
     replyEdit(CONVERSATION_CARD),
     replyEdit(CONVERSATION_PHONE),
     replyEdit(MARGIN_CARD),
     replyEdit(MARGIN_PHONE)
   ),
   ...answers(
-    "ThreadCard | MentionComposer | conditional | (expanded) ? …",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | conditional | (expanded) ? …",
     away(CONVERSATION_CARD),
     away(MARGIN_CARD)
   ),
   ...answers(
-    "ThreadCard | MentionComposer | conditional | (editing(reply)) ? …",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | conditional | (editing(reply)) ? …",
     replyEdit(CONVERSATION_CARD),
     replyEdit(CONVERSATION_PHONE),
     replyEdit(MARGIN_CARD),
     replyEdit(MARGIN_PHONE)
   ),
-  ...answers("ThreadCard | MentionComposer | key | <li key={reply.id}>", { reason: REASONS[2] }),
-  ...answers("ThreadCard | MentionComposer | conditional | drawn by shown.map(…)", {
-    reason: REASONS[2],
-  }),
-  ...answers("ThreadCard | MentionComposer | conditional | !(shown.length === 0) ? …", {
-    reason: REASONS[2],
-  }),
-  ...answers("ThreadCard | MentionComposer | conditional | (composerFirst) ? …", {
-    reason: REASONS[4],
-  }),
-  ...answers("ThreadCard | MentionComposer | conditional | !(composerFirst) ? …", {
-    reason: REASONS[4],
-  }),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | key | <li key={reply.id}>",
+    { reason: REASONS[2] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | conditional | drawn by shown.map(…)",
+    { reason: REASONS[2] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | conditional | !(shown.length === 0) ? …",
+    { reason: REASONS[2] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (composerFirst) ? …",
+    { reason: REASONS[4] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | !(composerFirst) ? …",
+    { reason: REASONS[4] }
+  ),
   ...answers(
     "CommentTurn | ThreadCard | address prop | expanded={currentExpanded}",
     away(CONVERSATION_CARD),
@@ -176,7 +187,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[5] }
   ),
   ...answers(
-    "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}>",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}> | lifetime | <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}>",
     reloaded(CONVERSATION_CARD),
     reloaded(CONVERSATION_PHONE),
     reloaded(MARGIN_CARD),

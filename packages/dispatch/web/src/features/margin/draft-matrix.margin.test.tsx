@@ -150,6 +150,22 @@
  *    (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses
  *    the same compose and moves nothing it holds.
  *
+ * The move the composer census found above the margin, in the shell, which no row makes:
+ * 14. A render inside the margin that throws draws the shell's error section in its place
+ *    (`ErrorBoundary`, "the margin", in `app.tsx`), which unmounts the compose and every card as
+ *    leaving the document does. Each composer keeps what it holds as it goes (`useKeptDrafts`):
+ *    the compose and an editor by their address (`keepAway`), a thread's reply under its
+ *    thread's name, written at each keystroke (`unsent.write`), and what was typed over a
+ *    refusal in its held send (`keepDraft`). Those stores live with the query client, above the
+ *    boundary (`unsentDraftsOf`, `heldSends`), and so does the compose (`MarginProvider`). The
+ *    boundary draws the margin again when the page's path changes (`resetKey`,
+ *    `componentDidUpdate`), with no thread open and no editor (`useMarginSheet` starts again),
+ *    and its Reload Dispatch reloads the page as the reload rows do. A composer drawn again at
+ *    its address opens on its draft (`mountDraft`): the compose on its document, a thread's
+ *    reply when its thread is opened, an editor when its comment's Edit is pressed (beside a
+ *    newer body where the comment changed, `changedUnder`), as the document-left rows, the
+ *    another-thread row and the edit file's margin card show.
+ *
  * `draft-matrix.margin.coverage.ts` holds each census item this file answers for to a test above
  * or to a numbered reason, and is the source this header is the prose of.
  */

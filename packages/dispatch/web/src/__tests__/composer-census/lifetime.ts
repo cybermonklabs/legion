@@ -85,14 +85,14 @@ function appReloads(program: Program): string[] {
   return found;
 }
 
-/** One lifetime item per mount. */
+/** One lifetime item per mount, about the mount itself. */
 export function readLifetimes(trees: Trees): LifetimeItem[] {
   const reloads = ["the browser's own reload", ...appReloads(trees.program)];
   return trees.mounts.map((mount) => ({
     at: where(mount.element),
     expression: mount.shown,
     host: mount.host.name,
-    mount: "MentionComposer",
+    mount: mount.name,
     mounts: [mount.name],
     reloads,
   }));

@@ -7,10 +7,17 @@
  * reload. `composer-census.test.ts` holds every item to an entry of a draft matrix file's
  * coverage list (`coverage.ts`).
  *
+ * The census fails closed: what it meets and cannot read, a `MentionComposer` drawn in no
+ * component it reads or a component element between a mount and the routes whose drawing it
+ * cannot follow, is listed as unread (`Census.unread`), and the test fails on each, since a
+ * mount or an item may be behind it.
+ *
  * Each item is named by a key that no line number enters: the component whose code holds it,
- * the component drawn at the place it is about (`MentionComposer` at a mount itself), its kind,
- * and the expression's own text with its whitespace run together. The same expression at two
- * places of one component, about the same component, is one item.
+ * the place it is about (a mount, by its host and its send name, at the mount itself and in a
+ * component the mount sits in a slot of; the component drawn there at a place above mounts),
+ * its kind, and the expression's own text with its whitespace run together. The same
+ * expression at two places of one component, about the same mount or the same component, is
+ * one item; above two mounts of one host it is an item of each.
  */
 import { readForms } from "./forms";
 import { readLifetimes } from "./lifetime";
@@ -23,7 +30,9 @@ export interface CensusItem {
   readonly key: string;
   /** The component (or, for a form, the hook) whose code holds the item. */
   readonly host: string;
-  /** The component drawn at the place the item is about. */
+  /** The place the item is about: a mount, by its host and its send name
+   *  (`ThreadCard <MentionComposer mutationKey={replyMutationKey}>`), the component drawn at a
+   *  place above mounts, or `-` for a form of a body that wraps no mount. */
   readonly mount: string;
   readonly kind: ItemKind;
   readonly expression: string;
@@ -35,17 +44,32 @@ export interface CensusItem {
   readonly detail: string;
 }
 
+export interface Census {
+  readonly items: readonly CensusItem[];
+  /** What the census met and cannot read, each with where it is (`Trees.unread`). */
+  readonly unread: readonly string[];
+}
+
 const SEPARATOR = " | ";
 
 export function itemKey(host: string, mount: string, kind: ItemKind, expression: string): string {
-  return [host, mount, kind, expression.replace(/\s+/g, " ").trim()].join(SEPARATOR);
+  const parts = [host, mount, kind];
+  if (parts.some((part) => part.includes(SEPARATOR))) {
+    throw new Error(`the census cannot key "${parts.join('", "')}": a part holds "${SEPARATOR}"`);
+  }
+  return [...parts, expression.replace(/\s+/g, " ").trim()].join(SEPARATOR);
 }
 
-/** A key read back into its parts. Neither a component's name nor a kind holds the separator,
+/** A key read back into its parts. No part but the expression holds the separator (`itemKey`),
  *  so the expression is all that follows the third. */
-export function keyParts(key: string): { host: string; kind: string; expression: string } {
-  const [host = "", , kind = "", ...expression] = key.split(SEPARATOR);
-  return { expression: expression.join(SEPARATOR), host, kind };
+export function keyParts(key: string): {
+  host: string;
+  mount: string;
+  kind: string;
+  expression: string;
+} {
+  const [host = "", mount = "", kind = "", ...expression] = key.split(SEPARATOR);
+  return { expression: expression.join(SEPARATOR), host, kind, mount };
 }
 
 /** One item as a part of the census finds it, before the same key found twice is one item. */
@@ -60,7 +84,7 @@ interface Found {
 }
 
 /** The census of the tree under `root`, a `web/src` or a copy of it. */
-export function composerCensus(root: string): CensusItem[] {
+export function composerCensus(root: string): Census {
   const trees = readTrees(readProgram(root));
   const found: Found[] = [
     ...trees.items.map((item) => ({ ...item, detail: "" })),
@@ -95,5 +119,5 @@ export function composerCensus(root: string): CensusItem[] {
     if (!known.at.includes(item.at)) known.at.push(item.at);
     for (const mount of item.mounts) if (!known.above.includes(mount)) known.above.push(mount);
   }
-  return [...byKey.values()];
+  return { items: [...byKey.values()], unread: trees.unread };
 }

@@ -23,6 +23,7 @@ const REASONS = {
   11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`).",
   12: "12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`, `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside it and the page still under it (`useDialog`). None moves an address or ends a mount. The app shell's forms, above every host, are the sign-in file's.",
   13: "13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and Ask switch (`onKindChange`), the reader's own control, which retypes the same mark (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses the same compose and moves nothing it holds.",
+  14: "14. A render inside the margin that throws draws the shell's error section in its place (`ErrorBoundary`, \"the margin\", in `app.tsx`), which unmounts the compose and every card as leaving the document does. Each composer keeps what it holds as it goes (`useKeptDrafts`): the compose and an editor by their address (`keepAway`), a thread's reply under its thread's name, written at each keystroke (`unsent.write`), and what was typed over a refusal in its held send (`keepDraft`). Those stores live with the query client, above the boundary (`unsentDraftsOf`, `heldSends`), and so does the compose (`MarginProvider`). The boundary draws the margin again when the page's path changes (`resetKey`, `componentDidUpdate`), with no thread open and no editor (`useMarginSheet` starts again), and its Reload Dispatch reloads the page as the reload rows do. A composer drawn again at its address opens on its draft (`mountDraft`): the compose on its document, a thread's reply when its thread is opened, an editor when its comment's Edit is pressed (beside a newer body where the comment changed, `changedUnder`), as the document-left rows, the another-thread row and the edit file's margin card show.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -33,7 +34,7 @@ const OFFER_LAPSED = `${HOST} · a compose offering an earlier draft, then signe
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
-    "MarginComposerSlot | MentionComposer | address prop | anchor={composer.anchor}",
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | address prop | anchor={composer.anchor}",
     cells(`${HOST} · Close, then Discard draft? (the margin's compose)`),
     cells(OFFER_CLOSED),
     cells(OFFER_ESCAPED),
@@ -42,56 +43,61 @@ export const coverage: readonly CoverageEntry[] = [
       `${HOST} · phone · a compose opened on another document, then back (the margin's compose)`
     )
   ),
-  ...answers("MarginComposerSlot | MentionComposer | address prop | kind={composer.kind}", {
-    reason: REASONS[13],
-  }),
   ...answers(
-    "MarginComposerSlot | MentionComposer | address prop | mutationKey={sendKey}",
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | address prop | kind={composer.kind}",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | address prop | mutationKey={sendKey}",
     cells(`${HOST} · a compose opened on another document, then back (the margin's compose)`),
     { reason: REASONS[3] }
   ),
   ...answers(
-    "MarginComposerSlot | MentionComposer | address prop | owner={composer.owner}",
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | address prop | owner={composer.owner}",
     cells(`${HOST} · document left, then back (the margin's compose)`),
     cells(`${HOST} · phone · panel closed, document left, then back (the margin's compose)`)
   ),
   // The send the reader stopped, set aside for the newer compose, which the slot hands that
   // compose to offer (`stoppedAside`): the offer rows' stopped cells.
   ...answers(
-    "MarginComposerSlot | MentionComposer | address prop | stoppedAside={stoppedAside}",
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | address prop | stoppedAside={stoppedAside}",
     cells(OFFER_CLOSED, ["stopped"]),
     cells(OFFER_ESCAPED, ["stopped"]),
     cells(OFFER_ISSUE_CLOSED, ["stopped"]),
     cells(OFFER_LAPSED, ["stopped"])
   ),
-  ...answers("MarginComposerSlot | MentionComposer | conditional | <div hidden={hidden}>", {
-    reason: REASONS[4],
-  }),
-  ...answers("ThreadCard | MentionComposer | address prop | owner={composerOwner(owner)}", {
-    reason: REASONS[1],
-  }),
   ...answers(
-    "ThreadCard | MentionComposer | conditional | (expanded) ? …",
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | conditional | <div hidden={hidden}>",
+    { reason: REASONS[4] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | owner={composerOwner(owner)}",
+    { reason: REASONS[1] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded) ? …",
     cells(`${HOST} · another thread opened, then back`),
     { reason: REASONS[2] }
   ),
   ...answers(
-    "ThreadCard | MentionComposer | address prop | mutationKey={replyMutationKey}",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | mutationKey={replyMutationKey}",
     cells(`${HOST} · another thread opened, then back`),
     { reason: REASONS[3] }
   ),
   ...answers(
-    'ThreadCard | MentionComposer | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}',
+    'ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}',
     cells(`${HOST} · Cancel reply`),
     cells(`${HOST} · Escape in the field`),
     { reason: REASONS[1] }
   ),
-  ...answers("ThreadCard | MentionComposer | conditional | (composerFirst) ? …", {
-    reason: REASONS[8],
-  }),
-  ...answers("ThreadCard | MentionComposer | conditional | !(composerFirst) ? …", {
-    reason: REASONS[8],
-  }),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (composerFirst) ? …",
+    { reason: REASONS[8] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | !(composerFirst) ? …",
+    { reason: REASONS[8] }
+  ),
   ...answers(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the key holds the expression's own source text, whose template literal this is.
     'MarginSheet | MarginComposerSlot | key | <MarginComposerSlot key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}>',
@@ -145,6 +151,9 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · document left, then back (the margin's compose)`)
   ),
   ...answers("MarginColumn | Margin | address prop | <Margin {...props}>", { reason: REASONS[5] }),
+  ...answers("ErrorBoundary | MarginColumn | conditional | if (message === undefined)", {
+    reason: REASONS[14],
+  }),
   ...answers(
     "MarginSheet | ThreadCard | conditional | (isPhoneViewport && phoneThread !== undefined && owner !== undefined && visibleArtifact !== undefined) ? …",
     cells(`${HOST} · Back, then back (phone thread view)`),
@@ -243,16 +252,29 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("MarginSheet | CommentsTab | address prop | threads={threads}", {
     reason: REASONS[7],
   }),
-  ...answers("MarginComposerSlot | MentionComposer | form | autoFocus={onScreen}", {
-    reason: REASONS[12],
-  }),
+  ...answers(
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | form | autoFocus={onScreen}",
+    { reason: REASONS[12] }
+  ),
   ...answers("MarginSheet | MarginComposerSlot | form | <div className>", { reason: REASONS[9] }),
+  ...answers("MarginSheet | CommentsTab | form | <div className>", { reason: REASONS[9] }),
   ...answers(
     "MarginSheet | MarginComposerSlot | form | <div hidden={covered}>",
     cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
     { reason: REASONS[4] }
   ),
+  ...answers(
+    "MarginSheet | CommentsTab | form | <div hidden={covered}>",
+    cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
+    { reason: REASONS[4] }
+  ),
   ...answers("MarginSheet | MarginComposerSlot | form | <aside className role aria-modal ref>", {
+    reason: REASONS[11],
+  }),
+  ...answers("MarginSheet | CommentsTab | form | <aside className role aria-modal ref>", {
+    reason: REASONS[11],
+  }),
+  ...answers("MarginSheet | ThreadCard | form | <aside className role aria-modal ref>", {
     reason: REASONS[11],
   }),
   ...answers(
@@ -312,11 +334,11 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[12],
   }),
   ...answers(
-    "MarginComposerSlot | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
+    "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",
     cells(`${HOST} · the page reloaded, then back (the margin's compose)`)
   ),
   ...answers(
-    "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

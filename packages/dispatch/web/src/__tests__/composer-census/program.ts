@@ -38,6 +38,8 @@ function listFiles(root: string, dir: string, out: string[]): string[] {
 interface Binding {
   readonly from: string | undefined;
   readonly name: string;
+  /** An import's module as the import names it, a library's where `from` is undefined. */
+  readonly spec?: string;
 }
 
 /** A module, by its path under the root, which is also its syntax tree's file name. */
@@ -50,12 +52,16 @@ export interface Mod {
   readonly stars: string[];
 }
 
-/** A component, or a hook read as one: a top-level function of a module. */
+/** A component, or a hook read as one: a top-level function of a module, or a class component
+ *  read through its `render`. */
 export interface Comp {
   readonly id: string;
   readonly name: string;
   readonly mod: Mod;
   readonly fn: ts.SignatureDeclaration & { body?: ts.Node };
+  /** A class component's class, whose `render` is `fn`: its props are `this.props`, and its
+   *  state `this.state`. */
+  readonly cls?: ts.ClassDeclaration;
 }
 
 /** One place a component is drawn: a JSX element whose tag names it. */
@@ -93,15 +99,19 @@ function resolveSpec(
 function readStatements(mods: ReadonlyMap<string, Mod>, mod: Mod): void {
   for (const statement of mod.sf.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-      const from = resolveSpec(mods, mod.rel, statement.moduleSpecifier.text);
+      const spec = statement.moduleSpecifier.text;
+      const from = resolveSpec(mods, mod.rel, spec);
       const clause = statement.importClause;
-      if (clause?.name !== undefined) mod.imports.set(clause.name.text, { from, name: "default" });
+      if (clause?.name !== undefined) {
+        mod.imports.set(clause.name.text, { from, name: "default", spec });
+      }
       const named = clause?.namedBindings;
       if (named !== undefined && ts.isNamedImports(named)) {
         for (const element of named.elements) {
           mod.imports.set(element.name.text, {
             from,
             name: (element.propertyName ?? element.name).text,
+            spec,
           });
         }
       }
@@ -146,6 +156,17 @@ export function componentFunction(node: ts.Node): Comp["fn"] | undefined {
   return undefined;
 }
 
+/** A class component's `render`: a top-level class with a `render` method. */
+function classRender(node: ts.Node): ts.MethodDeclaration | undefined {
+  if (!ts.isClassDeclaration(node)) return undefined;
+  return node.members.find(
+    (member): member is ts.MethodDeclaration =>
+      ts.isMethodDeclaration(member) &&
+      member.name.getText() === "render" &&
+      member.body !== undefined
+  );
+}
+
 /** Reads every module under `root`, tests left out, with its components and their uses. */
 export function readProgram(root: string): Program {
   const mods = new Map<string, Mod>();
@@ -176,9 +197,14 @@ export function readProgram(root: string): Program {
   for (const mod of mods.values()) {
     for (const [name, decl] of mod.decls) {
       if (!/^[A-Z]/.test(name)) continue;
-      const fn = componentFunction(decl);
+      const render = classRender(decl);
+      const fn = render ?? componentFunction(decl);
       if (fn === undefined) continue;
-      const comp: Comp = { fn, id: `${mod.rel}#${name}`, mod, name };
+      const id = `${mod.rel}#${name}`;
+      const comp: Comp =
+        render === undefined
+          ? { fn, id, mod, name }
+          : { cls: decl as ts.ClassDeclaration, fn, id, mod, name };
       comps.set(comp.id, comp);
       compByFn.set(fn, comp);
     }
@@ -305,8 +331,8 @@ export function tagComp(program: Program, mod: Mod, element: ts.Node): string | 
   return resolveLocal(program, mod, tag.text);
 }
 
-/** The top-level component a node sits in: only top-level component functions are indexed, so
- *  the first one found going up is it. */
+/** The top-level component a node sits in: only top-level component functions and class
+ *  components' `render`s are indexed, so the first one found going up is it. */
 export function compOf(program: Program, node: ts.Node): Comp | undefined {
   let current: ts.Node | undefined = node;
   while (current !== undefined) {
@@ -315,6 +341,131 @@ export function compOf(program: Program, node: ts.Node): Comp | undefined {
     current = current.parent;
   }
   return undefined;
+}
+
+/** A top-level function or constant of a module, which a component the module's own or an
+ *  importer's uses as a helper. */
+export type ModuleHelper = ts.FunctionDeclaration | ts.VariableDeclaration;
+
+/** Whether `node` is a declaration of a named top-level function or constant. */
+export function isModuleHelper(node: ts.Node): node is ModuleHelper {
+  if (ts.isFunctionDeclaration(node)) {
+    return node.name !== undefined && ts.isSourceFile(node.parent);
+  }
+  return (
+    ts.isVariableDeclaration(node) &&
+    ts.isIdentifier(node.name) &&
+    ts.isVariableStatement(node.parent.parent) &&
+    ts.isSourceFile(node.parent.parent.parent)
+  );
+}
+
+/** The top-level function or constant a node outside every component sits in, if any. */
+function moduleHelperOf(node: ts.Node): ModuleHelper | undefined {
+  let found: ModuleHelper | undefined;
+  for (let current: ts.Node = node; !ts.isSourceFile(current); current = current.parent) {
+    if (isModuleHelper(current)) found = current;
+  }
+  return found;
+}
+
+/** A module helper's name. */
+export function helperName(helper: ModuleHelper): string {
+  return helper.name?.getText() ?? "";
+}
+
+/** A module helper's id, which its module's components and its importers resolve it by. */
+export function helperId(program: Program, helper: ModuleHelper): string {
+  return `${modOf(program, helper).rel}#${helperName(helper)}`;
+}
+
+/** Whether an identifier names something where it stands, rather than reading a value: a
+ *  declaration, a property, an attribute or a tag. */
+function namesHere(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent)) return parent.name === node;
+  if (
+    ts.isJsxOpeningElement(parent) ||
+    ts.isJsxSelfClosingElement(parent) ||
+    ts.isJsxClosingElement(parent)
+  ) {
+    return parent.tagName === node;
+  }
+  if (ts.isBindingElement(parent)) return parent.name === node || parent.propertyName === node;
+  return (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isJsxAttribute(parent) ||
+      ts.isParameter(parent) ||
+      ts.isVariableDeclaration(parent) ||
+      ts.isFunctionDeclaration(parent) ||
+      ts.isFunctionExpression(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isClassExpression(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  );
+}
+
+const refsMemo = new WeakMap<Program, Map<string, ts.Identifier[]>>();
+
+/** Every identifier of the program that reads the top-level declaration `id` (`<module>#<name>`)
+ *  as a value, under whatever name its module knows it by: its own module's and its importers'.
+ *  A JSX tag is no such read: a component's tags are its uses (`Program.usesById`). */
+export function moduleRefs(program: Program, id: string): readonly ts.Identifier[] {
+  const memo = refsMemo.get(program) ?? new Map<string, ts.Identifier[]>();
+  refsMemo.set(program, memo);
+  const known = memo.get(id);
+  if (known !== undefined) return known;
+  const out: ts.Identifier[] = [];
+  for (const mod of program.mods.values()) {
+    const names = new Set(
+      [...mod.decls.keys(), ...mod.imports.keys()].filter(
+        (name) => resolveLocal(program, mod, name) === id
+      )
+    );
+    if (names.size === 0) continue;
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isTypeNode(node) ||
+        ts.isImportDeclaration(node) ||
+        ts.isExportDeclaration(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node)
+      ) {
+        return;
+      }
+      if (ts.isIdentifier(node)) {
+        if (names.has(node.text) && !namesHere(node) && lookup(node, { mod }).kind === "module") {
+          out.push(node);
+        }
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(mod.sf);
+  }
+  memo.set(id, out);
+  return out;
+}
+
+/** The components a node is drawn in: the one it sits in, or, in a helper of its module (a
+ *  top-level function or constant), each component that reads the helper, however many helpers
+ *  away. None for a node outside both, as the root `main.tsx` renders, or in a class's method
+ *  other than its `render`. */
+export function drawnIn(program: Program, node: ts.Node, seen = new Set<ts.Node>()): Comp[] {
+  const comp = compOf(program, node);
+  if (comp !== undefined) return [comp];
+  const helper = moduleHelperOf(node);
+  if (helper === undefined || seen.has(helper)) return [];
+  seen.add(helper);
+  const found = new Set<Comp>();
+  for (const ref of moduleRefs(program, helperId(program, helper))) {
+    for (const host of drawnIn(program, ref, seen)) found.add(host);
+  }
+  return [...found];
 }
 
 export function modOf(program: Program, node: ts.Node): Mod {
@@ -384,7 +535,37 @@ function declaredIn(statements: readonly ts.Statement[], name: string): Found | 
   return undefined;
 }
 
-export function lookup(ident: ts.Identifier, comp: Comp): Found {
+/** `this.props` or `this.state` in a class component. */
+export function isThis(
+  node: ts.Node,
+  member: "props" | "state"
+): node is ts.PropertyAccessExpression {
+  return (
+    ts.isPropertyAccessExpression(node) &&
+    node.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    node.name.text === member
+  );
+}
+
+/** A class component's local read out of `this.props` (`const { children } = this.props`) is
+ *  the prop it names, as a function component's parameter is. */
+function classProp(found: Found, comp: Pick<Comp, "cls">): Found {
+  if (comp.cls === undefined || found.kind !== "local") return found;
+  const init = found.decl.initializer;
+  if (init === undefined || !isThis(init, "props")) return found;
+  if (found.element === undefined) return { kind: "props-object" };
+  let top = found.element;
+  while (ts.isBindingElement(top.parent.parent)) top = top.parent.parent;
+  return { kind: "prop", prop: (top.propertyName ?? top.name).getText() };
+}
+
+/** What `ident` names inside `comp`: one of its props, a local, a parameter of a function inside
+ *  it, or something of its module or the globals. Looked up from a module's top level (`{ mod }`,
+ *  no `fn`), a name no function or block binds is the module's. */
+export function lookup(
+  ident: ts.Identifier,
+  comp: Pick<Comp, "cls" | "mod"> & { readonly fn?: ts.Node }
+): Found {
   const name = ident.text;
   let node: ts.Node | undefined = ident.parent;
   while (node !== undefined) {
@@ -402,7 +583,7 @@ export function lookup(ident: ts.Identifier, comp: Comp): Found {
     }
     if (ts.isBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node)) {
       const found = declaredIn(node.statements, name);
-      if (found !== undefined) return found;
+      if (found !== undefined) return classProp(found, comp);
     }
     if (
       (ts.isForOfStatement(node) || ts.isForInStatement(node) || ts.isForStatement(node)) &&
@@ -482,9 +663,29 @@ export interface Dep {
   readonly name: string;
 }
 
+/** The props and state a class component's expression reads through `this`. */
+function classReads(root: ts.Node): Dep[] {
+  const deps: Dep[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isTypeNode(node)) return;
+    for (const member of ["props", "state"] as const) {
+      if (!isThis(node, member)) continue;
+      const parent = node.parent;
+      const name =
+        ts.isPropertyAccessExpression(parent) && parent.expression === node
+          ? parent.name.text
+          : `(all ${member})`;
+      deps.push({ kind: member === "props" ? "prop" : "state", name });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return deps;
+}
+
 /** What an expression inside `comp` depends on: its props, state, route, reads and hooks. */
 export function dependsOn(root: ts.Node, comp: Comp, seen = new Set<ts.Node>()): Dep[] {
-  const deps: Dep[] = [];
+  const deps: Dep[] = comp.cls === undefined ? [] : classReads(root);
   for (const ident of readIdentifiers(root)) {
     const found = lookup(ident, comp);
     switch (found.kind) {
@@ -532,12 +733,19 @@ export function dependsOn(root: ts.Node, comp: Comp, seen = new Set<ts.Node>()):
         if (seen.has(fn)) break;
         seen.add(fn);
         const parent = fn.parent;
+        const helper =
+          ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+            ? parent.name.text
+            : isModuleHelper(fn)
+              ? helperName(fn)
+              : undefined;
         if (ts.isCallExpression(parent) && ts.isPropertyAccessExpression(parent.expression)) {
           deps.push({ kind: "list item", name: ident.text });
           deps.push(...dependsOn(parent.expression.expression, comp, seen));
-        } else if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
-          // A helper inside the component: each call hands the parameter its argument.
-          for (const call of callsOf(parent.name.text, comp)) {
+        } else if (helper !== undefined) {
+          // A helper, the component's own or its module's: each call the component makes hands
+          // the parameter its argument.
+          for (const call of callsOf(helper, comp)) {
             const argument = call.arguments[found.index];
             if (argument !== undefined) deps.push(...dependsOn(argument, comp, seen));
           }

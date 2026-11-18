@@ -23,7 +23,7 @@ const REASONS = {
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
-    "ConversationTab | MentionComposer | address prop | mutationKey={sendKey}",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | address prop | mutationKey={sendKey}",
     { row: `${HOST} · Close, then Discard draft? · cannot make: the composer draws no Close` },
     { reason: REASONS[3] },
     { reason: REASONS[4] },
@@ -31,11 +31,11 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[6] }
   ),
   ...answers(
-    'ConversationTab | MentionComposer | address prop | owner={{ issueKey, kind: "issue" }}',
+    'ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | address prop | owner={{ issueKey, kind: "issue" }}',
     { reason: REASONS[6] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | address prop | replyTo={replyTo}",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | address prop | replyTo={replyTo}",
     cells(`${HOST} · Reply on another message, then back`),
     cells(`${HOST} · host moves it over a refusal (elsewhere), then back`, ["refused", "stopped"]),
     {
@@ -47,18 +47,20 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[2] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | conditional | <div hidden={phoneThread !== undefined}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | conditional | <div hidden={phoneThread !== undefined}>",
     cells(`${HOST} · phone · a comment's Reply, then Back`),
     { reason: REASONS[1] }
   ),
-  ...answers("ConversationTab | MentionComposer | early return | if (loading) return …", {
-    reason: REASONS[7],
-  }),
-  ...answers("ConversationTab | MentionComposer | early return | if (failed) return …", {
-    reason: REASONS[7],
-  }),
   ...answers(
-    "ConversationTab | MentionComposer | form | <div hidden={phoneThread !== undefined}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | early return | if (loading) return …",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | early return | if (failed) return …",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | form | <div hidden={phoneThread !== undefined}>",
     { reason: REASONS[8] }
   ),
   ...answers("ConversationTab | - | form | (phone.id === undefined) ? …", { reason: REASONS[9] }),
@@ -80,7 +82,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[9] }
   ),
   ...answers(
-    "ConversationTab | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

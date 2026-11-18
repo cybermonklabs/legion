@@ -24,6 +24,7 @@ import {
   calleeName,
   callsOf,
   componentFunction,
+  isThis,
   lookup,
   type Program,
   resolveLocal,
@@ -36,8 +37,9 @@ import { CONDITIONAL_OPERATORS, containsReturn, type Item, type Trees, walkUp } 
 export interface FormItem {
   /** The component or hook whose code holds the form. */
   readonly host: string;
-  /** The component drawn at the place the form was found from: `MentionComposer` at a mount,
-   *  and `-` for a branch of a component's or a hook's body that wraps no mount. */
+  /** The place the form was found from: a mount by its name (`Mount.name`), the component drawn
+   *  at a place above mounts, and `-` for a branch of a component's or a hook's body that wraps
+   *  no mount. */
   readonly mount: string;
   readonly expression: string;
   readonly at: string;
@@ -244,6 +246,11 @@ function computeShape(layout: Layout, node: ts.Node, env: Env): Shape {
   }
   if (ts.isIdentifier(node)) return identShape(layout, node, env);
   if (ts.isPropertyAccessExpression(node)) {
+    // A class component's props are `this.props`, which its users pass as a function
+    // component's.
+    if (env.unit.cls !== undefined && isThis(node, "props")) {
+      return env.params.size === 0 ? undefined : { fields: env.params };
+    }
     return select(shapeOf(layout, node.expression, env), [node.name.text]);
   }
   if (ts.isElementAccessExpression(node)) {
@@ -343,7 +350,13 @@ function paramKey(layout: Layout, ident: ts.Identifier, unit: Comp): string | un
 function identShape(layout: Layout, ident: ts.Identifier, env: Env): Shape {
   const found = lookup(ident, env.unit);
   if (found.kind === "prop" || found.kind === "props-object") {
-    const key = paramKey(layout, ident, env.unit);
+    // A class component's props are read out of `this.props`, by the name `lookup` found.
+    const key =
+      env.unit.cls === undefined
+        ? paramKey(layout, ident, env.unit)
+        : found.kind === "prop"
+          ? found.prop
+          : "";
     if (key === undefined) return undefined;
     if (key === "") return env.params.size === 0 ? undefined : { fields: env.params };
     return env.params.get(key);
@@ -739,7 +752,9 @@ function acts(node: ts.Node): boolean {
 export function readForms(trees: Trees): FormItem[] {
   const { program } = trees;
   const layout = readLayout(program);
-  /** Each form once, by the node it turns on. */
+  /** Each form once, by the node it turns on and the place it was found from: one node a walk
+   *  passes from a mount and from a component's place is a form of each, as it is an item of
+   *  each in the trees. */
   const forms = new Map<string, Form>();
   /** The mounts each component or hook stands above. */
   const unitMounts = new Map<string, Set<string>>();
@@ -761,12 +776,12 @@ export function readForms(trees: Trees): FormItem[] {
   ) => {
     const key = formKey(node);
     if (wraps) wrapping.add(key);
-    const known = forms.get(key);
+    const known = forms.get(`${key} ${form.mount}`);
     if (known !== undefined) {
       for (const mount of mounts) known.mounts.add(mount);
       return;
     }
-    forms.set(key, { ...form, mounts: new Set(mounts) });
+    forms.set(`${key} ${form.mount}`, { ...form, mounts: new Set(mounts) });
   };
 
   /** Reads the items a forms walk up gathered for the layout. Answers whether a branch, key or
@@ -776,8 +791,8 @@ export function readForms(trees: Trees): FormItem[] {
     for (const item of items) {
       const node = item.node;
       if (node === undefined) continue;
-      const unit = unitOf(layout, node);
-      if (unit === undefined) continue;
+      // An item in a helper of its module is its component's, as the walk found it.
+      const unit = unitOf(layout, node) ?? item.unit;
       const env = envFor(layout, unit);
       if (item.kind === "element" && ts.isJsxOpeningElement(node)) {
         const found = elementForm(layout, node, env);
@@ -875,8 +890,8 @@ export function readForms(trees: Trees): FormItem[] {
     const receivers = new Set<string>();
     walkUp({ program, receivers }, element, host, items, false, new Set());
     for (const receiver of receivers) addMounts(receiver, [name]);
-    const gated = readItems(items, [name], "MentionComposer");
-    readProps(element, host, [name], "MentionComposer", gated);
+    const gated = readItems(items, [name], name);
+    readProps(element, host, [name], name, gated);
   }
   // Each place a component above a mount is drawn: the layout's props and key on it, and what
   // wraps it in the component that draws it.

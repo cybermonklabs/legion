@@ -23,36 +23,39 @@ const REASONS = {
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
-  ...answers("ThreadCard | MentionComposer | address prop | owner={composerOwner(owner)}", {
-    reason: REASONS[1],
-  }),
   ...answers(
-    "ThreadCard | MentionComposer | conditional | (expanded) ? …",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | owner={composerOwner(owner)}",
+    { reason: REASONS[1] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded) ? …",
     cells(`${HOST} · thread collapsed by the host, then opened`)
   ),
   ...answers(
-    "ThreadCard | MentionComposer | address prop | mutationKey={replyMutationKey}",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | mutationKey={replyMutationKey}",
     { row: `${HOST} · Close, then Discard draft? · cannot make: the card's reply draws no Close` },
     { reason: REASONS[2] },
     { reason: REASONS[3] }
   ),
   ...answers(
-    'ThreadCard | MentionComposer | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}',
+    'ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}',
     cells(`${HOST} · Cancel reply`),
     cells(`${HOST} · Escape in the field`),
     { reason: REASONS[1] }
   ),
   ...answers(
-    "ThreadCard | MentionComposer | conditional | <div hidden={hideReplyComposer}>",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | <div hidden={hideReplyComposer}>",
     cells(`${HOST} · Reply on its comment, then back`),
     cells(`${HOST} · phone · Reply on its comment, then back (phone thread view)`)
   ),
-  ...answers("ThreadCard | MentionComposer | conditional | (composerFirst) ? …", {
-    reason: REASONS[7],
-  }),
-  ...answers("ThreadCard | MentionComposer | conditional | !(composerFirst) ? …", {
-    reason: REASONS[7],
-  }),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (composerFirst) ? …",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | !(composerFirst) ? …",
+    { reason: REASONS[7] }
+  ),
   ...answers(
     "CommentTurn | ThreadCard | address prop | expanded={currentExpanded}",
     cells(`${HOST} · thread collapsed by the host, then opened`)
@@ -164,7 +167,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[9],
   }),
   ...answers(
-    "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
 ];
