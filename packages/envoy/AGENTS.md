@@ -249,7 +249,7 @@ Each item below names a task and where its code is, then notes on it.
   The windows themselves are built in `internal/dispatch/itemblocks/windows.go`, text alone, so no indexer pulls this package and the services it dials into its own closure;
   `embed`'s `TestEveryWindowFitsTheEmbedder` holds those windows to `MaxInputRunes`.
   `embedqueue/coverage.go` is the coverage pass the server runs once at start (no backfill subcommand; a window kind takes its settling and identity steps alone, since the indexers own its windows), whose identity steps and record of issues' inputs (`recordIssueSources`, after the stale rows' repair) run again every 10 minutes; a failed closing report is logged at WARN (`dispatch embedqueue: coverage pass report failed`) and fails nothing.
-  The report `GET /api/v1/search/coverage` serves (`cmd/dispatch/README.md`, "Search") is one statement that reads the windows through two partial indexes by one bitmap heap scan, reading no statistics (`planCoverage`), and hashes an issue's text only where its recorded inputs changed, under a 10 s `statement_timeout` that ends it while its caller waits, `503 SEARCH_COVERAGE_TIMEOUT` past it.
+  The report `GET /api/v1/search/coverage` serves (`cmd/dispatch/README.md`, "Search") is one statement that reads the windows by one bitmap heap scan of two partial indexes and by no other plan (`planCoverage`), and hashes an issue's text only where its recorded inputs changed, under a 10 s `statement_timeout` that ends it while its caller waits, `503 SEARCH_COVERAGE_TIMEOUT` past it.
 
 - **Model loop**: `agentloop/`
 

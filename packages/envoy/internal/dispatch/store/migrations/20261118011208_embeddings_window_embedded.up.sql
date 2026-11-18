@@ -28,10 +28,15 @@
 -- The predicate must stay the coverage statement's word for word. The statement repeats it
 -- (embedqueue's windowEmbedded, built from windowCoverageKinds and somethingToEmbed, the negation
 -- of nothingToEmbed, the one test of a text with nothing to embed) so that the planner can prove
--- this index applies and drop those conditions from the scan. A predicate that drifts from the
--- statement's - another kind list, another regex - leaves the answer right and the statement
--- reading every window's text again. Postgres evaluates the regex at each insert and update of a
--- row, not at each read, so the blank test stays exact.
+-- this index applies and drop those conditions from the scan. The kind is tested by a regex
+-- anchored at both ends, not by kind in (...): other indexes of embeddings read a list of kinds,
+-- and it proves their predicates, so the planner chose among those indexes by its estimates; no
+-- btree reads this regex and it proves no other index's predicate, so this index and
+-- 20261118011258_embeddings_window_unembedded are the statement's one way to the window rows
+-- (embedqueue's windowItems and planCoverage). A predicate that drifts from the statement's -
+-- another kind list, another regex - leaves the answer right and the statement reading every
+-- window's text again. Postgres evaluates the regexes at each insert and update of a row, not at
+-- each read, so the blank test stays exact.
 --
 -- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
 -- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
@@ -70,4 +75,4 @@
 -- log names, not an index to drop by hand.
 create index concurrently if not exists embeddings_window_embedded
     on embeddings (kind)
-    where kind in ('document_block', 'comment_block', 'message_block', 'ask_part') and text_snapshot ~ '[^[:space:]]' and embedding is not null and embedded_hash = content_hash;
+    where kind ~ '^(document_block|comment_block|message_block|ask_part)$' and text_snapshot ~ '[^[:space:]]' and embedding is not null and embedded_hash = content_hash;

@@ -94,24 +94,44 @@ var windowCoverageKinds = []string{"document_block", "comment_block", "message_b
 // windowEmbedded and windowUnembedded split those rows in two halves, each the other's negation
 // over them (content_hash is NOT NULL): embedded at the row's current text, and not.
 //
+// The kind is tested by a regex that matches the window kinds alone, anchored at both ends, and
+// not by kind in (...), so that the two window indexes are the only indexes of embeddings that
+// can read a window row (planCoverage). The planner reads kind in (...) as kind = any(...), and
+// since both halves begin with it, it takes it out of their OR as a condition of its own: one
+// that a btree on kind reads (embeddings_pkey, embeddings_kind_project, embeddings_window_owner),
+// and one that proves the predicate of each partial index on a list of kinds holding the window
+// kinds (embeddings_kind_project's five, embeddings_window_owner's four). Each of those indexes
+// was then a way to read the arm, with the blank test's regex as a filter over every window's
+// text, and the planner chose among them by its estimates. A btree reads a regex only through
+// the fixed prefix every match begins with, and these kinds share no first character, so the
+// pattern has none; and the planner proves an index's predicate from a regex only where that
+// predicate holds the same regex. A kind list whose kinds shared a prefix, or a single kind, could
+// give a btree on kind a range to read again.
+//
 // Each half is, word for word, the predicate of the index the report reads that half through
 // (migrations 20261118011208_embeddings_window_embedded and
-// 20261118011258_embeddings_window_unembedded). The report's window arm ORs the two as its WHERE
-// (coverageQuery), so the planner proves that the two indexes together hold every row the arm
-// selects, reads the arm through a BitmapOr of both, and leaves those conditions to them: the
-// bitmap heap scan over that BitmapOr visits each heap page holding window rows once and keeps the
-// regex to its recheck, which an exact bitmap never runs, so the statement tests no window's text
-// (planCoverage says why that is the plan, whatever the visibility map holds). Each index is keyed
-// on kind alone and carries no other column, since that scan reads every column the statement
-// reads of a row from the heap anyway. The columns are named bare, as an index predicate names
-// them. A change to the kinds, the regex or either half is a change to those indexes too, and owes
-// a migration that builds them again with it; without one the answer stays right and the
-// statement reads every window's text again.
+// 20261118011258_embeddings_window_unembedded): the planner proves a predicate by comparing
+// parsed expressions, so the kind's regex there is this one too. The report's window arm ORs the
+// two as its WHERE (coverageQuery), so the planner proves that the two indexes together hold every
+// row the arm selects, reads the arm through a BitmapOr of both, and leaves those conditions to
+// them: the bitmap heap scan over that BitmapOr visits each heap page holding window rows once and
+// keeps the regexes to its recheck, which an exact bitmap never runs, so the statement tests no
+// window's text (planCoverage says why that is the plan in every state of the table). Each index
+// is keyed on kind alone and carries no other column, since that scan reads every column the
+// statement reads of a row from the heap anyway. The columns are named bare, as an index predicate
+// names them. A change to the kinds, either regex or either half is a change to those indexes too,
+// and owes a migration that builds them again with it; without one the answer stays right and the
+// statement reads embeddings by a sequential scan that tests every window's text again, the one
+// path to the window rows left.
 var (
-	windowItems      = "kind in ('" + strings.Join(windowCoverageKinds, "', '") + "') and " + somethingToEmbed("text_snapshot")
+	windowItems      = "kind ~ '^(" + strings.Join(windowCoverageKinds, "|") + ")$' and " + somethingToEmbed("text_snapshot")
 	windowEmbedded   = windowItems + " and embedding is not null and embedded_hash = content_hash"
 	windowUnembedded = windowItems + " and (embedding is null or embedded_hash is distinct from content_hash)"
 )
+
+// windowKindArray is windowCoverageKinds as a text[] literal, for the window arm of coverageQuery,
+// which groups its rows by a kind's position in it and names each kind from its position.
+var windowKindArray = "'{" + strings.Join(windowCoverageKinds, ",") + "}'::text[]"
 
 // issueSourceFrom is every issue (issues i) beside what its source (issueSource) is computed from
 // and compared with, for the report (coverageQuery) and for the step that records sources
@@ -708,6 +728,15 @@ var notIndexedPositions = func() map[string]int {
 // its own item, so its written_at is its own pending_since, and its dead and pending_since are
 // read from the row itself; no window's text is tested and no row is joined back to itself.
 //
+// The arm groups its rows by the kind's position in the window kinds (array_position over
+// windowKindArray) and names each group's kind from that position, not by the kind itself, so
+// that no index's order is of use to it: grouped by kind, a full scan of embeddings_pkey, keyed on
+// (kind, id), hands the rows over in the grouping's order, and with random reads priced near
+// nothing (random_page_cost = 0.001, cpu_tuple_cost and cpu_operator_cost 10) the planner read the
+// arm that way on the scale test's corpus at 0.05 x production's size, with the regex as a filter
+// over every window's text. A window kind's position names that kind alone, so the groups and
+// their counts are the ones grouping by kind gives.
+//
 // The issue's items are the issues whose text has something to embed (issueHasText), each with
 // its embeddings row (issueSourceFrom), current when that row holds a vector from the identity of
 // the issue's current text (issueHash). That hash is the row's content_hash wherever the recorded
@@ -718,13 +747,14 @@ var notIndexedPositions = func() map[string]int {
 // issue whose inputs changed is slower to count, never counted from a stale text (but for the one
 // theoretical false match issueSource names).
 //
-// Each arm counts its own rows by kind (coverageCounts) before the arms meet, and the outer select
-// adds those counts up per kind and takes the earliest of their earliest waits: the answer one
-// count over every arm's rows gives, since counts add up and the earliest of the arms' earliest
-// is the earliest of all. So no row of an arm passes one by one through the union and a second
-// aggregate. On the scale test's corpus at 0.3 x production's size, on a test Postgres, that took
-// about 15% less time than one count over the arms' rows, with the table in each state of the
-// visibility map it was measured in, and answered the same rows in one snapshot.
+// Each arm counts its own rows by kind (coverageCounts), the window arm by the kind's position,
+// before the arms meet, and the outer select adds those counts up per kind and takes the earliest
+// of their earliest waits: the answer one count over every arm's rows gives, since counts add up
+// and the earliest of the arms' earliest is the earliest of all. So no row of an arm passes one by
+// one through the union and a second aggregate. On the scale test's corpus at 0.3 x production's
+// size, on a test Postgres, that took about 15% less time than one count over the arms' rows, with
+// the table in each state of the visibility map it was measured in, and answered the same rows in
+// one snapshot.
 var coverageQuery = func() string {
 	uncovered := make([]string, 0, len(notIndexedKinds))
 	for _, kind := range notIndexedKinds {
@@ -733,12 +763,12 @@ var coverageQuery = func() string {
 	}
 	return `
 		with judged as (
-			select kind, ` + coverageCounts + `
-			from (select kind, pending_since as written_at, pending_since, dead,
+			select (` + windowKindArray + `)[position] as kind, ` + coverageCounts + `
+			from (select array_position(` + windowKindArray + `, kind) as position, pending_since as written_at, pending_since, dead,
 			             coalesce(embedding is not null and embedded_hash = content_hash and $1::text <> '' and model = $1::text, false) as current
 			      from embeddings
 			      where (` + windowEmbedded + `) or (` + windowUnembedded + `)) windows
-			group by kind
+			group by position
 			union all
 			select kind, ` + coverageCounts + `
 			from (select '` + issueKind + `'::text as kind, i.created_at as written_at, e.pending_since, coalesce(e.dead, false) as dead,
@@ -754,11 +784,11 @@ var coverageQuery = func() string {
 		union all ` + strings.Join(uncovered, "\n union all ")
 }()
 
-// coverageCounts is what each arm of coverageQuery counts of its rows, grouped by kind: its items,
-// how many are current, how many are dead and not current (failed), and when the longest-waiting
-// lacking one, neither current nor dead, started waiting, the later of its row's pending_since and
-// its written_at. Every arm names its rows' columns kind, written_at, pending_since, dead and
-// current, so every arm counts alike.
+// coverageCounts is what each arm of coverageQuery counts of its rows, grouped by kind (the window
+// arm by the kind's position): its items, how many are current, how many are dead and not current
+// (failed), and when the longest-waiting lacking one, neither current nor dead, started waiting,
+// the later of its row's pending_since and its written_at. Every arm names its rows' columns
+// written_at, pending_since, dead and current, so every arm counts alike.
 const coverageCounts = `count(*) as items, count(*) filter (where current) as current,
 			       count(*) filter (where dead and not current) as failed,
 			       min(greatest(pending_since, written_at)) filter (where not current and not dead) as waited_since`
@@ -820,11 +850,11 @@ type coveragePlan struct {
 }
 
 // coverageBitmap reads the window rows by one bitmap heap scan over a BitmapOr of both window
-// indexes, with sequential scans off and work_mem raised so that the bitmap stays exact
-// (planCoverage says why).
+// indexes, with sequential scans, sorts, parallel workers and JIT off and work_mem raised so that
+// the bitmap stays exact (planCoverage says why).
 var coverageBitmap = coveragePlan{
 	name:     "bitmap",
-	settings: `set local enable_seqscan = off; set local work_mem = '128MB'`,
+	settings: `set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'`,
 	query:    coverageQuery,
 }
 
@@ -833,68 +863,73 @@ var coverageBitmap = coveragePlan{
 // the connection goes back to the pool with none of them. Coverage calls it once it has bounded
 // the statement, so the settings run under coverageStatementTimeout too. It is a function of its
 // own so that a test or a measurement of the statement plans it as Coverage does. It reads
-// nothing first: the plan is the same whatever the table's statistics record (the paragraph on
-// 2f9a6fc1 below says why).
+// nothing first: no estimate of the planner's decides how the window rows are read, so there is
+// no statistic to read, and R2 of dispatch://INFRA-4241 asks the route to hold its bound whatever
+// the statistics read and whatever share of the windows is embedded.
 //
-// The planner is not left free, because it cannot estimate either half of the window rows: both
-// predicates compare embedded_hash with content_hash, two columns of one row, which it prices at
-// its default equality selectivity, half a percent. So it takes the embedded half, about 99% of
-// the window rows, for half a percent of them, and the unembedded half, about 1%, for nearly all
-// (at production's size, 4,868 rows estimated against 974,072 read, and 977,422 against 9,840).
-// Left free, it reads embeddings by a sequential scan that runs the blank test's regex over every
-// window's text, the cost the window indexes exist to save, even on a freshly vacuumed table: on
-// the scale test's corpus at 0.3 x production's size, on a busy pod's test Postgres, that took 4.0
-// to 5.9 s, where the same text under these settings took 1.6 to 2.1 s freshly vacuumed and 1.7
-// to 2.4 s with the statistics recording 25,764 of embeddings' 56,891 pages all-visible and every
-// page written since (2026-11-18). enable_seqscan is off for that.
+// Under these settings the window arm of coverageQuery has exactly one access path. The planner
+// reads a table's rows by a sequential scan, or through an index that reads one of the
+// statement's conditions, whose predicate those conditions prove, whose order the statement can
+// use, or that holds every column the statement reads (an index-only scan). The arm's kind test is
+// a regex that no btree reads and that proves no other index's predicate (windowItems), as its
+// blank test is; it groups by the kind's position, an expression no index is ordered by
+// (coverageQuery); it reads columns no index holds; the HNSW index embeddings_cosine, on
+// embedding, answers an order by distance alone and has no bitmap scan; and the arm selects
+// embedded rows and dead ones, so its conditions do not prove embeddings_pending's predicate
+// (embedded_hash is distinct from content_hash and not dead). That leaves a sequential scan, which
+// would run the blank test over every window's text and which enable_seqscan = off disables, and
+// one bitmap heap scan over a BitmapOr of the two window indexes, each of whose predicates one side
+// of the arm's OR proves (the BitmapOr reads embeddings_window_unembedded twice, once for each test
+// of that half's own OR). With both window indexes dropped, the window rows are read by the
+// disabled sequential scan and by nothing else (TestNoOtherIndexCanReadTheWindowKinds); with them,
+// the bitmap is the plan on a table of a few dozen rows and under costs pushed to extremes
+// (TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes).
 //
-// The statement reads both halves in one arm whose WHERE is the two predicates ORed
-// (coverageQuery). No plain or index-only scan of one window index can answer that OR, since
-// neither predicate alone holds every row it selects, so the half the planner underestimates is
-// not read by a plain index scan of its index, one heap visit for each row, as it is when that
-// half is read alone with index-only scans off (1.8 to 1.9 s with no page all-visible, at 0.3 x).
-// The planner reads the two indexes through a BitmapOr instead, feeding one bitmap heap scan that
-// visits each heap page holding window rows once, in the table's order, whatever the visibility
-// map holds, and keeps the regex in its recheck alone, which an exact bitmap never runs. So index
-// and index-only scans stay on, and the issue arm keeps its index scans: 65 to 140 ms of the
-// statement at 0.3 x, where with index scans off its lookups were bitmap heap scans and an issue's
-// latest spec version was found by reading every version of its document (issueSourceFrom), about
-// 410 ms. work_mem is raised to 128MB so that the bitmap stays exact: an exact bitmap takes about
-// 64 to 96 bytes a heap page, so 128MB holds about eight times production's 171,000 pages of
-// embeddings, and a page a bitmap held only lossily would be rechecked against the indexes'
-// predicates, the regex over its windows' text among them. A bitmap takes only what its pages
-// need, so the setting is a ceiling, not an allocation.
+// So the arm's cost is the data's: every entry of both window indexes, and each heap page holding
+// window rows once, in the table's order, with the regexes left to the recheck, which an exact
+// bitmap never runs. That holds whatever the visibility map holds, since the scan reads the rows'
+// columns from each such page whether it is all-visible or not; whatever the statistics read,
+// since no estimate chooses the path; and whatever share of the windows is embedded, since the one
+// bitmap holds both halves. work_mem is raised to 128MB so that the bitmap stays exact: an exact
+// bitmap takes about 64 to 96 bytes a heap page, so 128MB holds about eight times production's
+// 171,000 pages of embeddings, and a page a bitmap held only lossily would be rechecked against
+// the indexes' predicates, the regex over its windows' text among them. A bitmap takes only what
+// its pages need, so the setting is a ceiling, not an allocation.
 //
-// One choice is still the planner's. An index on the window kinds alone (embeddings_pkey by its
-// kind, embeddings_window_owner) could answer the OR as well, with the regex as a filter over
-// every window. The planner takes the BitmapOr because it underestimates the embedded half,
-// pricing the read of embeddings_window_embedded at the half percent it takes that half for, and
-// TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes holds it to that plan on the scale
-// test's corpus at 0.005 x production's size.
+// The planner's other choices by estimate are off too. enable_sort = off leaves the window arm's
+// grouping, and the one over the arms, to a HashAggregate, where the planner would otherwise weigh
+// a Sort and a GroupAggregate against it by its estimate of the rows (the issue arm's one group
+// needs neither). max_parallel_workers_per_gather = 0, since the planner chooses a parallel plan by
+// its estimated cost, and the parallel bitmap plan was the slower on a pod's test Postgres. jit =
+// off, since Postgres compiles a statement whose estimated cost passes a threshold, and every
+// measurement of this statement ran with JIT off (a pod's test server and the builds Job);
+// production's setting was never read. Index and index-only scans stay on, so the issue arm keeps
+// its index scans: 65 to 140 ms of the statement at 0.3 x production's size, where with index scans
+// off its lookups were bitmap heap scans and an issue's latest spec version was found by reading
+// every version of its document (issueSourceFrom), about 410 ms.
 //
-// The bitmap plan is the one plan whatever the statistics read, since R2 of dispatch://INFRA-4241
-// asks the route to hold its bound whatever they read. An index-only read of each half by its own
-// index reads no heap page the visibility map marks all-visible, and 2f9a6fc1 chose it while the
-// statistics recorded at least 0.3 of embeddings' pages as all-visible (pg_class.relallvisible
-// over relpages). But only a VACUUM or an ANALYZE changes that record, and autoanalyze waits for a
-// tenth of the rows to change, so the statistics can record 0.453 of the pages all-visible while
-// none is. The index-only plan then fetched every window row from the heap, one row at a time:
-// 3,536 ms at production's size and 7,668 ms at twice it in a builds Job, so 10 s at 2.54 times
-// production's size, below the 4 times R2 asks for, where the bitmap plan took 1,329 and 3,355 ms
-// in that state; and the bitmap plan was the faster of the two at every share that Job measured
-// but the freshly vacuumed one. No threshold on the recorded share fixes that: one row written on
-// each page that was all-visible defeats any value. A correction by
-// pg_stat_user_tables.n_mod_since_analyze races the cumulative statistics' flush: on PostgreSQL
-// 18.6 another backend saw an update's n_mod_since_analyze only about a second later, and the
-// writing backend's own read did not include it. And the visibility map itself is readable only
-// through the pg_visibility extension, which is not a trusted extension: a superuser creates it,
-// and its functions are for superusers and members of pg_stat_scan_tables.
-//
-// Statistics on the expression (CREATE STATISTICS on embedded_hash = content_hash) would let the
-// planner estimate the halves itself, but they are not used: they need a migration that names
-// embeddings, a table past CensusTableLimit, and the census refuses such a migration unless every
-// statement of it is of a catalog-only kind, a list that holds no CREATE STATISTICS
-// (pgmigrate/exempt.go, catalogOnlyStatements).
+// Each earlier head of this statement left the planner a choice of paths, and INFRA-4241's tester
+// found each choice wrong in a state a production table spends time in. The planner cannot
+// estimate either half of the window rows: both predicates compare embedded_hash with
+// content_hash, two columns of one row, which it prices at its default equality selectivity, half
+// a percent (at production's size, 4,868 rows estimated against 974,072 read for the embedded
+// half, and 977,422 against 9,840 for the other). b3756b91 left it free, and with a third or more
+// of embeddings' pages not all-visible after an ANALYZE it read the windows by a sequential scan
+// that ran the blank test over every window's text, reaching 10 s at 3.2 times production's size;
+// and the statement after it, left free, read the windows that way even freshly vacuumed (4.0 to
+// 5.9 s at 0.3 x production's size on a pod's test Postgres, against 1.6 to 2.1 s by the
+// bitmap). 2f9a6fc1 read each half by an index-only scan of its own index while the statistics
+// recorded at least 0.3 of embeddings' pages all-visible (pg_class.relallvisible over relpages);
+// but only a VACUUM or an ANALYZE changes that record, and autoanalyze waits for a tenth of the
+// rows to change, so the statistics can record 0.453 of the pages all-visible while none is, and
+// that plan then fetched every window row from the heap one at a time: 3,536 ms at production's
+// size and 7,668 ms at twice it, 10 s at 2.54 times. 0ec6b4ad had the bitmap from the planner's
+// underestimate of the embedded half; after an embedder change drops every window's vector
+// (dropForeignVectors) that half is empty, and the planner read the arm through
+// embeddings_kind_project by kind, with the regex as the heap scan's filter over every window's
+// text: 4,590 ms at production's size and 8,455 ms at twice it, 10 s at 2.33 times. R2 asks for
+// at least 4 times. The times at production's size and twice it are the tester's, from a builds
+// Job (8 CPUs, 16 GiB).
 func planCoverage(ctx context.Context, tx pgx.Tx) (coveragePlan, error) {
 	if _, err := tx.Exec(ctx, coverageBitmap.settings); err != nil {
 		return coveragePlan{}, coverageFailed(ctx, fmt.Errorf("plan the statement: %w", err))
