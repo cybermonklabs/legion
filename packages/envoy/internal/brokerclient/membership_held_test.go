@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
@@ -117,7 +118,7 @@ func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
 			broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {
 				return 400, map[string]any{"error": "invalid_grant", "error_description": "no entry lists this identity"}
 			})
-			client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: tc.source})
+			client, err := New(Config{BrokerURL: brokeraddr.New(broker.URL()), Key: testKey(t), Subject: tc.source})
 			if err != nil {
 				t.Fatal(err)
 			}

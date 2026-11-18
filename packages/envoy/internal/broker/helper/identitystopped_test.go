@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -82,7 +83,7 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	}
 	r.waits = &tradeWaits{}
 	machine, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: r.broker.srv.URL, Key: key, HTTP: r.broker.srv.Client(),
+		BrokerURL: brokeraddr.New(r.broker.srv.URL), Key: key, HTTP: r.broker.srv.Client(),
 		Subject: brokerclient.NewProjectedToken(tokenFile), After: r.waits.after,
 	})
 	if err != nil {
@@ -90,7 +91,7 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	}
 	r.out = &syncBuffer{}
 	r.helper = &Broker{
-		URL: r.broker.srv.URL, Identity: machine, HTTP: r.broker.srv.Client(),
+		URL: brokeraddr.New(r.broker.srv.URL), Identity: machine, HTTP: r.broker.srv.Client(),
 		OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 		Log:          slog.New(slog.NewJSONHandler(r.out, nil)),
 	}

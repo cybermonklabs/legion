@@ -27,6 +27,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -277,7 +278,7 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectSigner after the lease lapsed: %v", err)
 	}
-	if _, _, err := newClient(broker.server.URL).Self(context.Background(), signer); err != nil {
+	if _, _, err := newClient(brokeraddr.New(broker.server.URL)).Self(context.Background(), signer); err != nil {
 		t.Fatalf("a call on a lapsed sign-in = %v; want the session registered again and the call answered", err)
 	}
 
@@ -382,7 +383,7 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 
 			_, signer, err := selectSigner(keyDir)
 			if err == nil {
-				_, _, err = newClient(broker.server.URL).Self(context.Background(), signer)
+				_, _, err = newClient(brokeraddr.New(broker.server.URL)).Self(context.Background(), signer)
 			}
 			if err == nil {
 				t.Fatal("a call whose trade the broker refused succeeded")

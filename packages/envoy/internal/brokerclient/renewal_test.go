@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -59,7 +60,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
 		}
 	})
-	client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Second})
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 		}
 		return 200, map[string]any{"access_token": "token-" + strconv.Itoa(n), "token_type": "DPoP", "expires_in": 3600}
 	})
-	client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Second})
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 // instant each token lands, which empties the broker's bucket.
 func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 	now := time.Now()
-	client, err := New(Config{BrokerURL: "https://secrets.example", Key: testKey(t), Subject: projectedStub(),
+	client, err := New(Config{BrokerURL: brokeraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
 		Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -241,7 +242,7 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				return tc.status, tc.body
 			})
 			logged := &logtest.Recorder{}
-			client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute, Log: slog.New(logged)})
+			client, err := New(Config{BrokerURL: brokeraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute, Log: slog.New(logged)})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -341,7 +342,7 @@ func messagesOf(records []slog.Record) []string {
 
 func refusalClient(t *testing.T, broker *stubBroker) *Client {
 	t.Helper()
-	client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub()})
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

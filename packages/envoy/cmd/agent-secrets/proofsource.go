@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -37,10 +38,10 @@ type proofSigner interface {
 
 // Signer is a session's proofSigner, which also builds and signs a credential-request object
 // naming the secrets the session is asking for, and the lifetime its grant lasts: lifetimeSeconds,
-// or nil when it lasts until the session ends.
+// or nil when it lasts until the session ends. audience is the broker the object is for.
 type Signer interface {
 	proofSigner
-	SignRequestObject(audience string, names []string, reason string, lifetimeSeconds *int) (string, error)
+	SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error)
 }
 
 // fileSigner signs with the key and enrollment id an agent box or pod keeps under
@@ -78,12 +79,12 @@ func (f *fileSigner) Reenroll(ctx context.Context) error {
 	return nil
 }
 
-func (f *fileSigner) SignRequestObject(audience string, names []string, reason string, lifetimeSeconds *int) (string, error) {
+func (f *fileSigner) SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
 	details := make([]record.AuthorizationDetail, len(names))
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	return record.Sign(f.key, audience, details, reason, "", lifetimeSeconds, time.Now())
+	return record.Sign(f.key, audience.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 }
 
 // helperSigner asks agent-secrets-helper, over its unix socket, to sign for this process's
@@ -189,7 +190,7 @@ func (h *helperSigner) Sign(method, url string) (string, error) {
 // SignRequestObject asks the helper's sign-request op. A helper from before lifetime_seconds
 // ignores the field and signs no lifetime; the broker's answer then names none, and the caller
 // that asked for one refuses it (grantedLifetime).
-func (h *helperSigner) SignRequestObject(audience string, names []string, reason string, lifetimeSeconds *int) (string, error) {
+func (h *helperSigner) SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
 	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds}, 5*time.Second)
 	if err != nil {
 		return "", helperFailure(h.sock, err, false)
@@ -239,10 +240,10 @@ func (l *launcherSigner) Sign(method, url string) (string, error) {
 
 // machineContext answers the broker URL and a launcher signer. Machine and grant commands run
 // where the helper does (the devbox); a machine with no helper has no machine login to act as.
-func machineContext() (base string, signer *launcherSigner, err error) {
+func machineContext() (base brokeraddr.Address, signer *launcherSigner, err error) {
 	base = brokerBaseURL()
-	if base == "" {
-		return "", nil, fmt.Errorf("%s is required: it names the secrets broker this machine's login, and the grants it lists or ends, are at", brokerURLVar)
+	if base.Empty() {
+		return brokeraddr.Address{}, nil, fmt.Errorf("%s is required: it names the secrets broker this machine's login, and the grants it lists or ends, are at", brokerURLVar)
 	}
 	sock, named := helperSocket()
 	if !exists(sock) {
@@ -250,7 +251,7 @@ func machineContext() (base string, signer *launcherSigner, err error) {
 		if named {
 			where = "AGENT_SECRETS_HELPER_SOCK"
 		}
-		return "", nil, fmt.Errorf("no agent-secrets-helper at %s (%s): machine and grant commands act under this machine's login, which its helper holds", sock, where)
+		return brokeraddr.Address{}, nil, fmt.Errorf("no agent-secrets-helper at %s (%s): machine and grant commands act under this machine's login, which its helper holds", sock, where)
 	}
 	return base, &launcherSigner{sock: sock}, nil
 }

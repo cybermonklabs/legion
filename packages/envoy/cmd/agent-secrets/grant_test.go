@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
@@ -184,7 +185,7 @@ func TestGrantRevokeOutsideASessionBesideAnOldMachineSession(t *testing.T) {
 
 	grantID := uuid.NewString()
 	code, stdout, stderr := r.run("grant", "revoke", grantID)
-	want := "revoked " + grantID + " at " + brokerSource(broker.URL()).String() + "\n"
+	want := "revoked " + grantID + " at " + brokerSource(brokeraddr.New(broker.URL())).String() + "\n"
 	if code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("grant revoke beside an old machine session: exit %d, stdout %q, stderr %q; want 0 and %q", code, stdout, stderr, want)
 	}
@@ -260,7 +261,7 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		if err := <-setupDone; err != nil {
 			t.Fatal(err)
 		}
-		want := "revoked " + grantID + " at " + brokerSource(broker.URL()).String() + "\n"
+		want := "revoked " + grantID + " at " + brokerSource(brokeraddr.New(broker.URL())).String() + "\n"
 		if code != 0 || stdout != want || stderr != "" {
 			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0 and %q once it has", code, stdout, stderr, want)
 		}

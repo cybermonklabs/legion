@@ -2145,7 +2145,18 @@ export async function runEnvoyChannelServer(): Promise<void> {
       return mcpResult(answer)
     }
     if (runtime === undefined) throw new Error("Envoy channel server is still starting")
-    return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
+    try {
+      return mcpResult(
+        await executeEnvoyTool(runtime, request.params.name, request.params.arguments),
+      )
+    } catch (error) {
+      // A tool that ran and failed answers a tool result with `isError`, which the model reads as
+      // the tool's answer: the listener's own sentence, a refusal for this session's sending rate
+      // among them. A tool this server does not have stays the JSON-RPC error it always was, since
+      // MCP lists an unknown tool among the protocol's errors, not a tool's.
+      if (error instanceof UnsupportedEnvoyToolError) throw error
+      return { content: [{ type: "text", text: messageFor(error) }], isError: true }
+    }
   })
   // INFRA-1026: the link to this session's Claude Code mod, bound below once the MCP transport is
   // up. It is this process's own socket, closed with the server. `linked` resolves with it for

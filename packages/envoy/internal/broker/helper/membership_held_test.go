@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -137,7 +138,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		waits := &tradeWaits{}
 		machine, err := brokerclient.New(brokerclient.Config{
-			BrokerURL: f.srv.URL, Key: key, HTTP: f.srv.Client(),
+			BrokerURL: brokeraddr.New(f.srv.URL), Key: key, HTTP: f.srv.Client(),
 			Subject: brokerclient.NewProjectedToken(tokenFile),
 			After:   waits.after,
 		})
@@ -146,7 +147,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		var out syncBuffer
 		b := &Broker{
-			URL: f.srv.URL, Identity: machine, HTTP: f.srv.Client(),
+			URL: brokeraddr.New(f.srv.URL), Identity: machine, HTTP: f.srv.Client(),
 			OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 			Log:          slog.New(slog.NewJSONHandler(&out, nil)),
 		}

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -25,6 +26,9 @@ type checkInstall struct {
 	// pin is the launcher's own pin, "" when its environment names none; dir is where the check
 	// is installed, never "" (leakguard.InstallDir unless Config.LeakCheckDir names another).
 	pin, dir string
+	// start starts the install's run of the check (leakguard.ServedInstall.Start): the launcher's
+	// pidGuard, which holds that run out of PID 1's reaper until its own wait has read its exit.
+	start procgroup.Starter
 	// done is whether this process has installed its pin, which every hello says
 	// (LauncherHello.LeakCheckInstalled). It is read apart from mu, so a role's reconnect is not
 	// held up by another role's install in progress.
@@ -43,12 +47,16 @@ type checkInstall struct {
 }
 
 // newCheckInstall is the install of a launcher whose environment pins tag pin ("" for none), into
-// dir ("" for leakguard.InstallDir).
-func newCheckInstall(pin, dir string) *checkInstall {
+// dir ("" for leakguard.InstallDir), whose run of the check start starts. A nil start panics here,
+// at the launcher's start, rather than at the pod's first install.
+func newCheckInstall(pin, dir string, start procgroup.Starter) *checkInstall {
+	if start == nil {
+		panic("launcher: the leak-check install was given no starter")
+	}
 	if dir == "" {
 		dir = leakguard.InstallDir
 	}
-	return &checkInstall{pin: pin, dir: dir}
+	return &checkInstall{pin: pin, dir: dir, start: start}
 }
 
 // hello is what a hello says of the check: the launcher's pin, and whether this process has
@@ -105,7 +113,7 @@ func (c *checkInstall) receive(ctx context.Context, frame shimwire.LauncherLeakC
 			got, frame.SHA256), nil))
 	}
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{
-		Dir: c.dir, Tag: frame.Tag, Body: body,
+		Dir: c.dir, Tag: frame.Tag, Body: body, Start: c.start,
 		Log: func(format string, args ...any) { logf("launcher: "+format, args...) },
 	}); err != nil {
 		return refuse(leakguard.Cause(err.Error(), nil))

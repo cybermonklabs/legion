@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/ctxlock"
 )
 
@@ -102,7 +103,7 @@ type SignInAuthority struct {
 	Flow *DeviceFlow
 	// BrokerURL, HTTP and Log are the trade's, as Config's own members of those names. The
 	// session name is not: it is the person's, and SessionFor settles it.
-	BrokerURL string
+	BrokerURL brokeraddr.Address
 	HTTP      *http.Client
 	Log       *slog.Logger
 
@@ -192,8 +193,11 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	case errors.As(err, &refusal) && refusal.Permanent():
 		// A refusal a retry could cure — the broker's 429, a skewed DPoP proof — is not this
 		// sign-in ending: marking it refused on one of those would enrol every later session
-		// under this machine for the life of the process.
-		a.markRefused(name, record.Person, refusal.Code)
+		// under this machine for the life of the process. The code is the answer's own text,
+		// so it is logged as the address lets it print (brokeraddr.Address.Words): beside an
+		// address that is not clean, whoever answers for it can write the credential the
+		// address carries into the code.
+		a.markRefused(name, record.Person, a.BrokerURL.Words(refusal.Code))
 		return nil, nil
 	case errors.Is(err, ErrSignInEnded):
 		// The issuer, not the broker, is what refused: a refresh token Google no longer
@@ -268,10 +272,11 @@ func (a *SignInAuthority) Refused(ctx context.Context, credentialID string) erro
 
 // markRefused records that this record's sign-in has been refused for good — by the broker, or
 // by the issuer that no longer honours the person's refresh token — and logs it once with the
-// person and the code that named the refusal: the person reads the refusal on Dispatch's sign-ins
-// page, and the box goes on working under its own authority. The line prints none of the
-// refusal's words, which can quote a URL with a credential in it, and adds no cure of its own
-// (Hint). The caller holds a.mu.
+// person and code, the code that named the refusal as a message may print it (the broker's
+// through brokeraddr.Address.Words, the issuer's this package's own invalid_grant): the person
+// reads the refusal on Dispatch's sign-ins page, and the box goes on working under its own
+// authority. The line prints none of the refusal's words, which can quote a URL with a
+// credential in it, and adds no cure of its own (Hint). The caller holds a.mu.
 func (a *SignInAuthority) markRefused(name, person, code string) {
 	if a.refused == nil {
 		a.refused = map[string]bool{}

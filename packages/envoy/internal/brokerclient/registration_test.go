@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -78,7 +79,7 @@ func waitForRegistration(t *testing.T, refusals int) (*Token, error, []stubReque
 	clock := &waitingClock{now: time.Date(2026, 11, 16, 4, 0, 0, 0, time.UTC), stop: ctx}
 	logged := &logtest.Recorder{}
 	client, err := New(Config{
-		BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
+		BrokerURL: brokeraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
 		Log: slog.New(logged), Now: clock.Now, After: clock.After,
 	})
 	if err != nil {

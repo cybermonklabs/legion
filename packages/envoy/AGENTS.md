@@ -112,6 +112,34 @@ Each item below names a task and where its code is, then notes on it.
   A server's refusal of a create or raise stops the listener's start naming the setting and its value, while Dispatch's server, which reconciles in the background, keeps serving with the refusal logged;
   a bucket raise's refusal also names the bucket (`refusedSettings`, `raiseReplicas`)
 
+- **Sender limit**:
+  `cmd/listener/sender_limit.go`, `cmd/listener/request_record.go` (`refuseSenderRateLimited`), `internal/bus/settings.go` (`MaxSenderMessagesPerMinute`), `internal/ratelimit/ratelimit.go` (`Keyed.WaitAt`)
+
+  `ENVOY_SENDER_MESSAGES_PER_MINUTE` is how many messages one agent session may send through this listener in a minute, `/v1/messages/send` and `/v1/messages/publish` together:
+  a whole number from 0 to 60000, and unset, blank or 0 sets no limit.
+  `ENVOY_SENDER_MESSAGE_BURST` is how many it may send at once, a whole number of 1 or more, and unset it equals the rate.
+  A burst with no rate or with a rate of 0, and any other value, refuses startup naming the variable and the value (`parseSenderLimit`).
+  The start logs one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this process` or `listener sender limit: none`.
+  The listener keeps one count for each sending session (`ratelimit.Keyed`), which starts at the burst and gains one message every 60 seconds divided by the rate, up to the burst.
+  The counts are this process's own: each listener, and each replica of one, keeps its own, and a restart fills each count again.
+  The sender is the session a secrets-broker token proves, else the request's `source_session`.
+  Only a message whose `source` is `agent` or absent and that has a sender is counted:
+  a message of Dispatch (`dispatch`) or of Envoy itself (`envoy`) is not, and neither is the Legion daemon's notice, which names no sender (`packages/daemon/internal/notify`).
+  Both routes take from the count after their own checks, the publish route's `ReachesNoSession` 400 included, and before they read a session, resolve a role, report a wake or store anything.
+  A message that finds its count at 0 is the `429` of `refuseSenderRateLimited`, recorded `outcome=sender_rate_limited`, and nothing is stored, kept for a later holder or reported for a wake.
+  `Retry-After` and the body's `retry_after_seconds` give the same whole seconds, rounded up and at least 1, until the count holds one message again.
+  The JSON body also holds `reason: "sender_rate_limited"`, `messages_per_minute`, `burst` and an `error` that is the sentence `Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.`, its nouns singular where a value is 1 (`1 message a minute`, `after 1 second`).
+  The request line of a refused message, and of each message that cost one, carries the field `sender`, and no other line of the listener carries it.
+  A counted message costs one where the route stores it, may have stored it (any answer of a role send after a forward, or a `503` after an unacknowledged publish, `bus.ErrUnacknowledged`) or reports a wake for it, whatever it answers (`senderCharge.stored`, `senderCharge.woke`).
+  Every role send `504` costs one, also one that forwarded nothing (`roleSend.timedOut`).
+  A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before anything was sent (a wait for NATS to reconnect), costs nothing: the deferred `settle` returns the take.
+  A repeat the listener recognises costs nothing too (`senderCharge.forgive`): the stream's `duplicate` answer to a send or a topic publish, unless it answers the bus's resend (`bus.StoredAck.Resent`), and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) before its first forward.
+  A role send's echo, and a repeat in the route's 10-minute record, cost nothing before any forward.
+  A repeat that finds the count at 0 is refused as a new message is, because the take comes first.
+  This 429 is not the broker token check's (`apiauth.go`), whose log reason is `rate_limited`.
+  No client sends a refused message again by itself (`packages/envoy-client/src/transport.ts` retries nothing below 500), except the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times (`packages/pi-legion/src/stall-evidence.ts`).
+  `envoy-infra` takes the two settings as inputs `senderMessagesPerMinute` and `senderMessageBurst`.
+
 - **Stream consumer cap**:
   `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
 
@@ -410,7 +438,7 @@ Each item below names a task and where its code is, then notes on it.
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
   one pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
-  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.mapped`), so no pass asks GitHub about a name it cannot read;
+  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.covered`), so no pass asks GitHub about a name it cannot read;
   an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
   The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
@@ -2717,11 +2745,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `issue.claimed` and `issue.released` carry `IssueClaimEventPayload {key, status, repo, resolved_repo, claim, previous_claim?, reason}` (`repo` and `resolved_repo` as on every issue event);
   the outbox publishes both to the previous claimant's own `notifications.agent.<session_id>` topic (`publishPreviousClaimant`), whatever the issue's route and regardless of `notify`, so a session learns it no longer holds the work.
 
-- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), which must be a mapping of its project;
-  the composite foreign key `issues_repo_mapped_to_project` to `repo_projects (repo, project)` makes that a database invariant.
+- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), any repository at all — one its project maps, one another project maps, one no project maps.
+  Migration `20261112004945` dropped the composite foreign key `issues_repo_mapped_to_project` that held it to a mapping of its project, and the unique constraint on `repo_projects (repo, project)` that backed only that key, because a project works wherever its issues say (INFRA-2543).
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` take it (`api/issue_repo.go`:
   absent leaves it, `null` clears it, a string is canonicalised as a mapping's path is;
-  not `owner/name` is `400 INVALID_ISSUE`, not mapped `400 REPO_NOT_MAPPED`, checked under a key-share lock on the mapping row so the mapping cannot move or go before the write commits;
+  not `owner/name` is `400 INVALID_ISSUE`;
   a closed issue refuses it, `409 ISSUE_CLOSED`).
   Every issue read and every issue event carries `repo` and `resolved_repo`, resolved on read by `refs.IssueRepoTerms`, the server's one repository-resolution rule (`internal/dispatch/refs/issues.go`, spliced by `api`'s issue reads with `refs.IssueRepoJoin` and `refs.IssueRepoColumns`):
   one walk climbs the parent chains of every issue the read answers for at once — its `subjects` term, which is a listing's page, a listing's whole match or the one issue a read names — and each issue takes the nearest issue on its chain (itself first) whose own `repo` is set, else its project's default mapping (`repo_projects.is_default`, at most one per project by the partial unique index `repo_projects_default_per_project`, read for every project of the read in one join), else null.
@@ -2741,7 +2769,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The API repairs an acyclic one: `PATCH` an ancestor that still reads (its `GET` answers 200) with `{"parent": null}`.
   The `PATCH` reads the issue it changes first (`issue_patch.go`), so a parent loop none of whose members reads, which only direct SQL can write, needs a database repair (`update issues set parent_key = null` on one member).
   A mapping's `PUT` takes `default` and moves the project's default in one transaction;
-  a mapping that issues name is neither deleted nor moved to another project (`409 REPO_PROJECT_IN_USE`, counted under the mapping's row lock);
+  a mapping that issues name as their repository is deleted and moved like any other, since an issue's own repository needs no mapping;
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
   Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
   an advisory lock on the repository, the event owners of every project it touches, then the row.
@@ -3585,8 +3613,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A current unit sends no title or summary text, because the stream keeps an envelope for its whole retention window and no deletion on the unit can recall it, so a reader fetches the current text through those links.
   A `summary_ready` payload also copies `status`, `summary_preset`, `summary_model`, `timestamp`, `version` and `payload_type`, and an older unit's `title` and `summary` (capped, with `body_truncated` when cut) still pass when present.
 
-- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is optional for trusted Ghost Wispr deployments;
-  when unset, skip signature verification explicitly rather than half-verifying missing headers.
+- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is required when `ENVOY_WEBHOOKS` names `ghostwispr`, as the GitHub and Slack secrets are for theirs:
+  an empty or blank value refuses the listener's start with an error naming the variable (`LoadWebhookConfig`, `internal/webhook/config.go`).
+  The handler checks the signature of every event, and `verify.GhostWispr` answers false for an empty secret, so a handler built with an empty secret publishes nothing and answers 401 to each request that reaches the check.
+
+- Every signature check in `internal/verify` (`Github`, `Slack`, `GhostWispr`) answers false when its secret is empty, the signature made with the empty key included.
+  The listener's start-up already refuses an enabled webhook whose secret is empty; the check's own refusal covers a handler that something else builds, such as a test.
 
 - GitHub mention routing is additive: matching comments publish to both `.comment` and `.mention` topics.
 
@@ -3950,7 +3982,7 @@ JSON decoding is limited to 1 MiB, multipart uploads retain their explicit 26 Mi
 it answers GET alone, for three read shapes, as the GitHub App.
 The event outbox publishes from one process at a time, the one holding the publisher hold `dispatch-outbox` (`duty.Hold`, migration `20261101143201_duty_holds`;
 `.dispatch/architecture/dispatch-outbox.md` holds the whole design), and sends each batch through one window bound to the hold's deadline (`bus.Client.WindowUntil`, `scanBatch`):
-the sends of one owner's events to one destination key go one at a time, in id order, each once the one before it reached its destination, while different owners and destination keys proceed side by side (`planChains`, `sendChains`), so a batch costs as many NATS round trips as its longest chain has sends, and a session takes each owner's events in order on each subject family it receives them on.
+the sends of one owner's events to one destination key go one at a time, in id order, each once the one before it reached its destination, and each send of the owner to any other key once the owner's earlier topic sends reached the topic family, while different owners and destination keys proceed side by side (`planChains`, `sendChains`), so a batch costs about as many NATS round trips as its longest chain has sends, and a session takes each owner's events in order across its own subject and the owner's topic family it follows.
 A batch does not block the next: the holder runs up to `concurrentBatches` (4) side by side, each reading only the owners no other batch holds in flight (`outbox.lanes`, `readBatch`), and settles, records and gives an owner back as soon as that owner's own sends are answered rather than at its batch's end, so an event waiting out the stream's acknowledgement of a role forward holds back its own owner's later events and nothing else;
 an owner whose settle released an event is the exception: its release reports the batch blocked, as a release of the batch's own last settle does, and its lane goes back at the batch's end with no wake, since the scan stops after that batch and a wake would have it read the released events again at once;
 the batches take one statement at a time between them, so the hold's renewal never queues behind two of them.
@@ -3959,7 +3991,7 @@ A stopping holder sends nothing more, records what NATS already answered, releas
 What one settlement came to is written in one statement (`recordBatch`), all of it or none - one statement per owner a batch settles before it ends, and one for everything it settles at its end - marking an event published only once each of its destinations is reached.
 It reads and records events, and renews its hold, on a pool of its own (`store.Pool.Outbox`, two connections), so the API's requests never queue ahead of it.
 It retries each required issue, route, and author destination with exponential backoff (`retry.Delay` on the database's clock, with the attempt count and `events.publish_error`), so a failed or poison delivery cannot be marked complete or starve later notifications;
-a destination that failed holds back only that destination's later events of the same owner, which wait as `blocked` with no attempt counted.
+a destination that failed holds back only that destination's later events of the same owner, except the owner's topic family, which holds back the owner's later sends to every key because the outbox cannot know which sessions follow it, and the held events wait as `blocked` with no attempt counted.
 A failure of the connection rather than the envelope (`bus.ErrUnavailable`:
 no connection, one lost or reconnected mid-batch) is not the event's failure:
 the window sends nothing on a connection that came back, and every event that met the failure or was not sent is released without an attempt counted, so the reconnect's wake sends it again and the stream's MsgId drops the copies of those that had landed.
@@ -4665,6 +4697,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
+  Before it reads the target, a message of an agent session whose count under the operator's sender limit is empty is answered `429` and recorded `outcome=sender_rate_limited`, with nothing read, reported or stored ("Sender limit" above).
 
 - A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
   the entry's last registration, or for a target with no entry its known-session record's last write.
@@ -4781,7 +4814,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed` or `stream_full`.
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `sender_rate_limited` (the `429` of "Sender limit" above).
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
 
 - `/v1/roles/<role>` (GET)
@@ -5480,7 +5513,7 @@ A write the page pressed names its presser in the `Dispatch-Login` request heade
 a caller that is another person, compared as `model.CanonicalLogin` compares them, or no person at all (any bearer), is answered `409 LOGIN_CHANGED` (`contracts.DispatchLoginChanged`) before anything runs and before its key is read, so the key is untouched.
 Another tab can sign someone else in in place, and a retry can go out on the new cookie before this tab knows;
 the page drops the presser's writes on that answer.
-A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
+A caller that resolves to nobody (a lapsed cookie) is passed on to the `401` written further in, the keyed layer's for a keyed write and the handler's for any other, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
@@ -5495,7 +5528,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   one that committed and lost its answer is `409 KEY_COMMITTED`;
   and a first that gave the key up meanwhile (released after a 5xx, a dead holder with nothing committed, its window past) is `409 KEY_IN_FLIGHT` with `Retry-After: 1`, its message saying it ended while this one's body arrived, so the retry under the same key runs the request.
   So a repeat of a large upload whose first attempt still runs is never written to disk.
-  A repeat whose body runs past the route's limit gets the route's `413`, unkeyed;
+  A repeat whose body runs past the route's limit gets the route's `413` from the layer, with no handler run;
   an `Expect: 100-continue` repeat gets `409 KEY_IN_FLIGHT` at once with nothing read.
   A fresh upload to a closed or missing issue (`POST /api/v1/issues/{key}/artifacts`) is refused as its handler would refuse it (`409 ISSUE_CLOSED` for a closed one) before its body is spooled, keyed or not, and claims no key (`refuseUploadToAClosedIssue`, mounted ahead of the layer).
   That refusal stands in for the handler, so it answers only a request whose handler would run - a fresh key, one past its window, an abandoned one:
@@ -5524,7 +5557,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 - The layer then reads the body, spooling at most the route's own limit (`routeBody`:
   an upload's file and a megabyte of fields for the three upload routes, `keyedUploads`, 26 MiB;
   `handoffRequestLimit`, 1,576,960 bytes, for the handoff write;
-  `maxJSONRequestBytes`, 1 MiB, for every other); a body past it runs unkeyed and its route refuses it.
+  `maxJSONRequestBytes`, 1 MiB, for every other); a body past it is answered its route's `413` by the layer itself, and the handler does not run.
   A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`, and a spill Dispatch could not write (`keyedSpillError`:
   a full disk, a temporary directory it cannot write) is a 5xx with the key echoed, Dispatch's own failure, which the client asks again.
 
@@ -5597,7 +5630,7 @@ migration `0138` indexes the pending attempts (`message_deliveries_pending`, `co
 `cmd/dispatch/keyed_kill_multiprocess_test.go` proves the takeover on two real processes:
 one killed mid-handler (held there by the slow-write hook), the other answers `409 KEY_IN_FLIGHT` while the lease lasts, then makes the write once and replays it.
 
-Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor a request whose caller it could not resolve, nor one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
+Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor the refusal of a caller it could not resolve, nor the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
 Together they are how a client tells a Dispatch that runs this layer from one that ignores the header and would run a retried write a second time:
 the agents' client resends only against a Dispatch whose answer carried the echo, or whose `/healthz` said so, in the last five minutes (`packages/envoy-client/README.md`).
 
@@ -5808,13 +5841,20 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
   a recreated record may reuse one and is dropped).
 
+- The listener publishes a GitHub webhook event only when it normalizes it: an event `githubEventKinds` names, carrying the JSON object `githubPayload` writes (`GithubEnvelopes` publishes no envelope whose payload is empty).
+  Every other event a webhook delivers (a commit status, a branch or tag created or deleted, a label, a review thread resolved, a webhook's ping, and the rest of GitHub's list) is answered `200` and published nowhere.
+  Such an event was once published on the repository's own `comment` topic with no `payload`, which every Legion daemon that hears the repository terminates as poison (`Envoy envelope payload is not JSON`), one ERROR line per delivery.
+  GitHub delivers a sub-issue added or removed to each issue's repository (`sub_issue_*` to the parent's, `parent_issue_*` to the child's), and each delivery is published on `issue.<n>.sub_issue` of the issue in the webhook's own repository: the parent for `sub_issue_*`, the child for `parent_issue_*`.
+  Its payload of kind `sub_issue` carries that `number`, the parent (`parent_number`, `parent_title`, `parent_url`, `parent_repo`), the sub-issue (`sub_issue_number`, `sub_issue_title`, `sub_issue_url`, `sub_issue_repo`) and the `sender`; each repository is the one GitHub names for that issue, else the webhook's own.
+  `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload` publishes every event the table names from a body of its own, and fails for one added without a normalizer.
+
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):
   it decides the outcome of every name it reports
   — at any id the ordering accepted, including the same run observed in place
   — and says nothing about the rest: a known failure among them stands (the consumer keeps failure names, not a per-name status map), and the head is red while any failure remains.
   A consumer that reconciles a verdict from GitHub's rollup compares the rollup's attempt set the same way, but GitHub's read is complete:
   its failing check runs and failing commit statuses replace the stored ones wholesale.
-  Statuses have no check run and the listener never sees them, so a consumer keeps them apart from check-run failures:
+  Statuses have no check run and the listener records and publishes none of them (a `status` webhook is published nowhere, above), so a consumer keeps them apart from check-run failures:
   a check run that shares a status's name cannot retire it — only GitHub does (likewise a deleted check's failure).
   A newer rollup set merges into the fence and takes the identity (no listener generation);
   the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; an older, mixed, or empty-over-fenced set is ignored.
@@ -5942,7 +5982,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   every later event of its owner is held back from each session key (`notifications.agent.*`, or a role route's key) the incomplete event neither names in its list nor already reached (`published_destinations`), behind a blocker carrying the failed event's back-off (`planChains`), so the later event is tried again no later than the failed one and reaches such a session after it;
   a key the list names chains as usual, a key the event already reached holds nothing back, and the owner's topic family is never held this way.
   An event that is not due reads its recipients as a due one does, since they are what it holds its owner's later events back from:
-  one whose reads answer holds back only the destinations it has not reached, and one whose read fails holds back the same keys as a due one until its `next_attempt_at`.
+  one whose reads answer holds back only the destinations it has not reached, and every key while one of them is the owner's topic family, and one whose read fails holds back the same keys as a due one until its `next_attempt_at`.
   A row no recipient read can take so backs off the events that read it and holds back their owners' later session copies on the keys those events could still owe, and the rest of the outbox publishes.
   Every lookup kind but the issues' is a uuid, read and answered in its canonical form (`validIDs`, `canonicalID`);
   an id that is no uuid is never sent to Postgres and fails the event that asked it - except a reply's `reply_to`, which then replies under no comment:
@@ -6022,6 +6062,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 - A waiting copy holds its destination key against the owner's later events, where a mentioned session's own held-back copy is left out of the event's list entirely (`planChains`, `destinations.leftTo`): nothing else delivers a role copy, a keep waiting up to its hour for the role's next live holder and a forward being the holder's one copy, so a later event let past it would reach the role's holder first - the kept lane is drained in stream order (`walkKeptRole` in `cmd/listener/role_keep.go`) and a forward goes straight to the holder's agent subject - while a mentioned session's copy is overtaken by nothing, the mention itself delivering that comment to that very session (`TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions`).
   The copy of a session the owner's own work names carries that same mark while an attempt that names no session yet, and whose role the read could name no holder for, may yet be pinned to it (`destinations.addWorkingSession`): nothing says that mention delivers the comment to this session rather than another, so it stays in the list and holds its key, and `planChains` reads a hold for the owner's later events alone (`by.event != event`), the role route to that same session being due in the very pass that copy waits in (`TestAWaitingCopyHoldsNoCopyOfItsOwnEvent`).
   A copy held as a `comment_fallback_copies` row carries no such mark, because it is out of the event's list altogether (`destinations.leftTo`'s resending arm): it holds nothing of the owner's back, and the owner's later events reach that session while the row waits.
+  Nor does anything of the owner hold the row back: the fallback pass publishes it outside `planChains`, so it can reach a session before an earlier event whose topic send has not gone, as the API's own mention send can, which is no outbox send at all, so a mention's copies are outside the owner's order both ways: a row exists to bound a wait, and holding it in the owner's order would bring that wait back.
   So a session the comment's own thread names, whose copy was first read past the attempt's lease, is shown that comment after those later events when the resend pins another session and the pass publishes the row - the comment out of order at that host, by as long as the resend and the pass take.
   That is the order cost of holding a past-lease copy as a row rather than in the list, and it is the price of the latency the row buys: a copy that waited in the list for a mention that may never be pinned to it costs the comment's own response, which is the budget this whole change exists to keep (`TestR17UnrelatedAuthorCopyFirstPass`).
   A role copy is held in the list instead for the reason above, nothing else delivering it.
@@ -6124,17 +6165,27 @@ only a broker that could not be reached is named, by its URL through `redact.URL
 Only the secret forms, which call the store itself, name the store's account or project (`AWS Secrets Manager account
 <id> in <region>`, `GCP Secret Manager project <number>`): `secret show` as `store:`, `secret list` one line on stderr, with `store` on each row under `--json`.
 No line names a secret's version: a grant's release carries names and values alone, and a session holds no sign-in of its own to the store.
-No output of `agent-secrets`, `agent-secrets-helper` (`internal/broker/helper`'s broker calls included) or `agent-secrets-devrelay` prints a credential the broker's URL carries:
-a message names that URL through `internal/redact`'s `URL`, an allow-list that prints the value as written only when it is provably a plain http(s) URL (printable ASCII with no `@`, `%`, `?`, `#`, backslash or whitespace;
+No printed form of the broker's URL, and no refusal or error that `agent-secrets`, `agent-secrets-helper` (`internal/broker/helper`'s broker calls included), `agent-secrets-devrelay`, the token client (`internal/brokerclient`) or `legion controller start` prints or logs, holds a credential that URL carries (what they print or log of an answer they accept is as it came: `--json` and `machine login`, below), and an error of theirs that passes through `redact.Error` or `redact.Cause` (below) prints, of a broker's OAuth error answer, only its error code and `error_description`, whole as the broker wrote them, and only where that URL is clean and the answer has an error code and no `error_uri`;
+every other answer — one with an `error_uri`, one with no error code, and any answer beside a URL that is not clean — prints as the failure's class alone, `the broker answered HTTP <n>`.
+A message names that URL through `internal/redact`'s `URL`, an allow-list that prints the value as written only when it is provably a plain http(s) URL (printable ASCII with no `@`, `%`, `?`, `#`, backslash or whitespace;
 net/url reads it back byte for byte as an http or https scheme, a DNS name, IPv4 or bracketed zone-less IPv6 host with an optional port of one to five digits, and a path of `[A-Za-z0-9._~/-]`), and as `redact.NotPrinted` otherwise, printing no part of it.
 A URL with user info prints as `NotPrinted` too, not as `xxxxx@host`: a host-less value whose password holds an `@` would print the password's tail as the host.
 An error net/http or net/url makes passes through `redact.Error(err, base)` (or `redact.Cause`, the same without net/http's `*url.Error` wrapper):
 it is err itself only when base is clean, the URL that error names is base followed by nothing or a plain `/v1/` path (`redact.Call`;
 a redirect's target on another host or path, or with a query, is not), and the error it wraps is a transport failure (`net.OpError`, name resolution, refused, timeout, TLS, `http.ErrSchemeMismatch`, EOF, a reset, a broken pipe:
-the set `peerAnswered` reads), an HTTP status answer, or text the allow-list passes (a malformed `Location`'s error quotes the target and is not).
+the set `peerAnswered` reads), an OAuth error answer (`oauth2.RetrieveError`) with a nonempty error code and an empty `error_uri`, or text the allow-list passes (a malformed `Location`'s error quotes the target and is not).
 Otherwise its text is the class alone (`name resolution failed`, `connection refused`, `timed out`, `TLS failed`, `the broker answered
 HTTP <n>`, `not a valid URL`, `the request failed`), found with errors.Is and errors.As on err, and it unwraps to err so callers classify as before.
-A trade the broker refused (`brokerclient.RefusedError`) is one of those HTTP status answers: it unwraps to the `oauth2.RetrieveError` the broker's own OAuth error body makes, so a clean base prints the broker's words whole — the reason a person acts on, such as an entry that fixes no session while the request names none — and a base that carries a credential prints `the broker answered HTTP <n>` rather than `the request failed`.
+The code and description of an OAuth answer that passes are trusted, not checked: they print whole, a colon, a mailbox or a URL in the description included, so a secret the broker put there would print.
+An `error_uri` is a URL by RFC 6749, which may carry a credential or point anywhere, and for an answer with no error code x/oauth2's text is the response body it kept, up to 1 MiB with its line breaks, which can forge a log line: either answer prints as its class.
+A trade the broker refused (`brokerclient.RefusedError`) is one of those trusted OAuth answers: it unwraps to the `oauth2.RetrieveError` the broker's own OAuth error body makes, its code and description with no `error_uri`, so a clean base prints the broker's words whole — the reason a person acts on, such as an entry that fixes no session while the request names none — and a base that carries a credential prints `the broker answered HTTP <n>` rather than `the request failed`.
+Each of those programs holds the configured address as a `brokeraddr.Address` rather than a string (`agent-secrets` from `brokerBaseURL` on, its `client` and `unreachableError` among them, and `agent-secrets-devrelay` from its `--broker` flag on), whose every printed form — each fmt verb, a `slog` field, and a field `fmt` reads by reflection — is `redact.URL` of it.
+Outside the type's own methods, its `Raw` builds a request; the few checks that read it without printing it are listed on `Raw` itself (`brokeraddr/brokeraddr.go`) and nowhere else.
+The text of a refusal from that address — its words, its code, the answer id it names — and a value the token client quotes from an answer it refuses print through `Address.Words`: whole beside a clean address, and as `brokeraddr.WordsNotPrinted`, `(not printed: the broker's address is not clean)`, beside any other, since whoever answers at such an address can repeat its credential in any text it answers.
+So beside such an address every refusal those programs print is its status — with that marker, where it is not one of the OAuth answers above — and no code and no answer id (the code that `agent-secrets renew`'s exit on a terminal refusal and the helper's log of a refusal it acts on name is one they matched against their own list, and the helper's log of a sign-in the broker refused, `brokerclient.SignInAuthority.markRefused`'s, names its code as that marker); whether a refusal's text is withheld is decided from the address where the refusal is built (`apiError.withheld`, `BrokerError.withheld`), never read back from its words; `agent-secrets` and the helper still read the words as they came to tell refusals apart (`enrollmentEnded`, `callRefused`, `enrollmentNotLive`) and print them nowhere.
+What a program takes from an answer and shows its reader prints as it came, whatever the address; among those outputs, `agent-secrets --json` writes a 2xx body verbatim, `agent-secrets machine login` prints the `user_code` and `verification_uri` the broker answered, `login-status` prints that `user_code`, a pending secret request's line names the `approve_url` its answer carries (`cmd/agent-secrets/client.go`), and the helper's log lines name the `credential_id` of the machine login the broker issued (`internal/broker/helper/broker.go`).
+Every call of theirs to the broker that carries a token or a proof — the trade, the helper's refresh, device authorization and renew, and every `agent-secrets` call — goes out on a client from `internal/redirects`' `Refused`, so a 3xx answered for the broker comes back as the non-2xx it is and its target is sent nothing;
+a redirect's body is not printed either, since net/http writes the target into the body of one it answers a GET with.
 `agent-secrets` refuses an id that `url.PathEscape` would change (`pathID`) before any call, never escaping it:
 the proof signs the URL as built and the broker rebuilds the htu from the decoded path.
 That refusal is a `refusedBeforeCall`, which `refusalText` prints with no `asked the broker` ending.
@@ -7542,7 +7593,7 @@ The granted value itself is read fresh from the `secrets.Store` on release and n
 `internal/broker/airlock` is the airlock's rules file and the two answers the proxy port takes from it, and holds no HTTP and no database code of its own.
 `BROKER_AIRLOCK_RULES_FILE` names the `airlock.json` the broker reads once at start, so a change to it rolls the pods, and with no such file there is no airlock and no proxy port at all: every granted secret is released as its value, as before.
 Each entry names one secret's `hosts`, the `headers` that may carry its value (absent, the one header `authorization`; empty, no header), the `allow` pairs of `method` and `pathPrefix` it may travel on (absent, any; empty, nothing), an optional `kind` (`""`, `aws` to sign the request again, or `azure` to exchange at the token endpoint) and an optional `judge`, a lifetime in seconds of at most 900.
-`Parse` refuses a field the broker does not know and a second JSON value after the object, so a broker from before a new field refuses the file rather than serving it with that field's rule missing, and `Validate` refuses a repeated name, an entry with no host, a judge above 900 seconds and any other kind, naming the entry by its index and its name.
+`Parse` refuses a field the broker does not know and a second JSON value after the object, so a broker from before a new field refuses the file rather than serving it with that field's rule missing, and `Validate` refuses a repeated name, an entry with no host, a judge above 900 seconds, any other kind, and a host that binds the secret nowhere (`HostShapeOK`) — one with a scheme, a path or a port, a bare `*`, an empty label, a label opening or closing with `-`, or an all-digit last label, which an address has — naming the entry by its index and its name.
 The name an entry carries is `cmd/broker`'s refusal and not this package's, because the airlock knows nothing of how a secret is named under the policy's prefix: `validateRulesFile` (`cmd/broker/main.go`) runs `Validate` and then `policy.NameToSlug` over each entry, so a name written `legion_slack_bot_token` or `LEGION-SLACK-BOT-TOKEN` — which `Rules.Lookup`, comparing exactly, would never match, leaving the value released as if the file had no entry for it — refuses the start and `airlock-check` alike, naming the entry.
 `Decide` answers whether one request may carry a secret and why not, and `Rewrite` answers that request with the grant's placeholder swapped for the real value in the headers the entry names, changing no header name, no header order, no query and no body;
 both refuse a request whose SNI or `Host` is not its CONNECT target, one whose headers already carry the real value, which was learnt somewhere other than this swap, and, on an entry that has an `allow` list, one carrying `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` (`request carries a method override header`, read directly below `not allowed by rule`), since a service that honours such a header acts on a method the entry's `allow` never named.
@@ -7558,7 +7609,10 @@ A CLI from before the airlock finds such a name in neither field and runs nothin
 One connection is one live grant: its `Proxy-Authorization` password is a placeholder of that grant (`Machine.AirlockConnection`), and that read's own two refusals, `ErrGrantNotLive` and `ErrAirlockNoNames`, are this port's 407, as is every call of a grant that has ended; every other refusal `requests.IsRefusal` names — a chain that no longer verifies, a secret the store no longer holds, a mint the secret's own minter refused, a value whose shape the airlock cannot take apart — is 403 in the error's own words, since no retry clears one of them; and a mint whose upstream could not be asked (`secrets.ErrMintUpstream`, read before that line because `requests.ErrMintFailed` wraps it) and every error left, the store that did not answer among them, are 503 with one fixed sentence carrying nothing of the error, which goes to the log instead (`grantRefusal`, the one rule for every grant read this package makes, which is four: `serveProxy`'s, `serveBound`'s, `valuesFor`'s and the azure access placeholder's), since a read that failed is no proof that a grant ended and a 407 tells a command to ask for a new grant, which on the human tier is a person approving each one.
 A CONNECT to a host no name of the grant binds is a plain tunnel the proxy opens no TLS on and reads nothing of;
 a CONNECT to a bound host is answered with a leaf its own authority signs (`ca.go`, `BROKER_AIRLOCK_CA_KEY_FILE`), so each request on it is read, decided by `airlock.Decide` and swapped by `airlock.Rewrite` and by nothing of this package's own (`bound.go`), with the `aws` kind signing the request again (`aws.go`) and the `azure` kind exchanging the federated token at the Microsoft endpoint (`azure.go`).
-That TLS offers `http/1.1` and then `h2`, and crypto/tls takes the first of the server's list the client offers too, so a client offering both (net/http, curl, git) speaks HTTP/1.1 and a client offering `h2` alone (every gRPC client) speaks HTTP/2; each HTTP/2 stream is one call of `serveBound`, which reads the grant, checks its `:authority` (net/http's `r.Host`) against the CONNECT target through `airlock.Decide`, and forwards it to that target whatever it named, as an HTTP/1.1 request is.
+That exchange is made only at the token authority (`login.microsoftonline.com`, or the local stack's `BROKER_AIRLOCK_TEST_AZURE_AUTHORITY`) and only as the application and in the tenant the name's own azure-login document names (`azureBound`, `requests.AirlockSecret.Azure`): the federated token is the broker's, which Entra takes for every application federated with it, so a token request to another host the entry binds, with another `client_id`, or at another tenant's endpoint, is refused `403 TOKEN_APPLICATION_REFUSED` before the token goes into it, and a pod's own exchange from an access slot is held to the same host and ids.
+Nor does the federated token leave the broker any other way: a request that is no token request and carries its placeholder in a header, to the authority or to any other host the entry binds, is refused `403 FEDERATED_TOKEN_SWAP_REFUSED` before anything is sent (`serveBound`), whatever the kind of the entry that binds the name, since the refusal follows the federated slot, which an azure-login value fills under an entry of any kind (`requests.airlockSplitOf` reads the policy kind first) though only an entry of kind `azure` exchanges a command's token request; a request carrying an access token's placeholder is swapped as any other value is, and one carrying no placeholder, as az's read of a tenant's OpenID configuration does, goes on with nothing swapped into it.
+The form the endpoint is sent is the exchange's own (`azureExchange.form`): the federated flow's two constants, the document's `client_id`, the command's `scope` (and its `resource` at the v1 endpoint) and the federated token, and no other field of the command's.
+The TLS on a bound host's CONNECT offers `http/1.1` and then `h2`, and crypto/tls takes the first of the server's list the client offers too, so a client offering both (net/http, curl, git) speaks HTTP/1.1 and a client offering `h2` alone (every gRPC client) speaks HTTP/2; each HTTP/2 stream is one call of `serveBound`, which reads the grant, checks its `:authority` (net/http's `r.Host`) against the CONNECT target through `airlock.Decide`, and forwards it to that target whatever it named, as an HTTP/1.1 request is.
 How a stream becomes the `airlock.Request` the model is proved over is net/http's server's, which `h2_test.go` reads back and nothing proves, since the Lean model has no wire format; `TestMain` (`rig_test.go`) runs the whole package's suite once with an HTTP/1.1 client and once with an h2-only one.
 A CONNECT, and an `Upgrade` naming `h2c`, on a decrypted connection is refused 403 `PROTOCOL_SWITCH_REFUSED` before the grant is read, since what crosses after its answer is no request the proxy reads; net/http's HTTP/2 server resets an extended CONNECT (`:protocol`) unless `GODEBUG=http2xconnect=1`, and answers any `Upgrade` header 400 itself.
 The inner server names both protocols (`Protocols`) and caps one HTTP/2 connection at 100 open streams (`maxStreams`); `GODEBUG=http2server=0` still takes HTTP/2 away whatever `Protocols` says, and then a client offering `h2` alone has its connection closed after its handshake.
@@ -7765,7 +7819,8 @@ and `probe-private`, `probe-bound` and `load` are the three Go clients `scripts/
 it runs `dev-broker.sh` for Postgres, `dev-oidc-issuer` and the binaries, starts the stands, writes a rules file and a fake secrets file naming the same six secrets (two stored, a `github-app`, a `google-login`, an `azure-login` and a stored AWS key pair), starts two brokers on a database of its own with one front over both API ports and one over both proxy ports, enrols one pod session, and prints the exports a second shell drives it from.
 It builds nothing of its own: `dev-broker.sh` builds `cmd/dev-airlock-stands` with the other five binaries, and this script runs that one, and `airlock-check.sh` reads it as `$DEV_BROKER_DIR/bin/dev-airlock-stands`.
 Each bound host is a `.test` name no resolver answers, on port 443 of a loopback address of its own, because the airlock refuses a request whose `Host` header is not its CONNECT target and a client writes the port into that header for every port but 443:
-`BROKER_AIRLOCK_TEST_RESOLVE` says where each name is and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` lets the proxy dial that one address, while every other loopback, private and link-local address stays refused, so one such stack runs at a time on a machine.
+`BROKER_AIRLOCK_TEST_RESOLVE` says where each name is and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` lets the proxy dial that one address, while every other loopback, private and link-local address stays refused, so one such stack runs at a time on a machine;
+`BROKER_AIRLOCK_TEST_AZURE_AUTHORITY` makes the Microsoft stand-in the token authority the `azure` exchange is held to.
 `--keep-values` and `--no-kind` (`BROKER_AIRLOCK_TEST_KEEP_VALUES`, `BROKER_AIRLOCK_TEST_NO_KIND`) are two checks' negative controls, and `cmd/broker` refuses every one of those test settings on a production start (`refuseAirlockTestSettingsInProduction`).
 `dev-airlock.test.sh` proves what that driver decides — which processes it starts, with which settings and behind which address, and what it stops at the end — behind fake `psql`, `curl` and `go` binaries, with no real Postgres, no network bind and no Go build, as `dev-broker.test.sh` does for `dev-broker.sh`.
 

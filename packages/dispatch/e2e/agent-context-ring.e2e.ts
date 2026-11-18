@@ -83,8 +83,10 @@ interface Edges {
   right: number;
 }
 
-/** One element's left and right edges on screen, rounded to whole pixels. */
+/** One element's left and right edges on screen, rounded to whole pixels, once it shows. */
 async function edgesOf(locator: Locator): Promise<Edges> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
   if (box === null) throw new Error("the element is not on the page");

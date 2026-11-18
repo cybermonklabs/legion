@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -68,7 +69,7 @@ func startContractHelper(t *testing.T, broker *brokertest.Rig, machineFile strin
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	cr.srv = &Server{
 		Registry: NewRegistry(sessionsPath),
-		Broker:   &Broker{URL: broker.URL, OperatorFile: broker.OperatorFile, MachineFile: machineFile, HTTP: client, Log: log},
+		Broker:   &Broker{URL: brokeraddr.New(broker.URL), OperatorFile: broker.OperatorFile, MachineFile: machineFile, HTTP: client, Log: log},
 		Hostname: "contract-test-host",
 		PeerOf:   PeerOf,
 		Log:      log,

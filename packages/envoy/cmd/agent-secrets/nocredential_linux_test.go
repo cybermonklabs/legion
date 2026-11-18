@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
@@ -211,7 +212,7 @@ func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
 	})
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, t.TempDir(),
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + signs, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir()}, "machine", "list")
-	want := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(broker.URL).String() +
+	want := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(brokeraddr.New(broker.URL)).String() +
 		" is expired or revoked; the helper's trade loop is trading this machine's identity for a new credential\n"
 	if exit != 1 || stdout != "" || stderr != want {
 		t.Fatalf("machine list refused LAUNCHER_INVALID on a helper in identity mode: exit %d, stdout %q, stderr %q; want 1, nothing, %q", exit, stdout, stderr, want)

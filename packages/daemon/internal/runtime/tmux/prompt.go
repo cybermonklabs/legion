@@ -12,10 +12,12 @@ import (
 //
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
 // for the `default` model role, which the settings of the profile the pane launches under set -
-// the launch prefix picks that profile (`omp_launch_prefix`, `env OMP_PROFILE=… --`) - and a
-// resumed session otherwise runs the model its first launch saved for ever. A launch under the
-// flag writes no `model_change` entry of its own, so the saved pin stays in the session file and
-// a later launch without the flag would read it again. A settings set with no `default` role is
+// the launch prefix picks that profile (`omp_launch_prefix`, `env OMP_PROFILE=… --`) - the
+// operator's current role is resolved per launch, and a resumed session without the flag runs its
+// recorded model. From Oh My Pi 18.18.6 of the fork (upstream oh-my-pi #18534), a resumed launch
+// under this role alias appends a replacement `model_change` for its resolved model, which later
+// launches without the flag read; that replacement is the role as it stood at the launch that
+// wrote it, so it stands in for no later launch's flag. A settings set with no `default` role is
 // not refused here: Oh My Pi launches silently on a built-in model instead
 // (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
 func innerCommand(prefix []string, invocation, resumeSessionFile, promptFile string) string {
