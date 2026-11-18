@@ -967,8 +967,12 @@ func (row faultRow) String() string {
 // no row (run). What follows is the readings' work (doing), which run puts back where the line
 // panicked.
 //
-// A panic in a line the logger writes can skip what follows that line in the same interval; it is
-// counted as a fault in its row, and PID 1 keeps running.
+// A panic in a line the logger writes can skip what follows that line in the same interval, and
+// PID 1 keeps running. It is counted as a fault in its row, but for three kinds of line, which are
+// counted in no row (run): the line run itself writes of a fault, which run drops, since the fault
+// it was about is counted already; the line that says the trimmer is off, which run drops as well;
+// and the lines of the last report, as switchOff makes and sends it or as deliverLast tries it
+// again, where a panic ends the trimmer (switchOff).
 //
 // Each row counts the recovered panics of its kind since the last work of that kind ran to its
 // end (ran, tick), a panic tick recovered and one of the work run contained alike, and a panic of
