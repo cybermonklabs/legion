@@ -233,12 +233,14 @@
 # argument of every process is readable by every user of the machine (/proc/<pid>/cmdline): the
 # Dispatch agent token, the listener token and the Postgres URL with its password reach the
 # runner on the standard input of the kubectl exec that starts the loadgen job reading them
-# (runner_start -c, replay_checksum), whose sh writes them into /work/secrets/<job>, a directory
-# of mode 700 of that job's alone with each file mode 600, and loadgen is given their -…-file
-# forms (endpoints). The EXIT trap of the sh that waits on the job removes the directory once
-# the job has ended, so none outlives the job that read it; loadgen refuses -token,
-# -listener-token and a -pg that sets a password outright (guard.go). The stored-order check takes
-# its URL on standard input too (STORED_ORDER_SCRIPT), and browser typing is given none.
+# (runner_start -c, replay_checksum), whose sh writes them into /work/secrets/<job>.<random>, a
+# directory of mode 700 that one start alone claims (mkdir fails on one that is there) with each
+# file mode 600, and loadgen is given their -…-file forms (endpoints). Once the job has ended,
+# however it ended, the sh that waits on it removes that directory, and on a HUP, INT or TERM of
+# that sh too, so none outlives the job that read it and no start removes another's; loadgen
+# refuses -token, -listener-token and a -pg that sets a password outright (guard.go). The
+# stored-order check takes its URL on standard input too (STORED_ORDER_SCRIPT), and browser typing
+# is given none.
 #
 # Every subcommand needs --namespace (no default; a Legion pod's own namespace is builds), and
 # every kubectl call names it. Subcommands after up find the run from the lock's `run` and its
@@ -839,17 +841,20 @@ state_set() {
 # loadgen_local ARGS: the run's loadgen on the worker pod, with its root in the run directory.
 loadgen_local() { LOADTEST_ROOT=$RUN_DIR "$LOADGEN" "$@"; }
 
-# endpoints JOB: every endpoint flag of loadgen seed and run (guard.go), into ENDPOINTS. The three
-# credentials are their -…-file forms, naming the files runner_start -c and replay_checksum write
-# for JOB in the runner (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here or
-# of anything in the runner pod.
+# endpoints JOB: every endpoint flag of loadgen seed and run (guard.go), into ENDPOINTS, and the
+# directory in the runner that the job's credentials go in, into JOB_SECRETS: RUNNER_SECRETS/
+# JOB.<random>, so two starts of one job name, of this command or of another one of the run, never
+# share one. The three credentials are their -…-file forms, naming the files runner_start -c and
+# replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here
+# or of anything in the runner pod.
 endpoints() {
-  local secrets=$RUNNER_SECRETS/$1
+  JOB_SECRETS=$RUNNER_SECRETS/$1.$(random_hex 8)
+  [[ $JOB_SECRETS =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "the runner job name '$1' is not letters, digits, '.', '_' and '-' alone"
   ENDPOINTS=(
-    -url "http://dispatch.$NS.svc:8766" -token-file "$secrets/dispatch-token"
-    -listener "http://listener.$NS.svc:9020" -listener-token-file "$secrets/listener-token"
+    -url "http://dispatch.$NS.svc:8766" -token-file "$JOB_SECRETS/dispatch-token"
+    -listener "http://listener.$NS.svc:9020" -listener-token-file "$JOB_SECRETS/listener-token"
     -nats "nats://nats.$NS.svc:4222" -nats-mon "http://nats-0.nats-headless.$NS.svc:8222"
-    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$secrets/pg-url" -nats-server-name nats-0
+    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
   )
 }
 
@@ -861,17 +866,26 @@ credentials() {
   state .secrets.dispatch_token && state .secrets.listener_token && pg_url
 }
 
-# RUNNER_SECRETS is where a runner job's credentials live: RUNNER_SECRETS/<job>, which no other
-# job shares.
+# RUNNER_SECRETS is where the runner jobs' credentials live: one directory per start under it
+# (endpoints).
 RUNNER_SECRETS=/work/secrets
 
-# RUNNER_CREDENTIALS: the runner sh's own lines that write the three lines of its standard input
-# (credentials) into the directory $secrets names, made afresh at mode 700, each file mode 600:
-# dispatch-token, listener-token and pg-url, the files endpoints names. Only sh builtins (read,
-# printf) touch a credential, so none is an argument of a process there either. A read or a write
-# that fails removes the directory and ends the sh with 1, before anything is started.
+# RUNNER_CREDENTIALS: the runner sh's own lines that claim the directory $secrets names and write
+# the three lines of its standard input (credentials) into it, at mode 700, each file mode 600:
+# dispatch-token, listener-token and pg-url, the files endpoints names. The claim is one mkdir,
+# which fails on a directory that is there, so a start never writes into, or removes, another
+# start's. Only sh builtins (read, printf) touch a credential, so none is an argument of a process
+# there either. A claim that fails ends the sh with 1 and removes nothing; a read or a write that
+# fails, or a HUP, INT or TERM while they run, removes the directory and ends the sh, before
+# anything is started.
 # shellcheck disable=SC2016 # expanded by the runner's sh
-RUNNER_CREDENTIALS='rm -rf -- "$secrets" && (umask 077 && mkdir -p -- "$secrets" && for f in dispatch-token listener-token pg-url; do IFS= read -r v && printf "%s\n" "$v" >"$secrets/$f" || exit 1; done) || { rm -rf -- "$secrets"; exit 1; }'
+RUNNER_CREDENTIALS='(umask 077 && mkdir -p -- "${secrets%/*}" && mkdir -- "$secrets") || exit 1; trap "rm -rf -- \"\$secrets\"; exit 143" HUP INT TERM; (umask 077 && for f in dispatch-token listener-token pg-url; do IFS= read -r v && printf "%s\n" "$v" >"$secrets/$f" || exit 1; done) || { rm -rf -- "$secrets"; exit 1; }'
+
+# RUNNER_SECRETS_CLEANUP: the traps of the runner sh that waits on a job given credentials: its
+# EXIT removes the directory $secrets names, and a HUP, INT or TERM exits through that EXIT, which
+# dash, the runner image's sh, runs on no signal it does not trap.
+# shellcheck disable=SC2016 # expanded by the runner's sh
+RUNNER_SECRETS_CLEANUP='trap "rm -rf -- \"\$secrets\"" EXIT; trap "exit 143" HUP INT TERM; '
 
 # ---- the lock -------------------------------------------------------------------------------------
 
@@ -1680,26 +1694,30 @@ put_executable() {
 # put_loadgen: the run's loadgen into the runner as /work/loadgen (put_executable).
 put_loadgen() { put_executable "$LOADGEN" /work/loadgen; }
 
-# runner_start [-c] NAME CMD...: CMD detached in the runner pod, its output in /work/logs/NAME.log,
-# its pid in NAME.pid and its exit status in NAME.rc. It goes through runner_exec, so no job of
-# this run is started in a runner pod the lock gives another run. With -c, the copy's three
-# credentials go to the runner on the exec's standard input and are written into
-# RUNNER_SECRETS/NAME before CMD starts (RUNNER_CREDENTIALS), for the -…-file flags endpoints NAME
-# gives CMD; the EXIT trap of the shell that waits on CMD removes that directory once CMD has
-# ended, whatever ended it (a SIGTERM or SIGKILL runner_stop sends goes to CMD alone), so no
-# credential outlives the job that read it. A job started without -c is given none.
+# runner_start [-c DIR] NAME CMD...: CMD detached in the runner pod, its output in
+# /work/logs/NAME.log, its pid in NAME.pid and its exit status in NAME.rc. It goes through
+# runner_exec, so no job of this run is started in a runner pod the lock gives another run. With
+# -c, the copy's three credentials go to the runner on the exec's standard input and are written
+# into DIR, the JOB_SECRETS endpoints gave CMD's -…-file flags, before CMD starts
+# (RUNNER_CREDENTIALS); the shell that waits on CMD removes DIR once CMD has ended, whatever ended
+# it (a SIGTERM or SIGKILL runner_stop sends goes to CMD alone), and on a HUP, INT or TERM of its
+# own (RUNNER_SECRETS_CLEANUP), so no credential outlives the job that read it. A job started
+# without -c is given none.
 runner_start() {
-  local input="" stdin=() creds="" on_exit="" name
+  local input="" stdin=() creds="" on_exit="" dir="" name
   if [ "$1" = -c ]; then
-    shift
+    dir=$2
+    shift 2
+    [[ $dir =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "runner_start -c: '$dir' is no directory endpoints gave"
     input=$(credentials) || die "reading the copy's credentials from $STATE failed"
-    # shellcheck disable=SC2016 # expanded by the runner's sh
-    stdin=(-i) creds="$RUNNER_CREDENTIALS; " on_exit='trap "rm -rf -- \"\$secrets\"" EXIT; '
+    # The sh's own signal trap of RUNNER_CREDENTIALS is reset before the job starts, so the sh that
+    # returns once the job is started leaves its directory to the job's own shell.
+    stdin=(-i) creds="$RUNNER_CREDENTIALS; trap - HUP INT TERM; " on_exit=$RUNNER_SECRETS_CLEANUP
   fi
   name=$1
   shift
   # shellcheck disable=SC2016 # expanded by the runner's sh
-  runner_exec "${stdin[@]}" sh -c 'name=$1; shift; secrets='"$RUNNER_SECRETS"'/$name; mkdir -p /work/logs; rm -f "/work/logs/$name.rc"; '"$creds"'
+  runner_exec "${stdin[@]}" sh -c 'name=$1; shift; secrets='"'$dir'"'; mkdir -p /work/logs; rm -f "/work/logs/$name.rc"; '"$creds"'
     ( '"$on_exit"'cd /work || exit 1; "$@" >"/work/logs/$name.log" 2>&1 & child=$!; echo "$child" >"/work/logs/$name.pid"; wait "$child"; echo "$?" >"/work/logs/$name.rc" ) </dev/null >/dev/null 2>&1 &' \
     sh "$name" "$@" <<<"$input" || die "$name was not started in the runner pod of $NS"
 }
@@ -2786,9 +2804,9 @@ step_at_exit() {
 
 # run_in_runner NAME DIR JOB SECONDS CMD...: a step's loadgen run CMD as the runner job JOB (at
 # most SECONDS), given the copy's credentials in the runner for as long as it runs (runner_start
-# -c, for the files endpoints JOB names),
-# with the Postgres data volume read before the load and refusing it with too
-# little free space (pg_disk_low: the step fails with kind pg_disk and sends nothing), a watcher
+# -c, into the JOB_SECRETS the caller's endpoints JOB gave CMD's flags), with the Postgres data
+# volume read before the load and refusing it with too little free space (pg_disk_low: the step
+# fails with kind pg_disk and sends nothing), a watcher
 # reading it while the load runs (pg_disk_watch, which this shell's pid and start time end when
 # this shell is killed outright), Postgres's write-out counters before and after it
 # (pg-stats-before.json, pg-stats-after.json) and, with --typing, browser typing from just before
@@ -2815,7 +2833,7 @@ run_in_runner() {
   pg_stats "$dir/pg-stats-before.json"
   started=$(utc_now)
   typing_start "$name" "$dir" "$seconds"
-  runner_start -c "$job" "$@"
+  runner_start -c "$JOB_SECRETS" "$job" "$@"
   pg_disk_watch "$name" "$dir" "$job" "$readings" "$shell_pid" "$shell_start" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=$name
   rc=$(runner_wait "$job" "$seconds" "$dir" "$shell_pid" "$shell_start")
@@ -2976,17 +2994,17 @@ replay_seed_refusal() {
 
 # replay_checksum DB: loadgen replay-checksum of the copy's database DB (its line of JSON), from
 # the runner, which needs its loadgen (put_loadgen). It runs in the foreground, its credentials
-# written from the exec's standard input into RUNNER_SECRETS/replay-checksum (RUNNER_CREDENTIALS)
-# under an EXIT trap of the runner's sh that removes them once loadgen has ended. Writing them is a
-# write into the runner, so it goes through runner_exec, and a runner the lock gives another run
-# gets none.
+# written from the exec's standard input into a directory of its own (endpoints,
+# RUNNER_CREDENTIALS), which the runner's sh removes once loadgen has ended, or on a HUP, INT or
+# TERM of that sh (RUNNER_SECRETS_CLEANUP). Writing them is a write into the runner, so it goes
+# through runner_exec, and a runner the lock gives another run gets none.
 replay_checksum() {
   local out input
   input=$(credentials) || return 1
   endpoints replay-checksum
   # shellcheck disable=SC2016 # expanded by the runner's sh
-  out=$(runner_exec -t 1800 -i sh -c 'secrets=$1; shift; trap "rm -rf -- \"\$secrets\"" EXIT; '"$RUNNER_CREDENTIALS"'; "$@"' \
-    sh "$RUNNER_SECRETS/replay-checksum" /work/loadgen replay-checksum -allow-foreign "${ENDPOINTS[@]}" -db "$1" <<<"$input") || return 1
+  out=$(runner_exec -t 1800 -i sh -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' \
+    sh "$JOB_SECRETS" /work/loadgen replay-checksum -allow-foreign "${ENDPOINTS[@]}" -db "$1" <<<"$input") || return 1
   jq -ce . <<<"$out"
 }
 
@@ -3605,17 +3623,18 @@ seed_run() {
   put_loadgen
   endpoints seed
   note "seeding through Dispatch's Service from the runner (the harness's 4 projects, 1,000 issues, 8 comments each)"
-  runner_start -c seed /work/loadgen seed -allow-foreign "${ENDPOINTS[@]}" -out /work/seed.json
+  runner_start -c "$JOB_SECRETS" seed /work/loadgen seed -allow-foreign "${ENDPOINTS[@]}" -out /work/seed.json
   rc=$(runner_wait seed 5400)
   [ "$rc" = 0 ] || die "loadgen seed ended with $rc; see $RUN_DIR/logs/seed.log"
   # The reference seed, as stack.sh seed writes it: 1,000 cited documents and their citations, so
   # the references route does the work it does in production.
   note "writing the production-shaped references through Dispatch's Service from the runner"
   endpoints seed-refs
-  runner_start -c seed-refs /work/loadgen seed-refs -allow-foreign "${ENDPOINTS[@]}" -seed /work/seed.json
+  runner_start -c "$JOB_SECRETS" seed-refs /work/loadgen seed-refs -allow-foreign "${ENDPOINTS[@]}" -seed /work/seed.json
   rc=$(runner_wait seed-refs 5400)
   [ "$rc" = 0 ] || die "loadgen seed-refs ended with $rc; see $RUN_DIR/logs/seed-refs.log"
-  runner_start -c seed-finish /work/loadgen seed-finish -pg-file "$RUNNER_SECRETS/seed-finish/pg-url" -timeout 15m
+  endpoints seed-finish
+  runner_start -c "$JOB_SECRETS" seed-finish /work/loadgen seed-finish -pg-file "$JOB_SECRETS/pg-url" -timeout 15m
   rc=$(runner_wait seed-finish 2400)
   [ "$rc" = 0 ] || die "loadgen seed-finish ended with $rc; see $RUN_DIR/logs/seed-finish.log"
   kube_read exec runner -c runner -- cat /work/seed.json >"$RUN_DIR/seed.json.tmp" || die "copying seed.json back failed"
