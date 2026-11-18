@@ -65,7 +65,12 @@ type branchCreate struct {
 func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)) *branchGitHub {
 	t.Helper()
 	g := &branchGitHub{answer: answer, defaultBranch: "main"}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.handle(t, rt)})
+	return g
+}
+
+func (g *branchGitHub) handle(t *testing.T, rt *fake.Runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls" {
 			_, _ = io.WriteString(w, `[]`)
 			return
@@ -99,8 +104,7 @@ func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)
 		default:
 			githubtest.Unexpected(t, w, r)
 		}
-	}})
-	return g
+	}
 }
 
 func (g *branchGitHub) created() []branchCreate {

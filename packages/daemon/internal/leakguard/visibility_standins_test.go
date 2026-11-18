@@ -69,6 +69,18 @@ func printsToStderr(lines ...string) string {
 	return "printf '%s\\n' " + strings.Join(quoted, " ") + " >&2\n"
 }
 
+// printsResponse is the lines of sh that print a response as `gh api --include` and `curl
+// --include` print one: the status line, the headers and a blank line, each ended by CRLF, then
+// body.
+func printsResponse(status string, headers []string, body string) string {
+	lines := append(append([]string{status}, headers...), "")
+	quoted := make([]string, len(lines))
+	for i, line := range lines {
+		quoted[i] = shQuote(line)
+	}
+	return "printf '%s\\r\\n' " + strings.Join(quoted, " ") + "\nprintf '%s' " + shQuote(body) + "\n"
+}
+
 // writeProgram writes body as an executable sh script called name in dir, which a test puts in
 // front of PATH: the guard looks its programs up on the PATH of the environment it was given.
 func writeProgram(t *testing.T, dir, name, body string) {
@@ -90,11 +102,10 @@ func pathWith(dir string) string {
 // read appends a line to the file reads names, which is how a test counts them.
 func spentRateLimit(reset time.Time, reads string) string {
 	return "echo read >> '" + reads + "'\n" +
-		"printf '%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'Content-Type: application/json; charset=utf-8' " +
-		"'X-Ratelimit-Limit: 15000' 'X-Ratelimit-Remaining: 0' " +
-		fmt.Sprintf("'X-Ratelimit-Reset: %d' ", reset.Unix()) +
-		"'X-Ratelimit-Resource: core' 'X-Ratelimit-Used: 15000' ''\n" +
-		`printf '%s\n' '{"message":"API rate limit exceeded for installation ID 1.","status":"403"}'` + "\n" +
+		printsResponse("HTTP/2.0 403 Forbidden", []string{"Content-Type: application/json; charset=utf-8",
+			"X-Ratelimit-Limit: 15000", "X-Ratelimit-Remaining: 0", fmt.Sprintf("X-Ratelimit-Reset: %d", reset.Unix()),
+			"X-Ratelimit-Resource: core", "X-Ratelimit-Used: 15000"},
+			`{"message":"API rate limit exceeded for installation ID 1.","status":"403"}`) +
 		printsToStderr("gh: API rate limit exceeded for installation ID 1. (HTTP 403)") +
 		"exit 1\n"
 }
@@ -116,10 +127,9 @@ var graphQLReset = time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
 func graphQLRead(record, status string, remaining int, body, stderr string, exit int) string {
 	script := `printf 'argv=%s\tread=%s\thost=%s\tnocolor=%s\tclicolor=%s\n' "$*" "${` + VisibilityReadVar + `-unset}" "${GH_HOST-unset}" ` +
 		`"${NO_COLOR-unset}" "${CLICOLOR_FORCE-unset}" >> ` + shQuote(record) + "\n" +
-		"printf '%s\\r\\n' " + shQuote(status) + " 'Content-Type: application/json; charset=utf-8' 'X-Ratelimit-Limit: 12500' " +
-		fmt.Sprintf("'X-Ratelimit-Remaining: %d' 'X-Ratelimit-Reset: %d' ", remaining, graphQLReset.Unix()) +
-		"'X-Ratelimit-Resource: graphql' ''\n" +
-		"printf '%s' " + shQuote(body) + "\n"
+		printsResponse(status, []string{"Content-Type: application/json; charset=utf-8", "X-Ratelimit-Limit: 12500",
+			fmt.Sprintf("X-Ratelimit-Remaining: %d", remaining), fmt.Sprintf("X-Ratelimit-Reset: %d", graphQLReset.Unix()),
+			"X-Ratelimit-Resource: graphql"}, body)
 	if stderr != "" {
 		script += printsToStderr(stderr)
 	}

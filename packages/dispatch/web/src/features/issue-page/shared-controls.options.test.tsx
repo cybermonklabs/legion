@@ -2225,8 +2225,9 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the unsent answer's box, its note and its words.
-    "AskCard unsent answer": "mt-3 rounded-xl border p-3 border-slate-200 dark:border-slate-800",
+    // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
+    // note and its words.
+    "AskCard unsent answer": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 mt-3",
     "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
     "AskCard unsent answer words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",

@@ -10626,6 +10626,202 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/projects/{key}/legion/board": {
+      "get": {
+        "description": "The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "operationId": "getApiV1ProjectsByKeyLegionBoard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionBoardResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/projects/{key}/legion/daemon": {
+      "get": {
+        "description": "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "operationId": "getApiV1ProjectsByKeyLegionDaemon",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LegionSetting"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "put": {
+        "description": "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "operationId": "putApiV1ProjectsByKeyLegionDaemon",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutLegionSettingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionSetting"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      },
+      "delete": {
+        "description": "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "operationId": "deleteApiV1ProjectsByKeyLegionDaemon",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/projects/{key}/related": {
       "get": {
         "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
@@ -22686,6 +22882,258 @@
         ],
         "type": "object"
       },
+      "LegionBoardCard": {
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "children": {
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "phase_since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slot": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "tree": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionBoardWait"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "priority",
+          "phase",
+          "phase_since",
+          "slot",
+          "roles",
+          "blocked_by",
+          "waiting_on",
+          "tree",
+          "children"
+        ],
+        "type": "object"
+      },
+      "LegionBoardColumn": {
+        "properties": {
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/LegionBoardCard"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "enum": [
+              "queue",
+              "design",
+              "planning",
+              "implementing",
+              "testing",
+              "reviewing",
+              "accepting",
+              "retro",
+              "merging",
+              "awaiting_person",
+              "held"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "cards"
+        ],
+        "type": "object"
+      },
+      "LegionBoardHeader": {
+        "properties": {
+          "queue_length": {
+            "type": "integer"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "read_error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "read_ok": {
+            "type": "boolean"
+          },
+          "slot_cap": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "slots_in_use": {
+            "type": "integer"
+          },
+          "trees": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "slots_in_use",
+          "slot_cap",
+          "trees",
+          "queue_length",
+          "read_at",
+          "read_ok",
+          "read_error"
+        ],
+        "type": "object"
+      },
+      "LegionBoardResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/LegionBoardColumn"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "computed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "header": {
+            "$ref": "#/components/schemas/LegionBoardHeader"
+          },
+          "project": {
+            "type": "string"
+          },
+          "settings": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "header",
+          "columns",
+          "settings",
+          "computed_at"
+        ],
+        "type": "object"
+      },
+      "LegionBoardWait": {
+        "properties": {
+          "answered_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "since",
+          "answered_at"
+        ],
+        "type": "object"
+      },
+      "LegionSetting": {
+        "properties": {
+          "created_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "project": {
+            "type": "string"
+          },
+          "state_url": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "state_url",
+          "created_by",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "ListUsersResponse": {
         "properties": {
           "users": {
@@ -24450,6 +24898,27 @@
         },
         "required": [
           "branch"
+        ],
+        "type": "object"
+      },
+      "PutLegionSettingInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state_url"
         ],
         "type": "object"
       },

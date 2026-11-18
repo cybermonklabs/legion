@@ -100,7 +100,7 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
-import { clearReplyDraft } from "./reply-drafts";
+import { UnsentText } from "./UnsentText";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -196,6 +196,10 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
  * registers for the page.
  */
+/** What the unsent answer's box says, on today's pages and inside `NoTooltips` alike. */
+const UNSENT_ANSWER_WHY =
+  "This question closed before you sent your answer, so it was not sent. Your text is here to copy.";
+
 const ON_PAGE = {
   action: `${pageLineBorder} ${pageMutedText}`,
   field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
@@ -662,11 +666,6 @@ export function AskCard({
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
   const currentAsk = completed ?? displayedAsk;
-  // A resolved ask takes no more replies, so an unsent one has nowhere to go.
-  const resolved = displayedAsk.state === "resolved" || currentAsk.state === "resolved";
-  useEffect(() => {
-    if (resolved) clearReplyDraft(displayedAsk.id);
-  }, [displayedAsk.id, resolved]);
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
@@ -897,18 +896,23 @@ export function AskCard({
           markRef={answerIsNewest ? markNewest : undefined}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
         />
-        {unsentAnswer === "" ? null : (
+        {unsentAnswer === "" ? null : tooltips ? (
+          <UnsentText
+            className="mt-3"
+            testId="ask-unsent-answer"
+            text={unsentAnswer}
+            why={UNSENT_ANSWER_WHY}
+          />
+        ) : (
+          // Inside `NoTooltips` the box is drawn in the page's colours, which `UnsentText` does
+          // not take, and the reader's own words are a value, which breaks anywhere.
           <div
-            className={`mt-3 rounded-xl border p-3 ${tooltips ? borderDefault : ON_PAGE.rule}`}
+            className={`mt-3 rounded-xl border p-3 ${ON_PAGE.rule}`}
             data-testid="ask-unsent-answer"
           >
-            <p className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}>
-              This question closed before you sent your answer, so it was not sent. Your text is
-              here to copy.
-            </p>
+            <p className={`text-xs ${ON_PAGE.quiet}`}>{UNSENT_ANSWER_WHY}</p>
             <p
-              // Inside `NoTooltips` the reader's own words are a value, which breaks anywhere.
-              className={`mt-1 text-sm whitespace-pre-wrap ${tooltips ? textPrimaryOnSurface : `max-w-full [overflow-wrap:anywhere] ${ON_PAGE.ink}`}`}
+              className={`mt-1 max-w-full text-sm whitespace-pre-wrap [overflow-wrap:anywhere] ${ON_PAGE.ink}`}
             >
               {unsentAnswer}
             </p>

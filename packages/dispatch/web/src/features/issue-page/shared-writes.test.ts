@@ -1,6 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, renderHook, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  type RenderResult,
+  render,
+  renderHook,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -36,6 +43,7 @@ import { issueStatuses } from "../project/board-model";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { StatusGlyph } from "./StatusGlyph";
 import {
   architecture,
   doc,
@@ -224,6 +232,54 @@ test("statusGlyph and statusTone give the prototype's three groups", () => {
       "○",
       pageStatusIdleText,
     ]);
+  }
+});
+
+// The page's typeface lacks ◐, which as text would be drawn in a face of the reader's own machine,
+// at that face's width; a shape is the same whatever the reader's fonts, so each group's glyph is
+// an inline svg with no text in it.
+test("StatusGlyph draws each status's shape as an inline svg with no text", () => {
+  const groups: [status: string, shapes: (string | null)[][]][] = [
+    ["done", [["path", "none", "currentColor"]]],
+    [
+      "in_progress",
+      [
+        ["circle", "none", "currentColor"],
+        ["path", "currentColor", null],
+      ],
+    ],
+    ["todo", [["circle", "none", "currentColor"]]],
+  ];
+  for (const [status, shapes] of groups) {
+    const view = render(createElement(StatusGlyph, { glyph: statusGlyph(status) }));
+    try {
+      const svg = view.container.firstElementChild;
+      expect({
+        elements: Array.from(view.container.children, (element) => element.tagName),
+        glyph: svg?.getAttribute("data-status-glyph"),
+        hidden: svg?.getAttribute("aria-hidden"),
+        shapes: Array.from(svg?.children ?? [], (shape) => [
+          shape.tagName,
+          shape.getAttribute("fill"),
+          shape.getAttribute("stroke"),
+        ]),
+        sized: svg?.classList.contains("size-[1em]"),
+        status,
+        text: svg?.textContent,
+        textElements: svg?.querySelectorAll("text").length,
+      }).toEqual({
+        elements: ["svg"],
+        glyph: statusGlyph(status),
+        hidden: "true",
+        shapes,
+        sized: true,
+        status,
+        text: "",
+        textElements: 0,
+      });
+    } finally {
+      view.unmount();
+    }
   }
 });
 

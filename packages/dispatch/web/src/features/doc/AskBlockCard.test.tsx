@@ -750,7 +750,10 @@ test("a reply written in Markdown keeps its paragraphs and list inside the block
   }
 });
 
-test("a resolved decision hosts the shared resolution record and no composer", () => {
+// A live document's resolved decision keeps its thread's reply behind Write a reply, as every
+// collapsed thread under a settled ask does; there is no answer form, and the reply's own form
+// waits for the control.
+test("a resolved decision hosts the shared resolution record, with Write a reply and no form", () => {
   const resolved: Ask = {
     ...ask,
     resolution: {
@@ -765,6 +768,7 @@ test("a resolved decision hosts the shared resolution record and no composer", (
   try {
     expect(card.section.querySelector("form")).toBeNull();
     expect(card.footer.getByTestId("ask-resolution-badge").textContent).toBe("Resolved");
+    expect(card.footer.getByRole("button", { name: "Write a reply" })).toBeInTheDocument();
   } finally {
     card.unmount();
   }

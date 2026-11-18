@@ -198,6 +198,16 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		s.beforeSettleStart(room)
 	}
 	state := s.lockState(room)
+	// A retirement that has reserved the record (roomState.retiring) is closing a room no one
+	// holds: the settlement takes the room once that close has returned - the same room where ygo
+	// refused the close, a fresh load of it where it closed.
+	for retiring := state.retiring; retiring != nil; retiring = state.retiring {
+		s.unlockState(room, state)
+		if err := s.awaitRetirement(parent, room, retiring); err != nil {
+			return settle.stoppedShort(err)
+		}
+		state = s.lockState(room)
+	}
 	if s.stopping.Load() || state.failed != nil || state.roomGeneration != generation {
 		s.unlockState(room, state)
 		return settleOutcome{}
@@ -275,7 +285,8 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 		// The warm-up carries the service's own mark (withOwnerVerified), so allowInject does not
 		// read the issue for it: it applies nothing, and a closed issue's document settles as an
 		// open one's does, so the refusal a closed issue makes of a caller's injection is not
-		// this load's to meet.
+		// this load's to meet. A late departure's settlement hands it the settlement's mark too,
+		// through parent (settleLastPeer, withSettlementLoad).
 		warmCtx := withOwnerVerified(parent)
 		if shuttingDown {
 			warmCtx = withShutdownLoad(warmCtx)
@@ -813,7 +824,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
-	// settlement that writes no version takes out none.
+	// settlement that writes no version takes out none. The room forgets the author of each ask
+	// block the commit indexed under the same hold, so no reader that finds the block's ask row
+	// committed then finds the room still owing its author.
 	committed := authorCapture{state: state}
 	if versioning {
 		committed = st.credit.capture
@@ -822,7 +835,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// This runs before the publish below, the order Ledger.Commit keeps for every other
 		// version write, so a subscriber acting on this version's artifact.version event acts
 		// after it.
-		if err == nil && state.roomGeneration == st.generation {
+		if err != nil {
+			return
+		}
+		st.credit.consumeAskAuthorsLocked(st.reconciliation.indexedAskBlocks)
+		if state.roomGeneration == st.generation {
 			state.settleFailures = 0
 			state.unsettled = len(state.inflight) > 0
 			if !state.unsettled {
@@ -832,7 +849,6 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}); err != nil {
 		return settleDone, st.commitFailed(advanced, fmt.Errorf("commit document settlement: %w", err))
 	}
-	st.credit.consumeAskAuthors(st.reconciliation.indexedAskBlocks)
 	st.finishSlots()
 	for _, event := range st.published {
 		s.events.Publish(event)
