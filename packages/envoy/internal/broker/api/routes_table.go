@@ -209,6 +209,10 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // service: every pod of such an account logs that service in, so a caller here may be the very
 // pod a request names, and the account and the pod uid are what tell the two apart.
 //
+// An account that BROKER_POD_OPERATORS maps to a person is refused, 403 PERSON_ACCOUNT
+// (serviceCaller), for a token bound to a pod and for a token bound to no pod. A person's pod
+// calls no route of this class.
+//
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already

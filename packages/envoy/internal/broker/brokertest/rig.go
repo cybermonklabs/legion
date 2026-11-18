@@ -134,17 +134,24 @@ type Rig struct {
 	// signing key they are minted under.
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
-	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon.
+	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon,
+	// and each account WithPersonPod names, as the service it names.
 	serviceLogins map[string]string
+	// podOperators is the broker's live BROKER_POD_OPERATORS: each account WithPersonPod names,
+	// answering its person, and no account by default. It is one map, which the enroll.Service
+	// and the requests.Machine share, and which the machine.Service reads through that
+	// enroll.Service. So a change SetPodOperator makes reaches all three.
+	podOperators map[string]string
 }
 
 // Option changes how NewRig wires its broker.
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease    time.Duration
-	maxConns int
-	minters  map[string]requests.Minter
+	lease      time.Duration
+	maxConns   int
+	minters    map[string]requests.Minter
+	personPods []personPod
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -164,6 +171,22 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
+// service the account logs in as.
+type personPod struct {
+	account, service, person string
+}
+
+// WithPersonPod maps account to person, as a BROKER_POD_OPERATORS entry does, and lets account
+// log in as service with its own token, as the BROKER_SERVICE_LOGINS entry does that the setting
+// needs for each account it maps. Without the second entry, a token login of account is refused
+// ACCOUNT_NOT_LISTED before any rule of the mapping applies. Give the option once for each account
+// to map. config.Load refuses a mapped account that BROKER_SERVICES binds, or whose service it
+// names, so give an account other than WorkerAccount and a service other than legion-daemon.
+func WithPersonPod(account, service, person string) Option {
+	return func(c *rigConfig) { c.personPods = append(c.personPods, personPod{account, service, person}) }
 }
 
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
@@ -209,11 +232,22 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
+	// BROKER_POD_OPERATORS: one map, empty unless WithPersonPod names an account. An empty map
+	// maps no account, as nil does, so a Rig without the option decides as before. Each mapped
+	// account logs in with its own token as its service, as config.Load requires.
+	podOperators := map[string]string{}
+	for _, pod := range config.personPods {
+		serviceLogins[pod.account] = pod.service
+		podOperators[pod.account] = pod.person
+	}
 	// BROKER_SERVICES: the account every pod MintPodToken mints a token for runs as, bound to the
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	enr := &enroll.Service{
+		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
+		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// A session name belongs to one principal here as it does on the real broker: the binder is
 	// a store on the same pool the OAuth provider's own store uses (NewOAuthProvider, built
@@ -224,6 +258,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)
@@ -261,7 +296,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Registry:  registry,
 		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
-		serviceLogins: serviceLogins,
+		serviceLogins: serviceLogins, podOperators: podOperators,
 	}
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
@@ -543,4 +578,17 @@ func (r *Rig) MintWorkflowToken(t *testing.T, repository, workflow, ref, runID s
 // line and redeploying the broker does.
 func (r *Rig) DropServiceLogin(account string) {
 	delete(r.serviceLogins, account)
+}
+
+// SetPodOperator changes account's entry in this Rig's BROKER_POD_OPERATORS, as an operator
+// editing that entry and redeploying the broker does: a person maps account to that person, and
+// "" drops the entry. The broker reads the setting at each decision, so the next call that reads
+// it sees the change. A login that a pod made before the change keeps its operator until the pod
+// logs in again. account stays in BROKER_SERVICE_LOGINS.
+func (r *Rig) SetPodOperator(account, person string) {
+	if person == "" {
+		delete(r.podOperators, account)
+		return
+	}
+	r.podOperators[account] = person
 }
