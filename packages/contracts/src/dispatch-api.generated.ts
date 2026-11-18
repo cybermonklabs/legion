@@ -1557,7 +1557,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
+    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. A requirement's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the requirement's whole content as the tree a reader is shown, links and references kept. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
     get: operations["getApiV1IssuesByKeyCoverage"];
     put?: never;
     post?: never;
@@ -1728,7 +1728,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
@@ -2681,6 +2681,23 @@ export interface paths {
     put?: never;
     /** @description The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds. The two forms do not answer alike. This one is the check an agent runs to ask a question, so it answers other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in (owner.project), ranked by meaning alone and offered with no claim that they answer the question. The GET form answers none. */
     post: operations["postApiV1ProjectsByKeyRelated"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/reference-targets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. */
+    get: operations["getApiV1ReferenceTargets"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -3845,6 +3862,12 @@ export interface components {
       sha256: string;
       surface: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       version: number;
       when: string;
     };
@@ -5078,8 +5101,10 @@ export interface components {
     IssueChild: {
       /** Format: date-time */
       active_at: string;
+      claim?: components["schemas"]["IssueClaim"];
       external_links: components["schemas"]["ExternalLink"][] | null;
       key: string;
+      needs?: string[];
       status: string;
       subtree_done: number;
       subtree_total: number;
@@ -5972,6 +5997,22 @@ export interface components {
       document: string;
       questions: components["schemas"]["ReferenceQuestion"][] | null;
     };
+    ReferenceTarget: {
+      ambiguous?: boolean;
+      gone: boolean;
+      kind: string;
+      name: string;
+      ref: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
+    ReferenceTargets: {
+      targets: components["schemas"]["ReferenceTarget"][] | null;
+    };
     ReferenceVia: {
       id: string;
       kind: string;
@@ -6063,6 +6104,12 @@ export interface components {
       plan_tasks: number;
       ref: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     ResidentRooms: {
       rooms: string[] | null;
@@ -13427,6 +13474,46 @@ export interface operations {
       };
     };
   };
+  getApiV1ReferenceTargets: {
+    parameters: {
+      query?: {
+        ref?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReferenceTargets"];
+        };
+      };
+      /** @description Not Modified */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1References: {
     parameters: {
       query?: {
@@ -14503,6 +14590,8 @@ export type RecordResponse = components["schemas"]["RecordResponse"];
 export type ReferenceMember = components["schemas"]["ReferenceMember"];
 export type ReferenceQuestion = components["schemas"]["ReferenceQuestion"];
 export type ReferenceQuestions = components["schemas"]["ReferenceQuestions"];
+export type ReferenceTarget = components["schemas"]["ReferenceTarget"];
+export type ReferenceTargets = components["schemas"]["ReferenceTargets"];
 export type ReferenceVia = components["schemas"]["ReferenceVia"];
 export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];

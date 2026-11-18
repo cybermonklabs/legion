@@ -2111,7 +2111,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
 		// claim's write of the delivery takes those rows from this start row and holds them
 		// under that claim and delivery id, and the write recording the turn's confirmation
-		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
+		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
+		// fact that a reviewer's task ends with the daemon's two sentences of its review round
+		// (record.SuperviseRequest.RoundNamed): the one place each prompt is composed reads it
+		// there, and gives a reviewer's task of a row that lacks it, which only a row of the
+		// release before this one can be, those sentences naming no commit and no entry
+		// (supervise's Delivery.message).
 		var task *supervise.RequestDeliver
 		if payload.Task != "" {
 			kept, err := keptJSON(payload.Kept)
@@ -2119,8 +2124,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed,
+				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim

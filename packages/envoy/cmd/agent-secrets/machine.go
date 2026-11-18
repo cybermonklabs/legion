@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -151,7 +152,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		case "expired":
 			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", code, held)
 		}
-		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now()))
+		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now(), resp.NoCredentialFailure()))
 		return 0
 	}
 	fmt.Fprintln(stdout, state)
@@ -159,15 +160,12 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	if state == "pending" {
 		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, redact.OneLine(resp.Code))
 	} else {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; run: agent-secrets machine login\n", reason)
+		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; %s\n", reason, brokerclient.Hint(resp.NoCredentialFailure()))
 	}
 	return 1
 }
 
-// credentialExpiry is login-status's line about when the held launcher credential lapses: the
-// machine login renews itself while the helper's refresh reaches the broker, so the time is when
-// it lapses only if no refresh does.
-func credentialExpiry(expiresAt string, now time.Time) string {
+func credentialExpiry(expiresAt string, now time.Time, failure brokerclient.Failure) string {
 	if expiresAt == "" {
 		return "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"
 	}
@@ -177,9 +175,9 @@ func credentialExpiry(expiresAt string, now time.Time) string {
 	}
 	left := at.Sub(now)
 	if left <= 0 {
-		return fmt.Sprintf("the launcher credential expired at %s; run: agent-secrets machine login", expiresAt)
+		return fmt.Sprintf("the launcher credential expired at %s; %s", expiresAt, brokerclient.Hint(failure))
 	}
-	return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", expiresAt, roughDuration(left))
+	return brokerclient.Lapse(failure, expiresAt, roughDuration(left))
 }
 
 // roughDuration is d to the minute, with days: 6d23h59m, 3h5m, 0m.
@@ -218,7 +216,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	}
 	machines, raw, err := newClient(base).OperatorMachines(context.Background(), signer)
 	if err != nil {
-		return operatorFail(stderr, form, brokerSource(base), err)
+		return operatorFail(stderr, form, brokerSource(base), signer.failure, err)
 	}
 	if *asJSON {
 		writeVerbatim(stdout, raw)
@@ -277,7 +275,7 @@ func cmdMachineRevoke(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if err := newClient(base).RevokeOperatorMachine(context.Background(), signer, id); err != nil {
-		return operatorFail(stderr, form, brokerSource(base), err)
+		return operatorFail(stderr, form, brokerSource(base), signer.failure, err)
 	}
 	if sameID(id, signer.credentialID) {
 		fmt.Fprintf(stderr, "agent-secrets %s: revoking this machine's own login ends every session it enrolled, this one's broker access included\n", form)
@@ -297,15 +295,17 @@ func sameID(a, b string) bool {
 // operatorFail prints a machine or grant command's failure and answers 1, naming the broker it
 // asked (src), so a refusal is never read as another secrets CLI's answer. The helper's refusal
 // to sign (launcherRefusal) prints as it stands: it is this machine's own helper refusing, with
-// no broker asked anything. The broker refusing the machine's login says to log it in again.
-func operatorFail(stderr io.Writer, form string, src source, err error) int {
+// no broker asked anything. The broker refusing the machine's credential is followed by the hint
+// of failure, the class of the helper's mode the signer read (launcherSigner.failure): a machine
+// login in machine-login mode, the helper's own trade loop in identity mode.
+func operatorFail(stderr io.Writer, form string, src source, failure brokerclient.Failure, err error) int {
 	var broker *apiError
 	var refused *launcherRefusal
 	switch {
 	case errors.As(err, &refused):
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, refused)
 	case errors.As(err, &broker) && broker.Status == http.StatusUnauthorized && broker.Code == "LAUNCHER_INVALID":
-		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's login to %s is expired or revoked (run: agent-secrets machine login)\n", form, broker, src)
+		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's launcher credential at %s is expired or revoked; %s\n", form, broker, src, brokerclient.Hint(failure))
 	default:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, refusalText(src, err))
 	}

@@ -209,11 +209,11 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	switch {
 	case flow == nil:
-		return record, fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then run: %s",
-			record.Person, brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar, brokerclient.SignInCommand)
+		return record, brokerclient.WithHint(fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
+			record.Person, brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar), brokerclient.FailureSignInRefused)
 	case record.ClientID != "" && record.ClientID != flow.ClientID:
-		return record, fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed; run: %s",
-			record.Person, record.ClientID, brokerclient.SignInCommand)
+		return record, brokerclient.WithHint(fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
+			record.Person, record.ClientID), brokerclient.FailureSignInRefused)
 	}
 	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
@@ -235,7 +235,9 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		return record, fmt.Errorf("%w; run: %s", err, brokerclient.SignInCommand)
+		// The broker's own words name the cure where one exists, and an ended sign-in carries
+		// its own hint, so a failed trade adds none (brokerclient.Hint).
+		return record, err
 	}
 	if token.CredentialID == "" {
 		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)

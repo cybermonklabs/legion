@@ -49,7 +49,7 @@ const (
 )
 
 // ErrNoSignIn is a machine where nobody has signed in.
-var ErrNoSignIn = fmt.Errorf("nobody is signed in on this machine; run: %s", SignInCommand)
+var ErrNoSignIn = errors.New("nobody is signed in on this machine; " + Hint(FailureNoSignIn))
 
 // signInStoreName is the sign-in store as a message names it. A record holds a refresh token and
 // a box key, so the store is a credential file's place, and no message names its path - the
@@ -142,10 +142,10 @@ func (s SignInStore) Read(path string) (SignInRecord, error) {
 	}
 	var record SignInRecord
 	if json.Unmarshal(raw, &record) != nil {
-		return SignInRecord{}, fmt.Errorf("a sign-in in %s is not a sign-in record; run: %s", signInStoreName, SignInCommand)
+		return SignInRecord{}, WithHint(fmt.Errorf("a sign-in in %s is not a sign-in record", signInStoreName), FailureNoSignIn)
 	}
 	if record.Person == "" || record.RefreshToken == "" || record.BoxKey == "" {
-		return SignInRecord{}, fmt.Errorf("a sign-in in %s names no person, no refresh token or no box key; run: %s", signInStoreName, SignInCommand)
+		return SignInRecord{}, WithHint(fmt.Errorf("a sign-in in %s names no person, no refresh token or no box key", signInStoreName), FailureNoSignIn)
 	}
 	record.path = path
 	return record, nil
@@ -196,8 +196,8 @@ func (s SignInStore) Choose(person string) (SignInRecord, error) {
 		}
 		// Not the value itself: a value this variable names nobody by is where a credential
 		// pasted into the wrong variable shows up, so the refusal names the variable alone.
-		return SignInRecord{}, fmt.Errorf("%s names nobody signed in on this machine; signed in here: %s; run: %s",
-			PersonVar, namesOf(records), SignInCommand)
+		return SignInRecord{}, WithHint(fmt.Errorf("%s names nobody signed in on this machine; signed in here: %s",
+			PersonVar, namesOf(records)), FailureNoSignIn)
 	case len(records) == 1:
 		return records[0], nil
 	default:

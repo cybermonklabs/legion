@@ -102,7 +102,7 @@ It carries:
   The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write; or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
-  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
+  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
@@ -1978,6 +1978,23 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release that keeps the commit a reviewer last read
+
+The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
+The last two sentences of each task a reviewer is sent are always the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.` or ` Review entry: none.`, in every phase and whatever queued the task.
+A stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
+A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.
+A task of the reviewer without that fact, which a start row or a pending delivery of the earlier release and an operator's own task are, is sent with ` Last reviewed commit: none. Review entry: none.` at its end, so its reviewer reads the whole change and keeps the entry of its round.
+All three statements run in the migration's one transaction: the two adds take a short lock on their tables and rewrite no row, and the update writes the reviewer's rows that store a task.
+An earlier release boots with the columns in place: its reads and writes of `phases` and of the claims' deliveries name each column they touch, so it never reads the columns, and every row it inserts takes their defaults.
+At the rollback, with the daemon stopped, run the way back that the migration's header gives: it takes the daemon's last two sentences off each task this release stored with them (a reviewer's row, and a pending delivery and a supervise start that carry the fact), deletes the key `roundNamed` from each supervise row, since the earlier release decodes an outbox row strictly and would retry such a row for ever, drops the two columns and deletes the migration's version row, so the roll-forward's `Migrate` adds the columns again at their defaults (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+The drops and the delete are owed to the roll-forward, the key's delete to the earlier release.
+An earlier release does not clear `phases.reviewed_head` when it opens a new generation of an issue, so a column left in place could tell the first reviewer of that generation after the roll-forward a commit that a review of the generation before read, where this release names none.
+And it replaces a claim's delivery with an upsert that does not name `round_named`, so a column left in place would say of the task that release wrote that it holds the daemon's sentences.
+What the way back costs is the commit each reviewer's row held and the fact on each start row and delivery: the next round of each issue then in review reads the whole change, and each task this release queued is sent after the roll-forward ending with ` Last reviewed commit: none. Review entry: none.`.
+Each strip is anchored at the end of the task, so a sentence of the same words earlier in it, such as one a retry's reason quotes, stays, and each task then holds the text the earlier release would have written, which it sends as text.
+The roll-forward appends one pair again to each task a reviewer's row stores, so each such task ends with exactly one pair of the daemon's sentences.
+
 #### Rolling back the release that tells the merger of a merge-queue removal
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
@@ -2573,7 +2590,7 @@ A migration added after it that neither block touches adds one to every count fr
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for the columns of later migrations that the list after the block leaves standing, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
-20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and 20261114031356, the highest row neither block deletes, on a store a release at contract 146 migrated.
+20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and the highest row neither block deletes on a store a release at contract 146 migrated, which is 20261114031356 where no migration recorded above it is left standing.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -2606,7 +2623,9 @@ The six drops and the deleted row are owed to the roll-forward rather than to th
 together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and fills the entries afresh from the tokens the earlier release kept current while it ran.
 What that second fill costs is the numbering:
 every role the earlier release had handed work is at entry 1 again, whatever entry it stood at before the rollback, and `entry_raised_at` reads the moment of the roll-forward.
-Nothing reads an entry across the rollback — what a role is owed is the difference between its own two numbers, both written by that one run — so the renumbering costs no more than the history it does not keep.
+What a role is owed is the difference between its own two numbers, both written by that one run, so that difference reads no entry from before the rollback.
+One reader does compare an entry across it: the reviewer's review names the entry of its round in its Legion footer, so a review from before the rollback that names entry 1 and is applied after the roll-forward, such as one whose webhook was lost and that the daemon's read of the pull request's reviews takes up, can match the reviewer's row at entry 1 again.
+Such a match moves the reviewed commit only for a review of the reviewer's own session that names the pull request's current head, so the commit it records is one that this session read, and the renumbering costs no more than that and the history it does not keep.
 Zeroing the six columns and leaving the row standing would cost more than that:
 the migration would never run again, and a role whose task the earlier release lost while it ran would read 0 against 0, owed nothing and swept nothing, holding its slot with nobody at work on it until a person noticed.
 The re-arm needs nothing of the other rows:
@@ -2614,15 +2633,19 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-Eleven migrations are recorded above this one at contract 146.
-20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
-20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
-20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
+The migrations recorded above this one are these.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
+20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+20261113082214_outbox_kinds_with_the_update_ask, of cybermonklabs/legion#3982, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
-20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses both first.
+20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
+20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982 too, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
+20261113181500_architect_stalled_notices adds the table that 20261113182000_architect_entry_upgrade marks, and that upgrade writes into three of the six, so the contract 146 block above reverses both first.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
+20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
+20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
+20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

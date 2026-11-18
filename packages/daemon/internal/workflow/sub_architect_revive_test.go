@@ -112,16 +112,23 @@ var plannerCompletes = reviveMove{
 
 // reviewerApproves is the review App's approval of the head the issue's pull request stands at,
 // its checks green and GitHub reporting it clean, which moves the issue to accepting: a phase
-// whose role is the architect, so no worker is started.
+// whose role is the architect, so no worker is started. The reviewer's claim is seeded under the
+// token the daemon starts the reviewer under, on the session ses-reviewer (seedRoleClaim), which
+// the approval's footer names (reviewBody): a review of the review App decides its round only when
+// its footer names the session that claim records (byReviewer).
 var reviewerApproves = reviveMove{
 	name: "the reviewer's approval", from: phase.Reviewing, to: phase.Accepting,
 	seed: func(t *testing.T, pool *pgxpool.Pool, key string) {
 		t.Helper()
+		reviewer, err := claim.NewToken("legion", key, claim.RoleReviewer)
+		if err != nil {
+			t.Fatalf("the reviewer token of %s: %v", key, err)
+		}
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 43,
 			Branch: "legion/" + key, HeadSHA: headOne, CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}})
-		seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "review-claim"})
+		seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: reviewer})
 		seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: "implement-claim"})
-		seedRoleClaim(t, pool, "review-claim", key, claim.RoleReviewer, supervise.StateWorking, "")
+		seedRoleClaim(t, pool, reviewer, key, claim.RoleReviewer, supervise.StateWorking, "")
 	},
 	apply: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 		t.Helper()

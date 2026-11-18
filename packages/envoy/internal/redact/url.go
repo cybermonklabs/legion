@@ -25,11 +25,12 @@
 // that same line, never the URL anew. What prints is always the checked error's own text: words a
 // caller wrapped around the failure or the *url.Error, with fmt.Errorf's %w or an error type of
 // its own, are no part of what was checked, so they never print. The one error type whose words
-// print over a trusted answer is one that vouches for them (Printable): its text is fixed words
-// and that answer's fields alone. Nothing under an error this package already put in words is
-// checked again: what Error, Cause, Named, Class, Masked and File return keeps the failure they
-// withheld reachable for errors.As, so a second Error or Cause of it, beside any URL and under any
-// wrapper, prints the words already given, never the answer the first one withheld.
+// print over a trusted answer is one that vouches for them (Printable): its text is fixed words,
+// words of its own that neither the answer nor a caller writes, and that answer's fields alone.
+// Nothing under an error this package already put in words is checked again: what Error, Cause,
+// Named, Class, Masked and File return keeps the failure they withheld reachable for errors.As, so
+// a second Error or Cause of it, beside any URL and under any wrapper, prints the words already
+// given, never the answer the first one withheld.
 package redact
 
 import (
@@ -339,20 +340,21 @@ func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 }
 
 // Printable is an error that vouches for its own words: an error type whose text is built only
-// from fixed words and the fields of the trusted OAuth answer it unwraps to (trustedAnswer), such
-// as a client's sentence around the broker's refusal. printable passes one at its own level of
-// the chain, as it passes that answer, and prints its PrintableText, never its Error. It passes
-// one only where the error it unwraps to is itself a trusted answer, so the fields it is built
-// from are ones printable would print anyway, and only where that text holds no control
-// character: x/oauth2 quotes the answer's fields, and a sentence that does not would let a line
-// break or an escape sequence from the answer forge a line where it prints, so such a text
-// prints as the answer's own. A wrapper around it still prints nothing of its own. The trust is
-// by declaration: redact cannot read a Printable's words, so each one is held to this promise
-// where it is written.
+// from fixed words, words of its own it held before the request, which neither the answer nor a
+// caller writes (a refusal's name for the identity it traded), and the fields of the trusted OAuth
+// answer it unwraps to (trustedAnswer), such as a client's sentence around the broker's refusal.
+// printable passes one at its own level of the chain, as it passes that answer, and prints its
+// PrintableText, never its Error. It passes one only where the error it unwraps to is itself a
+// trusted answer, so the fields it is built from are ones printable would print anyway, and only
+// where that text holds no control character: x/oauth2 quotes the answer's fields, and a sentence
+// that does not would let a line break or an escape sequence from the answer forge a line where
+// it prints, so such a text prints as the answer's own. A wrapper around it still prints nothing
+// of its own. The trust is by declaration: redact cannot read a Printable's words, so each one is
+// held to this promise where it is written.
 type Printable interface {
 	error
-	// PrintableText is the error's text built from fixed words and its trusted answer's fields
-	// alone.
+	// PrintableText is the error's text built from fixed words, its own words no answer or caller
+	// writes, and its trusted answer's fields alone.
 	PrintableText() string
 }
 

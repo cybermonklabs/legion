@@ -39,14 +39,19 @@ import (
 // never by its path, as MachineFileNamed names the machine file.
 const operatorFileNamed = "the operator file AGENT_SECRETS_OPERATOR_FILE names (default ~/.config/agent-secrets/operator)"
 
-// noCredentialMsg is the exact instruction returned whenever the helper has no machine
-// credential to authenticate the launcher routes with: never having logged in, and having dropped
-// its credential (drop), because the broker refused it with 401 LAUNCHER_INVALID (clearOnInvalid),
-// refused its refresh (refresh), or it reached its expiry without a refresh (watchExpiry). It
-// never auto-relogins; a login is a human ceremony.
-const noCredentialMsg = "no machine credential; run: agent-secrets machine login"
+var errNoCredential = errors.New("no machine credential")
 
-var errNoCredential = errors.New(noCredentialMsg)
+func (b *Broker) noCredentialFailure() brokerclient.Failure {
+	return modeFailure(b.Identity != nil, b.identityStopped.Load())
+}
+
+func (b *Broker) noCredential() error {
+	return brokerclient.WithHint(errNoCredential, b.noCredentialFailure())
+}
+
+func (b *Broker) noCredentialText() string {
+	return b.noCredential().Error()
+}
 
 // The refresh loop's defaults: a refresh a day at most; after a refresh the broker did not answer
 // (any transport error: a refused, unanswered or unresolved dial, a timeout, a lost answer, a
@@ -162,9 +167,10 @@ type Broker struct {
 	// never a proof, a token, a request object or key material. Nil logs nothing.
 	Log *slog.Logger
 
-	cred    atomic.Pointer[machineCredential]
-	loginMu sync.Mutex                 // one login at a time
-	login   atomic.Pointer[loginState] // most recent login: code, state
+	cred            atomic.Pointer[machineCredential]
+	identityStopped atomic.Bool
+	loginMu         sync.Mutex                 // one login at a time
+	login           atomic.Pointer[loginState] // most recent login: code, state
 	// credMu is held by whatever changes the held login and its machine file together: a login's
 	// save and install, a start's install, and a refresh from its request to its save and swap, so
 	// a refresh never races a login's install. Every save of the machine file runs under it. Every
@@ -637,7 +643,7 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 		b.credMu.Unlock()
 	}
 	if err != nil {
-		b.logger().Error("machine login approved, but the helper could not keep it; run: agent-secrets machine login again", "error", err)
+		b.logger().Error("machine login approved, but the helper could not keep it; "+brokerclient.Hint(brokerclient.FailureNoMachineLogin), "error", err)
 		b.recordLogin(&loginState{Code: code, State: "expired"})
 		return
 	}
@@ -742,6 +748,14 @@ func (b *Broker) Start(ctx context.Context) error {
 	return nil
 }
 
+// errAnswerLacksCredential stops startIdentity's trade loop: the broker served a token, but no
+// launcher credential to enrol sessions with. It describes the answer, not the helper, which may
+// still hold the credential an earlier trade gave it. It names no URL, so a log line prints it as
+// it is.
+var errAnswerLacksCredential = fmt.Errorf("the broker's token answer carries no %s or RFC 3339 %s, so it gives this machine no launcher credential", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
+
+const identityShutdownLine = "the helper stopped trading this machine's identity: it is shutting down"
+
 // startIdentity is Start for a machine that proves an identity of its own: the token client
 // trades it for one of the broker's access tokens, whose launcher credential the helper then
 // enrolls sessions with, and keeps trading before each one lapses (brokerclient.Client.Run) until
@@ -761,7 +775,7 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 	go func() {
 		err := b.Identity.Run(ctx, func(_ context.Context, token *brokerclient.Token) error {
 			if token.CredentialID == "" || token.CredentialExpiresAt.IsZero() {
-				return fmt.Errorf("the broker's token answer lacks a %s or an RFC 3339 %s, so this machine has no launcher credential to enrol sessions with", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
+				return errAnswerLacksCredential
 			}
 			cred := &machineCredential{key: b.Identity.Key(), id: token.CredentialID, expiresAt: token.CredentialExpiresAt.UTC(), gone: make(chan struct{})}
 			b.credMu.Lock()
@@ -773,7 +787,16 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 			return nil
 		})
 		if err != nil {
-			b.logger().Error("the helper stopped trading this machine's identity; it enrols no session until this is fixed", "error", b.URL.Error(err))
+			b.identityStopped.Store(true)
+			// The answer that lacks a credential is this helper's own words, naming no URL, so it
+			// is logged as it stands; a refusal, or a failure of the call, is redacted.
+			reason := b.URL.Error(err)
+			if errors.Is(err, errAnswerLacksCredential) {
+				reason = err
+			}
+			b.logger().Error("the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols under this machine's credential once that lapses, until the helper restarts", "error", reason)
+		} else {
+			b.logger().Info(identityShutdownLine)
 		}
 		once.Do(func() { close(first) })
 	}()
@@ -870,9 +893,10 @@ func (b *Broker) Close() {
 
 // Logged when a rotated login's save fails: the file was removed (unsavedRemovedMsg), or the
 // filesystem refused even that (unsavedStuckMsg).
-const (
-	unsavedRemovedMsg = "the helper could not keep the machine login's refresh on disk; removed the machine file, which named a token the broker has rotated away: the login is held only in memory, the helper retries only the save every 15 s, and a restart before a save lands needs a new approval (run: agent-secrets machine login)"
-	unsavedStuckMsg   = "the helper could not keep the machine login's refresh on disk, nor remove the machine file: a restart before the disk is writable again presents a token the broker has rotated away, and the broker revokes the machine as a reuse, ending its sessions; make the disk writable, and do not restart the helper until then"
+var (
+	unsavedRemovedMsg = "the helper could not keep the machine login's refresh on disk; removed the machine file, which named a token the broker has rotated away: the login is held only in memory, the helper retries only the save every 15 s, and a restart before a save lands needs a new approval; " +
+		brokerclient.Hint(brokerclient.FailureNoMachineLogin)
+	unsavedStuckMsg = "the helper could not keep the machine login's refresh on disk, nor remove the machine file: a restart before the disk is writable again presents a token the broker has rotated away, and the broker revokes the machine as a reuse, ending its sessions; make the disk writable, and do not restart the helper until then"
 )
 
 // unsaveFile records cred, the held login whose save just failed with err, as unsaved, and
@@ -1167,8 +1191,9 @@ func (b *Broker) settleRefused(ctx context.Context, cred *machineCredential) err
 // watchExpiry warns a day (expiryWarning) before cred lapses, at once when less than that is left,
 // and drops cred when it reaches its expiry (dropExpired), as a broker refusal would: the login
 // renews itself only while a refresh reaches the broker, and from then on no session can enroll
-// until a human approves a new machine login. It ends early, silently, once the helper stops
-// holding cred (a refusal, a refresh, or a newer login).
+// under this machine's credential until a human approves a new machine login (a person signed in
+// on the machine still enrols under their own sign-in). It ends early, silently, once the helper
+// stops holding cred (a refusal, a refresh, or a newer login).
 //
 // In identity mode there is no warning at all, only the drop. The credential this machine's
 // identity token trades for lives as long as that token, which Google bounds at an hour, so a
@@ -1251,7 +1276,9 @@ func (b *Broker) dropOutsideRefresh(ctx context.Context, cred *machineCredential
 }
 
 // expiresSoonMsg is the WARN watchExpiry logs a day before the held credential lapses.
-const expiresSoonMsg = "the launcher credential lapses soon: no refresh has moved its expiry; the machine login renews itself while the helper reaches the broker, otherwise run: agent-secrets machine login, and have a human approve it"
+// It is logged in machine-login mode alone: in identity mode watchExpiry warns of nothing.
+var expiresSoonMsg = "the launcher credential lapses soon: no refresh has moved its expiry; the machine login renews itself while the helper reaches the broker, otherwise " +
+	brokerclient.Hint(brokerclient.FailureNoMachineLogin)
 
 // enrollBody is POST /v1/enrollments's shape in the shared broker contract (the v8 "approver"
 // field is gone: the broker's policy picks a request's approver, never the enrollment).
@@ -1279,7 +1306,7 @@ type leaseReply struct {
 func (b *Broker) launcherProof(method, url string) (string, *machineCredential, error) {
 	cred := b.cred.Load()
 	if cred == nil {
-		return "", nil, errNoCredential
+		return "", nil, b.noCredential()
 	}
 	compact, err := proof.SignLauncher(cred.key, cred.id, method, url, time.Now())
 	return compact, cred, err
@@ -1333,7 +1360,7 @@ func (b *Broker) clearOnInvalid(ctx context.Context, cred *machineCredential, er
 	if !dropped && held {
 		return err
 	}
-	return errNoCredential
+	return b.noCredential()
 }
 
 // drop stops holding cred, if the helper still does, records why, logs at ERROR that it did,
@@ -1361,9 +1388,12 @@ func (b *Broker) drop(cred *machineCredential, why string, attrs ...any) bool {
 		return false
 	}
 	close(cred.gone)
-	b.logger().Error(why+"; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)",
-		append([]any{"credential_id", cred.id}, attrs...)...)
+	b.logger().Error(why+"; cleared: "+b.dropLeaves(), append([]any{"credential_id", cred.id}, attrs...)...)
 	return true
+}
+
+func (b *Broker) dropLeaves() string {
+	return "no session can enroll under this machine's credential; " + brokerclient.Hint(b.noCredentialFailure())
 }
 
 // logger is b.Log, or a logger that writes nowhere when there is none.
@@ -1443,7 +1473,7 @@ func (b *Broker) signingAuthority(ctx context.Context) (*brokerclient.Authority,
 	}
 	cred := b.cred.Load()
 	if cred == nil {
-		return nil, nil, errNoCredential
+		return nil, nil, b.noCredential()
 	}
 	return &brokerclient.Authority{Key: cred.key, CredentialID: cred.id}, cred, nil
 }
