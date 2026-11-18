@@ -17,11 +17,23 @@
 -- activity columns clears activity_sent_at too. Every existing row takes null in both, which that
 -- guard reads as no report yet, so the next report of each claim is written.
 --
--- Rolling the image back needs no statement: the release before this one names neither column,
--- so its daemon writes activity_at by the session's clock again and leaves both as they stand, and
--- a daemon rolled forward again orders by them from its next report on. A launch that release
--- made moves the generation and leaves them as the process before it left them, which the guard
--- then reads as another launch's report, so the launched process's first report is written.
+-- Rolling the image back needs one statement, run with the daemon stopped and before the earlier
+-- image is pinned:
+--
+--   update claims set activity_at = activity_sent_at
+--     where activity_sent_at is not null and activity_sent_generation = generation;
+--
+-- The release before this one names neither column and orders a session's reports by activity_at
+-- alone: it drops a report whose session time is before activity_at. This release writes
+-- activity_at as the daemon's receipt, so without the statement that release drops every report
+-- of a session whose clock runs X behind the daemon's for up to X after the rollback, and its idle
+-- rule meanwhile reads the last report this release wrote, which can say that nothing runs while a
+-- job of that session does. The statement dates each claim's last report by the session's own
+-- time again, the time that release compares, and only where this release wrote that report for
+-- the launch the row holds. Otherwise that release leaves both columns as they stand, and a daemon
+-- rolled forward again orders by them from its next report on. A launch that release made moves
+-- the generation and leaves them as the process before it left them, which the guard then reads
+-- as another launch's report, so the launched process's first report is written.
 --
 -- There is no down file: migrations here are forward-only.
 alter table claims add column activity_sent_at timestamptz;
