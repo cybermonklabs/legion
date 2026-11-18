@@ -116,11 +116,13 @@ the request. `agent-secrets-devrelay` stands in for Dispatch only for a machine 
 (`machine-approve`, with its code): the broker refuses every route a service calls to decide a
 secret request.
 
-The list Dispatch reads names each request's page as `approve_url`:
+The list Dispatch reads names each request's page as `approve_url`. `curl -H @-` reads the header
+from standard input, so the token is in no command line another process can read:
 
 ```sh
-curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" \
-  "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER" | jq '.pending[] | {record_id, kind, approve_url}'
+printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" |
+  curl -s -H @- "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER" |
+  jq '.pending[] | {record_id, kind, approve_url}'
 ```
 
 The [HTTP API reference](/legion/broker/reference/api/) documents the page's routes and that list.

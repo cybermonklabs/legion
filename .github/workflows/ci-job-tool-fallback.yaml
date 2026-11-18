@@ -132,13 +132,15 @@ jobs:
           cold=""
           for row in $rows; do
             url=$(ci_tools_blob_url "$row")
-            status=$(curl -sS -o /dev/null -I -L -w '%{http_code}' \
-              -H "Authorization: Bearer $token" "$url")
+            # The HEAD every reader of the package makes (ci_tools_registry_head): the bearer on
+            # standard input, in no process's command line, and with the first request alone, so
+            # a redirect to the store that holds the blob is followed with no token.
+            status=$(ci_tools_registry_head "$token" /dev/null "$url")
             echo "$row: $registry answers $status for $url"
             [ "$status" = 200 ] || cold="$cold $row"
           done
           if [ -n "$cold" ]; then
-            echo "::error::the package holds no blob for$cold, so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
+            echo "::error::the package answered no 200 for the blob of$cold (each answer is above), so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
             exit 1
           fi
 

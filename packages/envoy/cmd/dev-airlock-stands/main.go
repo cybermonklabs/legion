@@ -125,7 +125,7 @@ var stands = []string{
 	standModel, standDispatch, standMetadata,
 }
 
-// plainStands are the five served over http rather than https. The broker mints a kind's value
+// plainStands are the five served over http rather than https. The broker mints a type's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
 // behind TLS would need a root in the pod's trust store, and the three the model judge calls
 // are reached by that same sort of client; the metadata server could be nothing else, since
@@ -474,8 +474,11 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	// one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
 	// The GitHub stand answers each token request what its body asked for until a check sets
-	// another answer, so a stack driven with no call to its answer route mints as GitHub does.
-	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations})
+	// another answer, so a stack driven with no call to its answer route mints as GitHub does. It
+	// mints a token of its own for every request, as GitHub does (DistinctTokens): the broker
+	// revokes a token it minted and hands to nobody, and a stand that answered one string for a
+	// scope would have that revoke end the token the airlock's proxy holds for the same scope.
+	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations, DistinctTokens: true})
 	services[standGitHub].AnswerWith(github.Answer)
 	services[standGoogle].AnswerWith(airlocktest.NewGoogleStand(airlocktest.GoogleOptions{Lifetime: o.googleLifetime}).Answer)
 	// The Microsoft stand plays both hosts of its one certificate: the authority a federated

@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 )
@@ -343,7 +344,7 @@ func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 // session.
 func tradeAs(t *testing.T, rig *brokertest.Rig, exchangeToken string, key *ecdsa.PrivateKey, session string) error {
 	t.Helper()
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: rig.URL, Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
+	client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(rig.URL), Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -272,7 +272,7 @@ for (const [row, way, leave] of [
       await expect(status).toHaveText("Switching model to openai/model-c…");
       await expect.poll(sentSwitches, PROBE).toEqual([
         {
-          actor: { id: "alice", kind: "user" },
+          actor: { id: "alice", kind: "user", proven: true },
           message: "/model openai/model-c",
           mode: "steer",
           target: id,
@@ -312,7 +312,7 @@ test("type-ahead on a header picker moves its choice without switching the sessi
     await expect(status).toHaveText("Switching model to openai/model-c…");
     await expect.poll(sentSwitches, PROBE).toEqual([
       {
-        actor: { id: "alice", kind: "user" },
+        actor: { id: "alice", kind: "user", proven: true },
         message: "/model openai/model-c",
         mode: "steer",
         target: id,
@@ -375,12 +375,17 @@ test("a held header picker keeps focus and steps its choice but Enter sends noth
     await expect(status).toHaveText("Switching thinking level to low…");
     await expect.poll(sentSwitches, PROBE).toEqual([
       {
-        actor: { id: "alice", kind: "user" },
+        actor: { id: "alice", kind: "user", proven: true },
         message: "/model anthropic/model-b",
         mode: "steer",
         target: id,
       },
-      { actor: { id: "alice", kind: "user" }, message: "/effort low", mode: "steer", target: id },
+      {
+        actor: { id: "alice", kind: "user", proven: true },
+        message: "/effort low",
+        mode: "steer",
+        target: id,
+      },
     ]);
   } finally {
     await context.close();

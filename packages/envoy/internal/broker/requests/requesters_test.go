@@ -3,7 +3,7 @@
 // the session from — by a retag, or by an account mapping that stops proving the pod's service
 // — what an approval of such a request records, even when another of its names would be refused
 // first, what a secret's own max-grant bounds its grants to, and what the list decides on its
-// own for a kind whose rules make a service's pod wait for the secret's one person owner.
+// own for a type whose rules make a service's pod wait for the secret's one person owner.
 package requests
 
 import (
@@ -35,7 +35,7 @@ const anHour = 3600
 // listedSecret is policytest.ListedSecret holding the one value this file releases: a namespace
 // secret whose requesters tag names requesters, carrying that fixture's max-grant of an hour so
 // that the requests below sign for exactly as long as the secret allows. A test of a secret the
-// list leaves uncapped, or of a kind whose own rules demand a cap, builds its secret itself.
+// list leaves uncapped, or of a type whose own rules demand a cap, builds its secret itself.
 func listedSecret(name, owner, tier, requesters string) secrets.LocalSecret {
 	return policytest.ListedSecret(name, owner, tier, requesters, listedValue)
 }
@@ -452,7 +452,7 @@ func TestRequestersAWithheldNameTheListDropsIsDeniedRatherThanRefused(t *testing
 
 // accountValue is the stored value of the google-service-account secret below: the one account
 // its token would act as. No request here releases it, so no minter ever reads it; it is here
-// because the kind's secret is no secret without one.
+// because the type's secret is no secret without one.
 const accountValue = `{"service_account": "releases@example-project.iam.gserviceaccount.com"}`
 
 // TestServiceRequesterAwaitsOwner: a human-tier google-service-account secret may name registered
@@ -465,8 +465,8 @@ const accountValue = `{"service_account": "releases@example-project.iam.gservice
 func TestServiceRequesterAwaitsOwner(t *testing.T) {
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
-	account := policytest.KindSecret("GCLOUD_ACCOUNT_KEY", fixtureOperator, policy.TierHuman,
-		policy.KindGoogleServiceAccount, accountValue)
+	account := policytest.TypeSecret("GCLOUD_ACCOUNT_KEY", fixtureOperator, policy.TierHuman,
+		policy.TypeGoogleServiceAccount, accountValue)
 	account.Tags[policy.TagRequesters] = fixtureOperator + " " + fixtureService
 	retag(t, m, account)
 
@@ -514,7 +514,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 func TestUncappedListedLoginAwaitsOwner(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
-	login := policytest.KindSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
+	login := policytest.TypeSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	login.Tags[policy.TagRequesters] = fixtureOperator
 	retag(t, m, login)
 	if cap := m.Policy.Get().Secrets["UNCAPPED_LOGIN_KEY"].MaxGrant; cap != 0 {

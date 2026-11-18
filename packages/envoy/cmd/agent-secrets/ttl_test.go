@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
@@ -162,7 +163,7 @@ func TestTTLReachesTheSignedRequestObject(t *testing.T) {
 				t.Fatalf("exit %d, revoked %v, cancelled %v (stdout %q, stderr %q); want exit 0 ending nothing", exit, revoked, cancelled, stdout, stderr)
 			}
 			// This broker serves no settings, so the source names the broker alone (source.go).
-			want := "request_id: req-ttl_granted\nstate: granted\nsource: " + brokerSource(b.srv.URL).String() + "\n"
+			want := "request_id: req-ttl_granted\nstate: granted\nsource: " + brokerSource(brokeraddr.New(b.srv.URL)).String() + "\n"
 			if tc.args[0] != "request" {
 				want = "ran value-of-TTL_GRANTED\n"
 			}

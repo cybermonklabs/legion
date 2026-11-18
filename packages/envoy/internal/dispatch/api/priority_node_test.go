@@ -64,7 +64,7 @@ func TestPriorityNode(t *testing.T) {
 	if made.State != prioritystore.StateLive {
 		t.Fatalf("created priority state = %q, want %q", made.State, prioritystore.StateLive)
 	}
-	if made.MadeAt.IsZero() || made.MadeBy != (model.Actor{Kind: "user", ID: "alice"}) {
+	if made.MadeAt.IsZero() || made.MadeBy != (model.Actor{Kind: "user", ID: "alice", Proven: true}) {
 		t.Fatalf("created priority made_at=%v made_by=%+v, want the moment and the person who wrote it", made.MadeAt, made.MadeBy)
 	}
 	read := readTestPriority(t, handler, "ship-the-daemon")

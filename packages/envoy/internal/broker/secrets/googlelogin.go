@@ -60,7 +60,7 @@ func googleSubtype(subtype string) string {
 // ErrMintStoredValue, ErrMintRefused or ErrMintUpstream.
 func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	const what = "refresh Google login"
-	parsed, err := ParseValue(kindGoogleLogin, req.Value)
+	parsed, err := ParseValue(typeGoogleLogin, req.Value)
 	if err != nil {
 		return Minted{}, err
 	}
@@ -84,7 +84,7 @@ func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) 
 		now = m.Now
 	}
 	asked := now()
-	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Type), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit, true, nil)
 	if status := (*mintStatusError)(nil); errors.As(err, &status) {
 		var tokenError googleTokenError
 		if json.Unmarshal(payload, &tokenError) == nil && tokenError.Code == "invalid_grant" {

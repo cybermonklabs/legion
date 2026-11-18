@@ -26,6 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -289,6 +290,13 @@ type Config struct {
 	// belong to. For the broker's local stack alone: a production start, which is one with
 	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestNoKind bool
+	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY: the host of the token authority the airlock proxy
+	// makes every exchange of an azure entry's federated token at, in place of
+	// login.microsoftonline.com, so the exchange is made at a stand-in Microsoft. A host name an
+	// airlock rules entry can bind, in lower case and with no "*."; anything else refuses the
+	// start. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestAzureAuthority string
 	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
 	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
 	// with none of the five set there is no judge, and every human-tier request waits for the
@@ -354,7 +362,7 @@ type Config struct {
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
 	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
 	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with kind=azure-login,
+	// approval recorded for that name in its grant. Another secret with type=azure-login,
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
@@ -383,7 +391,7 @@ type Config struct {
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
-	// a broker with no binding still boots and still serves every other kind. The policy loader
+	// a broker with no binding still boots and still serves every other type. The policy loader
 	// reads it as well (policy.Loader.ServiceAccounts), for one rule — a secret bound to a
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
@@ -698,8 +706,8 @@ const noRulesFile = "the broker reads each secret's owner and tier from the secr
 // secret carries default-grant=session.
 const noGrantCap = "a request's --ttl chooses a shorter grant lifetime, otherwise its grant lasts 12 hours, or until the requesting session ends for a secret tagged default-grant=session"
 
-// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's kind tag names its minter.
-const noMintTargets = "the broker no longer reads one list of mint targets; each secret's kind tag names the minter it is served by"
+// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's type tag names its minter.
+const noMintTargets = "the broker no longer reads one list of mint targets; each secret's type tag names the minter it is served by"
 
 // removedVars are environment variables the broker no longer reads. A stale deployment still
 // setting one must fail loudly rather than silently running on configuration that means nothing
@@ -1208,6 +1216,26 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 	return hosts, nil
 }
 
+// parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
+// holds every exchange to and compares the ASCII lower-cased host of a token request's
+// connection with, exactly. It refuses, naming the value, a host no rules entry can bind
+// (airlock.HostShapeOK: a scheme, a port, a path, an empty label, a label opening or closing
+// with "-", a last label of digits alone, which an address has), since a token request reaches
+// the proxy only at a host an entry binds; a "*." suffix, which is no one host; and a capital
+// letter, since the proxy compares the value as it is written with a lower-cased host. A value
+// of any of those would refuse every exchange.
+func parseAirlockTestAzureAuthority(value string) (string, error) {
+	const setting = "BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"
+	host := strings.TrimSpace(value)
+	if host == "" {
+		return "", nil
+	}
+	if !airlock.HostShapeOK(host) || strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return "", fmt.Errorf("%s must be a host name in lower case that an airlock rules entry can bind, with no scheme, port, path, address or \"*.\", got %q", setting, host)
+	}
+	return host, nil
+}
+
 // testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
 // the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
 // than taken as off, since a misspelled value would otherwise turn a negative control into the
@@ -1420,6 +1448,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {

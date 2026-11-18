@@ -80,9 +80,9 @@ func approveOnTheDormantRow(t *testing.T, svc *Service, enrollmentID uuid.UUID, 
 // TestAnEnrollmentRecordsTheOwnerItsCallerProved: the owner is read from what the caller proved
 // and from the claim a pod's launcher stated, and from nothing else the caller says. A person's
 // sessions are the person's whether or not they name a session; a pod a launcher enrols under a
-// claim is that claim's within the launcher's service; a pod that states none is its own pod's,
-// and each slot of it its own slot's; and a machine's own session is that machine's, by the
-// subject its credential proved.
+// claim is that claim's under the account the launcher's login proved; a pod that states none is
+// its own pod's, and each slot of it its own slot's; and a machine's own session is that
+// machine's, by the subject its credential proved.
 func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	ctx := context.Background()
 	r := newPodRig(t)
@@ -120,10 +120,10 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 			owner: "person:ada@example.com",
 		},
 		{
-			name:  "a pod a launcher enrols under a claim belongs to that claim of the launcher's service",
+			name:  "a pod a launcher enrols under a claim belongs to that claim of the launcher's login",
 			cred:  launcher,
 			in:    claimed,
-			owner: "claim:legion-daemon/" + plannerClaim, claim: plannerClaim, principal: "account:" + workerPodAccount,
+			owner: "claim:" + launcherAccount + "/" + plannerClaim, claim: plannerClaim, principal: "account:" + workerPodAccount,
 		},
 		{
 			name:  "a pod that states no claim belongs to its own pod",
@@ -513,10 +513,10 @@ func TestAPodOfTheClaimUpBeforeTheLastOneEndedTakesWhatItLeft(t *testing.T) {
 	})
 }
 
-// TestTheSameClaimUnderAnotherServiceTakesNothing: a claim is an owner within the service whose
-// launcher stated it, claim:<service>/<claim>, so a pod another service's launcher enrols under
-// the same claim token is another owner: it takes nothing a dormant pod of the first service's
-// claim left, at its enrolment or at that pod's end.
+// TestTheSameClaimUnderAnotherServiceTakesNothing: a claim is an owner under the login whose
+// launcher stated it, claim:<login subject>/<claim>, so a pod another service's launcher enrols
+// under the same claim token is another owner: it takes nothing a dormant pod of the first
+// service's claim left, at its enrolment or at that pod's end.
 func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
 	ctx := context.Background()
 	const otherService, otherPodAccount = "other-service", "system:serviceaccount:other:other-worker"
@@ -543,8 +543,8 @@ func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
 		t.Fatalf("Revoke: %v", err)
 	}
 	later := theirPod("other-planner-session-2", "pod-uid-other-b")
-	if owner, _ := ownerAndClaimOf(t, r.svc, later.ID); owner != "claim:"+otherService+"/"+plannerClaim {
-		t.Fatalf("the other service's pod records owner %q, want %q", owner, "claim:"+otherService+"/"+plannerClaim)
+	if owner, _ := ownerAndClaimOf(t, r.svc, later.ID); owner != "claim:"+otherLauncherAccount+"/"+plannerClaim {
+		t.Fatalf("the other service's pod records owner %q, want %q", owner, "claim:"+otherLauncherAccount+"/"+plannerClaim)
 	}
 	if holder := grantHolder(t, r.svc, grant); holder != first.ID {
 		t.Fatalf("grant %s hangs off %s, want the dormant pod's %s: the same claim token under another service is another owner", grant, holder, first.ID)
@@ -554,6 +554,78 @@ func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
 			t.Fatalf("the other service's pod %s holds %+v, want nothing", e.ID, held)
 		}
 	}
+}
+
+// TestAnotherDaemonOfTheServiceStatingTheClaimTakesNothing: every project's Legion daemon logs in
+// as the one service legion-daemon, each under an account of its own, and their pods may run as
+// one account. A claim is an owner under the login that stated it, so one project's daemon whose
+// pod states another project's claim token is another owner, recorded under its own login: its
+// pods take nothing a pod of the first daemon's claim left, neither when that pod's end looks for
+// a live pod of the claim to hand its grant to (handOver) nor when they enrol after it (adopt).
+// The first daemon's own next pod of the claim still takes it.
+func TestAnotherDaemonOfTheServiceStatingTheClaimTakesNothing(t *testing.T) {
+	ctx := context.Background()
+	const otherDaemonAccount = "system:serviceaccount:legion-other:legion-daemon"
+	rig := func(t *testing.T) (podRig, Credential, Credential) {
+		t.Helper()
+		r := newPodRig(t)
+		r.svc.ServiceLogins[otherDaemonAccount] = podLoginService
+		launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+		theirs := r.login(t, otherDaemonAccount, "pod-uid-other-daemon")
+		if launcher.Service == nil || theirs.Service == nil || *launcher.Service != *theirs.Service {
+			t.Fatalf("the two daemons log in as services %v and %v, want the one service %q: this test measures two logins of one service", launcher.Service, theirs.Service, podLoginService)
+		}
+		return r, launcher, theirs
+	}
+	theirsHoldNothing := func(t *testing.T, r podRig, pods ...Enrollment) {
+		t.Helper()
+		for _, e := range pods {
+			if held := readCarryState(t, r.svc, e.ID); held.LiveGrants != 0 || held.Pending != 0 {
+				t.Fatalf("the other daemon's pod %s holds %+v, want nothing of the first daemon's claim", e.ID, held)
+			}
+			if owner, _ := ownerAndClaimOf(t, r.svc, e.ID); owner != "claim:"+otherDaemonAccount+"/"+plannerClaim {
+				t.Fatalf("the other daemon's pod %s records owner %q, want %q", e.ID, owner, "claim:"+otherDaemonAccount+"/"+plannerClaim)
+			}
+		}
+	}
+	t.Run("its live pod is handed nothing at the end of the first daemon's pod", func(t *testing.T) {
+		r, launcher, theirs := rig(t)
+		live := claimPod(t, r, theirs, plannerClaim, "other-planner-session-1", "pod-uid-other-a")
+		first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+		grant := insertLiveGrant(t, r.svc, first.ID)
+		request := insertPendingRequest(t, r.svc, first.ID)
+		if err := r.svc.Revoke(ctx, launcher, first.ID.String(), "launcher"); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		if left := readCarryState(t, r.svc, first.ID); !left.Dormant || left.LiveGrants != 1 || left.Pending != 1 {
+			t.Fatalf("the first daemon's pod is %+v after its end, want it dormant holding its grant and its request: the other daemon's live pod is no pod of this claim", left)
+		}
+		theirsHoldNothing(t, r, live)
+		if holder := requestHolder(t, r.svc, request); holder != first.ID {
+			t.Fatalf("request %s hangs off %s, want the dormant pod's %s", request, holder, first.ID)
+		}
+		next := claimPod(t, r, launcher, plannerClaim, "planner-session-2", "pod-uid-b")
+		if holder := grantHolder(t, r.svc, grant); holder != next.ID {
+			t.Fatalf("grant %s hangs off %s, want the first daemon's next pod %s: the claim's own login still takes what its dormant pod left", grant, holder, next.ID)
+		}
+	})
+	t.Run("its pod that enrols after takes nothing the first daemon's dormant pod left", func(t *testing.T) {
+		r, launcher, theirs := rig(t)
+		first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+		grant := insertLiveGrant(t, r.svc, first.ID)
+		request := insertPendingRequest(t, r.svc, first.ID)
+		if err := r.svc.Revoke(ctx, launcher, first.ID.String(), "launcher"); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		later := claimPod(t, r, theirs, plannerClaim, "other-planner-session-2", "pod-uid-other-b")
+		theirsHoldNothing(t, r, later)
+		if holder := grantHolder(t, r.svc, grant); holder != first.ID {
+			t.Fatalf("grant %s hangs off %s, want the dormant pod's %s: another daemon's login stating the claim is another owner", grant, holder, first.ID)
+		}
+		if holder := requestHolder(t, r.svc, request); holder != first.ID {
+			t.Fatalf("request %s hangs off %s, want the dormant pod's %s", request, holder, first.ID)
+		}
+	})
 }
 
 // TestAMachinesGrantStaysWithItsSession: a machine's own requests are the machine's to read and

@@ -247,9 +247,11 @@ from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports 
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
-`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
-release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
+need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+`agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
+from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -296,7 +298,7 @@ No line it prints is a credential: the child reads its token out of its own
 environment and prints the repository it asked for and the status it got, and a
 refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
 child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+served over plain http on `127.0.0.1`, because the broker mints a type's value with
 an HTTP client that trusts the host's own roots and nothing else.
 
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure

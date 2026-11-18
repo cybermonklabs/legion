@@ -173,6 +173,21 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
 		{name: "a repository that is not <owner>/<name>",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
+		// A repository's owner is a GitHub login, so each owner below is refused for what no
+		// login holds.
+		{name: "a repository whose owner holds a dot, which only a repository name may",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a.b/example-repo" })}, names: "a.b/example-repo"},
+		{name: "a repository whose owner holds a slash, which makes it no <owner>/<name>",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a/b/example-repo" })}, names: "a/b/example-repo"},
+		{name: "a repository whose owner starts with a hyphen, which no login does",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "-ada/example-repo" })}, names: "-ada/example-repo"},
+		{name: "a repository whose owner starts with an underscore, which no login does",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "_ada/example-repo" })}, names: "_ada/example-repo"},
+		{name: "a repository whose owner is 40 characters, past GitHub's 39",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = strings.Repeat("a", 40) + "/example-repo" })},
+			names:     strings.Repeat("a", 40) + "/example-repo"},
+		{name: "a repository with no owner",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "/example-repo" })}, names: "/example-repo"},
 		{name: "a workflow with no path",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Workflow = "" })}, names: repository},
 		{name: "a workflow with no ref",
@@ -309,6 +324,22 @@ func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 		if err != nil || !slices.Equal(claims.Projects, []string{c.want}) {
 			t.Errorf("Workflow(on %s) = %+v, %v; want the projects [%s]", c.gitRef, claims, err, c.want)
 		}
+	}
+}
+
+// TestNewSetTakesAManagedUsersRepository: a managed user's login ends in `_<shortcode>`, so a
+// workflow entry of a repository such an account owns is read, and a run of that workflow is the
+// entry's.
+func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
+	const managed = "mona-cat_octo/example-repo"
+	set, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet(a workflow of %s): %v", managed, err)
+	}
+	run := managed + "/" + workflow + "@" + ref
+	claims, err := set.Workflow(workflowToken(managed, run, run, ref), "release-bot", nil)
+	if err != nil || !slices.Equal(claims.Projects, []string{project}) || claims.Person != person {
+		t.Errorf("Workflow(a run of %s) = %+v, %v; want the projects [%s] for %s", managed, claims, err, project, person)
 	}
 }
 

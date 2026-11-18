@@ -61,6 +61,8 @@ me=install-key-file-model-route
 model=anthropic/claude-opus-4-8
 # shellcheck source=lib/model-endpoint.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/model-endpoint.sh"
+# shellcheck source=lib/omp-home.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/omp-home.sh"
 
 # refuse is for arguments (exit 2); fail is for the box the run is on (exit 1).
 refuse() {
@@ -312,11 +314,7 @@ modelRoles:
 # (packages/pi-envoy/README.md, "The time limit").
 extensionHandlers:
   toolCallTimeoutMs: 120000
-# Oh My Pi opens its setup wizard ("Setup step 1 of 5") in a fresh profile, and a pane waiting on
-# the wizard never starts its session. startup.setupWizard: false turns the wizard off, whatever
-# setup version the build counts to.
-startup:
-  setupWizard: false
 EOF
+omp_setup_wizard_off "$agent/config.yml"
 echo "$me: OMP profile $profile routes $model straight to $base_url, keyed by $key_command from $key_file" >&2
 printf '%s\n' "$key_command"

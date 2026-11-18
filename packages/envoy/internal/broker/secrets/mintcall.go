@@ -9,6 +9,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -59,6 +62,17 @@ type mintTransportError struct {
 	what, who, class string
 	// read is a failure reading the body of an answer that had begun.
 	read bool
+	// sent is whether the request may have reached the upstream, and it is true for every failure
+	// but one known to come before the transport had a connection to the upstream (mintAttempt):
+	// one the standard transport's trace shows came before a connection, such as a proxy's refused
+	// tunnel, or one whose error says so - a name that did not resolve, a dial that failed, a
+	// certificate the broker did not trust (beforeConnection). Either did nothing upstream. Any
+	// other failure may come after some or all of the request went out and was served, whatever
+	// the write reported. A read that failed is always sent.
+	sent bool
+	// status is the status that answer came with, for a read that failed; 0 where no answer
+	// arrived (answeredStatus).
+	status int
 }
 
 func (e *mintTransportError) Error() string {
@@ -69,6 +83,37 @@ func (e *mintTransportError) Error() string {
 }
 
 func (e *mintTransportError) Unwrap() error { return ErrMintUpstream }
+
+// mintOversizeError is an answer past the call's cap, with the status it came with
+// (answeredStatus). It wraps ErrMintUpstream and is never retried (classify).
+type mintOversizeError struct {
+	what, who string
+	limit     int64
+	status    int
+}
+
+func (e *mintOversizeError) Error() string {
+	return fmt.Sprintf("%s: %s: %s answered more than %d bytes", ErrMintUpstream, e.what, e.who, e.limit)
+}
+
+func (e *mintOversizeError) Unwrap() error { return ErrMintUpstream }
+
+// answeredStatus is the status of an answer whose body the call could not use whole: one whose
+// read failed part of the way, or one past the call's cap. It is 0 for every other error, and for
+// a call that got no answer at all. A call whose wanted status means the upstream made something,
+// as GitHub's 201 to a token request means a live token, reads it to learn that the upstream made
+// it although the answer did not hand it over whole (GitHubApp.installationToken).
+func answeredStatus(err error) int {
+	var transport *mintTransportError
+	var oversize *mintOversizeError
+	switch {
+	case errors.As(err, &transport):
+		return transport.status
+	case errors.As(err, &oversize):
+		return oversize.status
+	}
+	return 0
+}
 
 // rateLimited reports whether response, whose body is body, says it is a rate limit, without
 // quoting either: a 429; GitHub's X-RateLimit-Remaining of 0, which its primary rate limit's 403
@@ -99,20 +144,31 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 	return 0, false
 }
 
-// mintCall sends request with client (http.DefaultClient when nil) and reads at most limit bytes of
-// its answer, attempting it again as mint's Retry allows: classify decides which failures are
-// retried, and mintRetry.again how long the call waits first and whether it may. Each attempt is
-// counted, and resends the request's body from GetBody; a request whose body cannot be read again
-// gets one attempt. what names the call and who the upstream in its errors. No error quotes the
-// request, the answer or the transport's own text: Go's HTTP client quotes a malformed status
-// line, and a status line or body can echo the credential the request carried, so a failed call
-// is named by its class alone (transportFailure). A status other than want is a *mintStatusError,
-// returned with the body, so a caller can read the upstream's own reason from it; every other
-// failure wraps ErrMintUpstream. The error of a failed call is its last attempt's, and carries
+// mintCall sends request with client (ownClient, the minters' own, when nil) and reads at most
+// limit bytes of its answer, attempting it again as mint's Retry allows: classify decides which
+// failures are retried, and mintRetry.again how long the call waits first and whether it may.
+// Each attempt is counted, and resends the request's body from GetBody; a request whose body
+// cannot be read again gets one attempt. resendLost is whether an attempt that may have reached
+// the upstream and failed (a *mintTransportError that was sent) is sent again: the upstream may
+// have received it whole and served it, so a call that mints something nobody will use, as a
+// check's token request does (GitHubApp.installationToken), does not have the upstream make it
+// again. An attempt known to have failed before a connection (mintAttempt) did nothing upstream,
+// and is sent again as any failed call is. what names the call and who the upstream in its
+// errors. No error quotes the request, the answer or the transport's own text: Go's HTTP client
+// quotes a malformed status line, and a status line or body can echo the credential the request
+// carried, so a failed call is named by its class alone (transportFailure). A status other than
+// want is a *mintStatusError, returned with the body, so a caller can read the upstream's own
+// reason from it; an answer whose body was read in part, or past limit, is returned with as much
+// of it as was read; every other failure wraps ErrMintUpstream. answered, where it is not nil,
+// is called with each attempt's answer that came with want but could not be read whole, cut off
+// part of the way or past limit, and that attempt's error, before the call is sent again or
+// answers: the upstream did what was asked, and a call that makes something, as a token request
+// does, gives back what that answer made, which the next attempt's answer would otherwise leave
+// behind (GitHubApp.giveBackHook). The error of a failed call is its last attempt's, and carries
 // the number of attempts made (MintAttempts).
-func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64) ([]byte, error) {
+func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64, resendLost bool, answered func([]byte, error)) ([]byte, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = ownClient
 	}
 	ctx := request.Context()
 	resendable := request.Body == nil || request.Body == http.NoBody || request.GetBody != nil
@@ -123,7 +179,12 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 		if err == nil {
 			return body, nil
 		}
-		if !retry || !resendable || !mint.again(ctx, attempt, err) {
+		if answered != nil && answeredStatus(err) == want {
+			answered(body, err)
+		}
+		var transport *mintTransportError
+		served := errors.As(err, &transport) && transport.sent
+		if !retry || !resendable || served && !resendLost || !mint.again(ctx, attempt, err) {
 			return body, &attemptsError{err: err, attempts: attempt}
 		}
 	}
@@ -131,10 +192,25 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 
 // mintAttempt is one attempt of a mintCall, under mintAttemptTimeout within the request's own
 // context. A later attempt reads its body from the request's GetBody. A status other than want
-// carries the wait the answer names, read against now (serverWait).
+// carries the wait the answer names, read against now (serverWait). A call that failed says
+// whether its request may have reached the upstream (mintTransportError.sent): it did not where
+// the error says so (beforeConnection), or, for a client whose transport this package owns
+// (tracesConnections), where that transport reported to the attempt's trace that it went to get a
+// connection (GetConn) and never reported one (GotConn). net/http's own path reports both, and
+// GotConn before it writes a byte, on HTTP/1 and HTTP/2, so a call it failed before then - a proxy
+// that refused the tunnel, a handshake that failed - sent nothing, whatever the error's type. Any
+// other transport, of whatever type, owes the trace nothing, and one that forwards some hooks and
+// not others would make that reading wrong, so such a call is read by its error alone. The trace's
+// report of the write is not read: it can call a request the upstream received whole failed, or
+// come after Do has returned.
 func mintAttempt(client *http.Client, request *http.Request, attempt int, now func() time.Time, what, who string, want int, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(request.Context(), mintAttemptTimeout)
 	defer cancel()
+	var askedConnection, gotConnection atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GetConn: func(string) { askedConnection.Store(true) },
+		GotConn: func(httptrace.GotConnInfo) { gotConnection.Store(true) },
+	})
 	sent := request.Clone(ctx)
 	if attempt > 1 && request.GetBody != nil {
 		body, err := request.GetBody()
@@ -145,15 +221,16 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	}
 	response, err := client.Do(sent)
 	if err != nil {
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err)}
+		noConnection := tracesConnections(client) && askedConnection.Load() && !gotConnection.Load()
+		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true}
+		return body, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%w: %s: %s answered more than %d bytes", ErrMintUpstream, what, who, limit)
+		return body[:limit], &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}
 	}
 	if response.StatusCode != want {
 		limited := rateLimited(response, body)
@@ -161,6 +238,55 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 		return body, &mintStatusError{what: what, who: who, code: response.StatusCode, rateLimited: limited, wait: wait, waitNamed: named}
 	}
 	return body, nil
+}
+
+// ownTransport is the transport a minter sends through when it names no HTTP client, built by
+// this package alone and held here (newOwnTransport), so no code outside it can register a
+// protocol on it (http.Transport.RegisterProtocol), give it a callback for a negotiated protocol
+// (TLSNextProto) or wrap what it does. Its trace is net/http's own: GetConn before it asks for a
+// connection and GotConn before it writes a byte, on HTTP/1 and on the HTTP/2 net/http sets up
+// itself, a connection it already holds included.
+var ownTransport = newOwnTransport()
+
+// ownClient sends through ownTransport.
+var ownClient = &http.Client{Transport: ownTransport}
+
+// newOwnTransport builds a transport with the settings net/http documents for
+// http.DefaultTransport, rather than a clone of it: a clone carries whatever other code set on
+// http.DefaultTransport before this package started, TLSNextProto callbacks among them, and
+// those can send a request in a way no trace reports.
+func newOwnTransport() *http.Transport {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+// tracedTransports is every transport whose trace mintAttempt reads (tracesConnections):
+// ownTransport, and a transport a test made itself and registers no protocol on
+// (TraceTransportForTest in export_test.go).
+var tracedTransports sync.Map
+
+func init() { tracedTransports.Store(ownTransport, struct{}{}) }
+
+// tracesConnections reports whether client sends through a transport whose whole path this
+// package owns (tracedTransports), so the request's trace reports each connection it gets. The
+// concrete type of a transport says nothing of that: an *http.Transport hands a request to any
+// protocol registered on it before its own path runs, and a wrapper owes the trace none of its
+// hooks.
+func tracesConnections(client *http.Client) bool {
+	transport, isStandard := client.Transport.(*http.Transport)
+	if !isStandard {
+		return false
+	}
+	_, traced := tracedTransports.Load(transport)
+	return traced
 }
 
 // classify is the one rule for what an attempt's failure was, as broker_mint_attempts_total
@@ -191,6 +317,25 @@ func classify(ctx context.Context, err error) (outcome string, retry bool) {
 		return attemptUpstream, true
 	}
 	return attemptUpstream, false
+}
+
+// beforeConnection reports whether err, a failed call, is one the transport met before it had a
+// connection to the upstream, so no byte of the request left: a name that did not resolve, a
+// dial that failed or ran out of time, or a certificate the broker did not trust, which only the
+// TLS handshake checks. A TLS record error or alert can come after the handshake, once the
+// request went out, so it does not count, and neither does any other failure that may have come
+// after the request went out, or one this cannot place: each reads false.
+func beforeConnection(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	var certificate *tls.CertificateVerificationError
+	switch {
+	case errors.As(err, &dns), errors.As(err, &certificate):
+		return true
+	case errors.As(err, &op):
+		return op.Op == "dial"
+	}
+	return false
 }
 
 // transportFailure names the class of a failed call or body read, never its text: the request was

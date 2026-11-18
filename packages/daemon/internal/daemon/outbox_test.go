@@ -702,6 +702,35 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	}
 }
 
+// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its base,
+// carries its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue,
+// under the row's marker, before it moves the issue, as it does a done write's.
+func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
+	reason := "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."
+	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
+	row.ID = 57
+	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}
+	runner := &outbox{dispatch: client}
+
+	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "refused the message") {
+		t.Fatalf("first attempt = %v, want the message's failure", err)
+	}
+	if len(client.statuses) != 0 {
+		t.Fatalf("status writes %v after the reason failed to post, want none: the reason goes on the issue first", client.statuses)
+	}
+
+	client.postErr = nil
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if want := reason + "\n\n<!-- legion-outbox:57 -->"; len(client.messages) != 2 || client.messages[1] != want {
+		t.Fatalf("messages %q, want the reason posted again under the row's marker", client.messages)
+	}
+	if fmt.Sprint(client.statuses) != "[in_progress]" {
+		t.Fatalf("statuses %v, want the one move to in_progress once its reason is on the issue", client.statuses)
+	}
+}
+
 func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "Dispatch message."}, time.Now())
 	row.ID = 55
@@ -2633,20 +2662,32 @@ func (h *outboxFactHandler) facts() []intake.Fact {
 
 type outboxTokens struct{}
 
-func (outboxTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (outboxTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "outbox-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t outboxTokens) ReadToken(context.Context, appauth.AppRole, string, []string) (appauth.Lease, error) {
+func (t outboxTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "outbox-token-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
+// InstalledOwners is the owners each App is installed on, which a bundle reads from GitHub at
+// every build (appauth.OwnerInstallations): the one account these rigs' project serves its
+// repository under.
+func (outboxTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"legion"}, nil
+}
+
 // legionRepos is a project whose one repository is legion/legion, as the sandbox rigs here name
-// it, and legionDirs the gh directories a bundle built over it holds.
+// it, and legionDirs the gh directories a bundle built over it holds. legionInstalled is the
+// record those bundles write and legionDirs reads, as the daemon's own three share one
+// (appauth.Installed, sandboxRuntime): before the first bundle of an App it names no directory
+// for that App and no pod is moved, as it does for a bundle it cannot describe.
+var legionInstalled = appauth.NewInstalled()
+
 func legionRepos() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("legion/legion")} }
 
 func legionDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, nil, roles, repo)
+	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, legionInstalled, nil, roles, repo)
 }
 
 type outboxSpecs struct{}
