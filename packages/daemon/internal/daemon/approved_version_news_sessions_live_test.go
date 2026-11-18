@@ -997,7 +997,7 @@ func (r *sessionsRun) boot() {
 	r.daemon = newRecordingLog(r.log())
 	gated := &sessionsRuntime{localRuntime: r.rt, launchable: r.launchable}
 	r.d = startDaemonWithin(t, r.cfg, overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			// The boot snapshotted the prompts before it builds the runtime (prompts.New, in the
 			// plan), and no pane starts before the runtime exists.

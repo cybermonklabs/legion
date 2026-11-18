@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -140,9 +140,9 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { listProjectArtifacts, view } = renderList([]);
-  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
-  );
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const lostUpload = Promise.withResolvers<never>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(lostUpload.promise);
 
   try {
     await screen.findByText("No documents yet.");
@@ -150,6 +150,9 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
     await user.click(screen.getByRole("textbox", { name: "Title" }));
     await user.paste("Design notes");
     await user.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => {
+      lostUpload.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }));
+    });
 
     const made = await screen.findByTestId("landed-without-answer");
     expect(made.textContent).toBe(

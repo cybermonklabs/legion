@@ -915,17 +915,20 @@ func parentsFirst(summaries []intake.DispatchIssue) []intake.DispatchIssue {
 }
 
 // putNewRoot records an unrecorded root or orphan handed to Legion in todo, on the repository its
-// observation resolves to and that repository's default branch (workflow's ResolveRepository).
-// One whose repository resolves to none, or to one Legion does not serve, is not recorded: the
-// daemon says why on the issue, once for that resolution, and the issue's next observation in
-// todo is admission's next look at it.
+// observation resolves to and that repository's default branch (workflow's
+// ResolveIssueRepository, which takes the refusal the observation's own preparation read from
+// GitHub when it carries one). One whose repository resolves to none, or one GitHub does not
+// answer for as a repository a role App reaches, is not recorded: the daemon says why on the
+// issue, once for that resolution, and the issue's next observation in todo is admission's next
+// look at it. A root recorded on a repository nothing named before has that repository heard and
+// cached from here (workflow.Engine.HearRepository).
 //
 // This is where a root is first recorded, so it is where the issue-unit experiments the project
 // declares are drawn for it (drawExperiments): every issue the daemon records is drawn for at the
 // moment it records it, and a root is an issue like any other. Its tree's own experiments are
 // another draw, made when its tree is opened (promoteHolds).
 func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intake.DispatchIssue, logOrphan bool) error {
-	resolution, err := a.engine.ResolveRepository(observation.ResolvedRepo)
+	resolution, err := a.engine.ResolveIssueRepository(observation)
 	if err != nil {
 		return fmt.Errorf("resolve the repository of %s: %w", observation.Key, err)
 	}
@@ -936,7 +939,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		}
 		if noted {
 			intake.OnCommit(ctx, func() {
-				a.log.Info("admission: not admitted; its repository is not one Legion serves", "issue", observation.Key,
+				a.log.Info("admission: not admitted; GitHub does not answer for its repository as one Legion's Apps reach", "issue", observation.Key,
 					"resolved", observation.ResolvedRepo, "reason", resolution.Refusal)
 			})
 		}
@@ -965,6 +968,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
+	a.engine.HearRepository(ctx, issue.GitHubRepo)
 	if err := a.drawExperiments(ctx, tx, issue.Key, config.ExperimentIssue); err != nil {
 		return err
 	}

@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
+// Slack verifies a Slack request's v0= signature and that its timestamp is within 5 minutes of now.
+// An empty secret checks nothing, so it answers false for every signature.
 func Slack(secret string, body []byte, timestamp string, signature string) bool {
-	if !strings.HasPrefix(signature, "v0=") || timestamp == "" {
+	if secret == "" || !strings.HasPrefix(signature, "v0=") || timestamp == "" {
 		return false
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)

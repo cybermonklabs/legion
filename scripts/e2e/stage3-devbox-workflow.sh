@@ -412,6 +412,21 @@ claim_session_text() {
   f=$(claim_session_file "$1" "$2") || return 1
   cat -- "$f"
 }
+# pane_bundle_listing ISSUE prints, one a line, what the implementer's own `ls` of its gh bundle's
+# root listed: the words after CRED-OWNERS= in the newest result of its bash tool that holds that
+# line. Only a tool result is read: the instruction holds the command unexpanded, so its own text
+# never starts a line with the marker, and the model's reply could say anything. It fails while
+# the session holds no such result.
+pane_bundle_listing() {
+  local text listed
+  text=$(claim_session_text "$1" implementer) || return 1
+  listed=$(jq -R -r 'fromjson? | objects
+    | select(.type == "message" and .message.role == "toolResult" and .message.toolName == "bash")
+    | .message.content[]? | select(.type == "text") | (.text // "") | split("\n")[]
+    | select(startswith("CRED-OWNERS="))' <<<"$text" | tail -n 1) || return 1
+  [ -n "$listed" ] || return 1
+  tr -s ' ' '\n' <<<"${listed#CRED-OWNERS=}" | sed '/^$/d'
+}
 workspace_jj() {
   local issue=$1
   shift
@@ -1271,16 +1286,27 @@ restart_scenarios() {
   until_true 240 "the real Go pane bash tool to resolve the launcher directory's gh wrapper" session_contains "$restart_issue" implementer "CRED-GH=$state/bin/gh"
   until_true 240 "the implementer pane to name the real gh its wrapper runs" session_contains "$restart_issue" implementer "CRED-REAL=$realbin/gh"
   until_true 240 "the implementer pane to name its claim's gh directory" session_contains "$restart_issue" implementer "CRED-DIR=$state/secrets/"
-  until_true 240 "the implementer pane to list the bundle's one owner" session_contains "$restart_issue" implementer "CRED-OWNERS=$owner "
+  until_true 240 "the implementer pane to list its gh bundle's root" pane_bundle_listing "$restart_issue"
   until_true 240 "the implementer pane to carry an empty GH_TOKEN" session_contains "$restart_issue" implementer "CRED-TOKEN=."
   implement_app=$(role_app implementer)
   until_true 240 "the implementer pane to authenticate as its App, $implement_app" session_contains "$restart_issue" implementer "CRED-VIEWER=$implement_app"
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
-  # writes for the pane and, since INFRA-513 narrowed every token, a directory per other repository
-  # the project serves under that owner, each holding those two files alone; nothing else is in
-  # either.
+  # writes for the pane and nothing else, since a bundle holds one directory per owner account the
+  # App is installed on and no directory for a repository (INFRA-2543 R2). The root holds that
+  # directory, one more for each other account the App is installed on, and the bundle's one file,
+  # `renames.txt`, the configured renames both wrappers route a moved repository by, which every
+  # bundle this daemon writes carries, empty where the project has no rename that resolves.
+  # GitHub decides which accounts those are and this run does not: stage 3 defaults to this
+  # deployment's Apps, which are installed on several, so another owner's directory is no failure.
+  # The root is read twice, as the pane's own `ls` listed it and as this host holds it, and each
+  # reading must hold $owner and nothing that is neither a lowercased GitHub login, which is what
+  # a bundle's directory is named (ghconfig.IsOwner), nor that one file. A login is ghconfig's
+  # rule: a letter or digit, then up to 38 letters, digits, hyphens and underscores, since a
+  # managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its directory is a bundle's
+  # like any other; a name with a dot or a slash, one opening with a hyphen or an underscore, or
+  # one past 39 characters is still a stranger.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
   cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
@@ -1289,23 +1315,30 @@ restart_scenarios() {
   [ "$cred_dir" = "$cred_root/$owner" ] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want $owner's directory of $cred_root"
   [ "$(pane_value "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(pane_value "$cred_omp" LEGION_GH_PATH), want $realbin/gh"
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
+  cred_listed=$(pane_bundle_listing "$restart_issue") || fail "the implementer's session holds no bash result that lists its gh bundle's root"
+  grep -qxF -- "$owner" <<<"$cred_listed" || fail "the implementer pane's ls of its gh bundle's root lacks $owner; it listed: $(tr '\n' ' ' <<<"$cred_listed")"
+  cred_strangers=$(grep -vxF -- renames.txt <<<"$cred_listed" | grep -vxE -- '[a-z0-9][a-z0-9_-]{0,38}' || true)
+  [ -z "$cred_strangers" ] ||
+    fail "the implementer pane's ls of its gh bundle's root lists an entry that is neither an owner's directory nor the bundle's renames.txt: $(tr '\n' ' ' <<<"$cred_strangers")"
   for dir in "$cred_root" "$cred_dir"; do
     [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
   done
-  [ "$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want $owner's directory alone"
+  cred_root_entries=$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  [ -d "$cred_root/$owner" ] || fail "$cred_root holds no directory for $owner; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  [ -f "$cred_root/renames.txt" ] || fail "$cred_root holds no renames.txt, which every bundle this daemon writes carries; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  while IFS= read -r entry; do
+    case $entry in
+      "" | renames.txt) continue ;;
+    esac
+    [[ $entry =~ ^[a-z0-9][a-z0-9_-]{0,38}$ ]] && [ -d "$cred_root/$entry" ] ||
+      fail "$cred_root holds $entry, which is neither an owner's directory nor the bundle's renames.txt; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  done <<<"$cred_root_entries"
   cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$cred_owned" || fail "$cred_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   done
-  while read -r cred_entry; do
-    case $cred_entry in
-      "" | config.yml | hosts.yml) continue ;;
-      . | .. | *[!a-z0-9._-]*) fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone" ;;
-    esac
-    [ -d "$cred_dir/$cred_entry" ] || fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone"
-    cred_held=$(find "$cred_dir/$cred_entry" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
-    [ "$cred_held" = "config.yml hosts.yml " ] || fail "$cred_dir/$cred_entry holds $cred_held, want config.yml and hosts.yml alone"
-  done <<<"$cred_owned"
+  [ "$(tr '\n' ' ' <<<"$cred_owned")" = "config.yml hosts.yml " ] ||
+    fail "$cred_dir holds an entry beside its two gh files, and a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   [ "$(stat -c %a "$cred_dir/hosts.yml")" = 600 ] || fail "$cred_dir/hosts.yml is mode $(stat -c %a "$cred_dir/hosts.yml"), want 600"
   jq -R -s -e '[split("\n")[] | fromjson? | select(.msg == "tmux runtime: github credential written" and .role == "implementer")] | length > 0' <"$evidence/logs/daemon.log" >/dev/null ||
     fail "the daemon log has no 'github credential written' line for an implementer pane"
