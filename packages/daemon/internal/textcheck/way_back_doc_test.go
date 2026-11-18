@@ -171,16 +171,16 @@ func assertIsTheGuidesBlock(t *testing.T, held heldBlock, heading, mark string) 
 }
 
 // wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn): the
-// content of the one fenced block a reader sees holding mark, in the section heading opens. held
-// is the text the check holds the guide's block to, which a failure names: a committed extract, or
-// a migration's header. A guide with no such block stops the test rather than skipping it: an
-// absence here would read exactly like a pass, and what this check guards is the copy an operator
-// runs at a rollback.
-func wayBackBlockOfTheGuide(t *testing.T, heading, mark, held string) string {
+// content of the one fenced block a reader sees holding mark, in the section heading opens. name
+// names, in a failure, where the text the check holds that block to was read from: a committed
+// extract, or a migration's header. A guide with no such block stops the test rather than
+// skipping it: an absence here would read exactly like a pass, and what this check guards is the
+// copy an operator runs at a rollback.
+func wayBackBlockOfTheGuide(t *testing.T, heading, mark, name string) string {
 	t.Helper()
 	block, err := wayBackBlockIn(wayBackGuide, shippedText(t, wayBackGuide), heading, mark)
 	if err != nil {
-		t.Fatalf("%v; that block is the way back an operator runs, and the check holds it to %s", err, held)
+		t.Fatalf("%v; that block is the way back an operator runs, and the check holds it to %s", err, name)
 	}
 	return block
 }
