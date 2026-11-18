@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -36,8 +37,8 @@ import (
 
 // testGhChildEnv names, to this package's test binary run as `legion` (TestMain), environment
 // pairs to hand gh on top of the allowlist runGh builds its environment from (ghChildEnviron), one
-// NAME=value a line: the capture proxy and the CA it signs with, which the allowlist keeps from
-// gh as it keeps any other proxy (testGhChildEnviron).
+// NAME=value a line: the capture proxy and the CA it signs with. The allowlist keeps a caller's
+// proxy but no trust store, so the CA reaches gh only this way (testGhChildEnviron).
 const testGhChildEnv = "LEGION_TEST_GH_CHILD_ENV"
 
 // capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: the
@@ -45,6 +46,12 @@ const testGhChildEnv = "LEGION_TEST_GH_CHILD_ENV"
 // request naming none), and the credential it carried.
 type capturedRequest struct {
 	host, path, owner, auth string
+}
+
+// capturedConnect is one CONNECT a proxy was sent: the host and port the tunnel is to, and any
+// credential the request itself carried (Authorization or Proxy-Authorization).
+type capturedConnect struct {
+	host, auth string
 }
 
 // captureProxy is an HTTPS proxy that answers CONNECT for any host with a certificate of its own
@@ -62,6 +69,7 @@ type captureProxy struct {
 	url, caFile string
 	mu          sync.Mutex
 	requests    []capturedRequest
+	connects    []capturedConnect
 	// visibility is whether the next repository read is the guard's, to be answered.
 	visibility bool
 }
@@ -139,6 +147,9 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 					_ = conn.Close()
 					return
 				}
+				p.mu.Lock()
+				p.connects = append(p.connects, capturedConnect{host: req.Host, auth: req.Header.Get("Authorization") + req.Header.Get("Proxy-Authorization")})
+				p.mu.Unlock()
 				if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 					_ = conn.Close()
 					return
@@ -159,7 +170,8 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 
 // serve records every request, whatever its host, and refuses it. The test runs gh with its
 // telemetry off, so a request for any host but GitHub's API and git host is one the wrapper let
-// through to a host it never means.
+// through to a host it never means. A discussion's category list is answered with one category,
+// General, so `gh discussion create` reaches its editor (its body's prompt) as it would at GitHub.
 func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	request := capturedRequest{host: r.Host, path: r.URL.Path, auth: r.Header.Get("Authorization")}
@@ -191,6 +203,11 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"visibility":"private"}`)
 		return
 	}
+	if r.URL.Path == "/graphql" && strings.Contains(string(body), "DiscussionCategoryList") {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"repository":{"hasDiscussionsEnabled":true,"discussionCategories":{"nodes":[{"id":"C_1","name":"General","slug":"general","emoji":"","isAnswerable":false}]}}}}`)
+		return
+	}
 	switch {
 	case r.Host == "github.com" && request.auth == "":
 		w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
@@ -214,6 +231,99 @@ func (p *captureProxy) take() []capturedRequest {
 	p.requests = nil
 	p.visibility = true
 	return requests
+}
+
+// takeConnects is every CONNECT the proxy was sent since the last takeConnects.
+func (p *captureProxy) takeConnects() []capturedConnect {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	connects := p.connects
+	p.connects = nil
+	return connects
+}
+
+// tunnelProxy is a plain forwarding proxy, the shape of one a deployment reaches GitHub through:
+// it records each CONNECT and passes it, and every byte after it, to upstream, here the capture
+// proxy standing in for GitHub, recording the bytes the client sent through the tunnel.
+type tunnelProxy struct {
+	url      string
+	mu       sync.Mutex
+	connects []capturedConnect
+	relayed  bytes.Buffer
+}
+
+func startTunnelProxy(t *testing.T, upstream string) *tunnelProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	p := &tunnelProxy{url: "http://" + ln.Addr().String()}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go p.relay(conn, strings.TrimPrefix(upstream, "http://"))
+		}
+	}()
+	return p
+}
+
+// relay reads conn's CONNECT, records it, sends it on to upstream and then copies both ways,
+// recording what conn sent.
+func (p *tunnelProxy) relay(conn net.Conn, upstream string) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	req, err := http.ReadRequest(reader)
+	if err != nil || req.Method != http.MethodConnect {
+		return
+	}
+	p.mu.Lock()
+	p.connects = append(p.connects, capturedConnect{host: req.Host, auth: req.Header.Get("Authorization") + req.Header.Get("Proxy-Authorization")})
+	p.mu.Unlock()
+	next, err := net.Dial("tcp", upstream)
+	if err != nil {
+		return
+	}
+	defer next.Close()
+	if err := req.Write(next); err != nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(conn, next)
+		close(done)
+	}()
+	buffer := make([]byte, 32*1024)
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			p.mu.Lock()
+			p.relayed.Write(buffer[:n])
+			p.mu.Unlock()
+			if _, err := next.Write(buffer[:n]); err != nil {
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	_ = next.(*net.TCPConn).CloseWrite()
+	<-done
+}
+
+// take is every CONNECT the proxy was sent and every byte relayed through it since the last take.
+func (p *tunnelProxy) take() ([]capturedConnect, []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	connects, relayed := p.connects, bytes.Clone(p.relayed.Bytes())
+	p.connects = nil
+	p.relayed.Reset()
+	return connects, relayed
 }
 
 // chanListener is a net.Listener over the TLS connections the proxy hands it, so an http.Server
@@ -345,12 +455,12 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// shared check for; what this test reads is which token each call carries, so its check
 		// clears every call and the guard's own visibility read is answered by the proxy.
 		"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
-		// The capture proxy, for the gh `legion gh` runs: its environment is an allowlist that
-		// holds no proxy (ghChildEnviron), so only the test binary hands it this one.
-		testGhChildEnv + "=" + strings.Join([]string{
-			"HTTPS_PROXY=" + proxy.url, "https_proxy=" + proxy.url, "NO_PROXY=", "no_proxy=",
-			"SSL_CERT_FILE=" + proxy.caFile, "GIT_SSL_CAINFO=" + proxy.caFile,
-		}, "\n"),
+		// The capture proxy's CA, for the gh `legion gh` runs: its environment keeps the caller's
+		// proxy, the capture proxy above, but no trust store (ghChildEnviron), so only the test
+		// binary hands it this CA, which stands in for GitHub's own. SSL_CERT_DIR names an empty
+		// directory, so gh trusts no system CA either, and a request that bypassed the proxy would
+		// fail its handshake with GitHub rather than reach it.
+		testGhChildEnv + "=" + strings.Join([]string{"SSL_CERT_FILE=" + proxy.caFile, "SSL_CERT_DIR=" + t.TempDir(), "GIT_SSL_CAINFO=" + proxy.caFile}, "\n"),
 	}
 	runIn := func(dir string, env []string, name string, args ...string) (int, string) {
 		cmd := exec.Command(name, args...)
@@ -526,11 +636,27 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
 
-	// A proxy and a trust store the call's environment names hand gh's token to whatever that proxy
-	// is: a second proxy, with a CA of its own given gh as SSL_CERT_FILE or in SSL_CERT_DIR, would
-	// read every request. gh is run from an allowlist of its caller's environment, which keeps
-	// neither, so that proxy is sent nothing and the call reaches GitHub, here the capture proxy,
-	// with acme's token alone.
+	// The caller's proxy is kept, since a deployment that reaches GitHub only through a proxy names
+	// it there, and its trust store is not. Through a forwarding proxy, the shape of such a
+	// deployment's, the call reaches GitHub, here the capture proxy, with acme's token, and the
+	// proxy is sent a CONNECT to api.github.com carrying no credential and, after it, TLS bytes
+	// that never hold the token. A second proxy that reads TLS with a CA of its own, given gh as
+	// SSL_CERT_FILE or in SSL_CERT_DIR, is sent the same CONNECT and reads no credential inside it:
+	// gh does not trust its CA, so it sends no request through it, and nothing reaches GitHub.
+	tunnel := startTunnelProxy(t, proxy.url)
+	check(home, []string{"HTTPS_PROXY=" + tunnel.url, "https_proxy=" + tunnel.url}, []string{"api", "repos/acme/widgets"}, "acme", "")
+	connects, relayed := tunnel.take()
+	if !slices.ContainsFunc(connects, func(c capturedConnect) bool { return c.host == "api.github.com:443" }) {
+		t.Errorf("legion gh api repos/acme/widgets sent the caller's proxy %+v, want a CONNECT to api.github.com:443", connects)
+	}
+	for _, c := range connects {
+		if c.auth != "" {
+			t.Errorf("the CONNECT to %s through the caller's proxy carried %q, want no credential", c.host, c.auth)
+		}
+	}
+	if bytes.Contains(relayed, []byte(tokens["acme"])) {
+		t.Errorf("the caller's proxy relayed acme's token in the clear")
+	}
 	induced := startCaptureProxy(t)
 	inducedDir := t.TempDir()
 	if ca, err := os.ReadFile(induced.caFile); err != nil || os.WriteFile(filepath.Join(inducedDir, "induced.pem"), ca, 0o600) != nil {
@@ -540,9 +666,26 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{"HTTPS_PROXY=" + induced.url, "https_proxy=" + induced.url, "SSL_CERT_FILE=" + induced.caFile},
 		{"HTTPS_PROXY=" + induced.url, "https_proxy=" + induced.url, "SSL_CERT_FILE=", "SSL_CERT_DIR=" + inducedDir},
 	} {
-		check(home, env, []string{"api", "repos/acme/widgets"}, "acme", "")
-		if sent := induced.take(); len(sent) != 0 {
-			t.Errorf("legion gh api repos/acme/widgets under %q sent the proxy it names %+v, want nothing", env, sent)
+		what := fmt.Sprintf("legion gh api repos/acme/widgets under %q", env)
+		if code, out := runIn(home, append(append([]string{}, ghEnv...), env...), os.Args[0], "gh", "api", "repos/acme/widgets"); code == 0 {
+			t.Errorf("%s exit 0 through a proxy whose CA gh does not trust: %s", what, out)
+		}
+		connects := induced.takeConnects()
+		if !slices.ContainsFunc(connects, func(c capturedConnect) bool { return c.host == "api.github.com:443" }) {
+			t.Errorf("%s sent the proxy it names %+v, want a CONNECT to api.github.com:443", what, connects)
+		}
+		for _, c := range connects {
+			if c.auth != "" {
+				t.Errorf("%s: the CONNECT to %s carried %q, want no credential", what, c.host, c.auth)
+			}
+		}
+		for _, r := range induced.take() {
+			if r.auth != "" {
+				t.Errorf("%s: the proxy it names read %s%s with %q inside its tunnel, want no credential", what, r.host, r.path, r.auth)
+			}
+		}
+		if sent := proxy.take(); len(sent) != 0 {
+			t.Errorf("%s reached GitHub with %+v, want nothing", what, sent)
 		}
 	}
 
@@ -566,16 +709,59 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	} {
 		check(home, tc.env, tc.args, "", tc.refuse)
 	}
-	if _, err := os.Stat(ran + "-editor"); err == nil {
-		t.Errorf("an editor program ran under `legion gh`")
+
+	// An editor gh opens beyond the routes refused by name runs no program of the caller's: gh is
+	// handed an editor that fails (ghNoEditor) whatever GH_EDITOR, EDITOR or VISUAL name, and the
+	// nano gh falls back to is never reached. `gh discussion create` given an empty body, after it
+	// reads the repository's categories, and `gh preview prompter markdown-editor` each ask to
+	// launch an editor whatever prompts allow, and launch it on the `e` they read here; each
+	// editor fails, so nothing it wrote is sent. Measured with the editor left to gh's own choice:
+	// nano ran in both, and discussion create posted what it wrote.
+	nano := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	editors := []string{"GH_EDITOR=" + editor, "EDITOR=" + editor, "VISUAL=" + editor, "PATH=" + nano + ":" + bin + ":" + filepath.Dir(git) + ":/usr/bin:/bin"}
+	for _, tc := range []struct {
+		args    []string
+		graphql int // the GraphQL requests gh may send: discussion create's category list
+	}{
+		{[]string{"discussion", "create", "-R", "acme/widgets", "-t", "T", "-c", "General", "-b", ""}, 1},
+		{[]string{"preview", "prompter", "markdown-editor"}, 0},
+	} {
+		what := "legion gh " + strings.Join(tc.args, " ")
+		cmd := exec.Command(os.Args[0], append([]string{"gh"}, tc.args...)...)
+		cmd.Env = append(append(append([]string{}, base...), ghEnv...), editors...)
+		cmd.Dir, cmd.Stdin = home, strings.NewReader("e\ne\ne\n")
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "to launch") {
+			t.Errorf("%s = %v, %q; want gh's prompt to launch an editor, and a failure", what, err, out)
+		}
+		graphql := 0
+		for _, r := range proxy.take() {
+			if r.path == "/graphql" {
+				graphql++
+			}
+			if r.auth != "token "+tokens["acme"] {
+				t.Errorf("%s sent %s%s with %q, want acme's token", what, r.host, r.path, r.auth)
+			}
+		}
+		if graphql != tc.graphql {
+			t.Errorf("%s sent %d GraphQL requests, want %d: no request after its editor", what, graphql, tc.graphql)
+		}
+	}
+	for _, marker := range []string{"-editor", "-nano"} {
+		if _, err := os.Stat(ran + marker); err == nil {
+			t.Errorf("an editor program (%s) ran under `legion gh`", strings.TrimPrefix(marker, "-"))
+		}
 	}
 
 	// A gh directory whose config.yml holds a hosts block, which carries settings gh reads per
 	// host (an editor, a pager, a browser, a socket gh sends its requests through), or an alias
-	// shadowing a refused command, is refused before gh runs; one whose config.yml is no regular
-	// file is refused without being opened, so a named pipe there stalls nothing. The pane's own
-	// directory is judged before gh reads any help, so each is refused promptly; each run has a
-	// bound of its own, which a gh stalled on the pipe would meet.
+	// named `help`, which gh would run on `legion gh help`, is refused before gh runs; one whose
+	// config.yml is no regular file is refused without being opened, so a named pipe there stalls
+	// nothing. The pane's own directory is judged before gh reads any help, so each is refused
+	// promptly; each run has a bound of its own, which a gh stalled on the pipe would meet.
 	acmeConfig := filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.ConfigFile)
 	keptConfig, err := os.ReadFile(acmeConfig)
 	if err != nil {
@@ -589,9 +775,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{"a hosts block", func() error {
 			return os.WriteFile(acmeConfig, append(slices.Clone(keptConfig), "hosts:\n    github.com:\n        editor: vi\n"...), 0o600)
 		}, "holds a hosts block"},
-		{"an alias shadowing a refused command", func() error {
-			return os.WriteFile(acmeConfig, []byte(ghconfig.Config+"aliases:\n    agent-task: pr view\n"), 0o600)
-		}, "names an alias that shadows a command `legion gh` refuses"},
+		{"an alias named help", func() error {
+			return os.WriteFile(acmeConfig, []byte(ghconfig.Config+"aliases:\n    help: api repos/sjawhar/legion\n"), 0o600)
+		}, "names an alias `help`"},
 		{"a named pipe", func() error {
 			if err := os.Remove(acmeConfig); err != nil {
 				return err
@@ -714,6 +900,32 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// whatever it names; a gh with no agent-task refuses it as no command its help lists.
 		{issueWorkspace, nil, []string{"agent-task", "view", "https://github.com/sjawhar/legion/issues/1"}, "", "`gh agent-task` sends the token||no command gh's own help lists"},
 	}
+	// The git gh runs reads the working directory's repository configuration before its command
+	// line, and a URL-scoped http.<url>.sslVerify=false there beat the forced http.sslVerify=true
+	// (measured with git 2.43: a man-in-the-middle proxy read the credential helper's token). So a
+	// repository whose own configuration, or a file it includes, sets an http ssl or proxy key, or a
+	// credential helper other than `legion git-credential`, is refused before gh runs, naming the
+	// key and never its value. A Legion clone's own helpers and actions/checkout's extraheader pass.
+	included := filepath.Join(t.TempDir(), "included.gitconfig")
+	if err := os.WriteFile(included, []byte("[http]\n\tsslCAInfo = /tmp/example.pem\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows = append(rows,
+		row{workspace([][]string{origin, {"config", "http.https://github.com/.sslVerify", "false"}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets http.https://github.com/.sslverify"},
+		row{workspace([][]string{origin, {"config", "http.proxy", "http://127.0.0.1:1"}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets http.proxy"},
+		row{workspace([][]string{origin, {"config", "include.path", included}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets http.sslcainfo"},
+		row{workspace([][]string{origin, {"config", "credential.helper", "!/tmp/example-helper"}}), nil, []string{"pr", "view", "1", "--json", "title"}, "", "sets credential.helper to a helper other than"},
+		row{workspace([][]string{origin,
+			{"config", "credential.https://github.com.helper", ""},
+			{"config", "--add", "credential.https://github.com.helper", "!legion git-credential"},
+			{"config", "credential.useHttpPath", "true"},
+			{"config", "http.https://github.com/.extraheader", "AUTHORIZATION: basic example"},
+		}), nil, []string{"pr", "view", "1", "--json", "title"}, "acme", ""},
+		// The git `legion gh` routes a call by runs with gh's own environment (gitLines), so a
+		// caller's GIT_DIR, which gh's git never sees, cannot route the call to another owner's
+		// directory than the repository gh then acts on.
+		row{issueWorkspace, []string{"GIT_DIR=" + filepath.Join(otherClone, ".git")}, []string{"pr", "view", "1", "--json", "title"}, "acme", ""},
+	)
 	for _, scheme := range []string{"git+https://github.com/sjawhar/legion.git", "ftp://github.com/sjawhar/legion", "ftps://github.com/sjawhar/legion", "file://github.com/sjawhar/legion", "github.com://sjawhar/legion", "git@github.com/sjawhar:legion"} {
 		rows = append(rows, row{workspace([][]string{origin, {"remote", "add", "upstream", scheme}}), nil, []string{"pr", "list", "--json", "title"}, "", "more than one owner"})
 	}
@@ -740,16 +952,20 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 
 	// The git gh runs itself (a clone, a fork's parent, `pr checkout`) authenticates through the
-	// credential helper gh names after its own executable, GH_PATH (quality C). `legion gh` sets it
-	// to the pane's wrapper, so the helper gh writes is the wrapper's `auth git-credential`, and
-	// git, told useHttpPath as `legion gh` tells gh's git, gets the token of the owner in each
-	// request's path from it, never GH_CONFIG_DIR's acme token for sjawhar's repository.
+	// credential helper gh names after its own executable, GH_PATH (quality C). `legion gh` sets
+	// GH_PATH to the pane's wrapper (TestLegionGhExecsTheRealGhWithTheOwnersDirectory), so the
+	// helper the real gh writes under that GH_PATH is the wrapper's `auth git-credential`, and git,
+	// told useHttpPath as `legion gh` tells gh's git, gets the token of the owner in each request's
+	// path from it, never GH_CONFIG_DIR's acme token for sjawhar's repository. `legion gh auth
+	// setup-git` itself is refused: it writes git's global configuration, which the git `legion gh`
+	// runs never reads (GIT_CONFIG_GLOBAL=/dev/null), so git could not write it either.
+	check(home, nil, []string{"auth", "setup-git", "--hostname", "github.com"}, "", "`gh auth setup-git` writes git's global configuration")
 	gitConfig := filepath.Join(home, "gh-gitconfig")
-	if code, out := run(append([]string{"GIT_CONFIG_GLOBAL=" + gitConfig}, ghEnv...), os.Args[0], "gh", "auth", "setup-git", "--hostname", "github.com"); code != 0 {
-		t.Fatalf("legion gh auth setup-git = exit %d: %s", code, out)
+	if code, out := run([]string{"GIT_CONFIG_GLOBAL=" + gitConfig, "GH_PATH=" + filepath.Join(bin, "gh")}, gh, "auth", "setup-git", "--hostname", "github.com"); code != 0 {
+		t.Fatalf("gh auth setup-git under the wrapper's GH_PATH = exit %d: %s", code, out)
 	}
 	if sent := proxy.take(); len(sent) != 0 {
-		t.Errorf("legion gh auth setup-git sent %+v, want nothing", sent)
+		t.Errorf("gh auth setup-git sent %+v, want nothing", sent)
 	}
 	written, err := os.ReadFile(gitConfig)
 	if wrapperHelper := "helper = !" + filepath.Join(bin, "gh") + " auth git-credential"; err != nil || !strings.Contains(string(written), wrapperHelper) {

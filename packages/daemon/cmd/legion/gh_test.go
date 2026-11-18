@@ -464,6 +464,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), err: "`gh agent-task` sends the token"},
 		{argv: []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, err: `"-e" runs an editor program`},
 		{argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, err: `"--editor" runs an editor program`},
+		// -e is refused where it is --editor, and taken where the leaf's help gives it another
+		// option: `gh secret set`'s -e is --env.
+		{argv: []string{"secret", "set", "TOKEN", "-R", "acme/widgets", "-e", "production", "--body", "x"}, owner: "acme"},
 		{argv: []string{"pr", "view", "sjawhar/legion#1", "-R", "acme/widgets"}, owner: "acme"},
 		// The first re-review's reproductions.
 		{argv: []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, owner: "sjawhar"},
@@ -923,7 +926,8 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf '%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$*\"\n" +
-		"printf 'env %s|%s|%s=%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\"\n"
+		"printf 'env %s|%s|%s=%s|%s=%s|%s|%s|%s|%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GIT_CONFIG_KEY_1\" \"$GIT_CONFIG_VALUE_1\" " +
+		"\"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\" \"$GH_EDITOR\" \"$GH_TELEMETRY\" \"$GIT_CONFIG_GLOBAL\" \"$GIT_CONFIG_NOSYSTEM\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +940,9 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
-	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|1|credential.https://github.com.useHttpPath=true|1|1\n"
+	// gh's git gets http.sslVerify on and useHttpPath for github.com, reads no global or system
+	// file, and gh gets an editor that fails and its telemetry off (ghChildForced).
+	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|2|http.sslVerify=true|credential.https://github.com.useHttpPath=true|1|1|" + ghNoEditor + "|0|/dev/null|1\n"
 	for _, tc := range []struct {
 		args []string
 		dir  string
@@ -2329,14 +2335,33 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 
 // A gh directory whose hosts.yml or config.yml sends gh's requests elsewhere is refused, naming
 // the file and the key and never the value: api_host in a host's block, http_unix_socket at the
-// top of config.yml or in a host's block, at any depth gh might read it. So is a config.yml
-// holding any other hosts block or an alias shadowing a refused command, and a file that is no
-// regular file, which is refused without being opened, so a named pipe stalls nothing. The files
-// the daemon renders, a config.yml holding aliases, and a directory holding neither file pass; one
+// top of config.yml or in a host's block, at any depth and in any shape gh might read it as a key,
+// a list's even-indexed items among them (go-gh's FindEntry reads a list as pairs). So is a
+// config.yml holding any other hosts block or an alias named `help`, and a file that is no regular
+// file (a named pipe, a symbolic link, a directory) or is larger than any the daemon writes, which
+// is refused without being read, so a named pipe stalls nothing. The files the daemon renders, a
+// config.yml holding aliases, one naming an alias after a command `legion gh` refuses (which gh
+// never expands), a routing key's name as a value, and a directory holding neither file pass; one
 // that does not parse is refused.
 func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 	hosts := ghconfig.Hosts("ghs_acme_write")
 	fifo := func(dir, name string) error { return syscall.Mkfifo(filepath.Join(dir, name), 0o600) }
+	link := func(text string) func(dir, name string) error {
+		return func(dir, name string) error {
+			target := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(target, []byte(text), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(target, filepath.Join(dir, name))
+		}
+	}
+	directory := func(dir, name string) error { return os.Mkdir(filepath.Join(dir, name), 0o700) }
+	large := func(dir, name string) error {
+		return os.WriteFile(filepath.Join(dir, name), []byte(strings.Repeat("#", ghconfig.MaxFileBytes+1)), 0o600)
+	}
+	at := func(plant func(dir, name string) error, name string) func(dir string) error {
+		return func(dir string) error { return plant(dir, name) }
+	}
 	for _, tc := range []struct {
 		name          string
 		hosts, config string // "" writes no such file
@@ -2345,16 +2370,27 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 	}{
 		{name: "the files the daemon renders", hosts: hosts, config: ghconfig.Config},
 		{name: "a config.yml holding aliases", hosts: hosts, config: ghconfig.Config + "aliases:\n    co: pr checkout\n"},
+		{name: "an alias named after a refused command", hosts: hosts, config: ghconfig.Config + "aliases:\n    agent-task: pr view\n"},
+		{name: "api_host as a list's value", hosts: "github.com: [user, api_host]\n", config: ghconfig.Config},
 		{name: "neither file"},
 		{name: "api_host in hosts.yml's github.com block", hosts: hosts + "    api_host: api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
 		{name: "api_host under the account", hosts: strings.Replace(hosts, "            oauth_token: ghs_acme_write\n", "            oauth_token: ghs_acme_write\n            api_host: api.example.invalid\n", 1), config: ghconfig.Config, want: "hosts.yml sets api_host"},
 		{name: "http_unix_socket at the top of config.yml", hosts: hosts, config: ghconfig.Config + "http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "api_host in a flow list of hosts.yml", hosts: "github.com: [oauth_token, ghs_acme_write, user, x-access-token, api_host, api.example.invalid]\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "api_host in a block list of hosts.yml", hosts: "github.com:\n    - api_host\n    - api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "config.yml as a list", hosts: hosts, config: "[http_unix_socket, /tmp/example.sock]\n", want: "config.yml sets http_unix_socket"},
 		{name: "http_unix_socket in a host's block of config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
 		{name: "any other hosts block in config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        editor: vi\n", want: "config.yml holds a hosts block"},
-		{name: "an alias shadowing a refused command", hosts: hosts, config: ghconfig.Config + "aliases:\n    agent-task: pr view\n", want: "config.yml names an alias that shadows a command"},
+		{name: "an alias named help", hosts: hosts, config: ghconfig.Config + "aliases:\n    help: api repos/sjawhar/legion\n", want: "config.yml names an alias `help`"},
 		{name: "a hosts.yml that does not parse", hosts: "github.com: [\n", config: ghconfig.Config, want: "hosts.yml does not parse as YAML"},
-		{name: "a named pipe at hosts.yml", config: ghconfig.Config, plant: func(dir string) error { return fifo(dir, ghconfig.HostsFile) }, want: "hosts.yml is no regular file"},
-		{name: "a named pipe at config.yml", hosts: hosts, plant: func(dir string) error { return fifo(dir, ghconfig.ConfigFile) }, want: "config.yml is no regular file"},
+		{name: "a named pipe at hosts.yml", config: ghconfig.Config, plant: at(fifo, ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a named pipe at config.yml", hosts: hosts, plant: at(fifo, ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a symbolic link at hosts.yml", config: ghconfig.Config, plant: at(link(hosts), ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a symbolic link at config.yml", hosts: hosts, plant: at(link(ghconfig.Config), ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a directory at hosts.yml", config: ghconfig.Config, plant: at(directory, ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a directory at config.yml", hosts: hosts, plant: at(directory, ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a hosts.yml larger than any the daemon writes", config: ghconfig.Config, plant: at(large, ghconfig.HostsFile), want: "hosts.yml is larger than any file the daemon writes"},
+		{name: "a config.yml larger than any the daemon writes", hosts: hosts, plant: at(large, ghconfig.ConfigFile), want: "config.yml is larger than any file the daemon writes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

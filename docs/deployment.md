@@ -172,10 +172,18 @@ It refuses the same way, before gh runs: `--editor`/`-e` on any command, because
 editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
 an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
 GitHub names; `gh auth login`, `logout`, `refresh` and `switch`, which write the gh directory the
-daemon alone writes; and a gh directory whose `config.yml` holds a `hosts` block, names an alias
-that shadows one of those commands, or is no regular file.
+daemon alone writes; `gh auth setup-git`, which writes git's global configuration, a file the git
+`legion gh` runs never reads; a gh directory whose `hosts.yml` or `config.yml` is no regular file
+(a named pipe, a symbolic link, a directory) or is larger than any the daemon writes, which it
+reads without following a link or waiting on a pipe, or names `api_host` or `http_unix_socket`
+anywhere gh would read it as a key, a list's items among them; a `config.yml` that holds a `hosts`
+block or an alias named `help`, which gh would run on `legion gh help`; and a working directory
+whose repository configuration, or a file it includes, sets an `http` ssl or proxy key, generic
+or for a URL, or a credential helper other than `legion git-credential`, since git reads it before
+the command line and a URL-scoped `sslVerify=false` there beats every entry the command line
+forces.
 `legion gh` starts the real gh for a command's help only the first time:
-it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables, which nothing removes.
+it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
 It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
 In a pod every role runs as one user, so this keeps out another user and not another role.
 It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
@@ -192,12 +200,19 @@ The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
-and with gh's update check and prompts off. Its environment is built from an allowlist of the
+and with gh's update check, prompts and telemetry off and its editor a program that fails
+(`/bin/false`), whatever the caller names. Its environment is built from an allowlist of the
 caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh.go`): the paths,
-the terminal, the locale, gh's state directories, `GH_REPO`, how gh prints, git's own settings
-and identity, and Legion's wrapper variables, each kept for a read gh or go-gh makes of it. No
-proxy, trust store, editor, browser or pager variable of the caller's reaches gh, so a proxy and
-a CA the caller names together cannot read its token. The saved help its tests read is the image's gh's,
+the terminal, the locale, the proxy variables, gh's state directories, `GH_REPO`, how gh prints,
+git's identity, and Legion's wrapper variables, each kept for a read gh or go-gh makes of it. No
+trust store, editor, browser or pager variable of the caller's reaches gh: a proxy sees only the
+TLS tunnel gh opens through it, and cannot read the token. A deployment whose proxy inspects TLS
+with a CA of its own must install that CA in the system's trust store, which gh, git and curl read
+by default; naming it in `SSL_CERT_FILE` or `SSL_CERT_DIR` reaches a pane, but not the gh `legion
+gh` runs, and gh's requests then fail certificate verification. The git gh runs reads no global
+or system configuration file (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), takes of
+the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true`.
+The saved help its tests read is the image's gh's,
 with that gh's whole command reference, every argument and every repository-naming option of
 which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the script that
 regenerates it when that pin moves; `.github/scripts/check-gh-version.sh` fails the build until

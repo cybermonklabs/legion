@@ -396,19 +396,20 @@ type ghGuardRecord struct {
 	stderr, gh, checked, log string
 }
 
-// ghRigEnv is what the stand-in gh records of the pager and browsers the rig's caller names for a
-// call guarded whole: none of them, since gh is run from an allowlist of its caller's environment
-// that holds no program (ghChildEnviron); ghRigReadEnv is what it records for a call that writes
-// nothing, which runs with cat as its pager.
+// ghRigEnv is what the stand-in gh records of the pager, browsers and editor the rig's caller
+// names for a call guarded whole: none of them, since gh is run from an allowlist of its caller's
+// environment that holds no program (ghChildEnviron), and as its editor a program that fails
+// (ghNoEditor), so no editor gh starts can post text the guard never read; ghRigReadEnv is what it
+// records for a call that writes nothing, which runs with cat as its pager.
 const (
-	ghRigEnv     = "env GH_PAGER=unset GH_BROWSER=unset BROWSER=unset\n"
-	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset\n"
+	ghRigEnv     = "env GH_PAGER=unset GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
+	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
 )
 
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager and two browsers.
+// from another run. The caller's environment names a pager, two browsers and three editors.
 func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
@@ -419,7 +420,7 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
-		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s GH_EDITOR=%s EDITOR=%s VISUAL=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" \"${GH_EDITOR-unset}\" \"${EDITOR-unset}\" \"${VISUAL-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
@@ -435,6 +436,7 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
+			"GH_EDITOR": "rig-gh-editor", "EDITOR": "rig-editor", "VISUAL": "rig-visual",
 		}
 		code, _, stderr := legionGhIn(t, t.TempDir(), env, stdin, args...)
 		return ghGuardRecord{

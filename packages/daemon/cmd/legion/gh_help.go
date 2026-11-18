@@ -379,9 +379,10 @@ func ghSlots(path []string, args string) (slots []ghSlot, passthrough bool) {
 // ghArgKind is what one argument name of gh's usages selects — a repository, another repository a
 // command acts on beside its own, an owner, a URL that may name a repository, a search query, the
 // repository a command creates (OWNER/NAME, or a name alone, which names none), an issue or pull
-// request number (which names a repository written OWNER/REPO#N), or nothing ("") — and whether it
-// stands for one or more arguments, as a plural name does with no `...` (`gh issue edit
-// {<numbers> | <urls>}` edits one or more issues).
+// request number, which names none (a pr leaf reads OWNER/REPO#N as a branch of its own
+// repository, and `gh agent-task`, whose view read it as a repository, is refused whole), or
+// nothing ("") — and whether it stands for one or more arguments, as a plural name does with no
+// `...` (`gh issue edit {<numbers> | <urls>}` edits one or more issues).
 type ghArgKind struct {
 	kind string
 	many bool
@@ -436,9 +437,9 @@ type ghLeafQuirk struct {
 
 // ghLeafQuirks are gh 2.98.0's and 2.65.0's quirks, by leaf path, read from gh's source: project
 // link and unlink call gh's repository override with -R a plain string, and act on --team when it
-// is given; repo set-default resolves every remote's network before it reads its argument; agent-
-// task view is gh's one reader of OWNER/REPO#N (ParseFullReference) and reads a URL through the pr
-// finder, as every pr leaf does (quirkOf); and repo create's <name> is the repository it creates.
+// is given; repo set-default resolves every remote's network before it reads its argument; every
+// pr leaf reads a URL through the pr finder (quirkOf); and repo create's <name> is the repository
+// it creates.
 var ghLeafQuirks = map[string]ghLeafQuirk{
 	"project link":     {readsGHRepo: true, targetOption: "team"},
 	"project unlink":   {readsGHRepo: true, targetOption: "team"},
@@ -486,8 +487,8 @@ func (s ghSlot) kind() (kind, unknown string) {
 	return kind, ""
 }
 
-// takes says whether one of the slot's names is of kind: a slot whose most specific name is a URL
-// may still take a number, which may name its repository (OWNER/REPO#N).
+// takes says whether one of the slot's names is of kind, whatever the slot's most specific name
+// is: `[<repository>] [-- <gitflags>...]`'s first slot takes a repository.
 func (s ghSlot) takes(kind string) bool {
 	return slices.ContainsFunc(s.args, func(arg ghArg) bool { return arg.kind.kind == kind })
 }

@@ -670,7 +670,9 @@ func readGitRemotes() ([]ghRemote, error) {
 
 // gitLines runs git with args in the working directory and answers the lines it prints: none for
 // a directory that is no git repository, where no git runs, or, for `git config --get-regexp`,
-// where nothing matches.
+// where nothing matches. It runs with the environment gh runs with (ghChildEnviron), so it reads
+// the repository, the remotes and the configuration gh's own git reads, and no GIT_DIR, global
+// file or url.<base>.insteadOf of the caller's that gh's git never sees.
 //
 // It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
 // nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
@@ -681,7 +683,7 @@ func gitLines(args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = append(ghChildEnviron(os.Environ(), nil), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

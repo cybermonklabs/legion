@@ -364,9 +364,10 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 // and never in its argv or its environment. The token is the caller's GH_TOKEN, else its
 // GITHUB_TOKEN, which gh would have sent, and else what `gh auth git-credential get` answers, which
 // is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, and asks
-// GitHub's REST API for the repository with GitHub's media type. Of the caller's environment no
-// TLS key log reaches it, and no proxy or trust store: a proxy the caller names with a CA it
-// trusts would read the token's header.
+// GitHub's REST API for the repository with GitHub's media type. Of the caller's environment its
+// proxy reaches it, so a host that reaches GitHub through one reaches it the same way, and no trust
+// store and no TLS key log do: a proxy the caller names with a CA curl trusted would read the
+// token's header, where with the system's own CAs it sees only a TLS tunnel.
 func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -408,9 +409,14 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 					t.Errorf("curl ran as %q, want %q in it", argv, want)
 				}
 			}
-			for _, key := range []string{"ghtoken", "githubtoken", "sslkeylog", "httpsproxy", "allproxy", "certfile", "certdir", "cabundle"} {
+			for _, key := range []string{"ghtoken", "githubtoken", "sslkeylog", "certfile", "certdir", "cabundle"} {
 				if got := calls[0][key]; got != "unset" {
 					t.Errorf("curl ran with %s=%q, want it unset", key, got)
+				}
+			}
+			for _, key := range []string{"httpsproxy", "allproxy"} {
+				if got := calls[0][key]; got != "http://127.0.0.1:1" {
+					t.Errorf("curl ran with %s=%q, want the caller's proxy, http://127.0.0.1:1", key, got)
 				}
 			}
 			if stdin, err := os.ReadFile(rig.curlStdin); err != nil || string(stdin) != "Authorization: Bearer "+tc.token+"\n" {

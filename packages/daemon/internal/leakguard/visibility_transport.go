@@ -231,9 +231,9 @@ const curlProgram = "/usr/bin/curl"
 // request (GET /repos/<slug> at gitHubAPI) with the same token (Guard.ghToken), read by
 // curlAnswer. The token goes to curl on its standard input, as the `Authorization` header that
 // `--header @-` reads, and never in its argv, which any process of the machine can read. curl is
-// curlProgram, and it keeps of the caller's environment only the names curlInherits keeps, so its
-// proxy and its trust store are the system's own and no proxy the caller names sees the token.
-// Its options are these:
+// curlProgram, and it keeps of the caller's environment only the names curlInherits keeps: its
+// proxy, which then sees only a TLS tunnel, and no trust store, so the CAs curl trusts are the
+// system's own and no proxy the caller names can read the token. Its options are these:
 //
 //   - `-q`, first as curl requires, so curl reads no .curlrc, and `--no-netrc`, so it reads no
 //     netrc: the token is the one credential the request carries;
@@ -291,22 +291,28 @@ func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, er
 
 // curlInherits is which names of the caller's environment the curl read keeps: those a program
 // carrying a GitHub token keeps (TokenChildKeeps), which hold neither GH_TOKEN nor GITHUB_TOKEN,
-// since the token goes to curl on its standard input alone. Every other name is left out: the
-// proxy variables, by which a proxy the caller names would be handed the token, the trust stores
-// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), by which it would be trusted to read it,
-// SSLKEYLOGFILE, a file OpenSSL writes the connection's TLS keys to, and any name a later curl
-// learns to read.
+// since the token goes to curl on its standard input alone. The proxy variables are kept, so a
+// host that reaches GitHub through a proxy reaches it the same way here, and the proxy sees only
+// the TLS tunnel curl opens through it. Every other name is left out: the trust stores
+// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), by which a proxy would be trusted to read inside
+// that tunnel, SSLKEYLOGFILE, a file OpenSSL writes the connection's TLS keys to, and any name a
+// later curl learns to read.
 func curlInherits(name string) bool { return TokenChildKeeps(name) }
 
 // TokenChildKeeps is whether a program that carries a GitHub token keeps the name of its caller's
 // environment: gh, which `legion gh` runs with an installation's token, and the guard's curl read.
-// It keeps what any program needs to run (PATH, HOME, TMPDIR), the terminal (TERM), and the locale
-// and time zone (LANG and the LC_ names, TZ), and nothing else: an allowlist, so that no proxy
-// (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY), no trust store (SSL_CERT_FILE, SSL_CERT_DIR,
-// CURL_CA_BUNDLE), no program the tool would hand text to (EDITOR, VISUAL, BROWSER, PAGER) and no
-// name a later release learns to read reaches it from the caller. A proxy and a trust store the
-// caller names together hand the token to whatever the proxy is. A caller that needs more of its
-// environment names it beside this, with what reads it.
+// It keeps what any program needs to run (PATH, HOME, TMPDIR), the terminal (TERM), the locale and
+// time zone (LANG and the LC_ names, TZ), and the proxy variables in both cases (HTTPS_PROXY,
+// HTTP_PROXY, ALL_PROXY, NO_PROXY), which the daemon hands a pane or a pod as its route out
+// (runtime/tmux's paneEnvAllowList, the guard's own ls-remote): gh and curl reach GitHub through
+// such a proxy by a CONNECT tunnel, and with no trust store of the caller's, the proxy reads
+// nothing inside it. Nothing else is kept: an allowlist, so that no trust store (SSL_CERT_FILE,
+// SSL_CERT_DIR, CURL_CA_BUNDLE), no TLS key log (SSLKEYLOGFILE), no program the tool would hand
+// text to (EDITOR, VISUAL, BROWSER, PAGER) and no name a later release learns to read reaches it
+// from the caller. A proxy and a trust store the caller names together would hand the token to
+// whatever the proxy is, so a deployment whose proxy inspects TLS with its own CA installs that
+// CA in the system's trust store, which gh and curl read by default. A caller that needs more of
+// its environment names it beside this, with what reads it.
 func TokenChildKeeps(name string) bool {
 	return tokenChildNames[name]
 }
@@ -318,6 +324,8 @@ var tokenChildNames = map[string]bool{
 	"LC_ADDRESS": true, "LC_ALL": true, "LC_COLLATE": true, "LC_CTYPE": true, "LC_IDENTIFICATION": true,
 	"LC_MEASUREMENT": true, "LC_MESSAGES": true, "LC_MONETARY": true, "LC_NAME": true, "LC_NUMERIC": true,
 	"LC_PAPER": true, "LC_TELEPHONE": true, "LC_TIME": true,
+	"HTTPS_PROXY": true, "https_proxy": true, "HTTP_PROXY": true, "http_proxy": true,
+	"ALL_PROXY": true, "all_proxy": true, "NO_PROXY": true, "no_proxy": true,
 }
 
 // curlTransportExits are curl's exit statuses for a read that got no answer (the EXIT CODES of
