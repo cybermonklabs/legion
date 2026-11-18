@@ -291,6 +291,17 @@ func (l *mentionListener) sent() []mentionListenerSend {
 	return slices.Clone(l.sends)
 }
 
+// bodiesTo is the body of every send the listener took for session, in the order it took them.
+func (l *mentionListener) bodiesTo(session string) []string {
+	bodies := []string{}
+	for _, send := range l.sent() {
+		if send.session == session {
+			bodies = append(bodies, send.body)
+		}
+	}
+	return bodies
+}
+
 // unclaimedPending reports whether the comment's attempt for target is pending with no sender's
 // claim on it: the shape of an attempt whose send the mention sender refused, and of one whose
 // claim lapsed.
