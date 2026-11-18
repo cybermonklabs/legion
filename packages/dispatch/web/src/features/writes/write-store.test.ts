@@ -888,6 +888,51 @@ test("a write answered 401 again while its person is still signed in is refused"
   });
 });
 
+// Two writes answered 401 at once, while the sign-in check the first one asked for is still out:
+// the second's ask cancels that check and starts its own (`askSignInAgain`). The first waits for
+// that newer check's answer rather than reading the cancelled check as no answer, so each write is
+// Dispatch's refusal at its second 401, as a write alone is.
+test("two writes answered 401 at once while the sign-in check is out are each refused at their second 401", async () => {
+  await onFakeClock(async () => {
+    const client = signedIn("alice");
+    const whoami = new QueryObserver(client, {
+      // The check answers a while after it is asked, on the held clock, so the second write's ask
+      // comes while the first write's check is still out.
+      queryFn: () => {
+        const check = Promise.withResolvers<{ event_head: string; kind: "user"; login: string }>();
+        setTimeout(() => check.resolve({ event_head: "0", kind: "user", login: "alice" }), 200);
+        return check.promise;
+      },
+      queryKey: ["whoami"],
+      staleTime: Number.POSITIVE_INFINITY,
+    });
+    const stop = whoami.subscribe(() => {});
+    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    try {
+      const attempts = { first: 0, second: 0 };
+      const refusedWrite = (which: "first" | "second") =>
+        statusWrite(
+          writes,
+          () => {
+            attempts[which] += 1;
+            return Promise.reject(
+              new ApiError(401, { code: "UNAUTHENTICATED", error: "sign in again" })
+            );
+          },
+          { label: `The ${which} write` }
+        ).catch((error: unknown) => error);
+      const first = refusedWrite("first");
+      const second = refusedWrite("second");
+      await tick(10_000);
+      expect(attempts).toEqual({ first: 2, second: 2 });
+      expect(await first).toMatchObject({ status: 401 });
+      expect(await second).toMatchObject({ status: 401 });
+    } finally {
+      stop();
+    }
+  });
+});
+
 // W32, W50. A sign-out still out when the session lapses has done what it was for: it lands, with
 // no answer, rather than waiting to sign the person out again the moment they sign back in, or
 // being refused and leaving its surface to keep what the person chose to discard.
