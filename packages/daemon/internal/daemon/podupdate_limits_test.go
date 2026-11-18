@@ -759,6 +759,29 @@ func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToADriftedO
 	}
 }
 
+// askRowsOf is the id of every update-ask row of issue's role the outbox holds, oldest first.
+func (r *fleetRig) askRowsOf(issue string, role claim.Role) []int64 {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select id from outbox where kind = 'update_ask' and issue = $1 and payload->>'role' = $2 order by id`,
+		issue, string(role))
+	if err != nil {
+		r.t.Fatalf("read the update asks of %s's %s: %v", issue, role, err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			r.t.Fatalf("read an update ask of %s's %s: %v", issue, role, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the update asks of %s's %s: %v", issue, role, err)
+	}
+	return ids
+}
+
 // The per-minute limit is what paces a fleet-wide roll in time rather than in slots: with it, the
 // workers of the fleet are asked a few at a minute, so a change lands as a sequence of small
 // interruptions rather than one that stops everyone at once. It paces openings and nothing else
@@ -769,7 +792,7 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
-	asked := map[string]time.Time{}
+	asked := map[string]int64{}
 	for i := range keys {
 		if i > 0 {
 			rig.clock.advance(time.Minute)
@@ -777,28 +800,29 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
 		// The sweep asks a round's roles at the tick after the one that opened it, once the
-		// claims record the round, and never again.
+		// claims record the round, and never again. No lane runs here, so each ask is the row
+		// the sweep enqueued, still queued, and the sweep asks no claim whose ask is queued.
 		for _, prev := range keys[:i] {
-			c := rig.claimOf(prev, claim.RoleArchitect)
-			if c.UpdateTaskedAt == nil {
-				t.Fatalf("%s holds the round with no ask recorded a sweep after it opened: %+v", prev, c)
+			rows := rig.askRowsOf(prev, claim.RoleArchitect)
+			if len(rows) != 1 {
+				t.Fatalf("%s holds the round with %d asks queued a sweep after it opened, want one", prev, len(rows))
 			}
-			if at, ok := asked[prev]; ok && !c.UpdateTaskedAt.Equal(at) {
-				t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", prev, c.UpdateTaskedAt, at)
+			if id, ok := asked[prev]; ok && rows[0] != id {
+				t.Errorf("%s was asked in row %d, want the first ask's row %d: the limit asks no open round again", prev, rows[0], id)
 			}
-			asked[prev] = *c.UpdateTaskedAt
+			asked[prev] = rows[0]
 		}
 	}
 	// The last key opened is asked at the sweep after its opening, as every key before it was.
 	rig.clock.advance(time.Minute)
 	rig.tick()
 	for _, key := range keys {
-		c := rig.claimOf(key, claim.RoleArchitect)
-		if c.UpdateTaskedAt == nil {
-			t.Fatalf("%s holds the round with no ask recorded a sweep after the last opening: %+v", key, c)
+		rows := rig.askRowsOf(key, claim.RoleArchitect)
+		if len(rows) != 1 {
+			t.Fatalf("%s holds the round with %d asks queued a sweep after the last opening, want one", key, len(rows))
 		}
-		if at, ok := asked[key]; ok && !c.UpdateTaskedAt.Equal(at) {
-			t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", key, c.UpdateTaskedAt, at)
+		if id, ok := asked[key]; ok && rows[0] != id {
+			t.Errorf("%s was asked in row %d, want the first ask's row %d: the limit asks no open round again", key, rows[0], id)
 		}
 	}
 

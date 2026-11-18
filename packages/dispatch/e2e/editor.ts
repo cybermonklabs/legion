@@ -14,6 +14,7 @@ import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
 import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import { settledState } from "./settled";
 import { asUser } from "./users";
 
 export function documentEditor(page: Page): Locator {
@@ -247,13 +248,19 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 }
 
 // On the phone layout the margin is a bottom sheet over the document. Acting on a selection
-// opens it; close it again before selecting another range, as a person would.
+// opens it; close it again before selecting another range, as a person would. The sheet says
+// whether it is open, and is read once the page has drawn it rather than at the instant it
+// attaches.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
   if (project !== "iphone") {
     return;
   }
   const sheet = page.getByTestId("margin-sheet");
-  if ((await sheet.getAttribute("data-expanded")) !== String(open)) {
+  const shown = await settledState("the margin sheet", [
+    ["open", sheet.and(page.locator('[data-expanded="true"]'))],
+    ["shut", sheet.and(page.locator('[data-expanded="false"]'))],
+  ]);
+  if (shown !== (open ? "open" : "shut")) {
     if (open) {
       await page.getByRole("button", { name: /Open review panel/ }).click();
     } else {
@@ -320,19 +327,6 @@ export function needsYouCards(page: Page): Locator {
   return page.locator('[data-margin-section="needs-you"]');
 }
 
-export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
-  const card = threadCard(page, rootId);
-  if ((await card.getAttribute("aria-expanded")) !== "true") {
-    await card.getByRole("button").click();
-  }
-  const phoneThread = page.getByRole("dialog", { name: "Thread" });
-  const thread = (await phoneThread.count()) === 0 ? card : phoneThread;
-  const composer = thread.getByRole("form", { name: "Comment composer" });
-  const reply = composer.getByRole("textbox", { name: "Reply" });
-  await reply.fill(body);
-  await reply.press("Control+Enter");
-  await expect(composer.getByRole("textbox", { name: "Reply" })).toHaveValue("");
-}
 /** Document sockets the page has opened since the call, open or closed: every document's, or with
  *  `documentId` that document's alone, for a page that holds another document beside it. */
 export function countDocumentSockets(page: Page, documentId?: string): () => number {
