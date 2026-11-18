@@ -201,13 +201,14 @@ type MemoryGuardConfig struct {
 // program counted by what it holds over its parent, where those processes hold at least
 // FloorPercent of the limit between them, and at or above the urgent share, halfway from
 // ActPercent to the limit, every other process that grew over its last few reads at the same
-// reading; after the kills of a reading it ends no other until every killed process has exited or
-// WaitSeconds has passed, and it gives the rise up once WaitSeconds has passed with the reading
-// not fallen and nothing it may end grown since the kills. With Enabled false the daemon hands the
-// launchers no settings: each guard runs at its defaults from its launcher's start, as it does
-// while no daemon has answered, and turns off at its launcher's first acknowledgement, after which
-// it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
-// alone.
+// reading and, where a process it may end is not new to its stay near the limit, every other one
+// new to it that holds memory of its own; after the kills of a reading it ends no other until
+// every killed process has exited or WaitSeconds has passed, and it gives the rise up once
+// WaitSeconds has passed with the reading not fallen and nothing it may end grown since the kills.
+// With Enabled false the daemon hands the launchers no settings: each guard runs at its defaults
+// from its launcher's start, as it does while no daemon has answered, and turns off at its
+// launcher's first acknowledgement, after which it ends nothing and the pod's memory is bounded by
+// the kernel's kill of the whole container alone.
 type MemoryGuardPodConfig struct {
 	Enabled              bool
 	ActPercent           int
