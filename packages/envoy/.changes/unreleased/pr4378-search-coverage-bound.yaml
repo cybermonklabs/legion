@@ -11,5 +11,5 @@ body: |-
   boot and every 10 minutes). The statement runs under a 10 s `statement_timeout`, past which the
   route answers `503 SEARCH_COVERAGE_TIMEOUT` while its caller still waits, and a boot pass whose
   closing report fails logs it at WARN instead of failing. The two index builds run before the
-  server serves, so a single-replica deployment is down for them at the deploy, about 15 s at
-  1,000,000 window rows.
+  server serves, so a single-replica deployment is down for them at the deploy: 2.8 s and 4.7 s
+  on a synthetic corpus of 1,000,000 window rows.
