@@ -69,7 +69,36 @@ jobs:
       # commit.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A BOUND OF ITS OWN AND A SECOND ATTEMPT, here and in dispatch-two-builds-same below. Of
+      # the 755 checkouts of this file's two jobs in ci.yaml runs created from 2026-11-16 12:52Z
+      # to 2026-11-18 13:39Z, 753 took 96 s at most (median 44 s) and two hung: run
+      # 44143226907's for 44 minutes, until the job's budget cancelled it, and run
+      # 44125069013's for 25 minutes. Each attempt carries 2 minutes, the 96 s plus 15 per cent
+      # rounded up to the next whole minute (dispatch-browser.yaml's rule). The second attempt
+      # runs only when the first did not end in success, into the same workspace, which
+      # actions/checkout cleans and fetches again, and a second failure fails the job there.
+      # A step cut at its budget can leave its git running: the runner signals the action's own
+      # process, not the git processes it started (actions/runner, ProcessInvoker.cs). So the
+      # step between the two attempts ends every git process on the runner first. A hosted
+      # runner runs one job, so every such process is the first attempt's.
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: End the git processes a first attempt cut at its budget leaves running
+        if: steps.checkout.outcome != 'success'
+        timeout-minutes: 2
+        run: |
+          pkill -KILL -x git || true
+          pkill -KILL -f git-remote-http || true
+          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+      - name: Check out again, after a first attempt that did not complete
+        if: steps.checkout.outcome != 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -254,8 +283,26 @@ jobs:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
-      # refuses a commit older than its floor release, which it reads by its tag.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # refuses a commit older than its floor release, which it reads by its tag. Bounded and
+      # tried again as the job above's checkout is, for the reasons its comment gives.
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: End the git processes a first attempt cut at its budget leaves running
+        if: steps.checkout.outcome != 'success'
+        timeout-minutes: 2
+        run: |
+          pkill -KILL -x git || true
+          pkill -KILL -f git-remote-http || true
+          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+      - name: Check out again, after a first attempt that did not complete
+        if: steps.checkout.outcome != 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           persist-credentials: false
           fetch-depth: 0
