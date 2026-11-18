@@ -1115,7 +1115,7 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	for _, c := range ruleHostRows {
 		t.Run("a host: "+c.name, func(t *testing.T) {
 			path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
-			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), []string{c.absent})
+			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), c.absents())
 		})
 	}
 	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in

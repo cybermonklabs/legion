@@ -257,7 +257,8 @@ func formOf(form func() (string, error)) []string {
 	case failed:
 		return guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
 	case err != nil:
-		return guarded(func() string { return "!ERROR:" + err.Error() })
+		// fmt spells a panic of err's own Error as slog does, "%!v(PANIC=Error method: …)".
+		return guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) })
 	}
 	return []string{text}
 }

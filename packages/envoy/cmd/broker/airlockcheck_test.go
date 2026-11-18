@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -154,6 +155,22 @@ type ruleHostRow struct {
 	absent string
 }
 
+// ruleHostAdvice is the advice rulehost.Refusal gives after a reason that names no form of its
+// own. A refusal gives one advice: this, a form to write ("write it as …"), or the advice its
+// own reason carries, which an IP address's and a scheme's do.
+const ruleHostAdvice = "write a host name of letters, digits and hyphens"
+
+// absents is every text the row's refusal must not hold: the host's own text as written, and the
+// grammar's advice where the row wants none, so a reason that carries its own advice, or names a
+// form, is given no second one.
+func (c ruleHostRow) absents() []string {
+	absent := []string{c.absent}
+	if !slices.Contains(c.want, ruleHostAdvice) {
+		absent = append(absent, ruleHostAdvice)
+	}
+	return absent
+}
+
 // ruleHostRows is every host spelling outside the one grammar a rules host is written in
 // (rulehost.Refusal), one row per way out of it, each refused by airlock-check
 // (TestAirlockCheckRefusesAHostTheProxyNeverCompares) and by the boot
@@ -177,7 +194,7 @@ var ruleHostRows = func() []ruleHostRow {
 	dotted := []string{"trailing dot", "the resolver refuses", "refused before anything is bound"}
 	formed := func(why, form string) []string { return []string{why, "write it as " + form} }
 	noForm := func(why ...string) []string {
-		return append(why, "write a host name of letters, digits and hyphens")
+		return append(why, ruleHostAdvice)
 	}
 	const numbered = "clients read such a host differently"
 	const noDNSName = "is no DNS name"
@@ -258,6 +275,12 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a name of 254 characters", longestRuleHost + "c", noForm("longer than 253 characters", "binds nothing"), strings.Repeat("c", 63)},
 		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "api github"},
 		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "no host name either", "binds nothing"), "github.com."},
+		// One trailing dot after text Go's resolver does not read as a name either: digits
+		// alone, a label with a hyphen at an end, a label over 63 characters, a name over 253.
+		{"a trailing dot after numbers alone", "1.2.3.", noForm("ends in a dot", "no host name either", "binds nothing"), "1.2.3"},
+		{"a trailing dot after a label starting with a hyphen", "-api.github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "-api"},
+		{"a trailing dot after a label over 63 characters", strings.Repeat("a", 64) + ".example.", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("a", 64)},
+		{"a trailing dot after a name of 254 characters", longestRuleHost + "c.", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("c", 63)},
 		// One trailing dot after a name the resolver reads and the grammar refuses: a CONNECT
 		// with the dot binds and is refused "sni mismatch", and the refusal names why the name
 		// without its dot is refused as well.
@@ -265,6 +288,13 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a -- label before a trailing dot", "ab--cd.example.", noForm(append(decryptedDot, "without the dot it has a label with", "as its third and fourth characters")...), "ab--cd"},
 		{"a Fake A-label before a trailing dot", "xn--zz.example.", noForm(append(decryptedDot, "without the dot it has an xn-- label")...), "xn--zz"},
 		{"a last label of digits before a trailing dot", "foo.123.", noForm(append(decryptedDot, "without the dot it ends in a number")...), "foo.123"},
+		// A wildcard with a trailing dot is read as the names it matches, the shortest of which
+		// is "a." and its suffix: a.216.34. and a.123. are names the resolver reads, so the
+		// wildcard binds and is decrypted as they are, and a suffix of 252 characters matches
+		// no name of 253 or fewer.
+		{"a wildcard over the last labels of an address before a trailing dot", "*.216.34.", noForm(append(decryptedDot, "without the dot it is a wildcard whose last label is a number")...), "216.34"},
+		{"a wildcard over a number before a trailing dot", "*.123.", noForm(append(decryptedDot, "without the dot it is a wildcard whose last label is a number")...), "123"},
+		{"a wildcard over 252 characters before a trailing dot", "*." + strings.Repeat(strings.Repeat("e", 63)+".", 3) + strings.Repeat("e", 60) + ".", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("e", 60)},
 		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", numbered), "093.184"},
 		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", numbered), "184.54818"},
 		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", numbered), "1572395042"},
@@ -345,8 +375,10 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
 			}
-			if c.absent != "" && strings.Contains(text, c.absent) {
-				t.Fatalf("the refusal repeats %q as the file writes it: %q", c.absent, stderr)
+			for _, absent := range c.absents() {
+				if absent != "" && strings.Contains(text, absent) {
+					t.Fatalf("the refusal holds %q, which it must not: %q", absent, stderr)
+				}
 			}
 		})
 	}

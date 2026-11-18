@@ -108,26 +108,25 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		{"name": "`+testSecretsPrefix+`airlock-token", "kms_key_id": "`+testSecretsKMSKeyARN+`",
 		 "tags": {"owner": "`+service+`", "tier": "agent"}, "value": "the-real-airlock-token"}
 	]}`)
-	certFile, keyFile := airlockCAFiles(t)
-	broker := startBroker(t, brokerOptions{Env: []string{
-		"BROKER_DATABASE_URL=" + storetest.URL(t),
+	// The airlock's settings are airlockEnv's, so a setting added there reaches this broker too;
+	// the control below reads the authority it trusts from the same list.
+	airlock := airlockEnv(t)
+	certFile := envSetting(t, airlock, "BROKER_AIRLOCK_CA_CERT_FILE")
+	broker := startBroker(t, brokerOptions{Env: append(airlock,
+		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
-		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
-		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
-		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,
-		"BROKER_SERVICES=" + service + "=" + podAccount,
-		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
-		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
-		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
-		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
-		"BROKER_AIRLOCK_RULES_FILE=" + airlockRulesFile(t,
+		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_K8S_OIDC_ISSUER="+issuer.URL(),
+		"BROKER_K8S_OIDC_AUDIENCE="+podAudience,
+		"BROKER_SERVICE_LOGINS="+service+"="+loginAccount,
+		"BROKER_SERVICES="+service+"="+podAccount,
+		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t,
 			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"]}]}`),
-		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
-		"KUBERNETES_SERVICE_HOST=" + clusterServiceHost,
+		"BROKER_AIRLOCK_TEST_RESOLVE="+boundHost+"="+boundAddress,
+		"KUBERNETES_SERVICE_HOST="+clusterServiceHost,
 		"BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20, 198.51.100.0/24",
-	}})
+	)})
 	requireHealthy(t, broker.Addr)
 	proxyAddr := airlockProxyAddr(t, broker)
 
@@ -185,6 +184,19 @@ func TestMainOutsideAClusterStartsWithoutTheRanges(t *testing.T) {
 		"BROKER_AIRLOCK_CLUSTER_RANGES=",
 	)})
 	requireHealthy(t, broker.Addr)
+}
+
+// envSetting is the value env, a broker environment as startBroker takes one, gives key, and
+// fails t when env sets it nowhere.
+func envSetting(t *testing.T, env []string, key string) string {
+	t.Helper()
+	for _, setting := range env {
+		if value, ok := strings.CutPrefix(setting, key+"="); ok {
+			return value
+		}
+	}
+	t.Fatalf("the environment sets no %s: %v", key, env)
+	return ""
 }
 
 // connectThrough writes one CONNECT for target to the proxy at proxyAddr with password as its

@@ -209,11 +209,15 @@ func dotReason(h string) string {
 }
 
 // resolverReads reports whether Go's resolver reads name, in lower case and with no trailing dot,
-// as a domain name (net's isDomainName): after an optional leading "*.", labels of 1 to 63
-// letters, digits, hyphens and underscores that neither open nor close with a hyphen, at most
-// 253 characters, and not digits alone. A wildcard's name is read as the names it matches are.
+// as a domain name (net's isDomainName): labels of 1 to 63 letters, digits, hyphens and
+// underscores that neither open nor close with a hyphen, at most 253 characters, and not digits
+// alone. A wildcard is read as the shortest name it matches, "a." and its suffix, since what a
+// CONNECT writes is one of those names: *.216.34 matches a.216.34, which the resolver reads, and
+// a suffix of 252 characters matches no name of 253 or fewer.
 func resolverReads(name string) bool {
-	name = strings.TrimPrefix(name, "*.")
+	if suffix, ok := strings.CutPrefix(name, "*."); ok {
+		name = "a." + suffix
+	}
 	if name == "" || len(name) > maxName {
 		return false
 	}
