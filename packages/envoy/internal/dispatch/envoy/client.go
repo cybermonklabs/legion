@@ -646,28 +646,47 @@ func unavailableGetStatus(response *http.Response, route string) error {
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
+// sendSource is the source every send Dispatch makes through the listener names itself by.
+const sendSource = "dispatch"
+
+// EnvelopeMessage is the message the listener's send route stores for input
+// (contracts.AgentSendEnvelope): from Dispatch, with the frame as its payload whole, an empty one
+// included, and the delivery's urgency and expects_reply. Send writes its body from it, and
+// Dispatch's own queued copy of a send for a session no store of the listener's holds is built
+// from it, so the copy carries what the send would have.
+func (input SendInput) EnvelopeMessage() contracts.Message {
+	payload := string(input.Payload)
+	return contracts.Message{
+		Source:       sendSource,
+		Text:         input.Message,
+		Payload:      &payload,
+		Urgency:      input.Urgency,
+		ExpectsReply: input.ExpectsReply,
+	}
+}
+
 // Send delivers a Dispatch frame to an already-resolved session. The answer says what that
 // session was when the listener stored the message: connected, or stopped and stored for its own
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
 // instead, 409 with the listener's reason "the session is stopped", which arrives here as that
 // reason alone (listenerResponseError).
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
-	payload := string(input.Payload)
+	message := input.EnvelopeMessage()
 	send := listenerwire.SendRequest{
 		MessageBody: listenerwire.MessageBody{
-			Source:         "dispatch",
-			Message:        input.Message,
-			Payload:        &payload,
+			Source:         message.Source,
+			Message:        message.Text,
+			Payload:        message.Payload,
 			IdempotencyKey: input.IdempotencyKey,
 		},
 		TargetSession: input.TargetSession,
 		ConnectedOnly: input.ConnectedOnly,
 	}
-	if input.Urgency != "" {
-		send.Urgency = &input.Urgency
+	if message.Urgency != "" {
+		send.Urgency = &message.Urgency
 	}
-	if input.ExpectsReply != contracts.ExpectsReplyUnset {
-		expectsReply, err := json.Marshal(input.ExpectsReply)
+	if message.ExpectsReply != contracts.ExpectsReplyUnset {
+		expectsReply, err := json.Marshal(message.ExpectsReply)
 		if err != nil {
 			return SendResult{}, fmt.Errorf("encode POST /v1/messages/send body: %w", err)
 		}

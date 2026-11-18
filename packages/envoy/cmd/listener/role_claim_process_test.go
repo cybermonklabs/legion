@@ -399,7 +399,7 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 // (unresponsive), and its record standing past the gone horizon (gone). Where the record stands it
 // still names the process that registered the session, which is no process the claim names, so
 // each row first reads the record it lapses. The body is decoded into a map, because
-// roleHolderError's string member cannot tell an empty field from no field.
+// listenerwire.RoleRefusal's string member cannot tell an empty field from no field.
 func TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut(t *testing.T) {
 	const (
 		sessionID = "ses_shared_id"

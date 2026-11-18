@@ -116,6 +116,83 @@ func TestHTTPPublisherTellsANoHolderRefusalFromAnyOther(t *testing.T) {
 	}
 }
 
+// A kept publish asks the listener to keep a role message no live session holds the role for
+// (keep: true), and the listener's answers are told apart by status alone: 200, a live holder
+// took it; 202 kept, for a claim whose holder is not live (holder_lapsed) or a role nobody claims
+// (unclaimed), the listener of cybermonklabs/legion#4079 keeping the copy on the role's kept lane
+// for an hour; and the 404 holder_lapsed a listener before #4079 answers a claim whose holder is
+// not live, keeping nothing, which is ErrNoHolder for a holder that is gone and
+// ErrHolderUnresponsive for one that is unresponsive. A 202's body is not read, so the envelope a
+// kept answer carries, however long, changes nothing.
+func TestHTTPPublisherPublishKeptTellsAKeptMessageFromADeliveredOne(t *testing.T) {
+	long := strings.Repeat("x", refusalBodyLimit+1)
+	for _, tc := range []struct {
+		name         string
+		status       int
+		body         string
+		kept         bool
+		noHolder     bool
+		unresponsive bool
+		refused      bool
+	}{
+		{"a live holder took it", http.StatusOK,
+			`{"event_id":"evt-1","topic":"notifications.role.legion-demo-implementer","holder":"ses_a","holder_state":"live"}`, false, false, false, false},
+		{"kept for a holder that lapsed", http.StatusAccepted,
+			`{"event_id":"evt-2","topic":"notifications.role.legion-demo-implementer","holder":"ses_a","holder_state":"gone","kept":true,"kept_reason":"holder_lapsed","kept_until":1900000000000,"last_seen":1}`, true, false, false, false},
+		{"kept for a role nobody claims", http.StatusAccepted,
+			`{"event_id":"evt-3","topic":"notifications.role.legion-demo-implementer","kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`, true, false, false, false},
+		{"kept with an envelope past the refusal bound", http.StatusAccepted,
+			`{"event_id":"evt-4","message":"` + long + `","kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`, true, false, false, false},
+		{"a listener before #4079 keeps nothing for a holder that is gone", http.StatusNotFound,
+			`{"error":"role legion-demo-implementer holder ses_a lapsed","reason":"holder_lapsed","holder":"ses_a","holder_state":"gone","last_seen":1,"claim_released":false}`, false, true, false, true},
+		{"a listener before #4079 keeps nothing for a holder that is unresponsive", http.StatusNotFound,
+			`{"error":"role legion-demo-implementer holder ses_a lapsed; claim retained (last seen 1)","reason":"holder_lapsed","holder":"ses_a","holder_state":"unresponsive","last_seen":1,"claim_released":false}`, false, false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Topic     string `json:"topic"`
+					Message   string `json:"message"`
+					DedupeKey string `json:"dedupe_key"`
+					Keep      *bool  `json:"keep"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if body.Topic != "notifications.role.legion-demo-implementer" || body.Message != "the end of DEMO-1's testing phase" || body.DedupeKey != "legion-outbox:11" {
+					t.Errorf("kept publish body = %#v", body)
+				}
+				if body.Keep == nil || !*body.Keep {
+					t.Errorf("kept publish keep = %v, want true: the listener is to keep the message for the role's next holder", body.Keep)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			kept, err := New(server.URL, "").PublishKept(context.Background(), "notifications.role.legion-demo-implementer",
+				"the end of DEMO-1's testing phase", "the end of DEMO-1's testing phase", "legion-outbox:11")
+			if kept != tc.kept {
+				t.Fatalf("kept publish kept = %t with %v, want %t", kept, err, tc.kept)
+			}
+			if (err != nil) != tc.refused {
+				t.Fatalf("kept publish error = %v, want an error %t", err, tc.refused)
+			}
+			if tc.refused && !strings.Contains(err.Error(), tc.body) {
+				t.Fatalf("kept publish error = %v, want the listener's answer %s", err, tc.body)
+			}
+			if got := errors.Is(err, ErrNoHolder); got != tc.noHolder {
+				t.Fatalf("errors.Is(%v, ErrNoHolder) = %t, want %t", err, got, tc.noHolder)
+			}
+			if got := errors.Is(err, ErrHolderUnresponsive); got != tc.unresponsive {
+				t.Fatalf("errors.Is(%v, ErrHolderUnresponsive) = %t, want %t", err, got, tc.unresponsive)
+			}
+		})
+	}
+}
+
 // A listener that carries the session's state in its refusal tells an unresponsive holder from a
 // dead one (dispatch://INFRA-392): `holder_lapsed` with `holder_state` `unresponsive` is a session
 // past its live window but inside its gone horizon, which still holds the role, so the publish is

@@ -539,7 +539,7 @@ func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testin
 // It is a statement about the mapping and no more: the stamping decision reads no mapping, so a
 // pane working a repository the mapping does not hold stamps its commits all the same, and this
 // line catches the typo it exists for. It refuses no boot and widens nothing: the served set is
-// Dispatch's mapping either way, and `legion start --check-config` reads no Dispatch at all, so
+// Dispatch's mapping either way, and `legion config check` reads no Dispatch at all, so
 // the file alone cannot decide it.
 func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectIsNotMapped(t *testing.T) {
 	const unmapped = "commit_issue_trailer_repos names a repository Dispatch does not map to this project"

@@ -786,6 +786,11 @@ RULES = {
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
+    f"{ENVOY}/internal/dispatch/legion/golden_state_test.go": reads(
+        (f"{FIX}/daemon-api/state.json",
+         "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
+         "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
+         "internal/api/state_golden_test.go writes, which the sampler's decode must read")),
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "

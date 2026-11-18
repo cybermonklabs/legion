@@ -319,7 +319,7 @@ func TestProjectExperimentsHoldTheirArmsToTheTelemetryBound(t *testing.T) {
 // role's pod and the image probe see only those and the image: a sub_path mount of the file, an
 // item a directory mount of a ConfigMap projects, or any file under a whole Secret volume. A path
 // no mount holds, a directory mount itself, a key the projection leaves out and a role on a
-// harness that reads no overlay are refused at load, which is what `legion start --check-config`
+// harness that reads no overlay are refused at load, which is what `legion config check`
 // runs — and the mode is off throughout, since a unit already drawn keeps the files its variant
 // names.
 func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.T) {

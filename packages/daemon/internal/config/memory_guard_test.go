@@ -113,7 +113,7 @@ func TestMemoryGuardEnabledFalseTurnsTheGuardOff(t *testing.T) {
 }
 
 // Each number is held to the wire's range: both ends load, one past either end is refused naming
-// the whole key and the range, so `legion start --check-config` exits 1 saying where to look.
+// the whole key and the range, so `legion config check` exits 1 saying where to look.
 func TestMemoryGuardRefusesEachNumberOutsideItsRangeNamingTheKey(t *testing.T) {
 	for _, number := range []struct {
 		field    string

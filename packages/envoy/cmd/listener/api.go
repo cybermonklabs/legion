@@ -394,9 +394,9 @@ func writeStoreError(ctx context.Context, w http.ResponseWriter, err error, stat
 }
 
 // validateMessageBody refuses a body no envelope may be built from, naming the refusal and the
-// field it is about, and returns the body's parsed expects_reply so messageEnvelope takes the
-// value this parse already read instead of parsing the same bytes again. A refused body returns
-// the unset value, which no caller reads.
+// field it is about, and returns the body's parsed expects_reply so the envelope's message
+// (listenerMessage) takes the value this parse already read instead of parsing the same bytes
+// again. A refused body returns the unset value, which no caller reads.
 func validateMessageBody(body listenerwire.MessageBody) (string, string, listenerwire.ExpectsReply) {
 	for _, field := range []struct {
 		name  string
@@ -428,34 +428,20 @@ func optionalString(value *string) string {
 	return *value
 }
 
-func messageEnvelope(body listenerwire.MessageBody, topic, dedupeKey string, expectsReply contracts.ExpectsReply) contracts.Envelope {
-	summary := contracts.OneLineSummary(body.Message)
-	payload := ""
-	if body.Payload != nil {
-		payload = *body.Payload
-	} else if body.Message != summary {
-		payload = body.Message
-	}
-	source := body.Source
-	if source == "" {
-		source = "agent"
-	}
-	return contracts.Envelope{
-		EventID:        id.New(),
-		Source:         source,
-		SourceSession:  body.SourceSession,
-		SourceEventID:  id.New(),
-		Topic:          topic,
-		DedupeKey:      dedupeKey,
-		IssuedAt:       contracts.NowMillis(),
-		ExpiresAt:      body.ExpiresAt,
-		PayloadSummary: summary,
-		Payload:        payload,
-		TraceID:        id.New(),
-		InReplyTo:      optionalString(body.InReplyTo),
-		Supersedes:     optionalString(body.Supersedes),
-		Urgency:        optionalString(body.Urgency),
-		ExpectsReply:   expectsReply,
+// listenerMessage is what the request's sender wrote, as the envelope builders take it
+// (contracts.MessageEnvelope, contracts.AgentSendEnvelope), its expects_reply the value
+// validateMessageBody parsed from the same bytes.
+func listenerMessage(body listenerwire.MessageBody, expectsReply contracts.ExpectsReply) contracts.Message {
+	return contracts.Message{
+		Source:        body.Source,
+		SourceSession: body.SourceSession,
+		Text:          body.Message,
+		Payload:       body.Payload,
+		InReplyTo:     optionalString(body.InReplyTo),
+		Supersedes:    optionalString(body.Supersedes),
+		Urgency:       optionalString(body.Urgency),
+		ExpectsReply:  expectsReply,
+		ExpiresAt:     body.ExpiresAt,
 	}
 }
 
@@ -735,12 +721,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
-		idempotencyKey := body.IdempotencyKey
-		if idempotencyKey == "" {
-			idempotencyKey = id.New()
-		}
-		dedupeKey := contracts.AgentSendDedupeKey(targetSession, idempotencyKey)
-		item := messageEnvelope(body, contracts.LegacyAgentSubject(targetSession), dedupeKey, bodyExpectsReply)
+		item := contracts.AgentSendEnvelope(targetSession, body.IdempotencyKey, listenerMessage(body, bodyExpectsReply))
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
@@ -854,12 +835,14 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 //     must leave alone instead of clearing the predecessor its claim is then weighed against.
 //   - if_not_registered_after names the moment the delete belongs to, in unix milliseconds, and
 //     the registration is removed only while it was last written at or before it. It is the
-//     Legion daemon's clean stop of a role whose agent process a probe judged gone
-//     (dispatch://INFRA-392): the very decision that asks for the stop relaunches the claim under
-//     the same session id, so a stop that lands after the relaunch has registered must leave that
-//     live registration alone. A value that is not a positive whole number of milliseconds is a
-//     400, since a caller that names a condition and has it silently dropped would delete exactly
-//     what it asked to keep.
+//     Legion daemon's clean stop of a role whose agent process has ended (dispatch://INFRA-392):
+//     a death a probe judged, whose moment is the probe's, or a suspension whose stop ended a live
+//     process, whose moment is when that stop returned. A relaunch of the claim registers the
+//     same session id again, in the very decision that asks for a death's stop or at a later
+//     wake or resume of a suspended claim, so a stop that lands after the relaunch has registered
+//     must leave that live registration alone. A value that is not a positive whole number of
+//     milliseconds is a 400, since a caller that names a condition and has it silently dropped
+//     would delete exactly what it asked to keep.
 //
 // A request naming either condition answers {"deleted":true} for a registration that is gone and
 // {"deleted":false} with a reason for one that stayed, both 200: the caller has nothing to retry
@@ -1146,7 +1129,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		case request.IdempotencyKey != "":
 			dedupeKey = publishDedupePrefix + request.IdempotencyKey
 		}
-		item := messageEnvelope(request.MessageBody, request.Topic, dedupeKey, bodyExpectsReply)
+		item := contracts.MessageEnvelope(listenerMessage(request.MessageBody, bodyExpectsReply), request.Topic, dedupeKey)
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
