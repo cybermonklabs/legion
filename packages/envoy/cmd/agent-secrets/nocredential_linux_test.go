@@ -2,9 +2,10 @@
 //go:build linux
 
 // A machine session on a helper that holds no launcher credential has no broker identity: a helper
-// never logged in, or whose login lapsed or was refused, enrolls no one until the operator logs the machine in, so
-// identity sends its callers to their other backend, and every command that meets the helper's
-// NO_CREDENTIAL answer says so in one line. Linux-only for the real helper's pidfd pinning.
+// never logged in, whose login lapsed or was refused, or, in identity mode, whose trade loop has
+// not traded or has stopped, enrolls no one until it holds a credential again, so identity sends
+// its callers to their other backend, and every command that meets the helper's NO_CREDENTIAL
+// answer quotes it in one line. Linux-only for the real helper's pidfd pinning.
 package main
 
 import (

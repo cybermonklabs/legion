@@ -6890,7 +6890,7 @@ its login-status probe stays, since it also finds a helper that does not answer.
 Against an older helper an unconditional `--wait 10` stalls every launch 10 s while no credential exists;
 against this one that exception costs a launch the time the confirmation in flight it found takes to answer, and no more than `DefaultFirstConfirmBound` (3 s), the bound of that first renew, whatever the broker does.
 A broker that accepts the connection and never answers would otherwise hold each launch for the helper's whole client timeout (`leasetime.RenewClientTimeout`, 30 s), so the bound is what keeps an outage from spending a launcher gate's ten seconds, launch after launch, for as long as it lasts.
-With `--wait N --exec`, a session the helper cannot enroll for want of a credential starts with a warning that its `agent-secrets` calls fail until the machine is logged in.
+With `--wait N --exec`, a session the helper cannot enroll for want of a credential starts with a warning that its `agent-secrets` calls fail until the helper holds a credential again, followed by the helper's own NO_CREDENTIAL answer, which names the cure of the helper's mode.
 
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke` (`machine.go`, `grant.go`, dispatched by `cmdGroup` from the `commands` rows) are the operator routes from the person's own shell, under this machine's login:
 the CLI asks the helper for a launcher proof with the `sign-launcher` op (`launcherSigner`), whose key never leaves the helper, and calls `/v1/operator/*` with it.
