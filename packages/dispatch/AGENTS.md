@@ -1391,10 +1391,7 @@ outermost element carries `data-issue-page`) has a typeface, colours and words o
 no other page reads. Its typeface is Inter 4.1, shipped as
 `web/src/fonts/inter/InterVariable-subset.woff2` (cut by `subset.sh` beside it, which
 `subset.test.ts` holds the file and its `unicode-range` to) under the family name
-`Dispatch Inter`, which no component names. The file holds only the characters its
-`unicode-range` lists, so a character outside them is drawn in a face of the reader's
-machine, at that face's width: the page draws such a glyph as an inline `<svg>`, as
-`features/issue-page/StatusGlyph.tsx` draws a status's shape. One rule of `styles.css`,
+`Dispatch Inter`, which no component names. One rule of `styles.css`,
 `html:has([data-issue-page])`, sets that family and `--font-sans` (which Tailwind's `font-sans`
 reads) for the whole document while the new page is drawn, so `main`'s `:root` rule and the
 `--font-sans` of Tailwind's theme stay as they are, every other page keeps them, and no other
@@ -1409,6 +1406,13 @@ are the tables of `features/issue-page/page-words.ts` and `page-structure.ts` th
 `UNASKED_SOURCES` and `ANSWER_SOURCES` hold: a component of the page takes its words from there
 and keeps no copy of its own, and one test of `page-words.test.ts` reads every phrase for an
 internal word.
+
+The page's typeface file holds only the characters its `unicode-range` lists, so a character
+outside them is drawn in a face of the reader's machine, at that face's width: the page draws
+such a glyph as an inline `<svg>`, as `features/issue-page/StatusGlyph.tsx` draws a status's
+shape and `IssuePriorityLine.tsx` a priority's Remove.
+`features/issue-page/shared-controls.tooltips.test.tsx` refuses a shared control that draws,
+inside `NoTooltips`, a character outside that list.
 
 ## Document editor
 

@@ -2209,6 +2209,7 @@ const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  "features/inbox/AskThread.tsx",
   "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",
 ] as const;
@@ -3067,9 +3068,14 @@ test("inside NoTooltips the words come from the page's word list and carry their
         ["P2 Rocq and Lean speed work restarted", "author-text"],
         ["P1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
-        ["✕", "page-chrome"],
         ["+", "page-chrome"],
       ]);
+      // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
+      // name.
+      const remove = within(view.container).getByRole("button", {
+        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+      });
+      expect(markOf(remove)).toBe("page-chrome");
     }
   );
   await readDrawn(mountNamed("IssuePriorityLine, in a row of Details"), "inside", (view) => {
@@ -3271,6 +3277,50 @@ test("inside NoTooltips every colour is one of the page's colours", async () => 
   expect(offenders).toEqual([]);
   // A mount that drew nothing would pass the walk above with nothing read.
   expect(colourless).toEqual([]);
+});
+
+// The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
+// `unicode-range` in styles.css repeats (`fonts/inter/subset.test.ts` holds the two equal). A
+// character outside them is drawn in a face of the reader's own machine, at that face's width,
+// so the page draws such a glyph as an inline svg. A value the reader or a fixture wrote is no
+// glyph the page draws, so author text and each of a mount's `values` are skipped.
+test("inside NoTooltips no shared control draws a character the page's typeface lacks", async () => {
+  const subsetSh = readFileSync(
+    join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
+    "utf8"
+  );
+  const unicodes = /^UNICODES=(\S+)$/m.exec(subsetSh)?.[1];
+  if (unicodes === undefined) throw new Error("subset.sh has no UNICODES= line");
+  const ranges = unicodes.split(",").map((entry) => {
+    const match = /^U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?$/i.exec(entry.trim());
+    if (match === null) throw new Error(`${entry} in subset.sh's UNICODES is no U+ entry`);
+    const first = Number.parseInt(match[1], 16);
+    return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
+  });
+  const offenders: string[] = [];
+  let read = 0;
+  for (const mount of EVERY_MOUNT) {
+    await readDrawn(mount, "inside", (_view, elements) => {
+      for (const element of elements) {
+        if (element.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) !== null) continue;
+        for (const node of element.childNodes) {
+          if (node.nodeType !== node.TEXT_NODE) continue;
+          const text = node.textContent ?? "";
+          if (mount.values?.some((value) => text.includes(value))) continue;
+          for (const character of text) {
+            read += 1;
+            const point = character.codePointAt(0) ?? 0;
+            if (ranges.some(([first, last]) => point >= first && point <= last)) continue;
+            const code = point.toString(16).toUpperCase().padStart(4, "0");
+            offenders.push(`${mount.name}: U+${code} ${character} in "${text}"`);
+          }
+        }
+      }
+    });
+  }
+  expect(offenders).toEqual([]);
+  // A walk that read no character would pass with nothing read.
+  expect(read).toBeGreaterThan(0);
 });
 
 // The components line's picker takes its trigger's class from `ComponentPicker`, which hands it

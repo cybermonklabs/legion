@@ -41,6 +41,7 @@ import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
+  borderDefault,
   focusBorder,
   focusVisibleRing,
   inputClasses,
@@ -53,11 +54,14 @@ import {
   pageMutedText,
   pagePaperBg,
   pageQuietText,
+  textMutedOnSurface,
+  textPrimaryOnSurface,
 } from "../../theme/classes";
 import { mentionOptions } from "../conversation/MentionComposer";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
+import { UnsentReply } from "../inbox/AskThread";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
 import { badgeSelectWrapper } from "../issue/badge-select";
@@ -2231,6 +2235,11 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
     "AskCard unsent answer words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
+    // `main`'s features/inbox/UnsentText.tsx as UnsentReply draws it with no `className`.
+    "AskThread unsent reply": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 ",
+    "AskThread unsent reply note": "text-xs text-slate-500 dark:text-slate-400",
+    "AskThread unsent reply words":
+      "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
     // `main`'s features/inbox/AskCard.tsx: a decision question's "Open in document" line, the
     // warning that the question changed under the reader, and Cancel while an answer is changed.
     "AskCard block link":
@@ -3160,6 +3169,18 @@ test("the default shapes keep main's class strings", async () => {
     classAt("AskCard unsent answer words", within(unsent).getByText("Which one?"));
   } finally {
     undraw(laterCards);
+  }
+
+  // A reply typed under a settled ask that opened again, read-only in the composer's place, with
+  // no spacing of a caller's.
+  const unsentReply = draw(<UnsentReply text="Ship it after the freeze." />, "outside");
+  try {
+    const box = within(unsentReply.container).getByTestId("ask-unsent-reply");
+    classAt("AskThread unsent reply", box);
+    classAt("AskThread unsent reply note", box.querySelector("p"));
+    classAt("AskThread unsent reply words", within(box).getByText("Ship it after the freeze."));
+  } finally {
+    undraw(unsentReply);
   }
 
   // A compact approval request: its label, its document, the disclosure of the reader's own
@@ -5488,6 +5509,48 @@ test("inside NoTooltips the Remove of a middle priority hands its focus to the e
   }
 });
 
+// Inside `NoTooltips` a priority's Remove draws its cross as an inline svg in its own text size
+// and colour, since the page's typeface lacks "✕", and keeps its name; it draws no text. Outside,
+// it draws "✕" as on `main`.
+test("inside NoTooltips a priority's Remove draws its cross as an inline svg and keeps its name", async () => {
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <IssuePriorityLine
+        disabled={false}
+        issue={{
+          advances: [{ id: "rocq-lean", inherited: false }],
+          advances_revision: 1,
+          key: "CORE-1",
+        }}
+      />,
+      surface
+    );
+    try {
+      const remove = await within(view.container).findByRole("button", {
+        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+      });
+      const crosses = [...remove.querySelectorAll("svg")];
+      if (surface === "inside") {
+        expect(remove.textContent).toBe("");
+        expect(crosses).toHaveLength(1);
+        const [cross] = crosses;
+        if (cross === undefined) throw new Error("the Remove draws no svg");
+        expect(cross.getAttribute("aria-hidden")).toBe("true");
+        expect(cross.hasAttribute("data-remove-glyph")).toBe(true);
+        expect(classOf(cross)).toContain("size-[1em]");
+        const paths = [...cross.querySelectorAll("path")];
+        expect(paths).toHaveLength(1);
+        expect(paths[0]?.getAttribute("stroke")).toBe("currentColor");
+      } else {
+        expect(remove.textContent).toBe("✕");
+        expect(crosses).toEqual([]);
+      }
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 /** What Dispatch answers a rebuild that restored the document's latest saved version. */
 const rebuiltReport: ArtifactRebuildReport = {
   head: 1,
@@ -6672,5 +6735,28 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
       createComment.mockRestore();
       undraw(view);
     }
+  }
+});
+
+// A reply the reader typed under a settled ask that opened again is drawn inside `NoTooltips` in
+// the page's colours rather than `main`'s, and its words are the reader's, a value that breaks
+// anywhere: a long run with no space wraps inside the box rather than run past it.
+test("inside NoTooltips an unsent reply draws in the page's colours, and its words break anywhere", () => {
+  const typed = "x".repeat(200);
+  const view = draw(<UnsentReply text={typed} />, "inside");
+  try {
+    const box = within(view.container).getByTestId("ask-unsent-reply");
+    expect(classOf(box)).toEqual(expect.arrayContaining(tokens(pageLineBorder)));
+    expect(classOf(box).filter((token) => tokens(borderDefault).includes(token))).toEqual([]);
+    const note = classOf(within(box).getByText(/^This question opened again before you sent/));
+    expect(note).toEqual(expect.arrayContaining(tokens(pageQuietText)));
+    expect(note.filter((token) => tokens(textMutedOnSurface).includes(token))).toEqual([]);
+    const words = classOf(within(box).getByText(typed));
+    expect(words).toEqual(
+      expect.arrayContaining([...tokens(pageInkText), "max-w-full", "[overflow-wrap:anywhere]"])
+    );
+    expect(words.filter((token) => tokens(textPrimaryOnSurface).includes(token))).toEqual([]);
+  } finally {
+    undraw(view);
   }
 });
