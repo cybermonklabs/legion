@@ -9,10 +9,11 @@ body: |-
     names the version, what the database records and what the release's file is, and both ways
     out: reset a database that ran another branch's or commit's migration (drop it, create it
     empty and let the server migrate it), or, for an edit or rename made on purpose, add the
-    `-- replaces: <name> sha256:<hex>` line it names to the file, after which the next start
-    records the new file and logs both. `go run ./internal/pgmigrate/cmd/versions
-    dispatch|broker` from `packages/envoy` reads, without writing, what the next start would do
-    with each recorded migration.
+    `-- replaces: <name> sha256:<hex>` line it names to the file, after which a start accepts the
+    recorded row as it is, so the release before still boots over the database. Before the merge,
+    `envoy-go-checks` fails a change that edits a migration its base holds without such a line.
+    `envoy-dispatch versions` and `envoy-broker versions` read without writing what the image's
+    next start would do with each recorded migration.
 time: 2026-11-18T17:57:59.259752309Z
 custom:
     Issue: pr4435

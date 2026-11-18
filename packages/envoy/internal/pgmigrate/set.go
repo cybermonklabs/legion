@@ -36,7 +36,7 @@ type Migration struct {
 	Checksum string
 	// Replaces is each identity the file declares, in a -- replaces: <name> sha256:<hex> line, as
 	// one an earlier text or name of this version had: a database that records one of them is
-	// moved to this file's own identity, and not refused (Reconcile).
+	// accepted, and its row left as it is, so the release that recorded it still boots (Reconcile).
 	Replaces []Identity
 	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
 	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.

@@ -1915,6 +1915,13 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The check that no migration a database may have run is edited without its replaces line: a
+# script around `go run`, so pinned whole, and the Run stands for the command it compiles.
+EDITED_MIGRATIONS_STEP = "Check that no migration a database may have run is edited without its replaces line"
+EDITED_MIGRATIONS_SCRIPT = "\n".join([
+    'git fetch --no-tags --depth=2 origin "$GITHUB_SHA"',
+    'go run ./internal/pgmigrate/cmd/edited-migrations --base "$(git rev-parse HEAD^1)"',
+])
 SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
@@ -2852,6 +2859,11 @@ GATES = [
                          "go run ./cmd/spec-check guard, which builds the command and runs it over the "
                          "repository root", {"mode": "build"}),
                     ]),
+        pinned_step("envoy-go-checks", EDITED_MIGRATIONS_STEP, ENVOY, EDITED_MIGRATIONS_SCRIPT, [
+            (ENVOY, ["./internal/pgmigrate/cmd/edited-migrations"],
+             "go run ./internal/pgmigrate/cmd/edited-migrations, which builds the command and compares "
+             "each store's migrations with the base's", {"mode": "build"}),
+        ]),
         # One linux build of the listener per architecture the loop reads from the target list.
         pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",

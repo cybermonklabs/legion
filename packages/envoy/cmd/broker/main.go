@@ -1554,13 +1554,16 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand is one of the two arguments the broker takes in place of serving; the other
-// is airlockCheckCommand (airlockcheck.go).
-const endSessionsCommand = "end-sessions"
+// endSessionsCommand and versionsCommand are two of the three arguments the broker takes in place
+// of serving; the third is airlockCheckCommand (airlockcheck.go).
+const (
+	endSessionsCommand = "end-sessions"
+	versionsCommand    = "versions"
+)
 
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
-// refused with 2 and a usage line, never a fall-through to serving. There are two names, so a
+// refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
 // switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its nine).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
@@ -1570,12 +1573,49 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return endSessions(ctx, strings.TrimSpace(args[1]), stdout, stderr)
+	case versionsCommand:
+		if len(args) != 1 {
+			fmt.Fprintf(stderr, "broker: usage: broker %s, with no argument\n", versionsCommand)
+			return 2
+		}
+		return versions(ctx, stdout, stderr)
 	case airlockCheckCommand:
 		return airlockCheck(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login> and %s <file> [--against <old file>], and broker with no argument serves\n",
-		args[0], endSessionsCommand, airlockCheckCommand)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
 	return 2
+}
+
+// versions prints what broker_schema_migrations records of each version against the migrations
+// this image embeds, and what this image's next boot would do with each row (store.CheckVersions):
+// the check to take, read-only, before an image with a different set rolls out. It reads the same
+// configuration the server does and signs in to the database the same way, the RDS IAM token
+// minter included (openStore), binds no listener and migrates nothing. It exits 0 when every
+// recorded version has a file of this image and the next boot refuses none, 1 when one has no file,
+// a row would be refused or the table records nothing, and 2 when the check could not be taken.
+func versions(ctx context.Context, stdout, stderr io.Writer) int {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	st, _, err := openStore(ctx, cfg, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	defer st.Close()
+	check, err := st.CheckVersions(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	check.Write(stdout)
+	if !check.OK() {
+		return 1
+	}
+	return 0
 }
 
 // endSessions deletes every session login is signed in to the approval page with, wherever and

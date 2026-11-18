@@ -494,8 +494,8 @@ reset: drop it, create it empty, and
 start Dispatch, which migrates it from the first file. A migration edited or renamed on purpose
 takes the `-- replaces: <name> sha256:<hex>` line the refusal gives, and the next start records
 the new file. To see what a start would do, without changing the database, run
-`DATABASE_URL='<your database URL>' go run ./internal/pgmigrate/cmd/versions dispatch` from
-`packages/envoy` in a checkout of the release.
+`DATABASE_URL='<your database URL>' envoy-dispatch versions` with the image you mean to roll
+out, as you run its census.
 
 Before you roll a new version out, you can see what its migrations will touch:
 

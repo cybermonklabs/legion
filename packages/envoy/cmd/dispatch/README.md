@@ -1493,7 +1493,8 @@ Version 8 is an empty file: that version was recorded from Go by the one-time co
 
 **A migration must leave the release before it able to read and write the schema.**
 A rolling update runs the old build and the new build against one database at once (Running more than one process, above), and the old build applies no compatibility shim:
-nothing at boot refuses a schema newer than the binary knows, since the runner applies the versions it has not recorded and reads no other (`internal/dispatch/store/store.go`, `migrate`).
+nothing at boot refuses a schema newer than the binary knows, since the runner applies the versions it has not recorded and judges only the versions it has a file of (`internal/dispatch/store/store.go`, `migrate`).
+A later release records the identity of each version's first file (`pgmigrate.Migration.RecordedIdentity`, "A recorded version under another file" below), so what it records of a version the old build has a file of is an identity that file accepts.
 So a schema change is expand-then-contract across two releases.
 The expanding migration adds, with a default or a backfill, and the release that ships it writes both shapes;
 the contracting migration — one that drops, renames or narrows — ships no earlier than the next release, once no running build reads the old shape:
@@ -1552,18 +1553,20 @@ Versions are applied by their number, not by file name, and the store's tests re
 
 **A recorded version under another file.**
 `schema_migrations` records each applied migration's version and its identity: the file's name, without its directory, in `name`, and the sha256 of its whole text, in lower-case hex, in `checksum`.
+For a file that declares `-- replaces:` lines, the identity recorded, when the runner applies it or fills a row for it, is the one its first line names, the version's first file (`pgmigrate.Migration.RecordedIdentity`), so a database a later release created or filled still boots every release before it in the chain.
 The runner adds the two nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
 it takes `ACCESS EXCLUSIVE` on `schema_migrations`, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
 Adding the two columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
 Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
 In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
 
-- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with the file's identity and never refused; a name that is not null, the empty string included, is judged like any other.
+- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with that recorded identity and never refused; a name that is not null, the empty string included, is judged like any other.
   Each fill logs `pgmigrate: recorded the identity of a migration applied before the runners recorded identities` at INFO, with the table, the version, the name and the checksum.
 
 - A row that records the file's own identity passes.
 
-- A row that records, name and checksum both, an identity the file declares in a `-- replaces: <name> sha256:<hex>` line moves to the file's own identity, and logs `pgmigrate: moved a migration's recorded identity to the file that replaces it` at INFO with `from` and `to`.
+- A row that records, name and checksum both, an identity the file declares in a `-- replaces: <name> sha256:<hex>` line passes, and is left as it is: the release that recorded it still finds its own file's identity there and boots, as a rolling update, the auto-deployer's version-only rollback and the two-build tests (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`) need.
+  A second edit of the same file keeps the first replaces line first and adds one naming the first edit's identity after it, so the chain covers every identity a database may hold and the recorded identity stays the version's first.
 
 - A version no file of the build has is left as it is, as before: an image rolled back meets the versions a later one recorded.
 
@@ -1583,13 +1586,16 @@ What the operator does:
 - A database that ran another branch's or an earlier commit's migration, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
 
 - A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line.
-  The next boot moves the row and logs both identities.
+  If the file already carries replaces lines, the new one goes after them, in their order; the next boot accepts the row as it is.
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A file may carry several, one for each identity a database may record.
+  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version (`go run ./internal/pgmigrate/cmd/edited-migrations --base <commit>`), and fails a file whose text or name changed and that declares no replaces line naming the base's identity, or whose first replaces line is no longer the base's first, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
 
 Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each from the file the release ships and refuses none.
 A migration edited in place that reaches a database before this runner does is filled with its edited identity there; one edited after this runner's first boot needs its replaces line.
-`DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions dispatch`, from `packages/envoy`, reads in a read-only transaction what the next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
+`DATABASE_URL=<url> envoy-dispatch versions`, run as a one-off task of the image about to roll out, reads in a read-only transaction what that image's next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
+`envoy-broker versions` is the broker's, signing in as a broker pod does (`docs/site/src/content/docs/broker/operate.md`).
+The pre-deploy census (`envoy-dispatch census`) reads only which versions are recorded, and judges no identity.
 
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.

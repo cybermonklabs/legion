@@ -20,8 +20,9 @@ The concurrent mode drops an INVALID index of the migration's own name on its ow
 
 `schema_migrations` records each applied migration's version and its identity: the file's name (`name`) and the sha256 of its whole text (`checksum`), which the runner adds to a table an earlier runner made.
 Before it applies anything, under the migration key, the runner judges every recorded row against this build's file of its version (`pgmigrate.Reconcile`), and it judges them all again before each migration it applies, since it gives the key back in between and another process may have recorded a version.
-A row whose name is null, as every row an earlier runner wrote, is filled from the file and never refused, and each fill is logged.
-A row that names an identity the file declares in a `-- replaces: <name> sha256:<hex>` line moves to the file's own identity, logged with both.
+A row whose name is null, as every row an earlier runner wrote, is filled and never refused, and each fill is logged.
+A row that names an identity the file declares in a `-- replaces: <name> sha256:<hex>` line passes and is left as it is, so the release that recorded it still boots.
+What the runner records, for a new row and a filled one, is the identity the file's first replaces line names, or its own where it has none (`pgmigrate.Migration.RecordedIdentity`), and a later edit adds its line after the ones there, so a database a later release made still boots the releases before it.
 A version with no file is left as it is.
 Any other row refuses the boot, and nothing applies:
 a database that ran another branch's or an earlier commit's migration is reset (dropped, created empty and migrated by the server), and a file edited or renamed on purpose gets the replaces line the refusal names.

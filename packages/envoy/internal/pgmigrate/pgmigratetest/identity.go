@@ -36,11 +36,8 @@ const (
 	identityThird        = "create table identity_third (id integer)"
 )
 
-// The log messages of pgmigrate.LogFixes, which RunIdentityChecks counts.
-const (
-	backfillMessage = "pgmigrate: recorded the identity of a migration applied before the runners recorded identities"
-	moveMessage     = "pgmigrate: moved a migration's recorded identity to the file that replaces it"
-)
+// The log message of pgmigrate.LogFixes, which RunIdentityChecks counts.
+const backfillMessage = "pgmigrate: recorded the identity of a migration applied before the runners recorded identities"
 
 // identitySet is a migrations directory holding files, each name a file of it and each value its
 // text.
@@ -168,8 +165,8 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 			t.Error("the boot did not apply 0003_third")
 		}
 		want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second}, pgmigrate.Recorded{Version: 3, Identity: third})
-		if n := count(backfillMessage) + count(moveMessage); n != 0 {
-			t.Errorf("the boots logged %d fills or moves; want none", n)
+		if n := count(backfillMessage); n != 0 {
+			t.Errorf("the boots logged %d fills; want none", n)
 		}
 	})
 
@@ -217,7 +214,10 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 		}
 	})
 
-	t.Run("d: a file declaring the recorded identity boots, and the row moves to the file's own identity", func(t *testing.T) {
+	// The row keeps the identity it records, so the set it was recorded under, the release before,
+	// boots over the database again; a second edit carries a replaces line for each identity a
+	// database may hold, the chain that covers both.
+	t.Run("d: a file declaring the recorded identity boots and leaves the row as it is, and the set before boots again", func(t *testing.T) {
 		for name, file := range map[string]struct{ name, text string }{
 			"an edit in place": {"0002_second.up.sql", identitySecondEdited + "\n-- replaces: " + second.String() + "\n"},
 			"a rename":         {"0002_renamed.up.sql", "-- replaces: " + second.String() + "\n" + identitySecond},
@@ -231,11 +231,52 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 				if !applied(t, s) {
 					t.Error("the boot did not apply 0003_third")
 				}
-				want(t, s, pgmigrate.Recorded{Version: 1, Identity: first},
-					pgmigrate.Recorded{Version: 2, Identity: identity(file.name, file.text)}, pgmigrate.Recorded{Version: 3, Identity: third})
-				if n := count(moveMessage); n != 1 {
-					t.Errorf("the boot logged %d moves; want 1", n)
+				want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second}, pgmigrate.Recorded{Version: 3, Identity: third})
+				if n := count(backfillMessage); n != 0 {
+					t.Errorf("the boot logged %d fills; want none: the row is left as it is", n)
 				}
+				if err := s.Migrate(ctx, withThird("0002_second.up.sql", identitySecond)); err != nil {
+					t.Fatalf("the set before the edit, booted again over the database the edit booted: %v", err)
+				}
+				later := identity(file.name, file.text)
+				chained := identitySecondEdited + "-- a second edit\n-- replaces: " + second.String() + "\n-- replaces: " + later.String() + "\n"
+				if err := s.Migrate(ctx, withThird("0002_second.up.sql", chained)); err != nil {
+					t.Fatalf("a second edit whose replaces lines name both earlier identities: %v", err)
+				}
+				want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second}, pgmigrate.Recorded{Version: 3, Identity: third})
+			})
+		}
+	})
+
+	// A database a later release created, or filled, records the version's first identity, the
+	// file's first replaces line (pgmigrate.Migration.RecordedIdentity), so the release before
+	// boots it too, as a rollback and the two-builds tests need. The control is the same boots with
+	// the edited file recording its own identity, as a runner that recorded each file's own did:
+	// the set before refuses it.
+	t.Run("d: a database a file declaring a replaces line created records the first identity, and the set before boots it", func(t *testing.T) {
+		text := identitySecondEdited + "\n-- replaces: " + second.String() + "\n"
+		for name, earlierRows := range map[string]bool{"created by the edited set": false, "filled by the edited set": true} {
+			t.Run(name, func(t *testing.T) {
+				s := fresh(t)
+				editedSet := identitySet(map[string]string{"0001_first.up.sql": identityFirst, "0002_second.up.sql": text})
+				if earlierRows {
+					if err := s.Migrate(ctx, identitySet(original)); err != nil {
+						t.Fatalf("migrate the original set: %v", err)
+					}
+					earlierRunner(t, s)
+				}
+				if err := s.Migrate(ctx, editedSet); err != nil {
+					t.Fatalf("boot the edited set: %v", err)
+				}
+				want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second})
+				if err := s.Migrate(ctx, identitySet(original)); err != nil {
+					t.Fatalf("the set before the edit, booted over the database the edited set made: %v", err)
+				}
+				if _, err := s.Exec(ctx, "update "+table+" set checksum = $1 where version = 2", sum(text)); err != nil {
+					t.Fatalf("control: record the edited file's own identity: %v", err)
+				}
+				refused(t, s, s.Migrate(ctx, withThird("0002_second.up.sql", identitySecond)),
+					"version 2 is recorded as "+identity("0002_second.up.sql", text).String())
 			})
 		}
 	})
@@ -267,8 +308,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) Iden
 		if err := s.Migrate(ctx, withThird("0002_second.up.sql", text)); err != nil {
 			t.Fatalf("boot the edited file with its replaces line: %v", err)
 		}
-		want(t, s, pgmigrate.Recorded{Version: 1, Identity: first},
-			pgmigrate.Recorded{Version: 2, Identity: identity("0002_second.up.sql", text)}, pgmigrate.Recorded{Version: 3, Identity: third})
+		want(t, s, pgmigrate.Recorded{Version: 1, Identity: first}, pgmigrate.Recorded{Version: 2, Identity: second}, pgmigrate.Recorded{Version: 3, Identity: third})
 	})
 }
 

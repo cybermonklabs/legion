@@ -141,13 +141,14 @@ func TestReconcileJudgesEachRecordedRowAgainstItsFile(t *testing.T) {
 		fixes   []Fix
 		refused []string
 	}{
-		"its own identity":               {row: Recorded{Version: 2, Identity: own}},
-		"a null name":                    {row: Recorded{Version: 2, Unnamed: true}, fixes: []Fix{{Version: 2, To: own}}},
-		"an empty name that is not null": {row: Recorded{Version: 2, Identity: Identity{Checksum: own.Checksum}}, refused: []string{"version 2 is recorded as  sha256:" + own.Checksum}},
-		"a replaced identity":            {row: Recorded{Version: 2, Identity: earlier}, fixes: []Fix{{Version: 2, From: earlier, To: own}}},
-		"a version with no file":         {row: Recorded{Version: 7, Identity: other}},
-		"another name":                   {row: Recorded{Version: 2, Identity: other}, refused: []string{"version 2 is recorded as " + other.String(), "file of version 2 is " + own.String(), "-- replaces: " + other.String()}},
-		"the replaced name, other text":  {row: Recorded{Version: 2, Identity: Identity{Name: own.Name, Checksum: strings.Repeat("3", 64)}}, refused: []string{"whose replaces lines name only " + earlier.String()}},
+		"its own identity": {row: Recorded{Version: 2, Identity: own}},
+		"a null name, filled with the first identity the file declares": {row: Recorded{Version: 2, Unnamed: true}, fixes: []Fix{{Version: 2, To: earlier}}},
+		"an empty name that is not null":                                {row: Recorded{Version: 2, Identity: Identity{Checksum: own.Checksum}}, refused: []string{`version 2 is recorded as "" sha256 "` + own.Checksum + `"`, "no replaces line can name what this row records, so a reset is the one remedy"}},
+		"a name and a null checksum":                                    {row: Recorded{Version: 2, Identity: Identity{Name: own.Name}}, refused: []string{`version 2 is recorded as "0002_second.up.sql" sha256 ""`, "no replaces line can name what this row records, so a reset is the one remedy"}},
+		"a replaced identity":                                           {row: Recorded{Version: 2, Identity: earlier}},
+		"a version with no file":                                        {row: Recorded{Version: 7, Identity: other}},
+		"another name":                                                  {row: Recorded{Version: 2, Identity: other}, refused: []string{"version 2 is recorded as " + other.String(), "file of version 2 is " + own.String(), "-- replaces: " + other.String()}},
+		"the replaced name, other text":                                 {row: Recorded{Version: 2, Identity: Identity{Name: own.Name, Checksum: strings.Repeat("3", 64)}}, refused: []string{"whose replaces lines name only " + earlier.String()}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fixes, err := Reconcile(set, []Recorded{tc.row})
@@ -163,6 +164,16 @@ func TestReconcileJudgesEachRecordedRowAgainstItsFile(t *testing.T) {
 			for _, want := range tc.refused {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("refusal = %q, want it to say %q", err, want)
+				}
+			}
+			if !IsRefusal(err) {
+				t.Errorf("IsRefusal(%v) = false; a refusal must be told from a failed read or write", err)
+			}
+			// Every line a refusal offers is one Load accepts in the file it names.
+			if _, line, ok := strings.Cut(err.Error(), "add this line to "+own.Name+": "); ok {
+				set := fstest.MapFS{"migrations/" + own.Name: file("select 1;\n" + line + "\n")}
+				if _, err := Load(set, "migrations"); err != nil {
+					t.Errorf("the refusal offers %q, which Load refuses: %v", line, err)
 				}
 			}
 		})

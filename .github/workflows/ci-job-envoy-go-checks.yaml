@@ -198,6 +198,19 @@ jobs:
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener
         working-directory: packages/envoy
+      # A migration a database may already have run must keep its identity, or declare the
+      # identity the base gave it in a `-- replaces:` line: each runner refuses a database whose
+      # version table records a file other than its own (internal/pgmigrate, Reconcile), so an
+      # edit of an applied file, a comment included, is caught here, before any database boots it.
+      # The base is what this run's tree is merged onto, the first parent of the commit the run
+      # checked out: of the pull request's merge commit, of a merge-group entry's commit (main, or
+      # the entry before it, whose own run checks its change) and of a pushed commit. The checkout
+      # is one commit deep, so the step fetches that parent itself.
+      - name: Check that no migration a database may have run is edited without its replaces line
+        run: |
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          go run ./internal/pgmigrate/cmd/edited-migrations --base "$(git rev-parse HEAD^1)"
+        working-directory: packages/envoy
       # Every package of the module, its tests included, as macOS compiles it: the agent-secrets
       # command ships for darwin (.github/agent-secrets-client-targets.json), and a file with no
       # build constraint that uses a symbol only a `//go:build linux` file defines compiles on this

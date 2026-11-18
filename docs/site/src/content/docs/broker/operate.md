@@ -1582,18 +1582,20 @@ the broker cannot take back a value it released.
 ## A migration recorded under another file
 
 The broker records each migration it applies in `broker_schema_migrations` with its version, the
-file's name and the sha256 of the file's text. At every start, before it applies anything, it
-compares each recorded version with the file of that version in its own image:
+file's name and the sha256 of the file's text; for a file that declares `-- replaces:` lines, the
+name and sha256 its first line names, the version's first file, so a database a later image made
+still starts the images before it. At every start, before it applies anything, it compares each
+recorded version with the file of that version in its own image:
 
 - A version recorded with no name, as every one a broker before this check wrote, takes the
-  file's name and checksum, and the broker logs
+  identity the broker records of the file, and the broker logs
   `pgmigrate: recorded the identity of a migration applied before the runners recorded identities`
   for each. It is never refused. The first start of the release that brings the check writes one
   such line for each migration, and refuses none.
 - A version recorded under the file's own name and checksum passes.
 - A version recorded under a name and checksum that the file names in a
-  `-- replaces: <name> sha256:<hex>` line takes the file's own, and the broker logs
-  `pgmigrate: moved a migration's recorded identity to the file that replaces it` with both.
+  `-- replaces: <name> sha256:<hex>` line passes, and is left as it is, so a pod of the release that
+  recorded it still starts beside this one and after a rollback.
 - A version no file of the image has is left as it is, as an image rolled back finds them.
 - Any other version stops the start: the broker applies nothing, logs `broker: fatal` and exits 1.
 
@@ -1611,18 +1613,25 @@ What you do depends on how the database came to hold another file:
   production database this way; a refusal there is a release to stop and investigate.
 - **The file was edited or renamed on purpose**, and the database already holds the schema it
   means: add the line the refusal names, alone on a line of its own and outside every quoted
-  string or function body, to the file, and ship it. The next start moves the row to the file's
-  own name and checksum. The line names a file of the same version and 64 lower-case hex digits;
-  a line that begins `-- replaces:` and is written any other way, or that sits inside a quoted
-  string or a function body, stops every start, naming the file and the line.
+  string or function body, to the file, and ship it. The next start accepts the row as it is. A
+  later edit of the same file keeps that line first and adds one naming the edit before it. The line
+  names a file of the same version and 64 lower-case hex digits; a line that begins `-- replaces:`
+  and is written any other way, or that sits inside a quoted string or a function body, stops
+  every start, naming the file and the line. A pull request that edits a migration main already
+  holds without such a line fails CI's `envoy-go-checks` job before it merges.
 
-A start fills and moves rows as it judges them. The command below makes the same judgment without
-changing the database, so you can take it before a deploy from a checkout of the release you mean
-to ship, in `packages/envoy`:
+A start fills the rows that record no name as it judges them. `envoy-broker versions` makes the
+same judgment without changing the database: it reads the broker's own configuration and signs in
+as a pod does, by an RDS IAM token where the deployment uses one, so run it in a broker pod before
+you roll out an image with another set of migrations:
 
 ```sh
-DATABASE_URL='<the broker database URL>' go run ./internal/pgmigrate/cmd/versions broker
+kubectl exec deploy/broker -- envoy-broker versions
 ```
+
+That is the image already serving. To judge the image you are about to roll out, run its
+`envoy-broker versions` as a one-off pod of that image with the Deployment's environment and
+service account.
 
 It prints what the next start would do with each version, and exits 1 when a version would be
 refused or has no file in that release, or when the table records nothing, which it prints as

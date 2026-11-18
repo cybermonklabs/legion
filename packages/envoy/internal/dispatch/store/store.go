@@ -331,9 +331,9 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // out over processes of that one, which read the version cast.
 //
 // It then reads every row and judges it (pgmigrate.ReconcileRecorded): it fills a row that records
-// no name from the set's file of its version, moves a row that records an identity the file
-// replaces, and refuses a row that records any other identity, writing nothing and applying
-// nothing. The fills and moves commit with the table, and each is logged once they have
+// no name from the set's file of its version, accepts as it is a row that records an identity the
+// file replaces, and refuses a row that records any other identity, writing nothing and applying
+// nothing. The fills commit with the table, and each is logged once they have
 // (pgmigrate.LogFixes).
 //
 // The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
@@ -372,7 +372,7 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 		}
 		_, fixes, err = pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
 		if err != nil {
-			return fmt.Errorf("migrations refused, none applied: %w", err)
+			return pgmigrate.Labelled(versionTable, err)
 		}
 		return nil
 	})
@@ -475,8 +475,8 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	if err := pgmigrate.PinSession(ctx, conn); err != nil {
 		return fmt.Errorf("pin the runner's settings: %w", err)
 	}
-	// As in applyMigrationOnce. Each fill or move commits as its own statement here, so it is
-	// logged at once, whether or not the build then succeeds.
+	// As in applyMigrationOnce. Each fill commits as its own statement here, so it is logged at
+	// once, whether or not the build then succeeds.
 	applied, fixes, err := pgmigrate.RecheckRecorded(ctx, conn, versionTable, migrations, migration)
 	if err != nil {
 		return fmt.Errorf("check migration: %w", err)
