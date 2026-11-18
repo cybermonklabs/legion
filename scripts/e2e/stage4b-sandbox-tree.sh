@@ -265,10 +265,10 @@ stream=ENVOY_NOTIFICATIONS
 # controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
-# each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
-# Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
-# holding no slot at all, and are parked there; with tree 2 gone and child 2 parked they raise no
-# peak either.
+# each in an issue pod of its own with an architect of its own, which its first phase start starts,
+# and each holding a slot of its own. Children 3 and 4, filed at children-first-acceptance, run
+# while the root stands in accepting holding no slot at all, and are parked there; with tree 2 gone
+# and child 2 parked they raise no peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
@@ -3354,7 +3354,7 @@ refuse_leftovers legion-e2e4b
 ports_free "$port_daemon" "$port_worker_stream" "$port_session_db"
 imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
   fail "instance metadata is unreachable; the daemon binds the devbox's private address, read from it"
-host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) || fail "instance metadata has no local-ipv4"
+host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) || fail "instance metadata has no local-ipv4"
 unset imds
 leftover=$(op get sandboxes,pods,pvc,configmaps -l "legion.dev/project=$run_label" -o name 2>&1) || fail "the operator context cannot list namespace $namespace: $leftover"
 [ -z "$leftover" ] || fail "namespace $namespace already holds objects labelled legion.dev/project=$run_label, which another run left or owns: $(tr '\n' ' ' <<<"$leftover")"
@@ -3539,8 +3539,9 @@ cat >"$work/instructions.md" <<'EOF'
 # Stage 4b proof instructions
 
 This is a throwaway workflow proof on the disposable __LEGION_E2E_PROJECT__ project. A tree's root architect
-starts its tree from the daemon's `catch-up` notice as its role says: it writes the spec in the
-issue's own primary document and registers the gate, then waits. Apart from that, do not act until
+starts its tree from the task its start carries and the daemon's `catch-up` notice, as its role
+says: it writes the spec in the issue's own primary document and registers the gate, then waits.
+Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
 message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
 phase and is not that message. Read what your role says to read, then reply WAITING and wait for
@@ -3576,10 +3577,14 @@ this run in the line, a child of a running tree as readily as the root the drive
 
 The driver files child issues under a root itself, in `todo`, and later closes one as `done` and
 parks the others in `backlog`, the last of them while its root waits in `merging` for the
-rest of its tree; each child's planner holds for the driver like every other role. A
-`child-closed` or `child-status` notice of this run needs no action from the root architect: start,
-re-run, park or close nothing for it, write nothing about it, and keep waiting for the next
-targeted message.
+rest of its tree; each child's planner holds for the driver like every other role. The daemon
+starts a child's own architect with the child's first phase. That architect does not start its
+child from its `catch-up` notice. It reads the catch-up, which names its child and every issue
+under it. Then it replies WAITING and waits for the targeted message. It files no child, writes
+no spec and sends no message until then. A
+`child-closed` or `child-status` notice of this run needs no action from the root architect:
+start, re-run, park or close nothing for it, write nothing about it, and keep waiting for the
+next targeted message.
 EOF
 sed -i "s/__LEGION_E2E_PROJECT__/$project/g" "$work/instructions.md"
 # The daily report is the one controller action that waits for no targeted message (daily-report).
@@ -4007,8 +4012,8 @@ pass
 
 begin child-release
 # Acceptance 3, both paths, while the parent keeps running. Child 1 set done by the proof human: the
-# daemon retires every claim of the child with its session dropped (issue_close) and its durable
-# close effect foreground-deletes the child's Sandbox (SuspendIssue,
+# daemon retires every claim of the child, its own architect's included, each keeping its session
+# (issue_close), and its durable close effect foreground-deletes the child's Sandbox (SuspendIssue,
 # internal/runtime/sandbox/issue_suspend.go), logging the release; its pod goes with that Sandbox
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
@@ -4045,8 +4050,8 @@ deleted=$(deleted_lines "$child1" | grep -c . || true)
 lost_now=$(grep -c 'volume was lost' "$daemon_log" || true)
 [ "$lost_now" = "$lost_before" ] || fail "the daemon reported a lost volume across $child1's release: $(grep 'volume was lost' "$daemon_log" | tail -3 | cut -c1-300 | tr '\n' ' ')"
 retired=$(claims_cli list --json | jq -c --arg issue "$child1" '[.claims[] | select(.issue == $issue) | {role, state, session: (.session // ""), sessionFile: (.sessionFile // "")}]')
-jq -e 'length > 0 and all(.[]; .state == "retired" and .session == "" and .sessionFile == "")' <<<"$retired" >/dev/null ||
-  fail "$child1's claims after its done are $retired, want every one retired with no session"
+jq -e 'length > 0 and all(.[]; .state == "retired" and .session != "" and .sessionFile != "")' <<<"$retired" >/dev/null ||
+  fail "$child1's claims after its done are $retired, want every one retired with its session kept"
 note "at $at $child1 is done: its Sandbox and pod are gone (kubectl get sandboxes,pods -l legion.dev/issue=$child1: nothing), and the disk $child1_pod-issue its pod owned is gone with it; the daemon logged \"$deleted_msg\" for it once and no lost volume; its claims: $retired"
 note "the root $tree1 kept Sandbox $root_pod Running, its pod's own disk ${found%% *} Bound and pod uid $root_uid"
 set_status "$child2" backlog
@@ -4465,8 +4470,8 @@ begin tree-moved
 # no holder. The row waits, and the architect stays suspended, `suspendedBy: operator`, at the same
 # generation while it does; the operator's resume then relaunches it and the held notice arrives.
 # Each operator request that changed the claim logs one `api: operator request` line naming its
-# route and the claim. No rule acts on a tree architect, so this cannot show the rule passing over
-# an operator's suspension: child-reentered's control shows that, on a phase owner.
+# route and the claim. No phase start resumes a root's architect, so this cannot show the rule
+# passing over an operator's suspension: child-reentered's control shows that, on a phase owner.
 held_architect=$(claim_token "$tree1" architect)
 held_needle=$(notice_needle phase-finished "$tree1")
 held_before=$(notice_deliveries "$tree1" architect "$held_needle")
@@ -6365,8 +6370,8 @@ on_tree "$tree1" wait_for_worker "$tree1" merger
 # at children-first-acceptance, before the sign-off the daemon held for them, and no issue has
 # entered the tree since, which beneath an accepted root the daemon refuses — so the merge's own
 # close runs (closeMerged, internal/workflow/pullrequest.go): the status done, the slots its
-# issues held already freed, the tree lingered
-# (linger_hours 0.5) with every member's claims suspended, and the production check opened on the
+# issues held already freed, the tree lingered (linger_hours 0.5) with every member's claims
+# suspended except child 1's, which its done retired, and the production check opened on the
 # merge commit, whose first look the daemon hands the tester — the role a project that names no
 # `production_check` gets — in the still-live pod: its claim alone comes back, resumed on its kept
 # session, while the other five stay suspended, and the root's Sandbox stays Running for the look
@@ -6547,7 +6552,7 @@ begin production-check-bound
 # look, woken by the bound. The wait runs from here, after done: what remains of the 15 minutes,
 # and a bound deferred by a look still open when it came due (by the look's own two-hour bound)
 # fails here by name rather than hanging. The last look's pending closes the check as not_run: the
-# tester's claim is retired, its session dropped (issue_close), the state omits the check, and the
+# tester's claim is retired, its session kept (issue_close), the state omits the check, and the
 # root's Sandbox is deleted again with the pod it ran in and the disk that pod owned, leaving the
 # close at linger expiry nothing of it to take. It runs before node-release, which needs tree 1's
 # pods gone for good, and the tree's close at its linger expiry (close) waits for no open check

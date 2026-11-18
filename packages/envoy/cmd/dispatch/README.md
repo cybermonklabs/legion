@@ -3253,7 +3253,7 @@ It also answers `other_project_offers`, how many ask creates of the window offer
 The two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total:
 
 ```bash
-curl -sf -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/related-checks?project=<KEY>&from=<time>&to=<time>"
+printf 'Authorization: Bearer %s' "$(cat "$DISPATCH_TOKEN_FILE")" | curl -sf -H @- "$DISPATCH_URL/api/v1/related-checks?project=<KEY>&from=<time>&to=<time>"
 ```
 
 Every suggestion an issue's or an ask's check offers is recorded in `write_suggestions`, whose `outcome` the server's outcome sweep (`api.RunSuggestionOutcomeSweep`) advances from `ignored` to `acted_on` (the suggested item was cited from the source, or the suggested issue was updated directly) or `overridden` (the source got further activity instead)
