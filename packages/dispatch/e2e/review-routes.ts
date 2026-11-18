@@ -555,8 +555,11 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  draws for 2 s after a link lands on its artifact (`ArtifactHeader.tsx`'s `highlighted`): a
  *  shot inside those 2 s draws it and one after does not, so a scheme shot after a slower settle
  *  lost it while the other kept it (CI runs 44308307388 and 44323538727 read the dark
- *  `issue-artifact` row without it and with it). And the shell's one Inbox number must have
- *  stopped moving (`waitForInboxCountSettled` below), which every page draws and no row names.
+ *  `issue-artifact` row without it and with it). It is counted, as the pending mark is, because
+ *  most pages draw no artifact header: an assertion on the header itself waits for one to exist,
+ *  and timed out every row of a page without one (run 44326108595). And the shell's one Inbox
+ *  number must have stopped moving (`waitForInboxCountSettled` below), which every page draws
+ *  and no row names.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -569,7 +572,7 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
-  await expect(page.getByTestId("artifact-header")).not.toHaveClass(/\bring-2\b/);
+  await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
   await waitForInboxCountSettled(page);
 }
 
