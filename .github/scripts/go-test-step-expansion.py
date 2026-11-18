@@ -479,7 +479,9 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
     named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
     if not named:
         return None
-    alone = script.strip()
+    # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
+    # which bash reads as part of the name.
+    alone = script.strip(" \t\n")
     # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
     # the file in Python and name nothing the shell can run.
     matches = [path for path in named if alone in spellings(path, workdir)]
