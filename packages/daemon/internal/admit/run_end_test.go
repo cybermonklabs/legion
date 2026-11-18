@@ -95,6 +95,9 @@ var stepPlaces = map[phase.Phase]record.StepPlace{
 // over — the root lingers — and the run is not a merge that can still land in that tree (the
 // linger still runs, the pull request is open, or the linger's close handed the member over).
 // lingerClosed says the fact closed the linger, which ends its window whatever the clock says.
+// It states the end rule itself rather than calling workflow's (runOver, mergeCanLand): a check
+// that read the rule it judges would agree with any fault in it. With mergeCanLand made to answer
+// true for every merge, this check fails a linger close that leaves a merge open.
 func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool, what string, now time.Time, lingerClosed bool) {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select issue, task, kind, place, coalesce(record->>'generation', '') from step_starts where run = 'open' order by issue, kind, place`)
