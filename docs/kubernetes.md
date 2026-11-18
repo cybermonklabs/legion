@@ -4280,11 +4280,17 @@ architect, planner, implementer, tester, reviewer, merger):
    its first 64 KiB is written as a line of its own and the rest follows on a new line behind the prefix again.
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
-   As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-   As that PID 1 it also runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
-   In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
-   Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
-   A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
+   As the container's PID 1 the launcher does three things no other process of the pod does:
+
+   - It reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
+     Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, the leak-check install's run of the check, and each cache trimmer sweep's deleter), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `waitid: no such process`, which for the leak-check install refuses the role's launch.
+
+   - It runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+     In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
+
+   - It sweeps the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
+     A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
+
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
@@ -5720,7 +5726,7 @@ Outside every role it protects:
 
 - the launcher itself, which serves every role;
 
-- each process the launcher runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and each cache trimmer sweep's deleter, which its `pidGuard` holds), with every process under it;
+- each process the launcher runs for a step of its own (the test database's start script, the jj and git of a workspace restore, the leak-check install's run of the check, and each cache trimmer sweep's deleter, which its `pidGuard` holds), with every process under it;
 
 - the test database's server, the launcher's direct child whose executable is `postgres` and whose working directory is the test database's data directory, with every backend under it:
   ending one backend makes the server end and restart every backend, which stops every role's test database at once ([A test database in the pod](#a-test-database-in-the-pod)).

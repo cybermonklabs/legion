@@ -48,7 +48,11 @@ func TestLauncherPIDOneHelper(t *testing.T) {
 	}
 }
 
-func namespaceRig(t *testing.T, grace time.Duration) *rig {
+// pidNamespace is the sudo argv prefix that runs a command as PID 1 of a PID namespace of its own,
+// with that namespace's own /proc, as this user: the shape of a pod's container, whose /proc lists
+// the container's few processes and whose first process adopts every orphan. A machine that
+// cannot make one skips the test, and CI, which can, fails it instead.
+func pidNamespace(t *testing.T) []string {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("PID namespace launcher proof requires Linux")
@@ -61,6 +65,36 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		}
 		t.Skipf("PID namespace prerequisite: %v: %s", err, output)
 	}
+	return prefix
+}
+
+// pidOneHelperEnv marks the test binary re-executed as PID 1 of a PID namespace of its own by
+// runAsPIDOne: TestMain leaves such a child the environment its test hands it
+// (helperChildVariables), and each helper it runs returns at once without it.
+const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
+
+// runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
+// (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
+// its environment, fails t unless the helper ran and passed, and answers what it printed.
+func runAsPIDOne(t *testing.T, helper string) string {
+	t.Helper()
+	prefix := pidNamespace(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1",
+		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
+	output, err := exec.Command("sudo", args...).CombinedOutput()
+	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
+		t.Fatalf("%s as PID 1: %v\n%s", helper, err, output)
+	}
+	return string(output)
+}
+
+func namespaceRig(t *testing.T, grace time.Duration) *rig {
+	t.Helper()
+	prefix := pidNamespace(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

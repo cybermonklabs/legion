@@ -7,10 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -243,57 +240,4 @@ func CheckTestPostgres(dir string) error {
 		}
 	}
 	return run(testPGProgram, "stop")
-}
-
-// pidGuard holds the pids of the launcher's own children that are no generation's, so PID 1's
-// reaper leaves each exit to the wait that started it (reapOrphans skips them as it skips a
-// manager's generation). A pid is recorded before its process exists, under the lock the reaper
-// holds for its whole pass, so no pass can read /proc between a child's start and its record.
-type pidGuard struct {
-	mu   sync.Mutex
-	pids map[int]bool
-}
-
-// start runs cmd and answers its pid, recorded as the launcher's own.
-func (g *pidGuard) start(cmd *exec.Cmd) (int, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if err := cmd.Start(); err != nil {
-		return 0, err
-	}
-	pid := cmd.Process.Pid
-	if g.pids == nil {
-		g.pids = map[int]bool{}
-	}
-	g.pids[pid] = true
-	return pid, nil
-}
-
-// done forgets pid once its own wait has read its exit.
-func (g *pidGuard) done(pid int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.pids, pid)
-}
-
-// starter is start and done as a workspace.Starter, for the launcher's own jj and git children
-// that run through workspace.RunCommand: the put-back of a released workspace's bundle
-// (restoreWorkspace). Its start takes the guard's lock alone, as start does.
-func (g *pidGuard) starter() workspace.Starter {
-	return func(cmd *exec.Cmd) (func(), error) {
-		pid, err := g.start(cmd)
-		if err != nil {
-			return nil, err
-		}
-		return func() { g.done(pid) }, nil
-	}
-}
-
-// held are the pids the reaper must skip. The caller holds the guard's lock for the whole pass.
-func (g *pidGuard) held() []int {
-	pids := make([]int, 0, len(g.pids))
-	for pid := range g.pids {
-		pids = append(pids, pid)
-	}
-	return pids
 }

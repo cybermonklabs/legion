@@ -119,8 +119,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	// The pid guard comes before the managers: the pod's put-back of a released workspace starts
-	// its jj and git through it (newManagers), as the test database's script and each sweep's
-	// deleter start through it below.
+	// its jj and git through it, the leak-check install its run of the check, and each manager's
+	// drain of an exited generation reaps through it (newManagers), as the test database's script
+	// and each sweep's deleter start through it below.
 	pids := &pidGuard{}
 	managers, err := newManagers(cfg, pids)
 	if err != nil {
@@ -281,16 +282,20 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// connection it reaches, and the first role to start applies it for the pod, with every other
 	// role's start waiting on that one restore. Its jj and git start through the guard: they are
 	// this process's children, and the reaper would otherwise take an exit before the restore's
-	// own wait read it, which then fails with `waitid: no child processes` and puts nothing back.
-	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
+	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
+	// `waitid: no such process`) and puts nothing back.
+	restore := newBundleRestore(guard.starter())
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
-	// every other role's connection finds it installed.
-	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir)
+	// every other role's connection finds it installed. Its one run of the check starts through
+	// the guard for the same reason as the restore's jj and git: a run the reaper took first fails
+	// the install with `the served check could not be run: waitid: no child processes` (or `no such
+	// process`), and the role's launch with it.
+	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check,
+			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		}}, nil
 	}
@@ -312,7 +317,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check,
+			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		})
 	}
@@ -641,6 +646,10 @@ type manager struct {
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
+	// guard holds the launcher's own children, which are no generation's, out of every reap of
+	// PID 1's (pidGuard): the orphan reaper's passes, and the controller pod's drain of an exited
+	// generation (cleanExitedGeneration).
+	guard *pidGuard
 	// metadataAddress is the address this launcher serves the pod-local metadata endpoint at, which
 	// every generation it starts is told (metadataEnv); "" when it serves none.
 	metadataAddress string

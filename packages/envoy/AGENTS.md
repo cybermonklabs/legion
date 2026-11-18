@@ -5513,7 +5513,7 @@ A write the page pressed names its presser in the `Dispatch-Login` request heade
 a caller that is another person, compared as `model.CanonicalLogin` compares them, or no person at all (any bearer), is answered `409 LOGIN_CHANGED` (`contracts.DispatchLoginChanged`) before anything runs and before its key is read, so the key is untouched.
 Another tab can sign someone else in in place, and a retry can go out on the new cookie before this tab knows;
 the page drops the presser's writes on that answer.
-A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
+A caller that resolves to nobody (a lapsed cookie) is passed on to the `401` written further in, the keyed layer's for a keyed write and the handler's for any other, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
@@ -5528,7 +5528,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   one that committed and lost its answer is `409 KEY_COMMITTED`;
   and a first that gave the key up meanwhile (released after a 5xx, a dead holder with nothing committed, its window past) is `409 KEY_IN_FLIGHT` with `Retry-After: 1`, its message saying it ended while this one's body arrived, so the retry under the same key runs the request.
   So a repeat of a large upload whose first attempt still runs is never written to disk.
-  A repeat whose body runs past the route's limit gets the route's `413`, unkeyed;
+  A repeat whose body runs past the route's limit gets the route's `413` from the layer, with no handler run;
   an `Expect: 100-continue` repeat gets `409 KEY_IN_FLIGHT` at once with nothing read.
   A fresh upload to a closed or missing issue (`POST /api/v1/issues/{key}/artifacts`) is refused as its handler would refuse it (`409 ISSUE_CLOSED` for a closed one) before its body is spooled, keyed or not, and claims no key (`refuseUploadToAClosedIssue`, mounted ahead of the layer).
   That refusal stands in for the handler, so it answers only a request whose handler would run - a fresh key, one past its window, an abandoned one:
@@ -5557,7 +5557,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 - The layer then reads the body, spooling at most the route's own limit (`routeBody`:
   an upload's file and a megabyte of fields for the three upload routes, `keyedUploads`, 26 MiB;
   `handoffRequestLimit`, 1,576,960 bytes, for the handoff write;
-  `maxJSONRequestBytes`, 1 MiB, for every other); a body past it runs unkeyed and its route refuses it.
+  `maxJSONRequestBytes`, 1 MiB, for every other); a body past it is answered its route's `413` by the layer itself, and the handler does not run.
   A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`, and a spill Dispatch could not write (`keyedSpillError`:
   a full disk, a temporary directory it cannot write) is a 5xx with the key echoed, Dispatch's own failure, which the client asks again.
 
@@ -5630,7 +5630,7 @@ migration `0138` indexes the pending attempts (`message_deliveries_pending`, `co
 `cmd/dispatch/keyed_kill_multiprocess_test.go` proves the takeover on two real processes:
 one killed mid-handler (held there by the slow-write hook), the other answers `409 KEY_IN_FLIGHT` while the lease lasts, then makes the write once and replays it.
 
-Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor a request whose caller it could not resolve, nor one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
+Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor the refusal of a caller it could not resolve, nor the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
 Together they are how a client tells a Dispatch that runs this layer from one that ignores the header and would run a retried write a second time:
 the agents' client resends only against a Dispatch whose answer carried the echo, or whose `/healthz` said so, in the last five minutes (`packages/envoy-client/README.md`).
 
