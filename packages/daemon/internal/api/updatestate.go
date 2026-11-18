@@ -15,7 +15,9 @@ const (
 	// round ended.
 	UpdateStateNone UpdateState = "none"
 	// UpdateStateOpen is a round open over this claim whose ask has reached no session of the
-	// claim's role yet. The sweep asks the claim again until one does.
+	// claim's role yet. The sweep asks it again until one does, while the claim has not failed
+	// and is still in the round's pod (the daemon's unaskedClaims); a failed claim, or one that
+	// left the pod, keeps the round and reads `open` until the round ends.
 	UpdateStateOpen UpdateState = "open"
 	// UpdateStateAsked is a round whose ask reached a session of this claim's role, and which
 	// waits for the answer. UpdateTaskedAt marks that delivery (supervise's

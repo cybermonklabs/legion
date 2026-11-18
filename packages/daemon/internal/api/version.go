@@ -35,7 +35,7 @@ package api
 // which keeps each contract's record fixed once the base carries it, refuse a change that does not.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
-// only its row in settings_test.go's classification and, if `omitempty`, a fixture value.
+// only its row in settings_test.go's classification and the fixture values the field walk asks for.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.

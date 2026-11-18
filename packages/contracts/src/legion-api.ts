@@ -282,9 +282,11 @@ const legionClaimView = z.object({
   updateReasons: nonEmptyString.optional(),
   /** Where the claim's update round stands, read from the claim's own columns (contract 154):
    * `none` when no round is open, `open` when a round is open and its ask has reached no session
-   * of the worker's role yet (the daemon asks again until one does), `asked` once the round's ask
-   * reached a session of the worker's role, and `answered` once the worker answered. A reader
-   * takes this rather than spelling the same reading out of
+   * of the worker's role yet (the daemon asks again until one does, while the claim has not
+   * failed and is still in the round's pod; a failed claim, or one that left the pod, reads `open`
+   * until the round ends), `asked` once the round's ask reached a session of the worker's role,
+   * and `answered` once the worker answered. A reader takes this rather than spelling the same
+   * reading out of
    * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
    * one nobody asked. A caller in a pod whose plugin declares a contract below 154 is served the
    * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
