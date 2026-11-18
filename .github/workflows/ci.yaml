@@ -555,7 +555,7 @@ jobs:
             ci_router:
               - &ci_router '.github/workflows/ci.yaml'
             # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
-            # root manifest, the lockfile, the patches package.json:50-59 applies, the manifest of
+            # root manifest, the lockfile, the patches package.json:52-60 applies, the manifest of
             # every workspace package.json:19-31 lists, and the tarball
             # packages/proof-editor/package.json installs proof-sdk-upstream from;
             # .github/actions/setup-bun installs the Bun .bun-version pins.
@@ -3487,7 +3487,7 @@ jobs:
               - 'packages/envoy/go.mod'
               - 'packages/envoy/go.sum'
             # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
-            # root manifest, the lockfile, the patches package.json:50-59 applies, the manifest of
+            # root manifest, the lockfile, the patches package.json:52-60 applies, the manifest of
             # every workspace package.json:19-31 lists, and the tarball
             # packages/proof-editor/package.json installs proof-sdk-upstream from;
             # .github/actions/setup-bun installs the Bun .bun-version pins.

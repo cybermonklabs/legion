@@ -2452,9 +2452,10 @@ package api
 //     owed.
 //   - A key removed with no stand-in, together with a hand edit of the earlier contracts' records
 //     that removes it there too. The shape gate compares only what the daemon serves each
-//     contract with that contract's record, so the pair passes both gates. The spec allows such
-//     an edit (dispatch://INFRA-2694/spec R2), and the reviewer, who reads the records' diff, is
-//     the guard.
+//     contract with that contract's record, so the pair passes both gates. R2 lets a record of an
+//     earlier contract change only together with the serving-down that produces it; the gate cannot
+//     tell this pair from such an edit, so review is its only guard (the reviewer reads the
+//     records' diff).
 //
 // The request gate catches only a request field that a later type no longer reads. A newly
 // required field, a narrowed value and a changed type all pass it. (This
