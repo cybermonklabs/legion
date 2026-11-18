@@ -635,7 +635,8 @@ func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, def
 // request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
 // connection that drops ends with it, and the ensure's waits on the server end with it too. It
 // waits for no election it did not cause (atReconnect): a stream it finds with no leader is left to
-// elect one, so the hooks after it run, while a create or a raise it makes is waited out.
+// elect one, so the hooks after it run, unless the stream must be reconciled, an update that fails
+// at once while the cluster has no quorum, as at main; a create or a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {

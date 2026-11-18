@@ -794,8 +794,12 @@ const (
 	// atReconnect is the reconnect hook (ensureStreamOn), a background start's first ensure
 	// included: the hooks after it rewatch the program's state, and a stream a connection event
 	// finds with no leader may stay so past the hang guard, as one whose members are lost does, so
-	// it waits for no election it did not cause. A create or a raise it makes itself is still
-	// followed by a wait for the leader.
+	// it waits for no election it did not cause. A stream it must reconcile is still updated, and
+	// while the cluster has no quorum that update fails at once and so does the run, as at main,
+	// which recovery runs again once the quorum is back. A create or a raise it makes itself is
+	// still followed by a wait for the leader, as at a start; no publish waits for the run
+	// (WithConnectInBackground, onReconnect), so a run that wait ends at the guard holds no write,
+	// only the hooks after it, which recovery runs again after its backoff.
 	atReconnect
 )
 
