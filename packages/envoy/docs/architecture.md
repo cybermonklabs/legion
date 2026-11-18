@@ -489,6 +489,47 @@ the drop line `listener dropped a kept role message older than the keep window`.
 session holds the dead letter that names that event id, when the publish named that session and
 the copy was not dropped as stale.
 
+A role taken by a different session gets the role messages its previous holder did not read. A
+holder stays live for five minutes after its last registration, and every role route judges it by
+that age alone, so a message sent to the role while the holder had crashed inside that window is
+stored on the holder's own subject (`notifications.agent.<holder>`), where only that session
+reads it. Before each try of a claim's write, when the claim record that try read names another
+session, the claim route publishes a takeover record on a lane of the listener's own,
+`notifications.envoy.takeover.<role>.<previous holder>.<attempt>`, with the claim's time. The
+stream carries that lane, no consumer filter takes it and no session may register it, as the
+resume lane. Every claim writes with the revision of the claim record it read, and an outright
+claim reads again and writes again on a conflict until its request's budget ends, then answers
+`503` with `Retry-After: 1` and writes nothing, so the record names the holder the claim really
+replaced. A pass of a record reads the previous holder's subject from the acknowledgement floor of
+its session consumer on (or the floor the listener recorded when it deleted that consumer, or,
+with neither, from an hour before the claim), and copies each role message of that role stored
+less than an hour before the claim or after it to the role's kept lane: one whose topic is the
+role's, or whose `role` field names it. The copy is the envelope without the forward mark, under
+the kept message id followed by `:frame:` and the frame's stream sequence, so two copies of one
+frame are stored once and no copy is dropped as a repeat of an earlier kept copy of the same
+message; the walk forwards it under a forward id naming that sequence too. A pass reads at most
+two hundred messages and writes the record again with the sequence it reached. The claim route's
+handover runs passes before it walks the lane, and the sweep runs passes of every record that is
+not finished every five minutes, so a listener that stopped at any step delays a message and loses
+none. A record is finished by the first pass that starts more than 71 hours after the claim and
+reads to the end of the subject, and then ages out with the stream. A release of the role, the
+reaper's delete of its claim and a claim no read answers leave the records where they are.
+
+The session relay delivers a role message to a session only while the role's claim names that
+session. It reads the claim from the role bucket for each frame that is a role message; when the
+claim names another session, or none, it copies the frame to the role's kept lane as a pass does,
+acknowledges it only once the stream stored the copy, and logs `listener session relay copied a
+role message to the role's kept lane` with the session, the role, the holder and the event id. A
+claim read or a copy that failed gives the frame back with a delay, neither delivered nor
+acknowledged. A frame that is no role message costs the decode of its topic and role and nothing
+else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
+resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
+less one sweep interval) resolves the holder again first, so a forward the previous holder was
+chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+frame the previous holder was being handed at the takeover, one it acknowledged out of order above
+its floor, and every role message of the hour before a takeover whose holder's floor is unknown
+can reach both sessions.
+
 Every other `notifications.` topic the route takes is published to the stream and answered `200`
 once the stream stored it. The route forwards it to nobody: each session that registered the
 topic reads it from its own consumer, which the listener holding that session relays, whether the
