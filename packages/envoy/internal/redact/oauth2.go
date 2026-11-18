@@ -101,7 +101,11 @@ func (s *BoundTokenSource) Token() (*oauth2.Token, error) { return OAuth2(s.sour
 // of the code, the description and the error_uri, the body as a message may print it (Field),
 // and the answer's status and headers without its request, so errors.As, the status and
 // Retry-After reads, and this package's printing read it as the answer it is, and no reader
-// reaches the words. Its Error is x/oauth2's text of that reading.
+// reaches the words. The body and the reason phrase are read with every credential the refused
+// request carried redacted first (Tokens, requestTokens): something in the token endpoint's place,
+// a gateway or a proxy, can answer with a page of its own that echoes the request back, its
+// headers and its form, and the rule reads only the URLs in a field. Its Error is x/oauth2's text
+// of that reading.
 type OAuthAnswer struct {
 	code           RemoteText
 	refusalCode    RemoteText
@@ -117,11 +121,15 @@ func newOAuthAnswer(re *oauth2.RetrieveError) *OAuthAnswer {
 		ErrorDescription: ruled(re.ErrorDescription),
 		ErrorURI:         ruled(re.ErrorURI),
 	}
+	var carried []string
+	if re.Response != nil {
+		carried = requestTokens(re.Response.Request)
+	}
 	if len(re.Body) > 0 {
-		answer.Body = []byte(Field(string(re.Body)))
+		answer.Body = []byte(Field(Tokens(string(re.Body), -1, carried...)))
 	}
 	if r := re.Response; r != nil {
-		answer.Response = &http.Response{Status: r.Status, StatusCode: r.StatusCode, Proto: r.Proto,
+		answer.Response = &http.Response{Status: Tokens(r.Status, -1, carried...), StatusCode: r.StatusCode, Proto: r.Proto,
 			ProtoMajor: r.ProtoMajor, ProtoMinor: r.ProtoMinor, Header: r.Header.Clone()}
 	}
 	return &OAuthAnswer{code: NewRemoteText(re.ErrorCode), refusalCode: refusalCode, refusalMessage: refusalMessage, answer: answer}

@@ -134,13 +134,15 @@ func (e *ExternalAccountIdentity) Describe() string {
 }
 
 // Token mints the service account's access token with the credentials file's own exchange and
-// spends it on one generateIdToken. Every error names the step that failed and never a token.
+// spends it on one generateIdToken. Every error names the step that failed and never a token. The
+// exchange builds its requests' credentials itself (the subject token it read, the client's Basic
+// pair, the access token it minted and spends on the impersonation call) and prints a refusal's
+// body as text, so its requests go through a redact.RefusalClient, which redacts each one's own
+// credentials from its refusal before the library reads it.
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
-	if e.HTTP != nil {
-		ctx = context.WithValue(ctx, oauth2.HTTPClient, e.HTTP)
-	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(e.HTTP))
 	creds, err := redact.OAuth2(google.CredentialsFromJSONWithType(ctx, e.CredentialsJSON, google.ExternalAccount, poolScope))
 	if err != nil {
 		return "", "", fmt.Errorf("read the external_account credential %s names: %w", credentialsFileVar, err)
