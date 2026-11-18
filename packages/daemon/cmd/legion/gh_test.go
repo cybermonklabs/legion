@@ -1011,6 +1011,92 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 }
 
+// `legion gh` never runs itself as the real gh. A LEGION_GH_PATH that is the wrapper first on PATH,
+// or another script of the wrapper's form, is refused, exit 2, before anything runs. One that
+// leads back to `legion gh` only when it runs — a machine's own gh shim that hands every call to
+// the next gh on PATH, which is the wrapper, as the operator's knives shim did — reaches `legion
+// gh` once more, under the variable every real gh this command runs is given
+// (LEGION_GH_RUN_BY_REAL_GH), and that run refuses, exit 2, so the help read fails and nothing
+// runs again. gh's own git credential helper still answers under that variable, and the real gh
+// a call runs is given it. The `legion` the wrappers here run counts its starts and stops a chain
+// at five, so code that loops fails this test rather than running away; before the refusals, each
+// case below started `legion gh` five times.
+func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	starts := filepath.Join(t.TempDir(), "starts")
+	legion := filepath.Join(t.TempDir(), "legion")
+	counting := "#!/bin/sh\necho start >>'" + starts + "'\n[ \"$(wc -l <'" + starts + "')\" -le 4 ] || exit 97\n" +
+		testMainEnv + "=1 exec '" + os.Args[0] + "' \"$@\"\n"
+	wrappers, elsewhere := t.TempDir(), t.TempDir()
+	shim := filepath.Join(t.TempDir(), "gh")
+	for path, script := range map[string]string{
+		legion:                         counting,
+		filepath.Join(wrappers, "gh"):  "#!/bin/sh\nexec '" + legion + "' gh \"$@\"\n",
+		filepath.Join(elsewhere, "gh"): "#!/bin/sh\nexec '" + legion + "' gh \"$@\"\n",
+		shim:                           "#!/bin/sh\nexec '" + filepath.Join(wrappers, "gh") + "' \"$@\"\n",
+	} {
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	startsOf := func(t *testing.T) int {
+		t.Helper()
+		raw, err := os.ReadFile(starts)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(raw), "start\n")
+	}
+	envFor := func(gh string) map[string]string {
+		return map[string]string{
+			"LEGION_GH_PATH": gh, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+			"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		}
+	}
+	for _, tc := range []struct {
+		name, gh, want string
+		starts         int
+	}{
+		{"the wrapper first on PATH", filepath.Join(wrappers, "gh"), "is the wrapper first on PATH", 0},
+		{"a wrapper elsewhere", filepath.Join(elsewhere, "gh"), "is a wrapper that runs `legion gh`", 0},
+		{"a shim that runs the wrapper", shim, "the real gh " + shim + " ran `legion gh` again", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(starts); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := legionGh(t, envFor(tc.gh), "pr", "list")
+			if got := startsOf(t); code != 2 || stdout != "" || !strings.Contains(stderr, tc.want) || got != tc.starts {
+				t.Errorf("legion gh pr list with LEGION_GH_PATH %s = exit %d, stdout %q, stderr %q, and `legion gh` started %d more times; want exit 2 containing %q and %d more starts",
+					tc.gh, code, stdout, stderr, got, tc.want, tc.starts)
+			}
+		})
+	}
+
+	// gh's own git asks the wrapper under the variable, and the wrapper still answers.
+	marked := envFor(shim)
+	marked["LEGION_GH_RUN_BY_REAL_GH"] = shim
+	if code, stdout, stderr := legionGhIn(t, t.TempDir(), marked, "protocol=https\nhost=github.com\npath=acme/widgets.git\n\n", "auth", "git-credential", "get"); code != 0 || stdout != "username=x-access-token\npassword=ghs_acme_write\n" {
+		t.Errorf("legion gh auth git-credential get under LEGION_GH_RUN_BY_REAL_GH = exit %d, stdout %q, stderr %q; want acme's token", code, stdout, stderr)
+	}
+
+	// The real gh a call runs is given the variable, naming itself.
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$LEGION_GH_RUN_BY_REAL_GH\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, stdout, stderr := legionGh(t, envFor(stub), "pr", "list"); code != 0 || stdout != "run by "+stub+"\n" {
+		t.Errorf("legion gh pr list with a real gh = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, "run by "+stub+"\n")
+	}
+}
+
 // The `gh` each runtime puts first on PATH, the image's packages/daemon/docker/gh and the script a
 // tmux pane's launcher directory holds (workerbin), is one `legion gh` accepts as its wrapper
 // (ghWrapperScript), so the git gh runs names it as its helper; a machine's own wrapper is not.

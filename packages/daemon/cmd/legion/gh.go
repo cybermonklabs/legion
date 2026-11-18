@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -71,6 +72,15 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // would otherwise reach. Each of the three variables is runtime-set and required; an unset one is
 // refused, exit 2, naming it. With no LEGION_GH_PATH, --help prints this command's usage, so
 // `legion gh --help` outside a pane answers as every legion command does.
+//
+// The real gh never leads back to this command. A LEGION_GH_PATH that is a `legion gh` wrapper —
+// the one first on PATH, or any script of that form — is refused, exit 2, before anything runs
+// (refuseLegionGhAsRealGh). One that leads back only when it runs, such as a machine's own gh
+// shim that hands every call to the next gh on PATH, which is the wrapper, is caught when it
+// does: every real gh this command runs, for a help read or for the call itself, is given
+// ghRealGhEnv, and a `legion gh` started under it refuses, exit 2, so the help read that reached
+// it fails and nothing runs again. Before this, each such run read the real gh's help by
+// running it, which ran this command, which read the help again, without end.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	env := processEnvironment()
 	repo, commandPath, visibilitySource := "", "", ""
@@ -100,9 +110,19 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		logCall = false
 		return answerVisibilityRead(ctx, read, stdout, stderr)
 	}
+	// Past the two answers above, gh's own git credential helper and the shared check's read,
+	// nothing a real gh runs is a `legion gh`: one started under ghRealGhEnv is a loop.
+	if real := env[ghRealGhEnv]; real != "" {
+		fmt.Fprintf(stderr, "legion gh: the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path\n", real)
+		return 2
+	}
 	gh := env["LEGION_GH_PATH"]
 	wrapper, err := ghWrapperPath()
 	if err != nil {
+		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		return 2
+	}
+	if err := refuseLegionGhAsRealGh(gh, wrapper); err != nil {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
 	}
@@ -223,7 +243,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.dir != "" {
 		dir = target.dir
 	}
-	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
+	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1", ghRealGhEnv: gh}
 	// A call no private-name pass read runs no program the environment names: such a program
 	// runs with this call's token directory and could write what that pass never read. Its pager
 	// is cat, which gh reads as no pager (GH_PAGER outranks gh's config `pager` and PAGER; gh
@@ -1003,15 +1023,55 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	return nil
 }
 
+// ghRealGhEnv is the variable every real gh `legion gh` runs is given, naming that gh: a `legion
+// gh` started under it is one the real gh led back to, and refuses (runGh). gh's own git
+// credential helper, `legion gh auth git-credential`, and the shared check's read are answered
+// before that refusal, since a real gh's git runs the one and the guard the other.
+const ghRealGhEnv = "LEGION_GH_RUN_BY_REAL_GH"
+
+// refuseLegionGhAsRealGh refuses a LEGION_GH_PATH that is `legion gh` itself: the wrapper first
+// on PATH, or another script of the wrapper's form (isGhWrapper). Run as the real gh, either would
+// run this command again for every help read and every call. A LEGION_GH_PATH it cannot read is
+// left to the run that follows to fail on.
+func refuseLegionGhAsRealGh(gh, wrapper string) error {
+	info, err := os.Stat(gh)
+	if err != nil {
+		return nil
+	}
+	if wrapperInfo, err := os.Stat(wrapper); err == nil && os.SameFile(info, wrapperInfo) {
+		return fmt.Errorf("LEGION_GH_PATH %s is the wrapper first on PATH, which runs `legion gh`, not the real gh; set LEGION_GH_PATH to the real gh's install path", gh)
+	}
+	file, err := os.Open(gh)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	if wrapped, err := isGhWrapper(file); err == nil && wrapped {
+		return fmt.Errorf("LEGION_GH_PATH %s is a wrapper that runs `legion gh`, not the real gh; set LEGION_GH_PATH to the real gh's install path", gh)
+	}
+	return nil
+}
+
+// ghHelpTimeout bounds one help read (readGhHelp).
+var ghHelpTimeout = 30 * time.Second
+
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
-// gh's own), refused when gh answers it with an error.
+// gh's own), refused when gh answers it with an error. gh runs in a process group of its own,
+// which a read that outlives ghHelpTimeout stops whole (procgroup.Configure): a timeout that
+// killed gh alone would leave whatever gh started running, reparented and unwaited for. It runs
+// under ghRealGhEnv, so a gh that leads back to `legion gh` is refused there.
 func readGhHelp(gh string, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ghHelpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
+	killed := procgroup.Configure(cmd)
+	cmd.Env = append(os.Environ(), ghRealGhEnv+"="+gh)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		if killed() {
+			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", ghHelpTimeout)
+		}
 		return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	if stdout.Len() == 0 {
