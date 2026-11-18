@@ -817,7 +817,7 @@ A pod that states no claim is its own pod's, and each slot of it, one role proce
 is its own slot's, so the roles of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
 (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
-(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerOf`): a person reads their
+(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerAndState`): a person reads their
 request from another box, the next pod of a claim cancels what the pod before it asked for, and a
 second machine of the same fleet, or another role of the same issue, reads neither.
 An enrollment that records no owner, every one made before the broker recorded owners, reads and
