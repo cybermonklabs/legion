@@ -1039,21 +1039,39 @@ func airlockEnv(t *testing.T) []string {
 
 // TestMainRefusesAnAirlockRulesFileItCannotServe drives the real binary with each kind of rules
 // file it must refuse — one whose entry the airlock will not validate, one whose entry names a
-// secret by a name no session can ask for, some whose host is a spelling the proxy never
-// compares a request's host with (each spelling has its row in
-// TestAirlockCheckRefusesAHostTheProxyNeverCompares, through the same validateRulesFile), one
-// that is not JSON, and a path that is not there — and asserts it exits non-zero naming the file
-// and what is wrong with it, without ever binding. The database it is given is unreachable, so a
-// broker that read the file after opening the store would fail on the host instead of on the
-// file.
+// secret by a name no session can ask for, one for each host spelling outside the grammar a rules
+// host is written in (ruleHostRows, the rows TestAirlockCheckRefusesAHostTheProxyNeverCompares
+// drives through airlock-check), one that is not JSON, and a path that is not there — and asserts
+// it exits non-zero naming the file and what is wrong with it, without ever binding. The database
+// it is given is unreachable, so a broker that read the file after opening the store would fail
+// on the host instead of on the file.
 func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
+	refused := func(t *testing.T, path string, want, absent []string) {
+		t.Helper()
+		out := runRefusedBroker(t, binary, append(airlockEnv(t),
+			"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+			"BROKER_PUBLIC_URL=https://secrets.internal.example",
+			"BROKER_AIRLOCK_RULES_FILE="+path,
+		)...)
+		if !strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
+			t.Fatalf("broker refused, but its output does not name BROKER_AIRLOCK_RULES_FILE: %s", out)
+		}
+		for _, want := range want {
+			if !strings.Contains(out, want) {
+				t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
+			}
+		}
+		for _, absent := range absent {
+			if absent != "" && strings.Contains(out, absent) {
+				t.Fatalf("broker refused, but its output repeats %q as the file writes it: %s", absent, out)
+			}
+		}
+	}
 	for name, c := range map[string]struct {
 		path string
 		want []string
-		// absent is what the refusal must not repeat: a host as the file writes it.
-		absent []string
 	}{
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
@@ -1071,52 +1089,6 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL-API-KEY", "hosts": ["api.deel.com"]}]}`),
 			want: []string{"secrets[0]", "DEEL-API-KEY", "not an agent secret name", "holds nothing back"},
 		},
-		// The proxy compares a request's address in netaddr.Host's form, so a host written in
-		// another form binds nothing: the entry would read as covering an address whose
-		// CONNECT the proxy tunnels unread. The refusal names the form to write and repeats
-		// only that parsed address, never the host as written.
-		"an IPv6 address not written in its canonical form": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "2001:db8:7:0::1"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 2001:db8:7::1"},
-			absent: []string{"2001:db8:7:0::1"},
-		},
-		"an IPv4-mapped IPv6 address": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["::ffff:93.184.216.34"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
-			absent: []string{"::ffff:"},
-		},
-		// A CONNECT's host reaches the proxy without its brackets (net.SplitHostPort), so a
-		// host written in brackets matches no request either.
-		"an IPv6 address in brackets": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "[2001:db8:7::1]"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 2001:db8:7::1"},
-			absent: []string{"[2001"},
-		},
-		// A client writes an address with no dot after it, so a host written with one matches
-		// no request.
-		"an IPv4 address with a trailing dot": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "93.184.216.34."]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
-			absent: []string{"216.34."},
-		},
-		// netip reads no IPv4 address with a leading zero, and clients read one as different
-		// addresses, so the refusal names no form.
-		"an IPv4 address with a leading zero": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "093.184.216.34"]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "ends in a number", "binds nothing", "leading zero"},
-			absent: []string{"093.184"},
-		},
-		// A host name with a trailing dot matches only a request that writes the dot, and an
-		// empty host names nothing a request can reach.
-		"a host name with a trailing dot": {
-			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com."]}]}`),
-			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "trailing dot", "binds nothing", "write it as api.deel.com"},
-			absent: []string{"deel.com."},
-		},
-		"an empty host": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", ""]}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "is empty", "binds nothing"},
-		},
 		"a file that is not JSON": {
 			path: airlockRulesFile(t, "these are not the rules you are looking for\n"),
 			want: []string{"not JSON", "byte offset 2, line 1, column 2"},
@@ -1126,25 +1098,14 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 			want: []string{missing, "no such file"},
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
-			out := runRefusedBroker(t, binary, append(airlockEnv(t),
-				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
-				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_AIRLOCK_RULES_FILE="+c.path,
-			)...)
-			if !strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
-				t.Fatalf("broker refused, but its output does not name BROKER_AIRLOCK_RULES_FILE: %s", out)
-			}
-			for _, want := range c.want {
-				if !strings.Contains(out, want) {
-					t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
-				}
-			}
-			for _, absent := range c.absent {
-				if strings.Contains(out, absent) {
-					t.Fatalf("broker refused, but its output repeats %q as the file writes it: %s", absent, out)
-				}
-			}
+		t.Run(name, func(t *testing.T) { refused(t, c.path, c.want, nil) })
+	}
+	// The broker logs a refusal as a JSON string in its error field, so a quotation mark inside
+	// it comes out escaped; no row's want holds one.
+	for _, c := range ruleHostRows {
+		t.Run("a host: "+c.name, func(t *testing.T) {
+			path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
+			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), []string{c.absent})
 		})
 	}
 }
@@ -1169,9 +1130,8 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 }
 
 // TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the host rows above:
-// hosts written in the form the proxy compares — an IPv6 address, an IPv4 address, a name and a
-// wildcard — and an IPv6 address and a name in upper or mixed case, which fold.ASCII alone changes
-// and airlock.HostBound folds, are no obstacle to the boot, and the broker goes on to serve.
+// a host of each shape a deployment names, written in the one grammar a rules host is written in
+// (canonicalRuleHosts), is no obstacle to the boot, and the broker goes on to serve.
 func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
@@ -1182,9 +1142,7 @@ func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
-			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "API.Deel.com", "*.deel.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}
-		]}`),
+		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", canonicalRuleHosts...)),
 	)})
 	requireHealthy(t, broker.Addr)
 }

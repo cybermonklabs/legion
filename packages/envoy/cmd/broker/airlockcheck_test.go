@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -141,60 +142,129 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 	}
 }
 
-// TestAirlockCheckRefusesAHostTheProxyNeverCompares is one row for each spelling of a host that
-// airlock.HostBound, comparing text, would never match against a request's host as the proxy
-// writes it, so that the entry binds nothing; airlock-check refuses each as the boot does. The
-// proxy takes a CONNECT host's port and brackets off and writes an IP address as netaddr.Host
-// writes it, so an address in any other form is refused naming that form. A host that holds no
-// address to name is refused naming no form. No refusal repeats the host as written, whose zone
-// or label is any text. The control is a file of hosts in the form the proxy compares, and in
-// upper or mixed case, which fold.ASCII alone changes and HostBound folds on both sides: it is
-// valid.
+// ruleHostRow is one host spelling the broker refuses: what the refusal must say, and the text of
+// the host as written it must not repeat ("" where there is no such text to look for).
+type ruleHostRow struct {
+	name   string
+	host   string
+	want   []string
+	absent string
+}
+
+// ruleHostRows is every host spelling outside the one grammar a rules host is written in
+// (ruleHostGrammar), one row per way out of it, each refused by airlock-check
+// (TestAirlockCheckRefusesAHostTheProxyNeverCompares) and by the boot
+// (TestMainRefusesAnAirlockRulesFileItCannotServe) alike. A row names the form to write where the
+// host has one, and no form otherwise.
+var ruleHostRows = func() []ruleHostRow {
+	ip := func(canonical string) []string {
+		want := []string{"is an IP address", "no TLS server name", "sni mismatch", "binds nothing", "name the service by its host name"}
+		if canonical != "" {
+			want = append(want, canonical+" in its canonical form")
+		}
+		return want
+	}
+	formed := func(why, form string) []string { return []string{why, "write it as " + form} }
+	noForm := func(why ...string) []string {
+		return append(why, "write a host name of lower-case letters, digits and hyphens")
+	}
+	longLabel := strings.Repeat("a", 64) + ".example"
+	longName := strings.Repeat(strings.Repeat("b", 63)+".", 4) + "example"
+	return []ruleHostRow{
+		// An IP address, in any spelling: no client sends a TLS server name for one. Where the
+		// file writes it in a form other than netaddr.Canonical's, the refusal names that form.
+		{"a canonical IPv4 address", "93.184.216.34", ip(""), "216.34"},
+		{"a canonical IPv6 address", "2001:db8:7::1", ip(""), "7::1"},
+		{"a canonical IPv6 address with an embedded IPv4 part", "2001:db8::5db8:d822", ip(""), "5db8"},
+		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", ip("2001:db8:7::1"), "7:0::1"},
+		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", ip("2001:db8:7::1"), "0db8"},
+		{"an IPv6 address in upper case", "2001:DB8:8::1", ip("2001:db8:8::1"), "DB8"},
+		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", ip("93.184.216.34"), "::ffff:"},
+		{"an IPv6 address written with an IPv4 part", "2001:db8::93.184.216.34", ip("2001:db8::5db8:d822"), "::93.184"},
+		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 "x`, ip("2001:db8:7::1"), "eth0"},
+		{"an IPv6 address in brackets", "[2001:db8:7::1]", ip("2001:db8:7::1"), "[2001"},
+		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 "x]`, ip("2001:db8:7::1"), "eth0"},
+		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:93.184.216.34]", ip("93.184.216.34"), "::ffff:"},
+		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", ip("2001:db8:7::1"), "[2001"},
+		{"an IPv4 address with a trailing dot", "93.184.216.34.", ip("93.184.216.34"), "216.34."},
+		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", ip("2001:db8:7::1"), "::1."},
+		{"an IPv4 address with a port", "93.184.216.34:443", ip("93.184.216.34"), ":443"},
+		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", ip("2001:db8:7::1"), "]:443"},
+		// A host name written another way than the grammar's: the refusal names the grammar's
+		// spelling of the same host.
+		{"a host name in mixed case", "API.GitHub.com", formed("is not in lower case", "api.github.com"), "GitHub"},
+		{"a host name with a trailing dot", "api.github.com.", formed("sni mismatch", "api.github.com"), "github.com."},
+		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", formed("ends in a dot", "api.github.com"), "GitHub"},
+		{"a wildcard with a trailing dot", "*.googleapis.com.", formed("ends in a dot", "*.googleapis.com"), "googleapis.com."},
+		{"a Unicode internationalized name", "bücher.example", formed("punycode", "xn--bcher-kva.example"), "bücher"},
+		{"a host name ending in an ideographic full stop", "api.github.com\u3002", formed("is not ASCII", "api.github.com"), "\u3002"},
+		{"a host name ending in a full-width full stop", "api.github.com\uff0e", formed("is not ASCII", "api.github.com"), "\uff0e"},
+		{"a trailing dot and a zero-width space", "api.github.com.\u200b", formed("is not ASCII", "api.github.com"), "\u200b"},
+		// Text that is no host name in any spelling: the refusal names no form.
+		{"an empty host", "", noForm("is empty", "binds nothing"), ""},
+		{"a wildcard alone", "*", noForm("has a * other than one leading", "binds nothing"), ""},
+		{"a wildcard over a wildcard", "*.*", noForm("has a * other than one leading", "binds nothing"), ""},
+		{"a wildcard before a doubled dot", "*..com", noForm("has an empty label", "binds nothing"), "..com"},
+		{"a leading dot", ".api.github.com", noForm("has an empty label", "binds nothing"), ".api"},
+		{"a doubled dot", "a..b.com", noForm("has an empty label", "binds nothing"), "a..b"},
+		{"a space", " ", noForm("white space", "binds nothing"), ""},
+		{"a tab", "\t", noForm("white space", "binds nothing"), ""},
+		{"a leading space", " api.github.com", noForm("white space", "binds nothing"), "github"},
+		{"a trailing space", "api.github.com ", noForm("white space", "binds nothing"), "github"},
+		{"a trailing dot and a space", "api.github.com. ", noForm("white space", "binds nothing"), "github"},
+		{"a trailing dot and a newline", "api.github.com.\n", noForm("white space", "binds nothing"), "github"},
+		{"a host name with a port", "api.github.com:443", noForm("holds a colon", "carries no port", "binds nothing"), ":443"},
+		{"a host name in brackets", "[api.github.com]", noForm("holds a bracket", "binds nothing"), "[api"},
+		{"a host name holding a %", "api%x.github.com", noForm("holds a %", "binds nothing"), "%x"},
+		{"a colon in no IP address", "2001:db8::g", noForm("holds a colon", "binds nothing"), "::g"},
+		{"an underscore", "a_b.example.com", noForm("underscore"), "a_b"},
+		{"a label starting with a hyphen", "-api.github.com", noForm("starts or ends with a hyphen"), "-api"},
+		{"an xn-- label that is no punycode", "xn--zz.example", noForm("xn-- label the IDNA lookup profile refuses", "binds nothing"), "xn--zz"},
+		{"a label over 63 characters", longLabel, noForm("label longer than 63 characters", "binds nothing"), strings.Repeat("a", 64)},
+		{"a name over 253 characters", longName, noForm("longer than 253 characters", "binds nothing"), strings.Repeat("b", 63)},
+		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "binds nothing"), "api github"},
+		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "binds nothing"), "github.com."},
+		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", "binds nothing"), "093.184"},
+		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", "binds nothing"), "184.54818"},
+		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", "binds nothing"), "1572395042"},
+		{"an IPv4 address written in hex", "0x5db8d822", noForm("ends in a number", "hex part", "binds nothing"), "0x5db8"},
+		{"a wildcard over the last labels of an address", "*.216.34", noForm("wildcard whose last label is a number", "addresses by their text"), "*.216"},
+	}
+}()
+
+// canonicalRuleHosts are hosts the grammar reads, one of each shape a deployment's rules file
+// names: a name, a wildcard, a name with a hyphen and a digit in a label, an internationalized
+// name as its punycode, and a single-label name.
+var canonicalRuleHosts = []string{"api.github.com", "*.googleapis.com", "s3.us-east-1.amazonaws.com", "xn--bcher-kva.example", "localhost"}
+
+// rulesWithHosts is a rules file of one entry, name, that binds hosts, written by encoding/json
+// so that a host holding a quotation mark, a control character or Unicode is the host the row
+// means.
+func rulesWithHosts(t *testing.T, name string, hosts ...string) string {
+	t.Helper()
+	type entry struct {
+		Name  string   `json:"name"`
+		Hosts []string `json:"hosts"`
+	}
+	body, err := json.Marshal(struct {
+		Secrets []entry `json:"secrets"`
+	}{[]entry{{name, hosts}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares: a rules host is served only in the one
+// grammar a rules host is written in, the one spelling the proxy compares a request's host in,
+// and airlock-check refuses every other spelling as the boot does, naming the entry and the
+// host's position, saying why, and naming the form to write where one exists, with nothing else
+// of the host as written. The control is a file of hosts of each shape a deployment names, in the
+// grammar's spelling: it is valid.
 func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
-	const notCanonical = "canonical form"
-	// bindsNothing is what each row says but the wildcard's, which binds addresses by their text.
-	bindsNothing := func(want ...string) []string { return append([]string{"binds nothing"}, want...) }
-	for _, c := range []struct {
-		name   string
-		host   string
-		want   []string
-		absent string
-	}{
-		// An address in a form netaddr.Host rewrites.
-		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "2001:db8:7:0::1"},
-		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "0db8"},
-		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", bindsNothing(notCanonical, "write it as 93.184.216.34"), "::ffff:"},
-		{"an IPv6 address with an embedded IPv4 part", "2001:db8::93.184.216.34", bindsNothing(notCanonical, "write it as 2001:db8::5db8:d822"), "::93.184"},
-		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 \"x`, bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "eth0"},
-		// An address in a spelling netaddr.Host does not read.
-		{"an IPv6 address in brackets", "[2001:db8:7::1]", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "[2001"},
-		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 \"x]`, bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "eth0"},
-		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:93.184.216.34]", bindsNothing(notCanonical, "write it as 93.184.216.34"), "::ffff:"},
-		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "[2001"},
-		{"an IPv4 address with a trailing dot", "93.184.216.34.", bindsNothing(notCanonical, "write it as 93.184.216.34"), "216.34."},
-		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "::1."},
-		{"an IPv4 address with a port", "93.184.216.34:443", bindsNothing(notCanonical, "write it as 93.184.216.34"), ":443"},
-		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "]:443"},
-		// A host that holds no address to name.
-		{"a host name with a port", "api.github.com:443", bindsNothing("holds a port", "write the host alone"), ":443"},
-		{"a host name in brackets", "[api.github.com]", bindsNothing("bracket or a %", "no IP address"), "[api"},
-		{"a host name holding a %", "api%x.github.com", bindsNothing("bracket or a %", "no IP address"), "%x"},
-		{"a colon in no IP address", "2001:db8::g", bindsNothing("holds a colon", "no IP address"), "::g"},
-		{"an IPv4 address with a leading zero", "093.184.216.34", bindsNothing("ends in a number", "leading zero"), "093.184"},
-		{"an IPv4 address of fewer than four parts", "93.184.54818", bindsNothing("ends in a number", "four decimal"), "184.54818"},
-		{"an IPv4 address written as one number", "1572395042", bindsNothing("ends in a number", "four decimal"), "1572395042"},
-		{"an IPv4 address written in hex", "0x5db8d822", bindsNothing("ends in a number", "four decimal"), "0x5db8"},
-		{"a wildcard over the last labels of an address", "*.216.34", []string{"wildcard", "last label is a number", "match addresses by their text"}, "*.216"},
-		// A host name with a trailing dot matches only a request that writes the dot, which no
-		// client does for a name it was given without one; the form named is the folded name.
-		{"a host name with a trailing dot", "api.github.com.", bindsNothing("trailing dot", "write it as api.github.com"), "github.com."},
-		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", bindsNothing("trailing dot", "write it as api.github.com"), "GitHub"},
-		{"a wildcard with a trailing dot", "*.googleapis.com.", bindsNothing("trailing dot", "write it as *.googleapis.com"), "googleapis.com."},
-		{"a trailing dot after text that is no host name", "api github.com.", bindsNothing("trailing dot", "write the name without the dot"), "api github"},
-		{"an empty host", "", bindsNothing("is empty"), `""`},
-	} {
+	for _, c := range ruleHostRows {
 		t.Run(c.name, func(t *testing.T) {
-			path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "`+c.host+`"]}]}`)
+			path := airlockFile(t, "airlock.json", rulesWithHosts(t, "GITHUB", "api.github.com", c.host))
 			code, stdout, stderr := runAirlockCheck(t, path)
 			if code != 1 || stdout != "" {
 				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
@@ -204,15 +274,15 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
 			}
-			if strings.Contains(stderr, c.absent) {
+			if c.absent != "" && strings.Contains(stderr, c.absent) {
 				t.Fatalf("the refusal repeats %q as the file writes it: %q", c.absent, stderr)
 			}
 		})
 	}
-	t.Run("the control: each host in the form the proxy compares, in any case", func(t *testing.T) {
-		path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "API.GitHub.com", "*.googleapis.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1", "2001:db8::5db8:d822"]}]}`)
+	t.Run("the control: a host of each shape a deployment names, in the grammar's spelling", func(t *testing.T) {
+		path := airlockFile(t, "airlock.json", rulesWithHosts(t, "GITHUB", canonicalRuleHosts...))
 		if code, _, stderr := runAirlockCheck(t, path); code != 0 || stderr != "" {
-			t.Fatalf("a file of hosts in the form the proxy compares = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+			t.Fatalf("a file of hosts in the grammar's spelling = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
 		}
 	})
 }
