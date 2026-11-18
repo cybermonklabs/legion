@@ -701,6 +701,30 @@ func (r *rig) connectRaw(target string, headers ...string) (*http.Response, net.
 	return answer, conn, reader
 }
 
+// plainRaw writes one absolute-URL GET of http://<authority><path> on a connection of its own,
+// with authority as its Host header too, and answers what came back with its body read. A row
+// about a zoned literal needs it: net/http's client drops the zone from the URL it writes to a
+// proxy, so through that client the zone never reaches the proxy, while any client that writes
+// its own bytes can send it. Each header must end in CRLF.
+func (r *rig) plainRaw(authority, path string, headers ...string) (*http.Response, string) {
+	r.t.Helper()
+	conn, err := net.Dial("tcp", r.addr)
+	if err != nil {
+		r.t.Fatalf("dial the proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	request := "GET http://" + authority + path + " HTTP/1.1\r\nHost: " + authority + "\r\n" + strings.Join(headers, "") + "Connection: close\r\n\r\n"
+	if _, err := conn.Write([]byte(request)); err != nil {
+		r.t.Fatalf("write the GET: %v", err)
+	}
+	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		r.t.Fatalf("read the answer to GET http://%s%s: %v", authority, path, err)
+	}
+	return answer, bodyOf(r.t, answer)
+}
+
 // basic is one Proxy-Authorization header line, as a command's client writes it.
 func basic(password string) string {
 	return "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("agent:"+password)) + "\r\n"

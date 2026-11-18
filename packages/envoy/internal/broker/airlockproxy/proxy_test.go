@@ -612,7 +612,7 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 		}))
 		t.Cleanup(plain.Close)
 		r.addresses["service.example.net"] = []netip.Addr{clusterIP}
-		for _, addr := range []string{clusterIP.String(), "93.184.216.40", "2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x"} {
+		for _, addr := range []string{clusterIP.String(), "93.184.216.40", "2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x", "2001:db8:6::10"} {
 			r.dialTo[net.JoinHostPort(addr, "80")] = plain.Listener.Addr().String()
 		}
 		return r, &served
@@ -629,18 +629,31 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 			}
 		})
 	}
+	// The zoned literals are written on a socket of the row's own (plainRaw), as the bytes a
+	// command's client may send: net/http's client drops the zone from the URL it writes to a
+	// proxy, so through it each row would be the unzoned literal and prove nothing about a zone.
 	for _, host := range []string{"[2001:db8:5::10%25eth0]", "[2001:db8:5::10%250]", "[2001:db8:5::10%25x]"} {
 		t.Run("a plain-HTTP request to the zoned literal "+host+" is refused", func(t *testing.T) {
 			r, served := plainRig(t)
-			answer, body := r.get(r.client(workerPlaceholder), "http://"+host+"/status")
+			answer, body := r.plainRaw(host, "/status", basic(workerPlaceholder))
 			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, clusterRangeRule) {
-				t.Fatalf("plain http to %s answered %d %q; want 403 naming %q", host, answer.StatusCode, body, clusterRangeRule)
+				t.Fatalf("plain http to %s answered %d %q after the dials %v; want 403 naming %q", host, answer.StatusCode, body, r.dialedAddresses(), clusterRangeRule)
 			}
 			if r.dials.Load() != 0 || served.Load() != 0 {
 				t.Fatalf("the proxy dialled %v and the service answered %d request(s); want none", r.dialedAddresses(), served.Load())
 			}
 		})
 	}
+	t.Run("control: a plain-HTTP request to a zoned literal outside the ranges is forwarded to the address it was checked as", func(t *testing.T) {
+		r, served := plainRig(t)
+		answer, body := r.plainRaw("[2001:db8:6::10%25eth0]", "/status", basic(workerPlaceholder))
+		if answer.StatusCode != http.StatusOK || body != "the plain service answered" || served.Load() != 1 {
+			t.Fatalf("plain http to [2001:db8:6::10%%25eth0] answered %d %q with %d request(s) served after the dials %v; want 200 from the service", answer.StatusCode, body, served.Load(), r.dialedAddresses())
+		}
+		if dialed := r.dialedAddresses(); !slices.Equal(dialed, []string{"[2001:db8:6::10]:80"}) {
+			t.Fatalf("the proxy dialled %v; want [[2001:db8:6::10]:80], the address without its zone", dialed)
+		}
+	})
 	t.Run("control: a plain-HTTP request to a public address is forwarded", func(t *testing.T) {
 		r, served := plainRig(t)
 		answer, body := r.get(r.client(workerPlaceholder), "http://93.184.216.40/status")

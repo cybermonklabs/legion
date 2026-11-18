@@ -9,10 +9,13 @@ package airlockproxy
 
 import (
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
@@ -117,6 +120,39 @@ func TestAZonedLiteralOfABoundAddressIsThatBoundHost(t *testing.T) {
 			}
 			if len(leaf.IPAddresses) != 1 || !leaf.IPAddresses[0].Equal(net.ParseIP(bound)) {
 				t.Fatalf("the proxy's certificate names %v; want the bound address %s alone", leaf.IPAddresses, bound)
+			}
+		})
+	}
+}
+
+// TestAPlainHTTPRequestToAZonedLiteralOfABoundAddressIsRefusedAsPlainHTTP: servePlain refuses
+// plain HTTP to a bound host, since a value would cross in the clear, and it compares the host
+// with the hosts an entry binds as text. A zoned literal of a bound IPv6 address is that address,
+// so it is refused in the same words as the unzoned literal, and nothing is dialled for it. The
+// request is written on a socket of the row's own (plainRaw), because net/http's client drops the
+// zone before the proxy could read it.
+func TestAPlainHTTPRequestToAZonedLiteralOfABoundAddressIsRefusedAsPlainHTTP(t *testing.T) {
+	const bound = "2001:db8:7::1"
+	rules := airlock.Rules{Secrets: []airlock.SecretRule{{Name: workerName, Hosts: []string{bound}, Headers: []string{"authorization"}}}}
+	for _, authority := range []string{"[" + bound + "]", "[" + bound + "%25eth0]"} {
+		t.Run(authority, func(t *testing.T) {
+			r := newRig(t, Options{Rules: rules})
+			// A plain service wired to the address in either spelling, so a proxy that forwarded
+			// the request answers 200 in its words.
+			var served atomic.Int64
+			plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				served.Add(1)
+				io.WriteString(w, "the plain service answered")
+			}))
+			t.Cleanup(plain.Close)
+			r.dialTo["["+bound+"]:80"] = plain.Listener.Addr().String()
+			r.dialTo["["+bound+"%eth0]:80"] = plain.Listener.Addr().String()
+			answer, body := r.plainRaw(authority, "/v1/things", basic(workerPlaceholder))
+			if want := "refusing plain http to " + bound + ", a host behind the airlock"; answer.StatusCode != http.StatusForbidden || !strings.Contains(body, want) {
+				t.Fatalf("plain http to %s answered %d %q after the dials %v; want 403 naming %q", authority, answer.StatusCode, body, r.dialedAddresses(), want)
+			}
+			if r.dials.Load() != 0 || served.Load() != 0 {
+				t.Fatalf("the proxy dialled %v and the service answered %d request(s); want none", r.dialedAddresses(), served.Load())
 			}
 		})
 	}
