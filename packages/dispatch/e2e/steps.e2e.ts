@@ -3,8 +3,10 @@ import { expect, test } from "./test";
 
 // An issue's Steps tab reads the step records Legion's daemon wrote of it: each run of each step
 // of each task, with the attempt the server counts, and a run that has not ended read as running.
-// The records go through the route the daemon writes with, as the session `legion-daemon:LEG`, and
-// a review's end arrives before its start, as an outbox row that retried can deliver it.
+// The records go through the route the daemon writes with, as the session `legion-daemon:LEG`.
+// The review's run is written whole, its start and its end in one write, and then again with
+// only a start at another moment, which the record does not take: the run keeps its first start
+// and its failed end.
 
 const at = (time: string) => `2026-11-16T${time}:00Z`;
 

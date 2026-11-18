@@ -1,8 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { focusManager, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
@@ -317,10 +318,13 @@ test("a read still out at the next deadline lands and is drawn, and the deadline
   });
 });
 
-// A timer of the list only ever reads, so ten minutes with no read - twice the list's length -
-// is ten minutes with none of its timers held. (`jest.getTimerCount()` cannot say it: one timer
-// that is not the tab's comes and goes with the renders, the tab never shown included.)
-test("a tab not shown and a hidden page read nothing and hold no timer, and each catches up once shown", async () => {
+// While the tab is not shown, or the page is hidden, nothing reads: a read the catch-up asks for
+// then is dropped, since no hold is left on the query (`drive` in `api/query-refresh.ts`). So ten
+// minutes with no read here cannot tell whether a timer of the list is still held; the row after
+// this one tells it, since a timer left behind reads through the hold the tab takes when it is
+// shown again. (`jest.getTimerCount()` cannot tell it either: one timer that is not the tab's
+// comes and goes with the renders, the tab never shown included.)
+test("a tab not shown and a hidden page read nothing, and each catches up once shown", async () => {
   await onFakeClock(async () => {
     const tab = renderLiveTab(() => NO_STEPS, false);
     try {
@@ -361,6 +365,39 @@ test("a tab not shown and a hidden page read nothing and hold no timer, and each
   });
 });
 
+// Leaving the tab clears its catch-up's timers, so the tab shown again reads on its new list
+// alone. The event's list is left 3 s after the event, before its 5 s read, and the tab is shown
+// again at 4 s, when its new hold would let that read through. Control: with `stop()` left out of
+// the effect's cleanup, the event's 5 s read lands one second after the second show and this row
+// fails.
+test("a tab left during a catch-up and shown again reads on its new list alone", async () => {
+  await onFakeClock(async () => {
+    const tab = renderLiveTab(() => NO_STEPS);
+    try {
+      // The catch-up of the tab being shown runs out first, so only the event's reads follow.
+      await tick(301_000, 1_000);
+      const before = tab.fetchedAt.length;
+      const eventAt = Date.now();
+      tab.deliver();
+      await tick(3_000, 1_000);
+      tab.show(false);
+      await tick(1_000, 1_000);
+      // The event's reads at once and at 2 s, and none while the tab is left.
+      expect(tab.fetchedAt.slice(before).map((at) => at - eventAt)).toEqual([0, 2_000]);
+
+      const shownAgain = tab.fetchedAt.length;
+      const secondAt = Date.now();
+      tab.show(true);
+      await tick(600_000, 1_000);
+      expect(tab.fetchedAt.slice(shownAgain).map((at) => at - secondAt)).toEqual([
+        0, 2_000, 5_000, 15_000, 45_000, 120_000, 300_000,
+      ]);
+    } finally {
+      tab.restore();
+    }
+  });
+});
+
 // The tab's reads are its catch-up's and Retry's alone: a read that failed is asked again by the
 // catch-up's next read, never by the query on its own, so a tab the reader left - still mounted,
 // as the issue page keeps it - has no request left to make.
@@ -386,6 +423,69 @@ test("a tab left after a failed read reads nothing more, and reads at once when 
       await tick(0);
       expect(tab.listSteps).toHaveBeenCalledTimes(2);
       expect(screen.getByRole("region", { name: "Steps empty state" })).toBeDefined();
+    } finally {
+      tab.restore();
+    }
+  });
+});
+
+// The rows a read drew stay when a later read fails: the failure shows as a line with Retry above
+// them, and the next read that answers takes the line away. A failed last read of the list, at
+// 300 s, leaves the rows and the line until the next start or Retry, an hour on included.
+// Control: with the failure drawn in place of the tables, the table is gone at 2 s and this row
+// fails.
+test("a catch-up read that fails after one that answered keeps the rows, under the failure and Retry", async () => {
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    let failing = false;
+    const tab = renderLiveTab(() => {
+      if (failing) {
+        throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
+      }
+      return {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+      };
+    });
+    const rowsUnderFailure = () => {
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain(
+        "Couldn't load the steps of CORE-1: the database is busy"
+      );
+      const table = screen.getByRole("table", { name: "Steps of task default" });
+      expect(within(table).getByRole("cell", { name: "passed" })).toBeDefined();
+      expect(alert.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      return alert;
+    };
+    try {
+      await tick(0);
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
+
+      // The read at 2 s fails, and the one at 5 s answers.
+      failing = true;
+      await tick(2_000, 1_000);
+      expect(tab.listSteps).toHaveBeenCalledTimes(2);
+      rowsUnderFailure();
+      failing = false;
+      await tick(3_000, 1_000);
+      expect(tab.listSteps).toHaveBeenCalledTimes(3);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
+
+      // The reads at 15, 45, 120 and 300 s fail, and nothing reads for the hour after.
+      failing = true;
+      await tick(295_000, 1_000);
+      expect(tab.listSteps).toHaveBeenCalledTimes(7);
+      await tick(3_600_000, 60_000);
+      expect(tab.listSteps).toHaveBeenCalledTimes(7);
+      const alert = rowsUnderFailure();
+
+      failing = false;
+      await user.click(within(alert).getByRole("button", { name: "Retry" }));
+      await tick(0);
+      expect(tab.listSteps).toHaveBeenCalledTimes(8);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
     } finally {
       tab.restore();
     }

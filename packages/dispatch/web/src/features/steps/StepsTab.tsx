@@ -269,34 +269,33 @@ function useCatchUp(issueKey: string, shown: boolean): void {
  * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
  * and only through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its
  * own: it is never enabled, and a read that failed is asked again by the catch-up's next read,
- * not by the app's retry policy, whose retries no cleanup of the tab could stop.
+ * not by the app's retry policy, whose retries no cleanup of the tab could stop. A failed read
+ * shows alone only while the tab has drawn nothing; after a read that answered, the failure and
+ * its Retry stand above the rows that read drew, since nothing may read again until the next
+ * start or Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, active);
-  if (query.isPending) {
-    return <p className={textMutedOnCanvas}>Loading steps…</p>;
-  }
-  if (query.isError) {
-    return (
-      <QueryError
-        message={`Couldn't load the steps of ${issueKey}: ${query.error.message}`}
-        onRetry={() => void query.refetch()}
-        retrying={query.isFetching}
-      />
-    );
+  const failure = query.isError ? (
+    <QueryError
+      message={`Couldn't load the steps of ${issueKey}: ${query.error.message}`}
+      onRetry={() => void query.refetch()}
+      retrying={query.isFetching}
+    />
+  ) : null;
+  if (query.data === undefined) {
+    return failure ?? <p className={textMutedOnCanvas}>Loading steps…</p>;
   }
   const tasks = stepTasks(query.data);
-  if (tasks.length === 0) {
-    return (
-      <EmptyState label="Steps empty state" message="No step of this issue has run in Legion." />
-    );
-  }
   return (
     <div className="min-w-0 space-y-6">
-      {tasks.map(({ rows, task }) => (
-        <TaskTable key={task} rows={rows} task={task} />
-      ))}
+      {failure}
+      {tasks.length === 0 ? (
+        <EmptyState label="Steps empty state" message="No step of this issue has run in Legion." />
+      ) : (
+        tasks.map(({ rows, task }) => <TaskTable key={task} rows={rows} task={task} />)
+      )}
     </div>
   );
 }
