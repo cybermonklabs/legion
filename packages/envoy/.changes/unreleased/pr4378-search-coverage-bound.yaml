@@ -1,0 +1,14 @@
+kind: Fixed
+custom:
+  Issue: pr4378
+body: |-
+  `GET /api/v1/search/coverage` took 10 to 30 s in production; its statement now takes 0.9 s on a
+  synthetic corpus of production's size, where the old one took 12.2 s: it reads the window kinds
+  from two partial covering indexes (`embeddings_window_embedded`,
+  `embeddings_window_unembedded`) without reading any window's text, and builds and hashes an
+  issue's text only where the issue's inputs changed since the coverage pass recorded them in the
+  new table `embedding_issue_sources` (at boot and every 10 minutes). The statement runs under a
+  10 s `statement_timeout`, past which the route answers `503 SEARCH_COVERAGE_TIMEOUT` and the
+  database ends the statement, and a boot pass whose closing report fails logs it at WARN instead
+  of failing. The two index builds run before the server serves, so a single-replica deployment
+  is down for them at the deploy, about 15 s at 1,000,000 window rows.
