@@ -28,6 +28,9 @@ type stoppedLoopRig struct {
 	expiry *expiryTimers
 	waits  *tradeWaits
 	trades func() int
+	// requests counts every request to the token endpoint, whatever it is answered: a trade the
+	// loop makes after it stopped is one, refused or not.
+	requests atomic.Int32
 	// cancel ends the helper's context, as a shutdown does.
 	cancel  context.CancelFunc
 	refusal atomic.Pointer[stopAnswer]
@@ -59,6 +62,7 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	r.trades = serveTokenExchange(t, r.broker, trader, thumbprint)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, request *http.Request) {
+		r.requests.Add(1)
 		answer := r.refusal.Load()
 		switch {
 		case answer == nil:
@@ -115,7 +119,7 @@ func (r *stoppedLoopRig) signLauncher(t *testing.T) Response {
 }
 
 // stoppedLine is the log line the trade loop writes when it stops.
-const stoppedLine = "the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols once that lapses, until the helper restarts"
+const stoppedLine = "the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols under this machine's credential once that lapses, until the helper restarts"
 
 // TestAStoppedTradeLoopSaysNothingTradesAgain: a helper in identity mode whose trade the broker
 // refuses in a way no retry cures (a machine no entry of the deployment lists) stops its trade
@@ -148,6 +152,9 @@ func TestAStoppedTradeLoopSaysNothingTradesAgain(t *testing.T) {
 			t.Fatalf("the helper whose loop stopped said %q: it names a login or a trade to wait for, and neither comes", said)
 		}
 	}
+	if n := r.requests.Load(); n != 1 {
+		t.Fatalf("the helper made %d token requests; want one, the refused trade that stopped its loop", n)
+	}
 }
 
 // TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal: the loop stops while the credential
@@ -163,13 +170,13 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 	if first == nil {
 		t.Fatal("the helper holds no credential, so this test proves nothing about a stop that holds one")
 	}
-	traded := r.trades()
 	r.refusal.Store(&stopAnswer{noCredential: true})
 	r.waits.fire(t, 0)
 	line := waitForRecord(t, r.out, stoppedLine)
-	if said, _ := line["error"].(string); !strings.Contains(said, "lacks a credential_id") {
+	if said, _ := line["error"].(string); !strings.Contains(said, "carries no credential_id") {
 		t.Fatalf("the stopped loop's line carries %v; want the answer's own words, which name no URL", line)
 	}
+	stoppedAt := r.requests.Load()
 
 	signed := r.signLauncher(t)
 	if !signed.OK || signed.CredentialID != first.id || !signed.MachineIdentity || !signed.IdentityStopped {
@@ -194,8 +201,8 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 	if status := r.loginStatus(t); status.CredentialHeld || !status.IdentityStopped {
 		t.Fatalf("login-status after the lapse answered %+v; want no credential held and identity_stopped still set", status)
 	}
-	if after := r.trades(); after != traded {
-		t.Fatalf("the broker served %d trades after the loop stopped; want none past the %d before it", after-traded, traded)
+	if after := r.requests.Load(); after != stoppedAt {
+		t.Fatalf("the helper made %d token requests after its loop stopped; want none past the %d before it", after-stoppedAt, stoppedAt)
 	}
 }
 

@@ -706,8 +706,10 @@ func (b *Broker) Start(ctx context.Context) error {
 }
 
 // errAnswerLacksCredential stops startIdentity's trade loop: the broker served a token, but no
-// launcher credential to enrol sessions with. It names no URL, so a log line prints it as it is.
-var errAnswerLacksCredential = fmt.Errorf("the broker's token answer lacks a %s or an RFC 3339 %s, so this machine has no launcher credential to enrol sessions with", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
+// launcher credential to enrol sessions with. It describes the answer, not the helper, which may
+// still hold the credential an earlier trade gave it. It names no URL, so a log line prints it as
+// it is.
+var errAnswerLacksCredential = fmt.Errorf("the broker's token answer carries no %s or RFC 3339 %s, so it gives this machine no launcher credential", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
 
 // identityShutdownLine is what the trade loop logs when it ends with the helper's own shutdown,
 // rather than stopping on a refusal nothing cures (identityStopped).
@@ -751,7 +753,7 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 			if errors.Is(err, errAnswerLacksCredential) {
 				reason = err
 			}
-			b.logger().Error("the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols once that lapses, until the helper restarts", "error", reason)
+			b.logger().Error("the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols under this machine's credential once that lapses, until the helper restarts", "error", reason)
 		} else {
 			// Run answers nil only once the helper's context ends, which is this helper shutting
 			// down: no fault of the deployment's, and a restart trades again.

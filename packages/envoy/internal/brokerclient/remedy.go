@@ -94,7 +94,7 @@ func Lapse(f Failure, at, left string) string {
 	case FailureIdentityLapsed:
 		return fmt.Sprintf("the helper's trade loop renews the launcher credential; without a trade it lapses at %s (in %s)", at, left)
 	case FailureIdentityStopped:
-		return fmt.Sprintf("nothing renews the launcher credential, which lapses at %s (in %s), and no session enrols after that; %s", at, left, Hint(f))
+		return fmt.Sprintf("nothing renews the launcher credential, which lapses at %s (in %s), and no session enrols under this machine's credential after that; %s", at, left, Hint(f))
 	default:
 		return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", at, left)
 	}
