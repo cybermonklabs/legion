@@ -52,19 +52,36 @@ func requireClusteredRefusals(t *testing.T, rows []clusteredRefusal) {
 // listener is args' tailnet listener, for the rows that edit it.
 func listener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerArgs { return a.Tailnet.Listener }
 
+const (
+	// The token check a listener that requires a credential renders: its cluster's issuer, the
+	// audience its callers' projected tokens carry, and the one subject it admits.
+	clusteredListenerIssuer   = "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-hub"
+	clusteredListenerAudience = "envoy"
+	clusteredListenerAccount  = "system:serviceaccount:legion:legion-worker"
+)
+
+// withCredential gives l the token check a listener that requires a credential takes, and
+// returns it.
+func withCredential(l *gcp.ClusteredHubListenerArgs) *gcp.ClusteredHubListenerArgs {
+	l.OidcIssuer, l.OidcAudience, l.OidcAccounts = clusteredListenerIssuer, clusteredListenerAudience, []string{clusteredListenerAccount}
+	return l
+}
+
 // ownListener moves args' tailnet listener out to the hub's own listener input, as a consumer
-// declares it outside the tailnet entry, and returns it, for the rows that edit it there.
+// declares it outside the tailnet entry, with the token check such a listener requires, and
+// returns it, for the rows that edit it there.
 func ownListener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerArgs {
 	if a.Listener == nil {
-		a.Listener, a.Tailnet.Listener = a.Tailnet.Listener, nil
+		a.Listener, a.Tailnet.Listener = withCredential(a.Tailnet.Listener), nil
 	}
 	return a.Listener
 }
 
 // standaloneListener makes args a hub with no tailnet entry whose session listener is its own
-// input, as a consumer without a tailnet declares it: tailnet's listener moved out, a machine id
-// of its own, since no tailnet serviceName stands in for one, and the namespace whose pods reach
-// it, since no tailnet host does. It returns that listener, for the rows that edit it.
+// input, as a consumer without a tailnet declares it: tailnet's listener moved out with its token
+// check, a machine id of its own, since no tailnet serviceName stands in for one, and the
+// namespace whose pods reach it, since no tailnet host does. It returns that listener, for the
+// rows that edit it.
 func standaloneListener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerArgs {
 	l := ownListener(a)
 	withoutTailnet(a)
@@ -233,6 +250,39 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a listener cpu below Autopilot's floor, outside the tailnet entry", func(a *A) { ownListener(a).Cpu = str("100m") }, "listener.cpu",
 			[]string{`listener.cpu "100m" must be at least 250m`}},
 
+		// The credential: a listener that pods of the cluster reach, declared as the hub's own or
+		// given clientNamespaces, refuses to render without each part of its token check, naming
+		// it; a tailnet.listener without clientNamespaces, which checks no token, refuses each part
+		// rather than drop it; and each part is held to the shape the listener boots on.
+		{"an own listener with no issuer", func(a *A) { ownListener(a).OidcIssuer = "" }, "listener.oidcIssuer",
+			[]string{"listener.oidcIssuer is required because the listener is the hub's own listener input", "send as any session"}},
+		{"an own listener with no audience", func(a *A) { ownListener(a).OidcAudience = "" }, "listener.oidcAudience",
+			[]string{"listener.oidcAudience is required because the listener is the hub's own listener input"}},
+		{"a listener without tailnet and with no account", func(a *A) { standaloneListener(a).OidcAccounts = nil }, "listener.oidcAccounts",
+			[]string{"listener.oidcAccounts is required because the listener is the hub's own listener input"}},
+		{"a tailnet listener with client namespaces and no token check", func(a *A) { listener(a).ClientNamespaces = []string{"legion"} },
+			"tailnet.listener.oidcIssuer", []string{"tailnet.listener.oidcIssuer is required because tailnet.listener has clientNamespaces"}},
+		{"a tailnet listener with no client namespace given an audience", func(a *A) { listener(a).OidcAudience = clusteredListenerAudience },
+			"tailnet.listener.oidcAudience", []string{"tailnet.listener.oidcAudience is given on a tailnet.listener with no clientNamespaces", "declare the listener as listener"}},
+		{"a tailnet listener with no client namespace given an account", func(a *A) { listener(a).OidcAccounts = []string{clusteredListenerAccount} },
+			"tailnet.listener.oidcAccounts", []string{"tailnet.listener.oidcAccounts is given on a tailnet.listener with no clientNamespaces"}},
+		{"allowed hosts on a listener that requires a credential", func(a *A) { ownListener(a).AllowedHosts = []string{"envoy.example.com"} }, "listener.allowedHosts",
+			[]string{"listener.allowedHosts is given on a listener that requires a credential", "reads no ENVOY_ALLOWED_HOSTS"}},
+		{"an http issuer", func(a *A) { ownListener(a).OidcIssuer = "http://issuer.example.com" }, "listener.oidcIssuer",
+			[]string{`listener.oidcIssuer "http://issuer.example.com" must be an https URL`}},
+		{"an issuer with a query", func(a *A) { ownListener(a).OidcIssuer = clusteredListenerIssuer + "?x=1" }, "listener.oidcIssuer",
+			[]string{"must be an https URL with a host and no user, query or fragment"}},
+		{"an issuer with no host", func(a *A) { ownListener(a).OidcIssuer = "https:///v1" }, "listener.oidcIssuer", []string{"must be an https URL with a host"}},
+		{"an audience with a space", func(a *A) { ownListener(a).OidcAudience = "envoy hub" }, "listener.oidcAudience",
+			[]string{`listener.oidcAudience "envoy hub" holds whitespace or a control character`}},
+		{"an account that is no ServiceAccount subject", func(a *A) { ownListener(a).OidcAccounts = []string{"legion:legion-worker"} }, "listener.oidcAccounts",
+			[]string{`listener.oidcAccounts[0] "legion:legion-worker" must be system:serviceaccount:<namespace>:<name>`}},
+		{"an account with a third part", func(a *A) {
+			ownListener(a).OidcAccounts = []string{clusteredListenerAccount, "system:serviceaccount:legion:worker:extra"}
+		}, "listener.oidcAccounts", []string{`listener.oidcAccounts[1] "system:serviceaccount:legion:worker:extra" must be`}},
+		{"a repeated account", func(a *A) { ownListener(a).OidcAccounts = []string{clusteredListenerAccount, clusteredListenerAccount} }, "listener.oidcAccounts",
+			[]string{`listener.oidcAccounts[1] "` + clusteredListenerAccount + `" repeats listener.oidcAccounts[0]`}},
+
 		{"no users and no tailnet", func(a *A) { withoutTailnet(a).Users = nil }, "users", []string{"at least one user is required"}},
 		{"a user with no nkey", func(a *A) { a.Users[1].NKey = "" }, "users", []string{"users[1]: nkey is required"}},
 		{"a user naming no grant", func(a *A) { a.Users[1].Permissions = nil }, "users", []string{"users[1]: name machineId"}},
@@ -288,6 +338,11 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"tailnet.listener.clientNamespaces", "tailnet.listener.clientNamespaces[0]", func(a *A, s string) {
 			listener(a).ClientNamespaces = []string{strings.ToLower(s)}
 		}},
+		{"tailnet.listener.oidcIssuer", "tailnet.listener.oidcIssuer", func(a *A, s string) { listener(a).OidcIssuer = "https://" + strings.ToLower(s) + ".example.com" }},
+		{"tailnet.listener.oidcAudience", "tailnet.listener.oidcAudience", func(a *A, s string) { listener(a).OidcAudience = s }},
+		{"tailnet.listener.oidcAccounts", "tailnet.listener.oidcAccounts[0]", func(a *A, s string) {
+			listener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
+		}},
 		{"listener.image", "listener.image", func(a *A, s string) { ownListener(a).Image = "example.invalid/" + s + digest }},
 		{"listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
 		{"listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
@@ -300,6 +355,11 @@ func clusteredSeedRows() []clusteredSeedRow {
 		}},
 		{"listener.cpu", "listener.cpu", func(a *A, s string) { ownListener(a).Cpu = str(s) }},
 		{"listener.memory", "listener.memory", func(a *A, s string) { ownListener(a).Memory = str(s) }},
+		{"listener.oidcIssuer", "listener.oidcIssuer", func(a *A, s string) { ownListener(a).OidcIssuer = "https://" + strings.ToLower(s) + ".example.com" }},
+		{"listener.oidcAudience", "listener.oidcAudience", func(a *A, s string) { ownListener(a).OidcAudience = s }},
+		{"listener.oidcAccounts", "listener.oidcAccounts[0]", func(a *A, s string) {
+			ownListener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
+		}},
 		{"authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
 		{"authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},
 		{"authCallout.serviceUser", "authCallout.serviceUser", func(a *A, s string) {

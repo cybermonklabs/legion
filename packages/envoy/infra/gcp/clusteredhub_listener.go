@@ -1,6 +1,8 @@
 package gcp
 
 import (
+	"strings"
+
 	appsv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apps/v1"
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	metav1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/meta/v1"
@@ -51,16 +53,22 @@ const (
 )
 
 // clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
-// core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and the
-// flag that lets the API serve /v1 with no credential. No ENVOY_API_TOKEN: what keeps /v1 to its
-// callers is the listener's NetworkPolicy, which admits the tailnet entry's pods and the pods of
-// clientNamespaces alone, and the listener serves on every address of its pod, where its API
-// refuses to start with neither bearer nor OIDC pair unless ENVOY_API_ALLOW_UNAUTHENTICATED is
-// set (packages/envoy/cmd/listener/apiauth.go).
+// core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and then how
+// the API admits a caller. No ENVOY_API_TOKEN either way. A listener with a credential renders its
+// token check, ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE and ENVOY_OIDC_ACCOUNTS, and every caller
+// presents a projected ServiceAccount token of a listed subject, whatever the NetworkPolicy
+// admits. One without, a tailnet.listener with no clientNamespaces, renders the flag that lets
+// the API serve /v1 with no credential: its NetworkPolicy admits the tailnet entry's pods alone,
+// and that is what keeps /v1 to its callers, since the listener serves on every address of its
+// pod, where its API refuses to start with no bearer unless ENVOY_API_ALLOW_UNAUTHENTICATED is set
+// (packages/envoy/cmd/listener/apiauth.go). The two never render together.
 func clusteredHubListenerEnv(l *clusteredHubListener) corev1.EnvVarArray {
-	return append(envVars(l.env),
-		valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile),
-		valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
+	env := append(envVars(l.env), valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile))
+	if c := l.credential; c != nil {
+		return append(env, valueEnv("ENVOY_OIDC_ISSUER", c.issuer), valueEnv("ENVOY_OIDC_AUDIENCE", c.audience),
+			valueEnv("ENVOY_OIDC_ACCOUNTS", strings.Join(c.accounts, ",")))
+	}
+	return append(env, valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
 }
 
 // clusteredHubListenerSelector is the selector labels of the hub's session listener, the pod the
@@ -187,10 +195,12 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	}, opts...); err != nil {
 		return err
 	}
-	// The listener's port from the tailnet hosts and the pods of clientNamespaces alone, which is
-	// what lets it serve /v1 with no bearer; every other port of the pod is then admitted to
-	// nobody, which is what is wanted. Each source is a rule of its own, the tailnet hosts' first,
-	// and the resolver refuses a listener with neither, whose policy would admit nobody.
+	// The listener's port from the tailnet hosts and the pods of clientNamespaces alone; every
+	// other port of the pod is then admitted to nobody, which is what is wanted. With the tailnet
+	// hosts alone this policy is what lets the listener serve /v1 with no credential; with
+	// clientNamespaces the listener also requires each caller's token (clusteredHubListenerEnv).
+	// Each source is a rule of its own, the tailnet hosts' first, and the resolver refuses a
+	// listener with neither, whose policy would admit nobody.
 	var ingress networkingv1.NetworkPolicyIngressRuleArray
 	if s.tailnet != nil {
 		ingress = append(ingress, ingressFrom(core.DefaultListenerPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubTailnetSelector(s.name))}))

@@ -5768,7 +5768,8 @@ The token's own issuer decides which of the two identity-token branches judges i
 The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require none of them, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
 `/v1` is open only when none is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with none unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
 That flag is how an operator declares that something else fences the listener's port.
-The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
+The clustered hub's tailnet-only session listener (a `tailnet.listener` with no `clientNamespaces`) is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
+A hub listener that pods of the cluster reach renders the `ENVOY_OIDC_ISSUER`/`ENVOY_OIDC_AUDIENCE` pair with `ENVOY_OIDC_ACCOUNTS` instead, never the flag.
 The boot log names what is on, joined by `and`: `shared token`, `oidc <issuer>` (with ` for <subjects>` when `ENVOY_OIDC_ACCOUNTS` is set), `google <audience> for <accounts>`, and the broker's credential below; or `disabled`.
 
 Every request `/v1` admits is counted in `envoy_listener_requests_total{credential,path}` on `/metrics`.

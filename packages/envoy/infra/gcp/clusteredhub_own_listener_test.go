@@ -3,6 +3,7 @@ package gcp_test
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -47,32 +48,97 @@ func clusteredRender(t *testing.T, m *pulumitest.Mocks) string {
 	return strings.Join(lines, "\n")
 }
 
-// A listener declared as the hub's own input beside the tailnet entry is the listener
-// tailnet.listener declares: the hub registers the same resources with the same inputs, so a
-// consumer moving it out of the tailnet entry changes nothing deployed. The control renders the
-// same move with the listener's image changed and requires a difference, so the comparison is
-// shown able to see one.
-func TestClusteredNatsHubListenerOutsideTheTailnetEntryRendersTheSame(t *testing.T) {
-	inside := clusteredRender(t, runClusteredHub(t, clusteredArgs()))
+// listenerCredentialProblem is what is wrong with a listener container's environment for a
+// listener that requires a credential, "" when nothing is: it must carry the token check the
+// resolver renders, ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE and ENVOY_OIDC_ACCOUNTS with the
+// fixture's values and accounts, and none of ENVOY_API_ALLOW_UNAUTHENTICATED, which would let a
+// listener with no bearer serve /v1 with no credential, ENVOY_ALLOWED_HOSTS, which a listener that
+// requires a bearer never reads, or ENVOY_API_TOKEN, a shared bearer no caller is given.
+func listenerCredentialProblem(env map[string]any, accounts string) string {
+	for _, want := range [][2]string{
+		{"ENVOY_OIDC_ISSUER", clusteredListenerIssuer},
+		{"ENVOY_OIDC_AUDIENCE", clusteredListenerAudience},
+		{"ENVOY_OIDC_ACCOUNTS", accounts},
+	} {
+		if env[want[0]] != want[1] {
+			return fmt.Sprintf("%s is %v, want %q", want[0], env[want[0]], want[1])
+		}
+	}
+	for _, name := range []string{"ENVOY_API_ALLOW_UNAUTHENTICATED", "ENVOY_ALLOWED_HOSTS", "ENVOY_API_TOKEN"} {
+		if value, ok := env[name]; ok {
+			return fmt.Sprintf("%s is rendered as %v", name, value)
+		}
+	}
+	return ""
+}
 
+// withoutListenerDeployment is a clusteredRender with the listener's Deployment taken out, and how
+// many lines that took out.
+func withoutListenerDeployment(render string) (string, int) {
+	var kept []string
+	removed := 0
+	for _, line := range strings.Split(render, "\n") {
+		if strings.HasPrefix(line, "kubernetes:apps/v1:Deployment "+clusteredListenerName+" ") {
+			removed++
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n"), removed
+}
+
+// A listener declared as the hub's own input beside the tailnet entry requires a credential, where
+// the same listener declared as tailnet.listener serves the tailnet hosts with none. Every object
+// the hub registers is the same but the listener's Deployment, and in that the container's
+// environment differs by exactly the token check in place of the open flag and the hosts it
+// serves with no credential. The controls feed the check an environment that forces the flag back
+// in, and one that drops a part of the token check, and require it to see each.
+func TestClusteredNatsHubListenerOutsideTheTailnetEntryRequiresACredential(t *testing.T) {
+	insideHub := runClusteredHub(t, clusteredArgs())
 	args := clusteredArgs()
 	ownListener(args)
 	require.Nil(t, args.Tailnet.Listener, "the listener is declared outside the tailnet entry alone")
-	require.Equal(t, inside, clusteredRender(t, runClusteredHub(t, args)))
+	outsideHub := runClusteredHub(t, args)
 
-	control := clusteredArgs()
-	ownListener(control).Image = "example.invalid/envoy@sha256:" + strings.Repeat("e", 64)
-	require.NotEqual(t, inside, clusteredRender(t, runClusteredHub(t, control)), "the comparison sees one changed input")
+	inside, insideRemoved := withoutListenerDeployment(clusteredRender(t, insideHub))
+	outside, outsideRemoved := withoutListenerDeployment(clusteredRender(t, outsideHub))
+	require.Equal(t, 1, insideRemoved)
+	require.Equal(t, 1, outsideRemoved)
+	require.Equal(t, inside, outside, "only the listener's Deployment differs")
+
+	insideEnv := containerEnv(t, podContainer(t, deploymentPodTemplate(t, insideHub, clusteredListenerName), "listener"))
+	outsideEnv := containerEnv(t, podContainer(t, deploymentPodTemplate(t, outsideHub, clusteredListenerName), "listener"))
+	require.Empty(t, listenerCredentialProblem(outsideEnv, clusteredListenerAccount))
+	require.Equal(t, "1", insideEnv["ENVOY_API_ALLOW_UNAUTHENTICATED"], "tailnet.listener keeps serving the tailnet hosts with no credential")
+	require.Equal(t, "envoy-hub.example-tailnet.ts.net", insideEnv["ENVOY_ALLOWED_HOSTS"])
+	for _, name := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"} {
+		require.NotContains(t, insideEnv, name)
+	}
+	shared := func(env map[string]any, drop ...string) map[string]any {
+		kept := maps.Clone(env)
+		for _, name := range drop {
+			delete(kept, name)
+		}
+		return kept
+	}
+	require.Equal(t, shared(insideEnv, "ENVOY_API_ALLOW_UNAUTHENTICATED", "ENVOY_ALLOWED_HOSTS"),
+		shared(outsideEnv, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"))
+
+	forced := maps.Clone(outsideEnv)
+	forced["ENVOY_API_ALLOW_UNAUTHENTICATED"] = "1"
+	require.Equal(t, "ENVOY_API_ALLOW_UNAUTHENTICATED is rendered as 1", listenerCredentialProblem(forced, clusteredListenerAccount))
+	require.Contains(t, listenerCredentialProblem(shared(outsideEnv, "ENVOY_OIDC_ACCOUNTS"), clusteredListenerAccount), "ENVOY_OIDC_ACCOUNTS is <nil>")
 }
 
 // Without tailnet a hub's own listener runs as a workload of its own, reached inside the cluster
 // alone: its ServiceAccount, Deployment, Service, NetworkPolicy and budget, and none of the
 // tailnet hosts' objects. Its policy admits the pods of its client namespaces to port 9020 and
-// nothing else, it answers at its cluster Service's name, and the hub admits it to NATS and
-// renders its user; the hub's tailnet URLs stay null.
+// nothing else, it requires each caller's token, and the hub admits it to NATS and renders its
+// user; the hub's tailnet URLs stay null.
 func TestClusteredNatsHubRunsItsOwnListenerWithoutTailnet(t *testing.T) {
 	args := clusteredArgs()
 	standaloneListener(args).ClientNamespaces = []string{"legion", "agents"}
+	args.Listener.OidcAccounts = []string{clusteredListenerAccount, "system:serviceaccount:agents:envoy-client"}
 	var tailnetNatsURL, tailnetEnvoyURL any
 	m, err := runClustered(t, "example-clustered-hub", args, func(h *gcp.ClusteredNatsHub) {
 		tailnetNatsURL, tailnetEnvoyURL = awaitAny(t, h.TailnetNatsUrl), awaitAny(t, h.TailnetEnvoyUrl)
@@ -87,9 +153,8 @@ func TestClusteredNatsHubRunsItsOwnListenerWithoutTailnet(t *testing.T) {
 
 	env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, clusteredListenerName), "listener"))
 	require.Equal(t, "envoy-hub", env["ENVOY_MACHINE_ID"])
-	require.Equal(t, "envoy-nats-listener.envoy.svc.cluster.local", env["ENVOY_ALLOWED_HOSTS"])
 	require.Equal(t, "nats://envoy-nats.envoy.svc.cluster.local:4222", env["NATS_URLS"])
-	require.Equal(t, "1", env["ENVOY_API_ALLOW_UNAUTHENTICATED"])
+	require.Empty(t, listenerCredentialProblem(env, clusteredListenerAccount+",system:serviceaccount:agents:envoy-client"))
 
 	hubRules := m.Named(t, networkPolicyType, "envoy-nats").Inputs.Mappable()["spec"].(map[string]any)["ingress"].([]any)
 	require.Contains(t, hubRules, podRule(4222, listenerPodLabels), "the listener reaches NATS")
@@ -101,20 +166,20 @@ func TestClusteredNatsHubRunsItsOwnListenerWithoutTailnet(t *testing.T) {
 	require.Nil(t, s.Tailnet)
 }
 
-// With tailnet and client namespaces the listener serves both: the tailnet hosts' rule first,
-// then the namespaces', and its tailnet name first, then its cluster Service's name, then the
-// operator's own hosts. Without client namespaces it renders what it always rendered
-// (TestClusteredNatsHubListenerNetworkPolicy and TestClusteredNatsHubListenerEnvironment).
-func TestClusteredNatsHubListenerServesClientNamespacesBesideTheTailnet(t *testing.T) {
+// A tailnet.listener given client namespaces serves both, and so requires a credential of every
+// caller, the tailnet hosts' included: its policy takes the tailnet hosts' rule first, then the
+// namespaces', and its container renders the token check and no open flag. Without client
+// namespaces it renders what it always rendered (TestClusteredNatsHubListenerNetworkPolicy and
+// TestClusteredNatsHubListenerEnvironment).
+func TestClusteredNatsHubTailnetListenerWithClientNamespacesRequiresACredential(t *testing.T) {
 	args := clusteredArgs()
-	listener(args).ClientNamespaces = []string{"legion"}
-	listener(args).AllowedHosts = []string{"envoy.example.com"}
+	withCredential(listener(args)).ClientNamespaces = []string{"legion"}
 	m := runClusteredHub(t, args)
 
 	rules := m.Named(t, networkPolicyType, clusteredListenerName).Inputs.Mappable()["spec"].(map[string]any)["ingress"].([]any)
 	require.Equal(t, []any{podRule(9020, tailnetPodLabels), namespaceRule(9020, "legion")}, rules)
 	env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, clusteredListenerName), "listener"))
-	require.Equal(t, "envoy-hub.example-tailnet.ts.net,envoy-nats-listener.envoy.svc.cluster.local,envoy.example.com", env["ENVOY_ALLOWED_HOSTS"])
+	require.Empty(t, listenerCredentialProblem(env, clusteredListenerAccount))
 }
 
 // natsReplicas is the session listener's, so a hub without tailnet takes it beside its own
@@ -131,7 +196,7 @@ func TestClusteredNatsHubTakesNatsReplicasBesideItsOwnListener(t *testing.T) {
 
 // The hub's own listener reaches the plugin over the wire a consumer's SDK uses, as an object
 // input of its own beside no tailnet entry, and Construct decodes and renders it as the direct
-// path does: no tailnet object, the listener at its cluster Service's name, and no tailnet URL.
+// path does: no tailnet object, the listener's token check, and no tailnet URL.
 func TestConstructClusteredHubWithItsOwnListener(t *testing.T) {
 	inputs := clusteredPlainInputs()
 	delete(inputs, "tailnet")
@@ -143,12 +208,15 @@ func TestConstructClusteredHubWithItsOwnListener(t *testing.T) {
 		"seedSecretName":   property.New("envoy-hub-listener-seed"),
 		"seedSecretKey":    property.New("seed"),
 		"clientNamespaces": stringArray("legion"),
+		"oidcIssuer":       property.New(clusteredListenerIssuer),
+		"oidcAudience":     property.New(clusteredListenerAudience),
+		"oidcAccounts":     stringArray(clusteredListenerAccount),
 	}))
 	m, resp, err := constructClustered(t, inputs, false)
 	require.NoError(t, err)
 	requireClusteredOutputs(t, resp, false)
 	env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, clusteredListenerName), "listener"))
-	require.Equal(t, "envoy-nats-listener.envoy.svc.cluster.local", env["ENVOY_ALLOWED_HOSTS"])
+	require.Empty(t, listenerCredentialProblem(env, clusteredListenerAccount))
 	for _, r := range m.Registrations() {
 		require.NotContains(t, r.Name, "tailnet", "%s %s", r.Type, r.Name)
 	}

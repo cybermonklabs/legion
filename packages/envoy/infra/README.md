@@ -213,9 +213,9 @@ pod starts on them.
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
 | `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
-| `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders exactly what the same listener renders as `tailnet.listener`; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
+| `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>` with `tailnet` and the cluster Service's name with `clientNamespaces`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -231,7 +231,8 @@ input:
   `priorityClassName`, an entry of any of the three namespace lists, a user's `machineId`,
   `listenerMachineId` or `dispatchMachineId`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
   and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`, `machineId`,
-  `cpu`, `memory`, `clientNamespaces` entries and `allowedHosts` entries. The refusal names the
+  `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `clientNamespaces`, `allowedHosts` and
+  `oidcAccounts` entries. The refusal names the
   input by its path and never its value. A seed in
   a user's name, a rule entry or an `nkey` is refused by the authorization, as for `gcp:NatsHub`;
 - no `kubeconfig`;
@@ -262,7 +263,13 @@ input:
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
   `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
-  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing));
+  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing)); of a listener
+  that requires a credential (the hub's own `listener`, or a `tailnet.listener` with
+  `clientNamespaces`): no `oidcIssuer`, `oidcAudience` or `oidcAccounts`, an `oidcIssuer` that is
+  not an https URL with a host and no user, query or fragment, an `oidcAudience` holding whitespace
+  or a control character, an `oidcAccounts` entry that is not `system:serviceaccount:<namespace>:<name>`
+  or repeats an earlier one, and any `allowedHosts`; of a `tailnet.listener` with no
+  `clientNamespaces`, any of `oidcIssuer`, `oidcAudience` and `oidcAccounts`;
 - no `users` without a session listener, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
   session listener's durable among them; the listener's user is named after its machine id.
@@ -359,25 +366,38 @@ Three more objects carry that pod:
 
 The listener runs as machine `<l>.machineId`, `tailnet.serviceName` by default with `tailnet` and
 required without it, and binds `0.0.0.0`, the address its own Service reaches it at. It connects
-to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`. `ENVOY_ALLOWED_HOSTS` is
-`<tailnet.serviceName>.<tailnetDnsName>` with `tailnet`, then
-`<n>-listener.<namespace>.svc.cluster.local` with `<l>.clientNamespaces`, then `<l>.allowedHosts`;
-a client dialling the Service by a shorter name, such as `<n>-listener.<namespace>`, needs that
-name in `<l>.allowedHosts`.
+to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` are set exactly when `natsReplicas` and
 `streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
 exactly when `<l>.senderMessagesPerMinute` and `<l>.senderMessageBurst`
 are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, changing or removing
 either changes the pod's environment, so the update rolls the pod as above. `NATS_NKEY_SEED_FILE`
-names the mounted seed.
+names the mounted seed. There is no `ENVOY_API_TOKEN`.
 
-`ENVOY_API_ALLOW_UNAUTHENTICATED=1` is what lets the API serve `/v1` off loopback with no
-credential. There is no `ENVOY_API_TOKEN`. The NetworkPolicy above is what decides who may call
-`/v1`: every pod of a `<l>.clientNamespaces` namespace may, so name only namespaces whose pods may
-send as any session. The listener's own `Host` check answers 421 to every name that is neither a loopback name
-or address nor one of `ENVOY_ALLOWED_HOSTS`, as for `gcp:NatsHub`'s listener ([The hub's
-listener](docs/nats-hub.md#the-hubs-listener)); it stops a page that rebinds its own name, not a
-caller the NetworkPolicy already admits, which reaches `/v1` with `Host: localhost`.
+How `/v1` admits a caller depends on who reaches the listener:
+
+- **A `tailnet.listener` with no `clientNamespaces`**, which the tailnet hosts alone reach, carries
+  `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which lets the API serve `/v1` off loopback with no
+  credential, as it always has. The NetworkPolicy above is what decides who may call `/v1`, and it
+  admits the tailnet entry's pods alone. `ENVOY_ALLOWED_HOSTS` is
+  `<tailnet.serviceName>.<tailnetDnsName>`, then `<l>.allowedHosts`, and the listener's own `Host`
+  check answers 421 to every name that is neither a loopback name or address nor one of them, as
+  for `gcp:NatsHub`'s listener ([The hub's listener](docs/nats-hub.md#the-hubs-listener)); it stops
+  a page that rebinds its own name, not a caller the NetworkPolicy already admits, which reaches
+  `/v1` with `Host: localhost`.
+- **The hub's own `listener`, or a `tailnet.listener` with `clientNamespaces`**, which pods of the
+  cluster reach, requires a credential of every caller, a tailnet host's included: it carries
+  `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` and `ENVOY_OIDC_ACCOUNTS` (`<l>.oidcAccounts` joined
+  by commas) in place of the flag, and admits a request only with a projected ServiceAccount token
+  `<l>.oidcIssuer` signed for `<l>.oidcAudience`, of a subject `<l>.oidcAccounts` lists; anything
+  else gets 401. A calling pod mounts such a token with a projected volume of its own
+  (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends it as
+  `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the only
+  guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer
+  serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. It reads the issuer's discovery
+  document when it starts and refuses to start when the issuer does not answer, so its pod needs
+  egress to the issuer, such as GKE's cluster issuer,
+  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`.
 
 Three probes read the pod's own loopback, two routes between them:
 
@@ -479,10 +499,13 @@ first `pulumi up`:
 - The cluster enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane V2, and has nodes
   in three zones. The policy is what keeps a pod other than the hub's from joining the cluster on
   6222, since the routes carry no credential. It is also what keeps every other pod of the cluster
-  off the session listener's `/v1` on 9020, which that listener serves with no credential at all
+  off the session listener's `/v1` on 9020 where that listener is a `tailnet.listener` with no
+  `clientNamespaces`, which serves `/v1` with no credential at all
   (`ENVOY_API_ALLOW_UNAUTHENTICATED=1`, and the component takes no token input for it). A caller
   the policy admits reaches `/v1` with `Host: localhost`, so the listener's own `Host` check stops
-  a page that rebinds its own name and not such a caller. A cluster whose network plugin does not
+  a page that rebinds its own name and not such a caller. A listener pods of the cluster reach
+  requires their tokens as well ([The session listener](#the-session-listener)). A cluster whose
+  network plugin does not
   enforce NetworkPolicy accepts both objects and admits every caller, and the deployment looks
   healthy either way. Google Managed Prometheus's managed collection is on, so the `PodMonitoring`
   kind exists.
@@ -511,8 +534,9 @@ With `tailnet`, also:
   never reads, creates or waits on it.
 
 A hub may run without `tailnet` first and take it in a later update. A listener declared as
-`listener` stays where it is when `tailnet` arrives: the hosts forward to it, and its render
-gains the tailnet hosts' rule and name, and its machine id stays the one it was given.
+`listener` stays where it is when `tailnet` arrives: the hosts forward to it, its NetworkPolicy
+gains the tailnet hosts' rule, its machine id stays the one it was given, and it keeps requiring a
+token of every caller, the tailnet's clients included.
 
 ### Sizing
 

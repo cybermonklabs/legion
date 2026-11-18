@@ -199,7 +199,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
 	require.ElementsMatch(t, []string{
 		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
-		"senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
 

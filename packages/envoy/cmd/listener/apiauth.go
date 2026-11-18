@@ -556,10 +556,13 @@ func describeListenerAPIHosts(auth listenerAPIAuth) string {
 // socket's own address, so a socket on every interface is refused as ENVOY_LISTEN_HOST=0.0.0.0 is.
 //
 // ENVOY_API_ALLOW_UNAUTHENTICATED=1 passes such a listener, and it is how an operator states that
-// something else fences the port. The clustered hub's session listener is the one deployment here
-// that sets it: it binds 0.0.0.0 in a pod of its own, and its NetworkPolicy admits TCP 9020 from
-// the tailnet entry's pods alone (infra/gcp/clusteredhub_listener.go). The flag opens nothing
-// else: an open /v1 still serves only the Hosts servesHost admits, and answers 421 to the rest.
+// something else fences the port. The clustered hub's tailnet-only session listener (a
+// tailnet.listener with no clientNamespaces) is the one deployment here that sets it: it binds
+// 0.0.0.0 in a pod of its own, and its NetworkPolicy admits TCP 9020 from the tailnet entry's pods
+// alone (infra/gcp/clusteredhub_listener.go). A hub listener that pods of the cluster reach sets
+// the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair and ENVOY_OIDC_ACCOUNTS instead. The flag opens
+// nothing else: an open /v1 still serves only the Hosts servesHost admits, and answers 421 to the
+// rest.
 func validateListenerAPIAuth(cfg config.Service, auth listenerAPIAuth, allowUnauthenticated string) error {
 	if auth.requiresBearer() || allowUnauthenticated == "1" || isLoopbackHost(cfg.ListenHost) {
 		return nil
@@ -568,7 +571,7 @@ func validateListenerAPIAuth(cfg config.Service, auth listenerAPIAuth, allowUnau
 	if cfg.ListenSocket != nil {
 		listen = cfg.ListenSocket.String() + ", is not on loopback"
 	}
-	return fmt.Errorf("ENVOY_API_TOKEN, the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair or the ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS pair is required when %s. Set ENVOY_API_ALLOW_UNAUTHENTICATED=1 only where something else fences the port. The clustered hub's session listener sets it, behind a NetworkPolicy that admits the tailnet entry's pods alone", listen)
+	return fmt.Errorf("ENVOY_API_TOKEN, the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair or the ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS pair is required when %s. Set ENVOY_API_ALLOW_UNAUTHENTICATED=1 only where something else fences the port. The clustered hub's tailnet-only session listener sets it, behind a NetworkPolicy that admits the tailnet entry's pods alone; one that pods of the cluster reach takes the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair with ENVOY_OIDC_ACCOUNTS", listen)
 }
 
 func isLoopbackHost(host string) bool {

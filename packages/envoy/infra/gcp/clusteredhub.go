@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -212,7 +214,10 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 // NATS user's seed, and the existing Kubernetes Secret in the hub's namespace, and the key in it,
 // holding that seed, which the component mounts by reference and never reads. The hub renders
 // the listener's user itself, named after the machine id and granted core.ListenerPermissions
-// for it, as gcp:NatsHub renders its own listener's.
+// for it, as gcp:NatsHub renders its own listener's. Declared as the hub's own listener input, or
+// with clientNamespaces, the listener requires a credential of every caller (oidcIssuer,
+// oidcAudience, oidcAccounts); a tailnet.listener without clientNamespaces serves the tailnet
+// hosts with none, as it always has.
 type ClusteredHubListenerArgs struct {
 	Image string `pulumi:"image"` // pinned: <name>@sha256:<digest>
 	// The listener's machine id: tailnet.serviceName by default with tailnet, and required
@@ -228,8 +233,21 @@ type ClusteredHubListenerArgs struct {
 	ClientNamespaces []string `pulumi:"clientNamespaces,optional"`
 	// Any further address a client dials the listener by, beyond the names it always serves:
 	// <serviceName>.<tailnetDnsName> with tailnet, and its cluster Service's name with
-	// clientNamespaces.
+	// clientNamespaces. Only where the listener serves with no credential: one that requires a
+	// credential serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it refuses this.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// The credential the listener requires of a caller, which it checks itself
+	// (ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS): a projected Kubernetes
+	// ServiceAccount token oidcIssuer signed for oidcAudience, whose subject is one oidcAccounts
+	// lists, each system:serviceaccount:<namespace>:<name>. All three are required where the
+	// listener is the hub's own listener input or has clientNamespaces, since its NetworkPolicy
+	// alone would let every pod it admits send as any session, and refused on a tailnet.listener
+	// without clientNamespaces, which serves the tailnet hosts with no credential. oidcIssuer is an
+	// https URL, such as the hub's own cluster's,
+	// https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>.
+	OidcIssuer   string   `pulumi:"oidcIssuer,optional"`
+	OidcAudience string   `pulumi:"oidcAudience,optional"`
+	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
 	// The limit on the messages each agent session sends through the listener: how many a minute,
 	// from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there is no
 	// limit, and a rate with no burst takes the rate as its burst.
@@ -307,13 +325,22 @@ type clusteredHubTailnet struct {
 // clusteredHubListener is the resolved session listener the hub runs as a workload of its own,
 // nil without one: the tailnet hosts forward the Tailscale Service's port 9020 to it, and the
 // pods of clientNamespaces reach it at its cluster Service. env is its environment but the seed
-// (core.ListenerConfig.Env).
+// and its credential (core.ListenerConfig.Env), and credential is the token check it requires of
+// every caller, nil where it serves with none (clusteredHubListenerEnv).
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
 	clientNamespaces              []string
 	cpu, memory                   string
 	env                           []string
+	credential                    *clusteredHubListenerCredential
+}
+
+// clusteredHubListenerCredential is the token check a listener requires: the issuer and audience
+// of the projected ServiceAccount tokens it verifies, and the subjects it admits.
+type clusteredHubListenerCredential struct {
+	issuer, audience string
+	accounts         []string
 }
 
 // clusteredHubSeededInput names the first plain string input of args that holds an nkey seed
@@ -364,6 +391,8 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		opt(path+".memory", l.Memory)
 		list(path+".clientNamespaces", l.ClientNamespaces)
 		list(path+".allowedHosts", l.AllowedHosts)
+		fields = append(fields, field{path + ".oidcIssuer", l.OidcIssuer}, field{path + ".oidcAudience", l.OidcAudience})
+		list(path+".oidcAccounts", l.OidcAccounts)
 	}
 	listener("listener", args.Listener)
 	if t := args.Tailnet; t != nil {
@@ -770,12 +799,12 @@ func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListener
 // where each tailnet host forwards the Tailscale Service's port 9020; it reaches NATS through the
 // hub's client Service. Its machine id is tailnet.serviceName by default with tailnet and
 // required without it, where no other name of the hub's is the listener's. Without tailnet,
-// clientNamespaces names at least one namespace, since nothing else reaches the listener. It
-// answers on the Service's tailnet name with tailnet, on its cluster Service's name with
-// clientNamespaces, and on every further address allowedHosts names; the operator's entries are
-// checked as their own list, so a refusal names <path>.allowedHosts and the index the operator
-// wrote. Its sender limit is core's rule (core.CheckSenderLimit), naming
-// <path>.senderMessagesPerMinute or <path>.senderMessageBurst.
+// clientNamespaces names at least one namespace, since nothing else reaches the listener. The
+// credential it requires of a caller is clusteredHubListenerCredentialFor's to resolve. A listener
+// that requires none answers on the Service's tailnet name and on every further address
+// allowedHosts names; the operator's entries are checked as their own list, so a refusal names
+// <path>.allowedHosts and the index the operator wrote. Its sender limit is core's rule
+// (core.CheckSenderLimit), naming <path>.senderMessagesPerMinute or <path>.senderMessageBurst.
 func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, s clusteredHubSettings) (*clusteredHubListener, *listenerUser, error) {
 	if l == nil {
 		if args.Tailnet != nil {
@@ -823,12 +852,17 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
+	credential, err := clusteredHubListenerCredentialFor(l, path)
+	if err != nil {
+		return nil, nil, err
+	}
 	listener := &clusteredHubListener{
 		image:            l.Image,
 		machineID:        machineID,
 		seedSecretName:   l.SeedSecretName,
 		seedSecretKey:    l.SeedSecretKey,
 		clientNamespaces: l.ClientNamespaces,
+		credential:       credential,
 	}
 	// The listener is the only container of its own pod, so its size is that pod's whole request,
 	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
@@ -841,25 +875,23 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	}); err != nil {
 		return nil, nil, err
 	}
-	// The names a client reaches the listener by, in a fixed order: the tailnet name the
-	// Tailscale Service answers at, then its cluster Service's, which the pods of
-	// clientNamespaces dial, then the operator's own. A listener with neither tailnet nor
-	// clientNamespaces is refused above, so the list is never the operator's alone.
+	// The names a client reaches a listener that requires no credential by, in a fixed order: the
+	// tailnet name the Tailscale Service answers at, then the operator's own. Such a listener is a
+	// tailnet.listener with no clientNamespaces, so the list always holds the tailnet name. One
+	// that requires a credential serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS
+	// (cmd/listener/apiauth.go), so it renders none.
 	var hosts []string
-	if s.tailnet != nil {
-		hosts = append(hosts, core.TailnetHostName(s.tailnet.serviceName, s.tailnet.tailnetDNSName))
-	}
-	if len(l.ClientNamespaces) > 0 {
-		hosts = append(hosts, clusterLocal(clusteredHubListenerName(s.name), s.namespace))
+	if credential == nil {
+		hosts = append([]string{core.TailnetHostName(s.tailnet.serviceName, s.tailnet.tailnetDNSName)}, l.AllowedHosts...)
 	}
 	// The listener serves on every address of its own pod: the tailnet hosts and the pods of
 	// clientNamespaces reach it through its cluster Service, which a NetworkPolicy admits their
-	// pods alone to.
+	// pods alone to, and those pods present the credential it requires.
 	if listener.env, err = (core.ListenerConfig{
 		MachineID:               machineID,
 		Port:                    core.DefaultListenerPort,
 		ListenHost:              "0.0.0.0",
-		AllowedHosts:            append(hosts, l.AllowedHosts...),
+		AllowedHosts:            hosts,
 		NATSReplicas:            s.natsReplicas,
 		StreamMaxBytes:          s.streamMaxBytes,
 		SenderMessagesPerMinute: rate,
@@ -868,6 +900,75 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 		return nil, nil, err
 	}
 	return listener, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
+}
+
+// clusteredHubListenerCredentialFor resolves the token check the listener l, declared at path,
+// requires of every caller: nil where it requires none, which is a tailnet.listener with no
+// clientNamespaces, reached through the tailnet hosts alone, as it always has been. A listener
+// declared as the hub's own listener input, or one with clientNamespaces, requires one, since its
+// NetworkPolicy alone would let every pod it admits send as any session: a projected
+// ServiceAccount token oidcIssuer signed for oidcAudience, whose subject is one oidcAccounts
+// lists. Each of the three is then required, by its path, and allowedHosts is refused, since a
+// listener that requires a bearer serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS. Where
+// the listener requires none, each of the three is refused by its path rather than dropped.
+//
+// The listener refuses at boot half the issuer and audience pair and a subject of any other
+// shape (cmd/listener/apiauth.go, resolveListenerOIDCAccounts), so those are refused here first;
+// the issuer must also be an https URL with no user, query or fragment, as a cluster's issuer
+// is, since the listener reads its keys from it, and none of the three may hold whitespace or a
+// control character, which an environment variable's value cannot carry intact. An account list
+// may not repeat a subject. A seed in any of them is clusteredHubSeededInput's to refuse.
+func clusteredHubListenerCredentialFor(l *ClusteredHubListenerArgs, path string) (*clusteredHubListenerCredential, error) {
+	inputs := []struct {
+		name string
+		set  bool
+	}{
+		{path + ".oidcIssuer", l.OidcIssuer != ""},
+		{path + ".oidcAudience", l.OidcAudience != ""},
+		{path + ".oidcAccounts", len(l.OidcAccounts) > 0},
+	}
+	if path == "tailnet.listener" && len(l.ClientNamespaces) == 0 {
+		for _, in := range inputs {
+			if in.set {
+				return nil, core.InputErrorf(in.name, "%s is given on a tailnet.listener with no clientNamespaces, which serves the tailnet hosts with no credential, so it would check nothing; declare the listener as listener, or give it clientNamespaces, to require a token of its callers", in.name)
+			}
+		}
+		return nil, nil
+	}
+	why := "the listener is the hub's own listener input"
+	if path == "tailnet.listener" {
+		why = "tailnet.listener has clientNamespaces"
+	}
+	for _, in := range inputs {
+		if !in.set {
+			return nil, core.InputErrorf(in.name, "%s is required because %s: the listener then requires every caller's projected ServiceAccount token, issued by %s.oidcIssuer for %s.oidcAudience to a subject %s.oidcAccounts lists, since its NetworkPolicy alone would let every pod it admits send as any session", in.name, why, path, path, path)
+		}
+	}
+	if len(l.AllowedHosts) > 0 {
+		return nil, core.InputErrorf(path+".allowedHosts", "%s.allowedHosts is given on a listener that requires a credential, which serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it would do nothing; unset it", path)
+	}
+	blank := func(value string) bool {
+		return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
+	}
+	issuer, err := url.Parse(l.OidcIssuer)
+	if blank(l.OidcIssuer) || err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return nil, core.InputErrorf(path+".oidcIssuer", "%s.oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", path, l.OidcIssuer)
+	}
+	if blank(l.OidcAudience) {
+		return nil, core.InputErrorf(path+".oidcAudience", "%s.oidcAudience %q holds whitespace or a control character", path, l.OidcAudience)
+	}
+	seen := make(map[string]int, len(l.OidcAccounts))
+	for i, account := range l.OidcAccounts {
+		namespace, name, found := strings.Cut(strings.TrimPrefix(account, "system:serviceaccount:"), ":")
+		if !strings.HasPrefix(account, "system:serviceaccount:") || !found || !dnsLabel(namespace) || !dnsSubdomain(name) {
+			return nil, core.InputErrorf(path+".oidcAccounts", "%s.oidcAccounts[%d] %q must be system:serviceaccount:<namespace>:<name>, a ServiceAccount's subject", path, i, account)
+		}
+		if first, repeated := seen[account]; repeated {
+			return nil, core.InputErrorf(path+".oidcAccounts", "%s.oidcAccounts[%d] %q repeats %s.oidcAccounts[%d]", path, i, account, path, first)
+		}
+		seen[account] = i
+	}
+	return &clusteredHubListenerCredential{issuer: l.OidcIssuer, audience: l.OidcAudience, accounts: l.OidcAccounts}, nil
 }
 
 // authorizationRefusal is a refusal of the users' rendering as a core.InputError: core's refusal of
