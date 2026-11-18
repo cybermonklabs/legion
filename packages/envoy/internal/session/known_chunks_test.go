@@ -84,11 +84,19 @@ func heartbeatDay(t *testing.T, purge bool) (int, int) {
 		}
 	}
 	requireKnownTopics(t, "the store after a heartbeat day", known, "ses_known_day", topics)
-	known.mu.RLock()
-	fenced := known.chunks.Fenced()
-	known.mu.RUnlock()
-	if fenced != chunks {
-		t.Fatalf("after 144 heartbeats the chunk copy's fence holds %d keys, want the record's %d chunks: a replaced chunk's key must leave the fence with its delete", fenced, chunks)
+	// The watcher delivers the last rewrite's deletes a moment after its write: wait for them, and
+	// judge the fence once they are in. With no marker pass the loop above never waits for them.
+	fenced := func() int {
+		known.mu.RLock()
+		defer known.mu.RUnlock()
+		return known.chunks.Fenced()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for fenced() > chunks && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := fenced(); got != chunks {
+		t.Fatalf("after 144 heartbeats the chunk copy's fence holds %d keys, want the record's %d chunks: a replaced chunk's key must leave the fence with its delete", got, chunks)
 	}
 	return chunks, chunkSubjects(t, conn)
 }
