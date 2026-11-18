@@ -760,14 +760,14 @@ const PURITY_DOCUMENT = decisionsDocument("Keep the model pure.", [
   paragraph("Test it alone."),
 ]);
 
-// A Change's occurrence, from a pod of the build before during a rolling deploy,
-// whose read sends no reading of a decision's text: the quote is then the first paragraph below
-// the heading as markdown (`anchorQuote`), and the count still comes from the document's reading.
-// Where that markdown is the paragraph's words, the reading lines up, and the two decisions
-// opening with the paragraph name its places after the intro's. Where the markdown holds markup -
-// `**` - the paragraph's words do not read as the quote, so the anchor names no occurrence: the
-// server finds such a quote only by reading it as markdown, which this count does not mirror.
-test("a Change of a decision read with no reading names an occurrence only where its markdown is the document's words", () => {
+// A Change's occurrence, from a pod of the build before during a rolling deploy, whose read sends
+// no reading of a decision's text: the decision is then read by its stored text's reading
+// (`storedReading`), so the quote is the words of its first block below the heading
+// (`anchorQuote`), and the count still comes from the document's reading. The two decisions
+// opening with the paragraph name its places after the intro's. A paragraph whose markdown holds
+// markup - `**` - quotes its words, not its markdown, so the document's reading lines up with it
+// and its anchor names its occurrence, as a read reading's would.
+test("a Change of a decision read with no reading is read by its stored text's reading, so its quote is its words and names its occurrence where a read reading's would", () => {
   const worded = (blockId: string, heading: string, text: string): Decision => ({
     ...waitingDecision(blockId, []),
     heading,
@@ -787,7 +787,7 @@ test("a Change of a decision read with no reading names an occurrence only where
   ]);
 
   const marked = worded("d1", "Purity", "## Purity\n\n**Keep** the model pure.");
-  expect(anchorQuote(marked)).toBe("**Keep** the model pure.");
+  expect(anchorQuote(marked)).toBe("Keep the model pure.");
   const strong = decisionsDocument(PLAIN_INTRO, [
     headingNode(2, "Purity"),
     {
@@ -799,16 +799,17 @@ test("a Change of a decision read with no reading names an occurrence only where
     },
   ]);
   expect(changeAnchor(marked, [marked], strong)).toStrictEqual({
-    quote: "**Keep** the model pure.",
+    occurrence: 0,
+    quote: "Keep the model pure.",
   });
 });
 
 // One rule reads a decision for a Change: a reading that holds no blocks - a `text_tree` with no
-// `content` - is no reading, so the decision is read by its stored markdown. Its quote is then its
-// first paragraph's markdown, which the document's reading lines up with here, and a Change
-// quoting its words is placed on it. Read as that reading's words, which are none, the decision
-// would hold no block to quote, and a Change quoting the first decision's words would be placed
-// on none.
+// `content` - is no reading, so the decision is read by its stored text's reading
+// (`storedReading`). Its quote is then the words of its first paragraph, which the document's
+// reading lines up with here, and a Change quoting its words is placed on it. Read as the blockless
+// reading's words, which are none, the decision would hold no block to quote, and a Change quoting
+// the first decision's words would be placed on none.
 test("a decision whose reading holds no blocks is read by its stored markdown", () => {
   const worded = (blockId: string, heading: string, text: string): Decision => ({
     ...waitingDecision(blockId, []),

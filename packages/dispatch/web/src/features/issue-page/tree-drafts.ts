@@ -384,15 +384,19 @@ export function blockWords(name: string): string {
  * draws a stored text as plain words draws, since its marks are markup and no word of it (R21),
  * and a mark after a sentence's end (`today.**`) would hide that end from `firstLineOf`.
  *
- * They are the words of the text's reading (`storedReading`) - the text parsed as the page's
- * markdown engine parses it, in the shape of the server's reading - taken by the walk that takes
- * the words of the server's reading (`wordsOf`), so they are the words the server's reading of
- * the same text holds. An escape is the character it escapes (`1\.` is `1.`), a code span's
- * content reads as written, a link reads as its words and an autolink as its address. An image,
- * an HTML comment or tag, a table's pipes and rule, a thematic break and the markers of a
- * heading, a quote and a list are no word, and each block's words stand apart from the next
- * block's. Every character the author wrote as a word, a private-use one included, reads as
- * written. White space collapses to single spaces.
+ * They are the words of the text's reading (`storedReading`) - the text parsed by the CommonMark
+ * and GFM base of the page's markdown engine's parse, in the shape of the server's reading -
+ * taken by the walk that takes the words of the server's reading (`wordsOf`). They are so the
+ * words of that base parse, which are what the server's reading holds for every text that holds
+ * neither of two things the engine's own extensions read and the base parse does not: a
+ * container directive (a typed block such as `:::ask`), which reads here as its literal fence
+ * lines and content, and a Proof mark span (`<span data-proof=…>`), which reads here as HTML
+ * around its text. An escape is the character it escapes (`1\.` is `1.`), a code span's content
+ * reads as written, a link reads as its words and an autolink as its address. An image, an HTML
+ * comment or tag, a table's pipes and rule, a thematic break and the markers of a heading, a
+ * quote and a list are no word, and each block's words stand apart from the next block's. Every
+ * character the author wrote as a word, a private-use one included, reads as written. White
+ * space collapses to single spaces.
  *
  * A bare `dispatch://` address reads as its target's short form, run by run of the reading
  * (`withShortAddresses`): every place that reads a stored text to plain words draws it on one
@@ -442,30 +446,45 @@ export function addressesAsShortForms(words: string): string {
 }
 
 /**
- * A copy of `node` with each bare address in each of its text runs written as its target's short
- * form (`addressesAsShortForms`), one run at a time before their words are joined, so the words
- * of the copy are spaced as the node's are. A run marked as inline code, or inside a code block,
- * stays as its author wrote it, as a rendered body's one line keeps it (`markdown-engine.ts`'s
- * `shortenReferences`). `node` itself is left as it was, since a reading is shared: the server's
+ * `node` with each bare address in each of its text runs written as its target's short form
+ * (`addressesAsShortForms`), one run at a time before their words are joined, so its words are
+ * spaced as the node's are. A run marked as inline code, or inside a code block, stays as its
+ * author wrote it, as a rendered body's one line keeps it (`markdown-engine.ts`'s
+ * `shortenReferences`). `node` itself is never changed, since a reading is shared: the server's
  * by the node that carries it, a stored text's by every caller that reads that text
- * (`storedReading`). A line cut from a reading's first block (`issue-tree.ts`'s
- * `firstBlockWords`) and a stored text read to plain words (`plainWords`) are written short by
- * this one walk.
+ * (`storedReading`). A run whose address is written short is a copy, and so is each node above
+ * it; a node that holds no address to write short is answered as it is, so a text with none
+ * copies nothing. A line cut from a reading's first block (`issue-tree.ts`'s `firstBlockWords`)
+ * and a stored text read to plain words (`plainWords`) are written short by this one walk.
  */
-export function withShortAddresses(node: DisplayTree, inCode = false): DisplayTree {
+export function withShortAddresses(node: DisplayTree): DisplayTree {
+  return shortAddressesIn(node, false);
+}
+
+/** `withShortAddresses`' walk over `node`, which stands inside a code block where `inCode`, so
+ *  none of its runs is written short. */
+function shortAddressesIn(node: DisplayTree, inCode: boolean): DisplayTree {
   if (typeof node.text === "string") {
-    const marks = Array.isArray(node.marks) ? (node.marks as DisplayTree[]) : [];
-    return inCode || marks.some((mark) => mark.type === "inlineCode")
-      ? node
-      : { ...node, text: addressesAsShortForms(node.text) };
+    const marks = node.marks;
+    const inlineCode =
+      Array.isArray(marks) && (marks as DisplayTree[]).some((mark) => mark.type === "inlineCode");
+    if (inCode || inlineCode) return node;
+    const text = addressesAsShortForms(node.text);
+    return text === node.text ? node : { ...node, text };
   }
   const content = node.content;
   if (!Array.isArray(content)) return node;
   const code = inCode || node.type === "code_block";
-  return {
-    ...node,
-    content: (content as DisplayTree[]).map((child) => withShortAddresses(child, code)),
-  };
+  const children = content as DisplayTree[];
+  // The children up to the first one written short are the node's own; from there on they are
+  // copied, each as the walk answered it.
+  let changed: DisplayTree[] | undefined;
+  for (const [at, child] of children.entries()) {
+    const short = shortAddressesIn(child, code);
+    if (changed === undefined && short !== child) changed = children.slice(0, at);
+    changed?.push(short);
+  }
+  return changed === undefined ? node : { ...node, content: changed };
 }
 
 /** Every draft the reads hold, by its node id. */

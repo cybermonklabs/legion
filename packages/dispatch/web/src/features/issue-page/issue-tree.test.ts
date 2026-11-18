@@ -1091,7 +1091,7 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["[the plan](https://example.com/plan)", "the plan"],
     ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
     // A bare address reads as its target's short form, and so does an autolink's, as a link's
-    // words do; an escaped mark after an address is put back before it is read, so it trails the
+    // words do; an escaped mark after an address is the character it escapes, so it trails the
     // short form as a sentence's end. An address in a code span stays as its author wrote it.
     ["see dispatch://CORE-2 and <dispatch://CORE-3>", "see CORE-2 and CORE-3"],
     ["see dispatch://CORE-2\\.", "see CORE-2."],
@@ -1138,10 +1138,8 @@ test("a stored text read to plain words drops the markers of a quote and of a li
 });
 
 // R21: an author's own private-use character - an icon font's, a pasted terminal glyph - is a
-// word of the text, as the server's reading holds it. U+E02A and U+E05F, which once stood in for
-// an escaped `*` and `_`, read as written outside code, inside a code span and beside an escape,
-// and a text holding one still reads its escapes and code spans as it did, as does one holding
-// U+E000 and U+E020, the first private-use code points.
+// word of the text: it reads as written outside code, inside a code span and beside an escape,
+// as the server's reading holds it.
 test("a stored text read to plain words keeps the author's private-use characters as written", () => {
   const star = "\ue02a";
   const low = "\ue05f";
@@ -1249,8 +1247,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
 });
 
 // A stored heading's text is everything after its one marker, so a heading whose text opens on
-// `#` keeps it: `## # 1 rule` is the heading `# 1 rule`. Cutting the marker off before reading the
-// line to plain words, which cuts a marker off again, read it `1 rule`.
+// `#` keeps it: `## # 1 rule` is the heading `# 1 rule`.
 test("a node's line from a stored heading leaves out its marker once", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");

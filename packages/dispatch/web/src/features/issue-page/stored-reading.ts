@@ -18,10 +18,13 @@ type ParsedRow = Extract<Parsed, { type: "tableRow" }>;
 
 /**
  * The parse a stored text is read with: CommonMark with GFM's syntax - tables, strikethrough
- * with one tilde or two, task boxes, autolink literals and footnotes. It is the parse the page's
- * markdown engine reads a body with, since remark-parse and remark-gfm are these two extensions
- * over `mdast-util-from-markdown`, and the server's reading of a text is written to agree with
- * that engine. The extensions hold nothing of any one parse, so one set serves every text.
+ * with one tilde or two, task boxes, autolink literals and footnotes. It is the base of the parse
+ * the page's markdown engine reads a body with, since remark-parse and remark-gfm are these two
+ * extensions over `mdast-util-from-markdown`. None of the engine's own extensions on top of that
+ * base is applied here; among them, a container directive (a typed block such as `:::ask`) reads
+ * as its literal fence lines and the content between them, and a Proof mark span
+ * (`<span data-proof=…>`) reads as HTML around its text. The extensions hold nothing of any one
+ * parse, so one set serves every text.
  */
 const GFM_PARSE: Options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] };
 
@@ -30,19 +33,27 @@ const GFM_PARSE: Options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkd
  *  remembered stays small however many texts a session reads. */
 const READING_LIMIT = 500;
 
-/** The readings made so far, by the text each was read from. */
+/** The readings made so far, by the text each was read from, the one read longest ago first: a
+ *  reading is moved to the end each time it is read (`storedReading`), so where the memo is full
+ *  the reading it drops (`rememberUpTo`) is the one read longest ago, never one the page still
+ *  draws. */
 const readings = new Map<string, DisplayTree>();
 
 /** The marks of a run that stands in no mark. */
 const NO_MARKS: readonly DisplayTree[] = [];
 
+/** A line ending inside a text run, in any of the three forms markdown reads as one. */
+const LINE_FEED = /\r\n?|\n/gu;
+
 /**
- * The reading of a stored markdown text: the text parsed as the page's markdown engine parses it
- * (`GFM_PARSE`) and held as a `DisplayTree` of the shape the server's reading of a text has. The
- * walks that read the server's reading - its words (`wordsOf`), a node's first block
- * (`lineWords`), its addresses written short (`withShortAddresses`) - so read a stored text the
- * same way, and a place that has only the text reads the words the server's reading of it holds
- * (R21).
+ * The reading of a stored markdown text: the text parsed by the CommonMark and GFM base of the
+ * page's markdown engine's parse (`GFM_PARSE`) and held as a `DisplayTree` of the shape the
+ * server's reading of a text has. The walks that read the server's reading - its words
+ * (`wordsOf`), a node's first block (`lineWords`), its addresses written short
+ * (`withShortAddresses`) - so read a stored text the same way. Its words are the words of that
+ * base parse, which are what the server's reading holds for every text that holds neither a
+ * container directive nor a Proof mark span (`GFM_PARSE`), so a place that has only the text
+ * reads what the server's reading of it would hold (R21).
  *
  * The reading holds what decides the words and where they stand apart: the blocks, the text runs
  * and the marks on them, by the server's names, and no attribute, since no word lies in one. A
@@ -51,17 +62,23 @@ const NO_MARKS: readonly DisplayTree[] = [];
  * (`a **b**c` reads `a bc`). A leaf that holds no text - a hard break, an image, a footnote
  * reference, a piece of HTML - opens a space as a block does. Markup is no word: a list's and a
  * quote's markers, a heading's `#`, a task box, a table's pipes and rule, a link's target, an
- * image's address and alt text, an HTML comment or tag, and a link reference definition. A run's
- * text is as the parse gives it, a soft line break inside it included; a caller collapses the
- * white space.
+ * image's address and alt text, an HTML comment or tag, and a link reference definition. A text
+ * run holds each line feed as a space, as the server writes a soft line break (`parseTextValue`,
+ * `pmdoc/parse.go`); code - a code span and a code block - holds its text as the parse gives it.
  *
  * The page reads a node's line on every draw, so the reading of each text is remembered, up to
- * `READING_LIMIT` texts. A reading is shared by every caller that reads its text, so nothing may
- * change one: `withShortAddresses` writes its addresses into a copy.
+ * `READING_LIMIT` texts, the one read longest ago dropped first. A reading is shared by every
+ * caller that reads its text, so nothing may change one: `withShortAddresses` writes an address
+ * into a copy of the nodes it changes.
  */
 export function storedReading(markdown: string): DisplayTree {
   const remembered = readings.get(markdown);
-  if (remembered !== undefined) return remembered;
+  if (remembered !== undefined) {
+    // Reading a reading keeps it: it goes to the end, behind every reading read since.
+    readings.delete(markdown);
+    readings.set(markdown, remembered);
+    return remembered;
+  }
   const reading = withContent("doc", blocksOf(fromMarkdown(markdown, GFM_PARSE).children));
   rememberUpTo(readings, READING_LIMIT, markdown, reading);
   return reading;
@@ -155,7 +172,7 @@ function addRuns(
   for (const node of nodes) {
     switch (node.type) {
       case "text":
-        addText(runs, node.value, marks);
+        addText(runs, node.value.replace(LINE_FEED, " "), marks);
         break;
       case "inlineCode":
         addText(runs, node.value, withMark(marks, "inlineCode"));
