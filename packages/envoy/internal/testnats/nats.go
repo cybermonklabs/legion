@@ -602,6 +602,13 @@ func (s *Server) launch(t testing.TB) {
 		srv.WaitForShutdown()
 		t.Fatalf("NATS did not accept connections within %s: %s", connectTimeout, s.log.String())
 	}
+	// Before s.srv is set the relay refuses every connection, so no client request reaches the
+	// server before its system account's response timers are set past any test (responseThreshold).
+	if err := outliveResponseTimers(srv); err != nil {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+		t.Fatalf("keep the NATS server's response timers from firing during the test: %v", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.srv = srv
@@ -743,6 +750,24 @@ func (g *NkeyGrant) Grant(t testing.TB, allow ...string) {
 
 func publishGrantConfig(user string, allow []string) string {
 	return grantConfig(user, "publish", allow)
+}
+
+// StartNkeyDenied runs a NATS server with JetStream whose nkey user, the one whose public key is
+// user, may publish to anything but deny, and whose no_auth_user, an admin in the same account, may
+// do anything, and returns its client URL. A test plays a program whose grant lacks the subjects of
+// deny with the user (its seed in NATS_NKEY_SEED), and sets the server up, its stream included,
+// through a connection that names no credential.
+func StartNkeyDenied(t testing.TB, user string, deny ...string) string {
+	t.Helper()
+	_, admin := User(t)
+	quoted := make([]string, len(deny))
+	for index, subject := range deny {
+		quoted[index] = fmt.Sprintf("%q", subject)
+	}
+	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { deny: [%s] } } }, { nkey: %q } ]\n}\nno_auth_user: %q\n",
+		user, strings.Join(quoted, ", "), admin, admin)
+	_, uri := StartConfig(t, config, []string{"-js"}, true)
+	return uri
 }
 
 // SubscribeGrantConfig is the configuration of a server with JetStream whose one user, the nkey user

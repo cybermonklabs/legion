@@ -21,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -100,18 +99,6 @@ type Kubernetes struct {
 	// of its Oh My Pi, after a stale-plugin relaunch's install and with the environment and working
 	// directory Oh My Pi gets; Oh My Pi starts only once it exits 0. Nil when the file sets none.
 	Setup []string
-	// SkillsRepository is `runtime.kubernetes.skills_repository`: the GitHub repository holding the
-	// Oh My Pi plugin marketplace every issue pod's roles load their skills from. With it, each
-	// issue pod runs a third init container that clones the repository's default branch shallow
-	// into a volume of the pod's own, read-only in the pod's launcher container, and every role's
-	// start wrapper installs from that directory before Oh My Pi starts — so a pod's skills are the
-	// repository's default branch as GitHub names it, as of the pod's start, with no image rebuild,
-	// and no role's launch ever clones or fetches anything (dispatch://INFRA-1300). The clone takes
-	// that default branch and no other: a deployment whose skills must come from a branch of
-	// another name needs a repository whose default branch is that one. The zero repository when
-	// the file names no skills repository, in which case a pod runs two init containers and no
-	// role installs a skill.
-	SkillsRepository ghrepo.Repository
 	// RepositoryCache is `runtime.kubernetes.repository_cache`, settled: the file's members where it
 	// sets them and the defaults (DefaultRepositoryCache) for the rest, field by field.
 	RepositoryCache RepositoryCacheConfig
@@ -305,8 +292,8 @@ func (c SandboxConfig) AnyMicroVM() bool {
 }
 
 // PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers carry Issue — its third too, where the
-// deployment names a SkillsRepository — and the controller's pod's one container Controller.
+// issue pod's one container and its two init containers, workspace-fetch and workspace-init,
+// carry Issue, and the controller's pod's one container Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }
@@ -613,12 +600,13 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 
 // readKubernetes reads the `runtime.kubernetes` block, refusing any member it does not model and
 // any value a pod could not run with. A key an earlier shape of the block had (tree_volume, the
-// TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
-// it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
-// that read the block's scheduling, pod and agent_secrets too are checked once all four are read
-// (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the whole
-// file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
-// block is settled (resolveKubernetes).
+// TypeScript daemon's role_profiles and gateway, and skills_repository) is known so that its
+// refusal names what replaced it, which is what `legion config check` shows the operator to edit;
+// skills_repository is refused whatever its value, a null one included (namesKey). The sandbox's
+// rules that read the block's scheduling, pod and agent_secrets too are checked once all four are
+// read (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the
+// whole file is read (checkKubernetesKeys), and the reservations the file leaves out are filled
+// when the block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
@@ -635,6 +623,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	}
 	if fields["gateway"] != nil {
 		return nil, errors.New("runtime.kubernetes.gateway was removed (LEGION-270): configure pods with runtime.kubernetes.pod (docs/kubernetes.md, Operator configuration)")
+	}
+	if namesKey(value, "skills_repository") {
+		return nil, errors.New("runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key")
 	}
 	block := &Kubernetes{IssueVolume: defaultIssueVolume}
 	if block.Namespace, err = requiredString(fields["namespace"], kubernetesKey+".namespace", ""); err != nil {
@@ -687,9 +678,6 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.Setup, err = readSetup(fields["setup"]); err != nil {
 		return nil, err
 	}
-	if block.SkillsRepository, err = readSkillsRepository(fields["skills_repository"]); err != nil {
-		return nil, err
-	}
 	if block.TestPostgres, err = readTestPostgres(fields["test_postgres"]); err != nil {
 		return nil, err
 	}
@@ -724,20 +712,6 @@ func readTestPostgres(value *yaml.Node) (bool, error) {
 		return false, fmt.Errorf("%s must be true or false", key)
 	}
 	return on, nil
-}
-
-// readSkillsRepository reads `runtime.kubernetes.skills_repository`, the zero repository when
-// absent: the GitHub repository (<owner>/<name>) holding the Oh My Pi plugin marketplace every
-// issue pod's roles install their skills from. It is read with ghrepo.Parse, as every other
-// repository the file names is, so an owner or a name GitHub could not carry is refused at load
-// rather than in a pod's init container.
-func readSkillsRepository(value *yaml.Node) (ghrepo.Repository, error) {
-	const key = kubernetesKey + ".skills_repository"
-	named, err := optionalString(value, key)
-	if err != nil || named == "" {
-		return ghrepo.Repository{}, err
-	}
-	return ghrepo.Parse(key, named)
 }
 
 // readSetup reads `runtime.kubernetes.setup`, an argv of non-empty strings (readStrings), nil when
@@ -1209,7 +1183,7 @@ func unfilledPlaceholder(key, value, put string) error {
 // One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
 // the operator's own resource attributes, which the runtime appends the launch's issue and role
 // to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
-// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// refused here, where a person reads the refusal — under `legion config check` as at boot
 // — rather than at a launch nobody watches.
 func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	const key = podKey + ".env"
@@ -1443,7 +1417,7 @@ type objectSource struct {
 // `config_map`, which take default_mode, and a projected source's two, which do not, Kubernetes
 // setting the mode of a projected volume's files for the whole volume and never per source. The
 // group decides which names the mapping may carry, so deriving it from one of the four, as this
-// read did, left the other three's keys out of `legion config-reference` and the page generated
+// read did, left the other three's keys out of `legion config reference` and the page generated
 // from it.
 func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (objectSource, error) {
 	if value.Kind != yaml.MappingNode {
@@ -1493,7 +1467,7 @@ func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, s
 // The four members readers a source's place names (readObjectSource): a volume's own `secret` and
 // `config_map`, which take default_mode, and a projected source's `secret` and `config_map`,
 // which do not. Each names its group as a constant of its own, which is what carries every one of
-// those keys into `legion config-reference` and holds the four to the key table
+// those keys into `legion config reference` and holds the four to the key table
 // (TestNoKeyBypassesTheKeyTable).
 
 func volumeSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {

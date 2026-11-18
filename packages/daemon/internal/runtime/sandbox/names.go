@@ -93,6 +93,12 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// TestPGLogFile is where `legion launcher role-init` binds that cluster's server log, the one
+	// file, read-only, in every role's namespace of such a pod, over the empty file the worker
+	// image makes there; the launcher names it to every role as launcher.TestPGLogVariable. No
+	// container mounts anything at it, and legionMountPaths fences it all the same, since an
+	// operator's mount there would turn that bind into a refusal of every role's start.
+	TestPGLogFile = launcher.FixedRoot + "/" + launcher.RoleTestPGLog
 	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
 	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
 	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),
@@ -109,14 +115,6 @@ const (
 	// generation's namespaces over (launcher.CheckRoleNamespaces).
 	RoleProbeDir = launcher.FixedRoot + "/role-probe"
 )
-
-// SkillsDir is where an issue pod mounts its skills volume: the clone of the deployment's skills
-// marketplace (runtime.kubernetes.skills_repository) that skills-fetch filled, with the commit,
-// the marketplace's name and its plugins recorded beside it (workspace.SkillsClone and its
-// siblings). It is read-write in skills-fetch alone and read-only in the pod's launcher
-// container, and it is not under RolesDir or HomeMountsDir, the two directories a role's
-// namespaces cover, so every role of the pod reads it at this one path.
-const SkillsDir = launcher.FixedRoot + "/skills"
 
 // roleDir is role's own directory of an issue pod's one container, under RolesDir: its launcher
 // token and gh projections of its role Secret, read-only, and its memory-backed private, state and

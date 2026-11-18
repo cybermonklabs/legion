@@ -273,10 +273,11 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // block.
 //
 // Of either kind, the blank lines at the start and at the end of the content are no part of it,
-// so a block that holds nothing has no content; nor is a line of only spaces and tabs that ends an
-// indented code block before an item's fence, though the item's own parse holds that line in the
-// code. A first line `---` is written `***`, the same rule: at the start of a document of its own,
-// `---` opens front matter, which it does not in the block.
+// so a block that holds nothing has no content; nor are the lines of only spaces and tabs, one or
+// several, that end a code block which ends the content, an indented block or a fenced one its
+// own fence does not close, wherever the opening line stands, though the item's own parse holds
+// them in the code. A first line `---` is written `***`, the same rule: at the start of a
+// document of its own, `---` opens front matter, which it does not in the block.
 //
 // The text is cut only where its last line is a fence and its first line, the lines as the kind
 // reads them and that fence read back as one typed block (pmdoc.ParseRendering): a document's
@@ -353,30 +354,46 @@ func outdented(lines, indent string) (text string, cut bool) {
 
 // columnsOff is lines with columns columns of indentation taken off each line, as the item's own
 // parse reads a typed block whose opening line stands columns spaces in
-// (pmdoc.typedDirectiveParser.Continue). With columns 0 it is lines. With columns above 0, a
-// line's columns are counted as it is stored, a space one column and a tab reaching the next
-// multiple of four from its column in the stored text, and the line is written again. The spaces
-// and tabs it starts with, a blank line's included, are written as spaces: as many as the columns
-// they reach, less columns, and never fewer than none. Then, while what follows starts with a
-// container marker (containerMarker), the marker is kept and the spaces and tabs after it are
-// written as spaces, as many as the columns they span. The walk stops at a run of them that
-// reaches the line's end, which is kept as it stands, and after a run five columns or more wide.
-// The rest of the line is kept as it stands.
+// (pmdoc.typedDirectiveParser.Continue); with columns 0 it is lines. Otherwise each line's columns
+// are counted as stored, a space one column and a tab reaching the next multiple of four, and the
+// line is written again: the spaces and tabs it starts with as spaces, as many as the columns they
+// reach less columns and never fewer than none; then, while what follows starts with a container
+// marker (containerMarker), the marker as it stands and the spaces and tabs after it as spaces, as
+// many as the columns they span; then the rest of the line as it stands. But a run after a marker
+// that reaches the line's end is written as spaces only after a `>` taken for a quote's: one the
+// line starts with, three columns in at most once columns are taken off, or one that follows such
+// a `>` with at most four columns between them. After any other marker that run is kept as it
+// stands, and the walk stops there.
 //
-// The item's own parse measures every tab from the column it stands at, a tab after a list
-// marker or `>` too (pmdoc's listItemColumns). Kept as a tab, a tab past columns would reach
-// another stop once the line starts columns earlier, so the content would read with another
-// block structure than the item gives it: under an opening line two spaces in, `-\tItem.` holds
-// its text one column past the marker, and at column 0 three, so a second paragraph two columns
-// in would fall out of the list item. A run that reaches the line's end decides no column, since
-// a list item whose marker ends its line takes its content a column past the marker, and written
-// as spaces it could end a paragraph's line in a hard break. Of a run five columns or more wide,
-// the list item or the quote takes one column, and what follows is code or a paragraph's text,
-// where no container opens.
+// The item's own parse measures every tab from the column it stands at, after a list marker too
+// (pmdoc's listItemColumns) and after `>` (goldmark's blockquote parser, which takes util.TabWidth
+// from the line's offset). Kept as a tab, a tab past columns would reach another stop once the
+// line starts columns earlier, and the content would read with another block structure: under an
+// opening line two spaces in, `-\tItem.` holds its text one column past the marker, and at column
+// 0 three, so a second paragraph two columns in would fall out of the list item. Written as
+// spaces, a run reaches the column it reaches in the stored text, less the columns taken off the
+// line's start, so it moves nothing after it. A wide run does not end the walk: under an opening
+// line one space in, the lines ` > 1. a` and ` >\t\t-\t\tb` leave five columns after the quote's
+// own, the list item in the quote takes three of them, and the `-` two columns into that item
+// opens a list. A run to the line's end after a list marker decides no column, since such an item
+// takes its content a column past the marker, and a marker that opens no list is a paragraph's
+// text, whose line that run written as spaces would end in a hard break. Any other `>` can be such
+// text too, on a lazy line or after a marker that opens no list. A `>` taken for a quote's opens or
+// continues one outside code and HTML, since a quote can interrupt a paragraph: its line is blank
+// in the quote, and in code the quote holds, the run's columns past the code's are the code's text.
 //
-// A tab past the opener's columns that the item's own parse keeps as text, in code (indented or
-// fenced) or after a marker that opens no container, is written as spaces all the same, so that
-// text can hold spaces where the item holds a tab; the block structure is the same.
+// So the content reads as the item's own parse reads the block but in three ways, the block
+// structure the same. A tab past the opener's columns that the item keeps as text, in code or
+// after a marker that opens no container, is written as spaces, so that text holds spaces where
+// the item's holds a tab. A `>` four columns or more into a list item (`10. >`, `-   >`,
+// `> 1.  >`) is a quote's that the walk does not take for one, so on a line of only spaces and
+// tabs in code that quote holds, the run kept as it stands starts columns earlier and a tab in it
+// can reach another stop: that line holds up to three columns more or fewer of whitespace than
+// the item's. And a code span that crosses lines, one of whose ends a run written as spaces
+// decides, can differ from the item's by one space or line ending at each end, either way:
+// CommonMark strips those two ends from a span whose text begins and ends with a space and is not
+// all spaces, and a tab is no space, so where the item's span keeps its ends the content's can
+// lose them, and where the item's loses them the content's can keep them.
 func columnsOff(lines string, columns int) string {
 	if columns == 0 {
 		return lines
@@ -386,23 +403,22 @@ func columnsOff(lines string, columns int) string {
 	for line := range strings.Lines(lines) {
 		at, column := blankRun(line, 0, 0)
 		writeSpaces(&written, column-columns)
+		quote := column-columns <= 3
 		for {
 			marker := containerMarker(line[at:])
 			if marker == 0 {
 				break
 			}
+			quote = quote && line[at] == '>'
 			written.WriteString(line[at : at+marker])
 			at, column = at+marker, column+marker
 			end, reached := blankRun(line, at, column)
-			if end == len(line) || line[end] == '\n' || line[end] == '\r' {
+			if !quote && (end == len(line) || line[end] == '\n' || line[end] == '\r') {
 				break
 			}
-			width := reached - column
-			writeSpaces(&written, width)
+			quote = quote && reached-column <= 4
+			writeSpaces(&written, reached-column)
 			at, column = end, reached
-			if width >= 5 {
-				break
-			}
 		}
 		written.WriteString(line[at:])
 	}
@@ -443,10 +459,10 @@ func containerMarker(rest string) int {
 	case '-', '*', '+':
 	default:
 		digits := 0
-		for digits < len(rest) && digits <= 9 && '0' <= rest[digits] && rest[digits] <= '9' {
+		for digits < len(rest) && digits < 9 && '0' <= rest[digits] && rest[digits] <= '9' {
 			digits++
 		}
-		if digits == 0 || digits > 9 || digits == len(rest) || (rest[digits] != '.' && rest[digits] != ')') {
+		if digits == 0 || digits == len(rest) || (rest[digits] != '.' && rest[digits] != ')') {
 			return 0
 		}
 		length = digits + 1
@@ -458,7 +474,9 @@ func containerMarker(rest string) int {
 }
 
 // withoutBlankEnds is lines from the first that holds more than whitespace to the line ending
-// of the last that does, and "" when none does.
+// of the last that does, and "" when none does. The lines it drops at the end include the lines
+// of only spaces and tabs, one or several, that end a code block which ends lines, an indented
+// block or a fenced one its own fence does not close, which the item's own parse keeps in the code.
 func withoutBlankEnds(lines string) string {
 	from, to, at := -1, 0, 0
 	for line := range strings.Lines(lines) {

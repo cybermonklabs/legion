@@ -26,6 +26,7 @@ import type {
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
+import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
 import { HeaderSlot } from "./slots/header";
 
@@ -761,7 +762,7 @@ test("the approval chip's keys press its own actions, and only while those take 
 // holds the reader's reason, or its Cancel. No action draws the words of any of them, so only
 // their place inside the dialog sends the focus to the chip rather than to "Issue actions". Where
 // the reader sent a change request, the chip also hands the focus to itself once the read after
-// it removes Request changes (`ApprovalChip`), so the first two rows below hold where the focus
+// it removes Request changes (`ApprovalChip`), so the first three rows below hold where the focus
 // ends, whichever of the two moves it; the rows after them, where nothing was sent, are the
 // keeper's alone.
 
@@ -822,12 +823,18 @@ async function openRequestChanges(
   return { dialog, stateActions };
 }
 
-/** The chip's two actions the header draws. The dialog stands inside the same line, so its own
- *  Request changes is left out. */
+/** The chip's two actions the header draws, found as the header finds them: by the words each
+ *  draws (`ACTION_WORDS`), since a name may also say the document. The dialog stands inside the
+ *  same line, so its own Request changes is left out. */
 function headerReviewActions(stateActions: HTMLElement): HTMLElement[] {
+  const patterns = Object.values(ACTION_WORDS);
   return within(stateActions)
-    .queryAllByRole("button", { name: /^(Approve|Request changes)$/ })
-    .filter((button) => button.closest('[role="dialog"]') === null);
+    .queryAllByRole("button")
+    .filter(
+      (button) =>
+        patterns.some((pattern) => pattern.test(button.textContent ?? "")) &&
+        button.closest('[role="dialog"]') === null
+    );
 }
 
 /** The document's approval chip on the header's line of state controls. */
@@ -838,9 +845,10 @@ function documentChip(stateActions: HTMLElement): HTMLElement {
 }
 
 /** Answers the issue's reads with the waiting request until the reader's change request lands,
- *  and with the answered request from then on, as the server does. Returns the spy of the review's
- *  write and what puts both back. */
-function answerChangeRequest(): {
+ *  and with the answered request from then on, as the server does. The write lands once `landing`
+ *  settles, at once unless a case holds it. Returns the spy of the review's write and what puts
+ *  both back. */
+function answerChangeRequest(landing: Promise<void> = Promise.resolve()): {
   readonly createArtifactReview: Mock<typeof api.createArtifactReview>;
   readonly restore: () => void;
 } {
@@ -848,6 +856,7 @@ function answerChangeRequest(): {
   const restoreHeader = stubHeader(read);
   const getIssue = spyOn(api, "getIssue").mockImplementation(async () => read);
   const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(async () => {
+    await landing;
     read = answeredApprovalIssue("changes_requested");
     stubbedIssue = read;
     return changeRequest;
@@ -916,6 +925,59 @@ test("a change request sent by Ctrl+Enter in the dialog's text box leaves the fo
   }
 });
 
+// Escape closes the dialog while its change request is written, and the write goes on: the dialog
+// gives the focus back to the header's Request changes, which refuses a press until the write
+// lands and its read is drawn. That read answers the request, so Request changes goes with the
+// focus on it, and the focus must reach the document's chip, not "Issue actions" or the body.
+test("a change request closed by Escape while its write is out leaves the focus on the document's chip once the answer removes Request changes", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<void>();
+  const { createArtifactReview, restore } = answerChangeRequest(landing.promise);
+  const view = renderHeader();
+
+  try {
+    const { dialog, stateActions } = await openRequestChanges(user);
+    expect(headerReviewActions(stateActions).length).toBe(2);
+    const requestChanges = headerReviewActions(stateActions).find((action) =>
+      ACTION_WORDS["request-changes"].test(action.textContent ?? "")
+    );
+    const submit = within(dialog).getByRole("button", { name: "Request changes" });
+    act(() => submit.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(submit).toHaveTextContent("Submitting…"));
+    expect(submit).toHaveFocus();
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactReview).toHaveBeenCalledWith(
+      "artifact-1",
+      { reason: CHANGE_REASON, state: "changes_requested" },
+      keyedAttempt
+    );
+
+    // The write is held: Escape closes the dialog all the same, and the focus goes back to the
+    // header's Request changes, refused while the write is out.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await waitFor(() => expect(requestChanges).toHaveFocus());
+    expect(requestChanges).toHaveAttribute("aria-disabled", "true");
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+
+    // The write lands, and the issue's read after it answers the request: the header draws
+    // neither action, and the focus is on the document's chip.
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(headerReviewActions(stateActions)).toEqual([]));
+    await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    // A case that fails while the write is held still lets it land before the header goes.
+    landing.resolve();
+    view.unmount();
+    restore();
+  }
+});
+
 // Another reviewer answers the request while the reader's dialog is open, so the issue's read
 // draws no request: the header's two actions go and the dialog stays. The reader then shuts it, by
 // its Cancel, pressed by Enter, or by Escape in its text box. Nothing was sent, so the chip has no
@@ -952,6 +1014,46 @@ test.each([
 
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The keeper finds the document's chip from where the lost control stood (`chipOfLostAction`):
+// the box `ApprovalChip` draws the chip in holds only the chip, its two actions and the dialogs it
+// opens. The Status select stands on the same line but outside that box, so when the issue's read
+// turns closed and disables it, the focus goes on to "Issue actions", not to the chip, whether the
+// document's request still waits on the reader or not.
+test.each([
+  "waits on the reader",
+  "is answered",
+])("the Status select disabled as the issue turns closed while the document's request %s leaves the focus on Issue actions, not on the chip", async (request) => {
+  const open =
+    request === "is answered" ? answeredApprovalIssue("approved") : awaitingApprovalIssue();
+  const restore = stubHeader(open);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const stateActions = await screen.findByTestId("issue-state-actions");
+    const status = within(stateActions).getByRole("combobox", { name: "Status" });
+    const chip = documentChip(stateActions);
+    expect(headerReviewActions(stateActions).length).toBe(request === "is answered" ? 0 : 2);
+    act(() => status.focus());
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...open,
+        closed_at: "2026-09-12T10:00:00Z",
+        status: "done",
+      });
+    });
+    await waitFor(() => expect(status).toBeDisabled());
+
+    const issueActions = screen.getByRole("button", { name: "Issue actions" });
+    await waitFor(() => expect(issueActions).toHaveFocus());
+    expect(chip).toBeInTheDocument();
+    expect(chip).not.toHaveFocus();
   } finally {
     view.unmount();
     restore();

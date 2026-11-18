@@ -44,26 +44,23 @@ export function chipBox(
 }
 
 /**
- * Where the header's focus keeper (`useFocusKeeper`) puts the focus when the control it lost is
- * one of an approval chip's two actions, or a control of a dialog the chip opened: that chip, or
- * `null` when the lost control is neither. Both actions go once the request is answered, so a
- * reader who pressed one stays on the document they reviewed, and the chip is what stays of its
- * approval control.
+ * Where the header's focus keeper (`useFocusKeeper`) puts the focus when the control it lost
+ * stood in the box `ApprovalChip` draws a chip in: that chip, or `null` when the control stood in
+ * no such box. That box holds the chip, its two actions and the dialogs the chip opens, and
+ * nothing else, so where the control stood is enough to say it was one of the two actions or a
+ * control of one of those dialogs. Both actions go once the request is answered, so a reader who
+ * pressed one stays on the document they reviewed, and the chip is what stays of its approval
+ * control.
  *
  * The Request changes dialog gives the focus back to the header's Request changes as it shuts.
  * When that button went first - the request was answered elsewhere while the dialog was open -
  * the focus falls from the dialog's own control: its submit, which reads "Submitting…" then, or
- * its text box after a Mod+Enter, whose words are no action's. So a control that stood inside a
- * dialog is taken too; `closest` walks the subtree the dialog was taken out with.
+ * its text box after a Mod+Enter. That control stood in the chip's box too, so it finds the same
+ * chip.
  *
  * The lost control may already be out of the page, so its chip is found from where it stood
- * (`FocusLoss.place`), and an action by the words it draws.
+ * (`FocusLoss.place`).
  */
-export function chipOfLostAction({ lost, place, root }: FocusLoss): HTMLElement | null {
-  const words = lost.textContent ?? "";
-  const action = Object.values(ACTION_WORDS).some((pattern) => pattern.test(words));
-  if (!action && lost.closest('[role="dialog"]') === null) {
-    return null;
-  }
+export function chipOfLostAction({ place, root }: FocusLoss): HTMLElement | null {
   return chipBox(place, root)?.chip ?? null;
 }

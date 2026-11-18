@@ -98,11 +98,18 @@ function writesField(request: Request, key: string, field: string): boolean {
 }
 
 /** The review actions of an approval inside `scope`: Approve (`Approve v2` on a stale approval)
- *  and Request changes, by the words the header itself finds them by (`ACTION_WORDS`). The chip
- *  itself (`Approved v1`) is none of them. */
+ *  and Request changes. Each is found as the header finds it, by the words it draws
+ *  (`ACTION_WORDS`), not by its name: where two documents' requests wait on the reader, each
+ *  action's name also says its document ("Approve the spec"). The chip itself (`Approved v1`) is
+ *  none of them, and neither is a button inside a dialog, as the Request changes dialog's own
+ *  Request changes, which stands inside the header: the header's own list of the two actions
+ *  (`CHIP_ACTIONS`) leaves those out too. */
 function reviewActions(scope: Locator): Locator {
   const sources = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
-  return scope.getByRole("button", { name: new RegExp(sources.join("|")) });
+  return scope
+    .getByRole("button")
+    .filter({ hasText: new RegExp(sources.join("|")) })
+    .and(scope.locator(':not([role="dialog"] *)'));
 }
 
 /** The words the labels' count reads with `left` labels it does not draw: `+3 labels`. */
@@ -146,6 +153,8 @@ async function pressOutOfTheEdit(
     await control.tap();
     return;
   }
+  // Both callers wait for the header drawn and the title's editor focused first, so the control
+  // is drawn here; a null box only throws.
   const box = await control.boundingBox();
   if (box === null) throw new Error(`${what} is not drawn while the title is edited`);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -462,7 +471,15 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await header.getByTestId("issue-details-control").click();
       await expect(details(page), "Details' control opened no Details").toBeVisible();
       await closeDetails(page);
-      await header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions }).click();
+      const actionsControl = header.getByRole("button", {
+        exact: true,
+        name: CONTROL_LABELS.issue_actions,
+      });
+      await actionsControl.click();
+      await expect(
+        actionsControl,
+        `the actions control opened no menu at ${width} px`
+      ).toHaveAttribute("aria-expanded", "true");
       // The open menu hangs under its control, so a second press on the control reaches the
       // control, which closes the menu, rather than the menu's first action.
       expect(
@@ -1544,6 +1561,8 @@ test("the band stays when the page scrolls, and on a phone the header goes @phon
           message: `the band's stuck state is wrong once scrolled at ${width} px`,
         })
         .toBe(wide);
+      // The two polls above waited for the scroll and the band's stuck state, so this one reading
+      // is of the settled page; null only throws.
       const scrolled = await stickyReading(page);
       if (scrolled === null) throw new Error("the header left the page as it scrolled");
       expect(
@@ -1751,6 +1770,7 @@ test("the labels' count names every label the line leaves out, at every width of
           element.style.maxWidth = `${at}px`;
         }, full - by);
         await framesDrawn(page, 4);
+        // Four frames were drawn since the line's width changed, so it is laid out at that width.
         const { cut, left, whole } = await labelsAgainstTheCount(page);
         if (whole + left !== TWENTY_LABELS.length || cut.length > 0) {
           wrong.push(
@@ -2136,6 +2156,8 @@ test("the header's menu gives the focus back to its control on Escape and after 
       await page.keyboard.press("Enter");
       await expect(trigger).toHaveAttribute("aria-expanded", "true");
       for (let step = 0; step < at; step += 1) await page.keyboard.press("Tab");
+      // The menu was read open above, and each Tab moves the focus before its press resolves;
+      // null only throws.
       const focused = await page.evaluate(
         () => (document.activeElement as HTMLElement | null)?.dataset.issueAction ?? null
       );
@@ -2197,6 +2219,23 @@ const ON_ISSUE_ACTIONS = {
   what: `button ${CONTROL_LABELS.issue_actions}`,
 } as const;
 
+/** Waits for Details, just opened, to hold the focus, as it takes the focus as it opens. */
+async function expectFocusInDetails(page: Page): Promise<void> {
+  await expect
+    .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+      message: "Details took no focus as it opened",
+    })
+    .toBe(true);
+}
+
+/** Closes Details by Escape, and waits until it is hidden and two frames are drawn, so a focus
+ *  read next that only passes through a control is not taken for one that stays there. */
+async function escapeDetails(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect(details(page), "Escape left Details open").toBeHidden();
+  await framesDrawn(page, 2);
+}
+
 // Details gives the focus back to the control it was opened from as it closes, but a write made
 // while it is open can take that control off the header: the labels' count goes once every label
 // fits, and the parent link once the parent is cleared. Details then had nothing to give the
@@ -2219,16 +2258,10 @@ test("Details closed after a write removed the labels' count leaves the focus in
     await count.focus();
     await page.keyboard.press("Enter");
     await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
-    await expect
-      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-        message: "Details took no focus as it opened",
-      })
-      .toBe(true);
+    await expectFocusInDetails(page);
     await patchIssue(seeded.key, { labels: ["dispatch"] });
     await expect(count, "one label still draws the labels' count").toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(details(page), "Escape left Details open").toBeHidden();
-    await framesDrawn(page, 2);
+    await escapeDetails(page);
     expect(
       await focusNow(page),
       "Details, closed after its labels' count went, left the focus off Issue actions"
@@ -2250,20 +2283,53 @@ test("Details closed after a write removed the parent link leaves the focus in t
     await expect(parent, "the header's parent link took no focus").toBeFocused();
     await page.keyboard.press("Shift+M");
     await expect(details(page), "Shift+M on the parent link opened no Details").toBeVisible();
-    await expect
-      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-        message: "Details took no focus as it opened",
-      })
-      .toBe(true);
+    await expectFocusInDetails(page);
     await patchIssue(seeded.key, { parent: null });
     await expect(parent, "a cleared parent still draws the parent link").toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(details(page), "Escape left Details open").toBeHidden();
-    await framesDrawn(page, 2);
+    await escapeDetails(page);
     expect(
       await focusNow(page),
       "Details, closed after its parent link went, left the focus off Issue actions"
     ).toEqual(ON_ISSUE_ACTIONS);
+  });
+});
+
+// The same, opened by Shift+M from the header's Approve while the document's request waits on
+// the reader, and bob answers that request while Details is open: the header then draws neither
+// action, and the box that keeps the two together goes with them. The keeper reads the elements
+// around Approve as the focus leaves it, so it still finds that document's chip and gives it the
+// focus, as after an approval made from the header, rather than going on to "Issue actions".
+test("Details closed after an answer elsewhere removed Approve leaves the focus on the document's chip", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    await expect(
+      reviewActions(header),
+      "the header's Approve and Request changes are not found by their drawn words"
+    ).toHaveCount(2);
+    await approve.focus();
+    await expect(approve, "the header's Approve took no focus").toBeFocused();
+    await page.keyboard.press("Shift+M");
+    await expect(details(page), "Shift+M on Approve opened no Details").toBeVisible();
+    await expectFocusInDetails(page);
+    await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
+    await expect(
+      reviewActions(header),
+      "the header still draws an action once bob answered the request"
+    ).toHaveCount(0);
+    await escapeDetails(page);
+    const focus = await focusNow(page);
+    await expect(
+      approvalChip(page, seeded.specArtifactId),
+      `Details, closed after Approve went, left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
   });
 });
 
@@ -2783,11 +2849,9 @@ test("a change request sent after the header's actions went leaves the focus on 
 
     await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
     // The dialog stands inside the header, so its own Request changes is one of the header's
-    // buttons: the chip's actions are the header's actions outside every dialog.
+    // buttons, but no action of the chip: `reviewActions` leaves out every button of a dialog.
     await expect(
-      reviewActions(header).and(
-        header.locator('xpath=.//button[not(ancestor::*[@role="dialog"])]')
-      ),
+      reviewActions(header),
       "the header still draws an action once bob answered the request"
     ).toHaveCount(0);
     await expect(dialog, "bob's answer shut the Request changes dialog").toBeVisible();
@@ -2935,6 +2999,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     ).toBeVisible();
     await framesDrawn(page, 2);
     const pressedOn = await focusNow(page);
+    // This only names the dialog's state in the messages below; no step of the row depends on it.
     const dialogOpen = await dialog.isVisible();
     const where = `${pressedOn.what}, with the dialog ${dialogOpen ? "open" : "shut"}`;
     await page.keyboard.press("Enter");

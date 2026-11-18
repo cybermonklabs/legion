@@ -115,7 +115,7 @@ async function focusNothing(page: Page): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
 
-/** `locator`'s box, failing the row where it draws none. */
+/** `locator`'s box once it is drawn, failing the row where it is never drawn. */
 async function boxOf(
   locator: Locator,
   what: string
@@ -125,6 +125,8 @@ async function boxOf(
   x: number;
   y: number;
 }> {
+  await expect(locator, `${what} is not drawn`).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error(`${what} draws no box`);
   return box;
@@ -426,10 +428,15 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         await assertPageFits(page);
         await assertWhole(filterRow(page));
         await assertNoSidewaysScroll(filterRow(page), `the view row at ${width} px`);
+        // The shell draws the rail in the render that routes to the new page, from a width query
+        // read as it renders, and the view row was drawn above, so one count says whether this
+        // width has the rail.
         if ((await iconRail(page).count()) > 0) {
           await assertWhole(iconRail(page));
           await assertNoSidewaysScroll(iconRail(page), `the rail at ${width} px`);
         }
+        // The page draws the Contents pane in the render that draws the view row read above,
+        // from a width query read as it renders, so one count says whether this width has it.
         if ((await contentsPane(page).count()) > 0) {
           await assertNoSidewaysScroll(contentsPane(page), `the pane at ${width} px`);
         }
@@ -442,6 +449,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
           await closeDetails(page);
         }
       }
+      // The view row read above draws the Outline control in its own render, from a width query
+      // read as it renders, so one count says whether this width has it.
       if ((await outlineControl(page).count()) > 0) {
         await outlineControl(page).click();
         await assertNoSidewaysScroll(outlineSheet(page), `the Outline sheet at ${width} px`);
@@ -687,7 +696,11 @@ test("the five controls are toggles with an address each, one line at every widt
       // A control's words are the text it shows less what it hides from assistive technology,
       // such as the menu control's `▾`, a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
+      // The poll above waited for the row to draw at this width and its controls were measured
+      // since, with no press between, so one count lists the buttons it shows.
       for (let at = 0; at < (await named.count()); at += 1) {
+        // The count above found this control drawn, and its words are the ones its render wrote,
+        // so one read says whether it shows any words.
         const words = await named.nth(at).evaluate((control: HTMLElement) => {
           let text = control.innerText;
           for (const hidden of control.querySelectorAll<HTMLElement>('[aria-hidden="true"]')) {

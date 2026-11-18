@@ -362,12 +362,12 @@ func newSessionRig(t *testing.T, natsURL string) *sessionRig {
 	t.Helper()
 	conn := testnats.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
-	roles, err := envoystore.Open(conn)
+	roles, err := envoystore.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(roles.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn)
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -7429,10 +7429,12 @@ const quickTakeoverWindow = time.Second
 // "service starting" - on every route, then on the send alone while the outgoing listener still
 // answers the registry read - then does not yet hold the session, for a few seconds. A direct
 // message and a mention sent then wait it out under the attempt each holds and reach the session
-// once it answers: attempt 1 sent, one receipt, one send. A session the listener never knows still
-// reads failed, "no live session", once the take-over window has passed. And a process killed
-// while it waits leaves its attempts pending under the claim it renewed last, which the other
-// process's delivery sweep sends.
+// once it answers: attempt 1 sent, one receipt, one send. A message to a session the listener
+// never knows waits the take-over window out as well, and is then queued rather than failed "no
+// live session": since R5 (dispatch://INFRA-3740), Dispatch queues it on that session's own
+// subject, so a released Legion role that comes back under the id reads it from its consumer.
+// And a process killed while it waits leaves its attempts pending under the claim it renewed
+// last, which the other process's delivery sweep sends.
 func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 	t.Run("sent during the take-over", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
@@ -7461,13 +7463,25 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 
 	t.Run("sent to a session the listener never knows", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
-		// This subtest waits out the take-over window and nothing else, so its processes run it
-		// at quickTakeoverWindow (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW) in place of the twelve
-		// seconds a deployment runs: what it is about is that the send settles failed once the
-		// window has passed, not how long the window is.
+		// Since R5 (dispatch://INFRA-3740), Dispatch queues a targeted message to a session no
+		// store of the listener holds on that session's own subject, so a released Legion role
+		// that comes back under the id reads it from its consumer, rather than failing it "no live
+		// session". It still waits the take-over window out first: during a take-over the
+		// successor answers "no live session" for a session it does not hold yet. This subtest
+		// waits that window out and nothing else, so its processes run it at quickTakeoverWindow
+		// (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW) in place of the twelve seconds a deployment
+		// runs: what it is about is that the send settles queued once the window has passed, not
+		// how long the window is.
 		env := listener.processEnv()
 		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = quickTakeoverWindow.String()
 		pair := startPair(t, env)
+		conn := testnats.Connect(t, pair.nats)
+		t.Cleanup(conn.Close)
+		js, err := conn.JetStream()
+		if err != nil {
+			t.Fatalf("JetStream context: %v", err)
+		}
+		head := streamHead(t, js)
 		started := time.Now()
 		var message model.Message
 		if err := json.Unmarshal(pair.a.call(t, http.MethodPost, "/api/v1/agents/never-known/messages",
@@ -7475,20 +7489,34 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 			t.Fatalf("decode the message: %v", err)
 		}
 		took := time.Since(started)
-		if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" ||
-			message.Deliveries[0].Error == nil || *message.Deliveries[0].Error != "no live session never-known" {
-			t.Fatalf("deliveries = %#v, want attempt 1 failed with %q", message.Deliveries, "no live session never-known")
+		if len(message.Deliveries) != 1 || message.Deliveries[0].Attempt != 1 || message.Deliveries[0].State != "queued" ||
+			message.Deliveries[0].EnvelopeID == nil || message.Deliveries[0].Error != nil ||
+			message.Deliveries[0].SessionID != "never-known" {
+			t.Fatalf("deliveries = %#v, want attempt 1 queued for never-known, naming its envelope and no error",
+				message.Deliveries)
 		}
 		if took > 15*time.Second {
 			t.Fatalf("the send to a session the listener never knows answered %v after it was made, want within 15s: "+
-				"it waits out the %v take-over window and settles failed", took, quickTakeoverWindow)
+				"it waits out the %v take-over window and settles queued", took, quickTakeoverWindow)
 		}
 		gone := messageDelivery("the message to nobody", message.ID+":steer")
-		if states := gone.attempts(t, pair.database); !slices.Equal(states, []string{"1:failed"}) {
-			t.Fatalf("%s reads %v, want attempt 1 alone, failed", gone.what, states)
+		if states := gone.attempts(t, pair.database); !slices.Equal(states, []string{"1:queued"}) {
+			t.Fatalf("%s reads %v, want attempt 1 alone, queued", gone.what, states)
 		}
 		if receipts := gone.receipts(t, pair.database); receipts != 1 {
 			t.Fatalf("%s: attempt 1 has %d delivery receipts, want one", gone.what, receipts)
+		}
+		subject := contracts.LegacyAgentSubject("never-known")
+		var held []string
+		for _, stored := range readStreamMessagesFrom(t, js, head) {
+			if stored.subject == subject {
+				held = append(held, stored.item.EventID+" under "+stored.item.DedupeKey)
+			}
+		}
+		want := *message.Deliveries[0].EnvelopeID + " under " +
+			contracts.AgentSendDedupeKey("never-known", message.ID+":steer")
+		if !slices.Equal(held, []string{want}) {
+			t.Fatalf("the stream holds %q on %s, want the one envelope attempt 1 names, %q", held, subject, want)
 		}
 	})
 
@@ -7581,7 +7609,7 @@ func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duratio
 		t.Fatalf("JetStream: %v", err)
 	}
 	// One copy, as the single test NATS server holds and the runs under test open.
-	state, err := redeliver.OpenState(nc, js, 1)
+	state, err := redeliver.OpenState(t.Context(), nc, js, 1)
 	if err != nil {
 		t.Fatalf("open the redelivery bucket: %v", err)
 	}

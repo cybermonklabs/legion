@@ -258,6 +258,8 @@ export const LONGEST_LABEL = "the-longest-label-the-header-never-holds";
  * still fits; a room that holds all of its words, or not one letter, throws.
  */
 export async function labelFillingTheRoom(page: Page, under: number): Promise<string> {
+  // The one caller waits for the labels drawn and no count first, so the line has settled; an
+  // error only throws.
   const filled = await propertiesLine(page).evaluate((line, under) => {
     const box = line.querySelector('[data-testid="issue-header-labels"]');
     const last = [...(box?.querySelectorAll<HTMLElement>("[data-header-label]") ?? [])].at(-1);
@@ -318,6 +320,8 @@ export function details(page: Page): Locator {
  *  menu's first action instead of closing it. The menu is the element the control names in
  *  `aria-controls`. */
 export async function actionsMenuDrop(page: Page): Promise<number> {
+  // The one caller waits for the control's `aria-expanded` to read true first, so the menu is
+  // open when this reads it; a miss only throws.
   const drop = await issueHeader(page)
     .getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions })
     .evaluate((control) => {
@@ -656,6 +660,8 @@ export async function expectHeaderWithinItsLimit(
   const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting`;
   await expect(filterRow(page), `the page draws no view row ${where}`).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
+  // The view row was waited visible just above, and every caller waits for the header drawn
+  // first; null only throws.
   const reading = await headerReading(page);
   if (reading === null) throw new Error(`the page draws no header or no view row ${where}`);
   const drawnAs = `${reading.lines.length} lines, ${reading.height.toFixed(1)} px`;
@@ -750,6 +756,8 @@ export const TYPEFACE = "Dispatch Inter";
 /** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
  *  rule. Throws when no rule declares the family. */
 export async function typefaceAddress(page: Page): Promise<string> {
+  // Callers wait for the header drawn first, and the page's script runs only once its stylesheet
+  // has loaded, so the rule is there; a miss only throws.
   const address = await page.evaluate((family) => {
     const find = (rules: CSSRuleList, base: string): string | null => {
       for (const rule of rules) {
@@ -882,6 +890,8 @@ export async function titleOfLines(page: Page, lines: number): Promise<string> {
   let title = "Edit";
   for (let index = 0; index < 400; index += 1) {
     title = `${title} ${words[index % words.length]}`;
+    // The caller waits for the header drawn first, and each call lays out and measures its own
+    // hidden copy within the call.
     const drawn = await page.evaluate((text) => {
       const heading = document.querySelector<HTMLElement>(
         "[data-issue-page] [data-issue-header] h1"

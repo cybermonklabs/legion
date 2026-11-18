@@ -121,7 +121,8 @@ test("delivers each dedupe key once and answers each relayed frame, never a rece
  * One Dispatch message as the listener publishes it for one send: `/v1/messages/send` mints a
  * fresh `event_id`, `source_event_id` and `trace_id` for every request and derives `dedupe_key`
  * from the idempotency key Dispatch passes, which is the same for an attempt and its same-mode
- * Retry (`packages/envoy/cmd/listener/api.go` messageEnvelope, sendHandler).
+ * Retry (`packages/envoy/internal/contracts/message_envelope.go` AgentSendEnvelope, which
+ * `packages/envoy/cmd/listener/api.go` sendHandler calls).
  */
 function listenerSend(send: string): string {
   return JSON.stringify({
@@ -1025,15 +1026,85 @@ test("with Envoy on and no NATS server the server serves its listener tools with
     expect(listed?.tools.map((tool) => tool.name)).toContain("envoy_send")
     expect(JSON.stringify(responses.get(3)?.["result"])).toContain("ses_no_nats")
     expect(responses.get(4)?.["result"]).toEqual({ content: [{ type: "text", text: "[]" }] })
-    expect(responses.get(5)?.["error"]).toMatchObject({
-      message: expect.stringContaining(
-        "inbound messages are off for this session: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)",
-      ),
+    // A tool's error is the tool's result, which the model reads, and no JSON-RPC error.
+    expect(responses.get(5)?.["error"]).toBeUndefined()
+    expect(responses.get(5)?.["result"]).toEqual({
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "inbound messages are off for this session: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)",
+          ),
+        },
+      ],
+      isError: true,
     })
     expect(stderr).toContain(
       "envoy-channel: Envoy's inbound messages are off: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL); the Envoy tools still work",
     )
     expect(calls).toEqual(["GET /v1/sessions"])
+    expect(exitCode).toBe(0)
+  } finally {
+    listener?.stop(true)
+  }
+}, 20_000)
+
+test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
+  const sentence =
+    "Your sending is rate limited. This message was not sent. This listener lets one session send " +
+    "4 messages a minute and 2 at once. You can send it again after 15 seconds."
+  let listener: Server<undefined> | undefined
+  try {
+    const home = temporaryHome("rate-limited")
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    const calls: string[] = []
+    // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
+    // packages/envoy/cmd/listener/sender_limit.go), to every call.
+    listener = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        calls.push(`${request.method} ${new URL(request.url).pathname}`)
+        return Response.json(
+          {
+            error: sentence,
+            reason: "sender_rate_limited",
+            retry_after_seconds: 15,
+            messages_per_minute: 4,
+            burst: 2,
+          },
+          { status: 429, headers: { "Retry-After": "15" } },
+        )
+      },
+    })
+    await writeFile(
+      join(configDirectory, "envoy.json"),
+      JSON.stringify({ envoy: { url: `http://127.0.0.1:${listener.port}` } }),
+    )
+    // No NATS server, so the server registers nothing and the tools' calls are the only ones.
+    const { exitCode, responses } = await runChannelServer(
+      {
+        HOME: home,
+        CLAUDE_CONFIG_DIR: configDirectory,
+        CLAUDE_CODE_SESSION_ID: "ses_rate_limited",
+        CLAUDE_PLUGIN_DATA: home,
+      },
+      [
+        { name: "envoy_send", arguments: { session_id: "ses_target", message: "hello" } },
+        { name: "envoy_publish", arguments: { topic: "notifications.team.x", message: "hello" } },
+      ],
+    )
+
+    for (const id of [4, 5]) {
+      expect(responses.get(id)?.["error"]).toBeUndefined()
+      expect(responses.get(id)?.["result"]).toEqual({
+        content: [{ type: "text", text: `${sentence} (reason: sender_rate_limited)` }],
+        isError: true,
+      })
+    }
+    // One call to each route, in whichever order the two concurrent calls reached the listener:
+    // a refusal is not sent again.
+    expect([...calls].sort()).toEqual(["POST /v1/messages/publish", "POST /v1/messages/send"])
     expect(exitCode).toBe(0)
   } finally {
     listener?.stop(true)

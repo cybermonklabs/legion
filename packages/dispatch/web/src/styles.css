@@ -1003,6 +1003,20 @@ html:has([data-issue-page]) {
   line-height: inherit;
 }
 
+/* A wide block in a node's words - a table of many columns, a long line of code - scrolls
+   sideways inside itself, as a table does in a document's reading (`.dispatch-doc .milkdown
+   table` above), so neither its row nor the page is ever wider than the screen: at 390 px a
+   note holding a table of sixteen columns made the whole page 794 px wide. A table's own box
+   takes no overflow, so the table is drawn as a block; a code block is one already. A picture
+   is never wider than the words: Tailwind's preflight, and for a Dispatch picture the rules
+   below, hold it to their width. */
+[data-node-words] .dispatch-markdown table,
+[data-node-words] .dispatch-markdown pre {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 /* A link in a node's words is the words' own ink, underlined in the bullets' grey 3 px under the
    text (the prototype's `.body a`), never the app's link blue: the underline says it is a link,
    and the page's colours are its palette's (part G's R4, ruling 5). */

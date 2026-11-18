@@ -129,8 +129,8 @@ type outbox struct {
 	// launches run issues side by side, so several issues' provisions are in flight together.
 	provisions provisionLocks
 	// githubAPI is the GitHub REST root a row's GitHub call is made under — an issue_branch row's
-	// create and a check_compare's compare: the workflow's
-	// (workflowRuntime.githubAPI), which empty, in production, is https://api.github.com.
+	// create: the workflow's (workflowRuntime.githubAPI), which empty, in production, is
+	// https://api.github.com.
 	githubAPI string
 	// repositories is the daemon's view of the project's repositories, which the outbox reads for
 	// the deployment's repository equivalence alone (`repository_renames`): which repository
@@ -649,7 +649,8 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 // which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
 // start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
 // tree or of the child ends rather than an operator, and then for the branch row a re-admission
-// queued for the child (startRoot), whose own failures that row logs.
+// queued for the child (startRoot), whose own failures that row logs, and a delivery row waiting
+// for a launch the wake pacing parked (parkedWait), which that launch's turn ends.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -657,8 +658,9 @@ func routineWait(err error) bool {
 
 // routineWaiting is a wait that is routine (routineWait), so every attempt of its row stays at
 // debug after the first rather than turning into a warning from the seventh (waitWarnAttempts),
-// however long the wait lasts. err is the wait itself (wait.Errorf), which it unwraps to, so
-// settle still reads the row as waiting (wait.ErrWaiting) and retries it on its backoff.
+// however long the wait lasts. err is the wait itself (wait.Errorf, or wait.Until for a wait that
+// names its moment, as parkedWait's does), which it unwraps to, so settle still reads the row as
+// waiting (wait.ErrWaiting) and retries it on its backoff, or at that moment (wait.UntilAt).
 type routineWaiting struct{ err error }
 
 func (w routineWaiting) Error() string { return w.err.Error() }
@@ -1511,17 +1513,25 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	if woken, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
+	// A launch of the architect the wake pacing holds is waited for until it runs, the claim read
+	// again at its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is
+	// a notice held for its architect still (errNoticeWaits).
+	if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
 		return err
-	} else if woken {
+	} else if !turn.IsZero() {
+		return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
+			row.ID, architect, turn.UTC().Format(time.RFC3339))))
+	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
 	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
-		// holds it (record.Notice.PacedAt): this row runs once, then, rather than climbing its
-		// backoff to it — over a hold of tens of minutes that is a Warn every attempt from the
-		// seventh (settle), about one wake's worth of noise per architect in a wave. The hold
-		// itself is right: it keeps the architect to the one wake its catch-up is.
+		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
+		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
+		// This row runs once, then, rather than climbing its backoff to it — over a hold of tens
+		// of minutes that is a Warn every attempt from the seventh (settle), about one wake's
+		// worth of noise per architect in a wave. The hold itself is right: it keeps the
+		// architect to the one wake its catch-up is.
 		if now := r.now().UTC(); due.After(now) {
 			return wait.Until(due, fmt.Sprintf("%s's notice row %d waits behind its row %d, due at %s",
 				architect, row.ID, earlier, due.Format(time.RFC3339)))
@@ -1544,9 +1554,20 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
 // the listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392).
+//
+// A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
+// says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
+// left: a release between this read and the publish, which the listener refuses (holder_lapsed)
+// and wakes the role on. An outbox with no supervisor (a test's), or a role no machine of this
+// daemon holds, publishes as before.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
+	}
+	if r.supervisor != nil && r.supervisedClaim(claim.Token(payload.Role)).Released() {
+		r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		return nil
 	}
 	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
@@ -1587,10 +1608,23 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // and ends a running wait, the Claude Code bridge puts it in that session's inbox, and the role's
 // turn, jobs and process run on.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
-// holding it as an architect's notice is held: the role's next task from the daemon names its phase
-// anyway, so a message nobody is there to read is worth nothing later, and a role that never claims
-// its topic — a session that has not registered, or one that failed — would hold the row for ever.
+// The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept), so a topic with no
+// live holder is answered kept: the listener holds the message on the role's kept lane for one
+// hour and hands it to the next session that holds the role live in that hour, and the row ends
+// with one log line, since the listener is then the message's keeper and the row holds nothing.
+// That is what reaches a released role: the row's first attempt wakes the role's pod
+// (wakeForDelivery) and waits on its backoff, an attempt that finds the wake pacing holding that
+// resume waits for its turn, reading the claim again at most parkedWakeBound apart (parkedWait),
+// and the first attempt after the resume has launched meets a woken session that has not claimed
+// the role yet, so the listener keeps the message and hands it over when that session claims the
+// role or registers again. A listener before #4079 keeps nothing for a claim whose holder is not
+// live; publishKeptToRole says what each answer does to the row.
+//
+// The row is not held for a holder as an architect's notice is held, since the role's next task
+// from the daemon names its phase anyway, so the kept copy is the message's one keeper:
+// publishKeptToRole says why that copy can reach a later round's session and what bounds it, and
+// the phases the message names tell its reader which round it was for.
+//
 // The three answers of the confirmed publish route are different failures and keep the ordinary
 // retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take it on the next
 // attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can be
@@ -1605,15 +1639,23 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 		return err
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
-	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
-	// than finishing undelivered. This runs before the publish, which would otherwise answer
-	// ErrNoHolder and drop the message the woken role is owed.
-	if woken, err := r.wakeForDelivery(ctx, token, "the end of "+row.Issue+"'s "+string(payload.From)+" phase"); err != nil {
+	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
+	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
+	// wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait). The kept publish raises the
+	// listener's own wake report too, but this wake is the daemon's and does not rest on what the
+	// listener does with the publish, so it brings the pod back against a listener before #4079 as
+	// well. The listener's report then meets the role's open resume, and the pod starts once.
+	if waits, turn, err := r.wakeForDelivery(ctx, token, "the end of "+row.Issue+"'s "+string(payload.From)+" phase"); err != nil {
 		return err
-	} else if woken {
+	} else if !turn.IsZero() {
+		return r.parkedWait(turn, fmt.Sprintf("the end of %s's %s phase waits for its %s's launch, which the wake pacing holds until %s",
+			row.Issue, payload.From, payload.Role, turn.UTC().Format(time.RFC3339)))
+	} else if waits {
 		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
 	}
-	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"outbox phase-ended message finished: the listener keeps it for the role's next holder",
 		"outbox phase-ended message finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To); err != nil {
 		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, err)
@@ -1631,13 +1673,23 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 // message stops nothing: the session takes it at its next model turn, and the role's turn, jobs
 // and process run on.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
-// holding it. The hook wrote its words for this round, and nothing repeats them: the move back
-// they were written for has been made, and no later task of the daemon's carries them, so a
-// prompt nobody is there to read is worth nothing later either. An unheld topic is besides the
-// ordinary state for a role an issue has never had — the deployment's default hook writes a row
-// for the reviewer, and the work of an issue may never have reached one — and a role that never
-// claims its topic would hold the row for ever.
+// The row publishes with keep, as a phase-ended row does (publishKeptToRole): a topic with no
+// live holder is answered kept, the listener holding the prompt on the role's kept lane for one
+// hour for the next session that holds the role live, and the row ends with one log line, the
+// listener being the prompt's keeper. A released role's woken session is that next holder: the
+// row's first attempt wakes the pod (wakeForDelivery) and waits on its backoff, or, while the wake
+// pacing holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
+// (parkedWait), and the attempt after the resume has launched publishes before the woken session
+// has claimed the role. A listener before #4079 keeps nothing for a claim whose holder is not
+// live; publishKeptToRole says what each answer does to the row.
+//
+// The hook wrote its words for this round, and nothing repeats them: the move back they were
+// written for has been made, and no later task of the daemon's carries them, so the kept copy is
+// the prompt's one keeper. An unheld topic is besides the ordinary state for a role an issue has
+// never had — the deployment's default hook writes a row for the reviewer, and the work of an
+// issue may never have reached one — so a reviewer started inside the hour can be handed an
+// earlier round's prompt: publishKeptToRole says why that is intended and what bounds it, and the
+// move back and the counts the prompt names tell its reader which round it was for.
 //
 // The three answers of the confirmed publish route are different failures and keep the ordinary
 // retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take the prompt on the
@@ -1653,15 +1705,23 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 		return err
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
-	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
-	// than finishing undelivered. This runs before the publish, which would otherwise answer
-	// ErrNoHolder and drop the prompt the woken role is owed.
-	if woken, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
+	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
+	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
+	// wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
+	// back whatever the listener does with the publish, a listener before #4079 included; the
+	// listener's own report of the kept publish meets the role's open resume, and the pod starts
+	// once.
+	if waits, turn, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
 		return err
-	} else if woken {
+	} else if !turn.IsZero() {
+		return r.parkedWait(turn, fmt.Sprintf("the %s hook's prompt for %s waits for its %s's launch, which the wake pacing holds until %s",
+			payload.Hook, row.Issue, payload.Role, turn.UTC().Format(time.RFC3339)))
+	} else if waits {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"outbox hook prompt finished: the listener keeps it for the role's next holder",
 		"outbox hook prompt finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
@@ -1678,7 +1738,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
-// holder, and the round ends at its bound whether or not the role answers.
+// holder, so its ask is lost as every ask that reached no session is (below), the sweep asks the
+// claim again once its agent is ready again, and the round ends at its bound whether or not the
+// role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -1686,10 +1748,27 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line. Every other
-// failure of the publish keeps the ordinary retry, as phaseEnded's does: a holder that did not
-// confirm in time, one that does not advertise the delivery mode, and a forward the listener's
-// own NATS grant denies can each go through on a later attempt.
+// The publish and the claim's ask mark are one step of the claim's machine
+// (supervise.Machine.PublishUpdateAsk), whose comment holds the order and why it neither loses an
+// ask nor gives one twice. In short: the machine's lock is taken without waiting, the claim is
+// read under it, the ask is published, and the claim is marked asked only once the publish
+// reached a session, all before the row can end. A machine whose lock is held is a wait: this
+// issue's role-message lane runs one row at a time (record.LaneKey), and a Sandbox relaunch holds
+// that lock for minutes, so waiting for it would hold every role message of this issue behind one
+// decision. The row keeps its place, nothing was published, and its next attempt is the first
+// publish. A claim an earlier ask of the round already reached is published nothing, so a second
+// row of one round asks no role twice.
+//
+// A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
+// nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
+// claim again (askRound). The round waits for every claim it asks until its bound, and a claim
+// the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
+// is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
+// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
+// keeps the ordinary retry, as phaseEnded's does: a holder that did not confirm in time, one that
+// does not advertise the delivery mode, and a forward the listener's own NATS grant denies can
+// each go through on a later attempt. A mark the store did not take keeps the row too, and the
+// next attempt writes it and publishes nothing.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -1701,26 +1780,47 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return err
 	}
-	if current := r.supervisedClaim(token).UpdateRound; current != payload.Round {
-		r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
-			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
+	machine, found := r.supervisor.Machine(token)
+	if current := r.supervisedClaim(token).UpdateRound; !found || current != payload.Round {
+		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	published, err := r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
-		"outbox update ask finished undelivered: no live session holds the role", fields...)
-	if err != nil {
+	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
+		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
+			"outbox update ask finished undelivered: no live session holds the role", fields...)
+	})
+	switch {
+	case errors.Is(err, supervise.ErrMachineBusy):
+		return wait.Errorf("the ask of round %s for %s waits for its %s's machine, whose lock is held; nothing is published yet: %w",
+			payload.Round, row.Issue, payload.Role, err)
+	case err != nil && (outcome == supervise.UpdateAskDelivered || outcome == supervise.UpdateAskAlreadyDelivered):
+		return fmt.Errorf("the ask of round %s for %s reached its %s, and the claim write that marks it asked is not made yet: %w",
+			payload.Round, row.Issue, payload.Role, err)
+	case err != nil:
 		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
 	}
-	if published {
+	switch outcome {
+	case supervise.UpdateAskDelivered:
 		r.log.Info("outbox update ask published to the role topic", fields...)
+	case supervise.UpdateAskAlreadyDelivered:
+		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
+	case supervise.UpdateAskOutOfRound:
+		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
 	}
 	return nil
 }
 
+// updateAskLeftRound is the one line of an update-ask row that finishes without a publish because
+// the claim no longer records the row's round, current being the round it records now.
+func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateAsk, token claim.Token, current string) {
+	r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
+		"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
+}
+
 // roleToken is the claim of role on the row's issue in project, whose Envoy topic a role message
-// of the row is published to (publishToRole, under notify.RoleTopicPrefix).
+// of the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix).
 func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Token, error) {
 	token, err := claim.NewToken(project, row.Issue, role)
 	if err != nil {
@@ -1731,20 +1831,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 
 // publishToRole publishes message to topic, the Envoy topic of one role's claim
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
-// one delivery. It is the publish that phaseEnded, hookPrompt and updateAsk share. Each of them
-// decides what comes before the publish, and each wraps the error it returns.
-//
-// Three other executors publish to a role's topic, each through its own call of the publisher and
-// with its own rules for what the publisher answers: deliverNotice, an architect's notice, holds
-// the row for a topic with no holder while the owning architect can hold its role again
-// (noticeAnswered); roleMessage ends the row for a topic with no holder, waits for a holder
-// the listener calls unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder
-// that refuses the delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own
-// NATS grant denies (notify.ErrPublishDenied); and mergeQueueRemoval, the merger's message of a
-// removal from the merge queue, holds the row for a topic with no holder and for an unresponsive
-// holder while the merger's claim has neither failed nor retired, and retries every other
-// failure (merge_queue_removal.go). So whoever changes the rule for a topic with no holder must
-// read all six executors, not this function alone.
+// one delivery. It is updateAsk's publish, with keep: false; phaseEnded and hookPrompt publish
+// with keep through publishKeptToRole, which also says how each executor that publishes to a
+// role's topic answers the publisher.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
 // fields, and the answer is false with no error. Every other failure is returned as the
@@ -1757,6 +1846,61 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
+// (notify.RoleTopicPrefix and the claim's token), under the row's own key, and asks the listener
+// to keep it for the role's next live holder. A retry of the row while its copy is still on the
+// role's kept lane stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's
+// answers and what a repeat after the copy's hand-over does. It is the publish phaseEnded and
+// hookPrompt share; each decides what comes before it, and each wraps the error it returns. What
+// each answer does to the row:
+//
+//   - a live holder took the message: the row ends, with nothing logged;
+//   - the listener kept the message on the role's kept lane for one hour: the row ends with kept
+//     logged at Info with fields, the listener being the message's keeper from there;
+//   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder): the row
+//     ends undelivered with noHolder logged at Info with fields;
+//   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
+//     failure: the error is returned as the publisher gave it, and the row keeps its retry.
+//
+// Neither row is held for a holder as an architect's notice is held, so the kept copy is the
+// message's one keeper, and it can reach a later session than the one it was written for: for a
+// role nobody claims, the listener hands it to the first session that claims the role inside the
+// hour, which can be a later round's. That is intended — the role's topic names the issue's role,
+// not one session of it — and the hour bounds it: the listener drops a copy no live holder took
+// inside its hour (roleKeepWindow, packages/envoy/cmd/listener/role_keep.go), so no session is
+// handed one older than that, and a forwarded copy carries when it was kept (Envoy's
+// contracts.Envelope.KeptAt) beside what the message names of its round, so its reader judges
+// which round it was for. An unheld topic of a role that never claims it — a session that has not
+// registered, or one that failed — holds no row either: the row ends, and the kept copy is
+// dropped once its hour ends.
+//
+// Four other executors publish to a role's topic, each with its own rules for what the publisher
+// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
+// every other failure; deliverNotice, an architect's notice, holds the row for
+// a topic with no holder while the owning architect can hold its role again (noticeAnswered);
+// roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
+// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
+// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied); and mergeQueueRemoval, the merger's message of a removal from the
+// merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
+// merger's claim has neither failed nor retired, and retries every other failure
+// (merge_queue_removal.go). Each of those four publishes with keep: false: deliverNotice and
+// mergeQueueRemoval hold their own row, and a kept copy beside it would be a second keeper of one
+// message; roleMessage's message is stale by the time a role nobody holds is claimed; and
+// updateAsk's round ends at its bound whether or not the role answers. So whoever changes the
+// rule for a topic with no holder must read all six executors, not this function alone.
+func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
+	keeps, err := r.notices.PublishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
+	switch {
+	case errors.Is(err, notify.ErrNoHolder):
+		r.log.Info(noHolder, fields...)
+		return nil
+	case err == nil && keeps:
+		r.log.Info(kept, fields...)
+	}
+	return err
 }
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
@@ -1967,7 +2111,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
 		// claim's write of the delivery takes those rows from this start row and holds them
 		// under that claim and delivery id, and the write recording the turn's confirmation
-		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
+		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
+		// fact that a reviewer's task ends with the daemon's two sentences of its review round
+		// (record.SuperviseRequest.RoundNamed): the one place each prompt is composed reads it
+		// there, and gives a reviewer's task of a row that lacks it, which only a row of the
+		// release before this one can be, those sentences naming no commit and no entry
+		// (supervise's Delivery.message).
 		var task *supervise.RequestDeliver
 		if payload.Task != "" {
 			kept, err := keptJSON(payload.Kept)
@@ -1975,8 +2124,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed,
+				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim

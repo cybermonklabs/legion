@@ -38,7 +38,7 @@ on:
 
 jobs:
   sessions-script:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # One Bun suite over a local Postgres: the measured run is seconds, and ten minutes fails a
     # hung connection rather than waiting out the runner's own limit.
     timeout-minutes: 10

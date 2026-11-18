@@ -33,6 +33,7 @@ export interface PageWords {
     | "approval_version_of"
     | "cancel"
     | "choose_priority"
+    | "close"
     | "components_inherited_from"
     | "components_none"
     | "components_not_attached"
@@ -43,6 +44,7 @@ export interface PageWords {
     | "external_link_unsafe"
     | "github_checks"
     | "no_repository"
+    | "none"
     | "not_requested"
     | "not_running"
     | "priority_to_advance"
@@ -91,6 +93,13 @@ export function withoutEllipsis(words: string): string {
  * It is a context rather than a prop because Details is drawn in the margin, which the shell
  * mounts beside the router, so no prop of the page reaches it. Outside the issue page it holds
  * nothing, and every control draws what it draws on `main`.
+ *
+ * Inside it a control also draws in the page's colours (`PAGE_COLORS`), lets every value wrap
+ * with `[overflow-wrap:anywhere]`, draws a glyph the page's typeface lacks as an inline svg, and
+ * keeps the focus on a control whose own write is out (`aria-disabled`, never `disabled`); the
+ * cases of `features/issue-page/shared-controls.tooltips.test.tsx` and
+ * `shared-controls.options.test.tsx` hold each rule. No control imports a module of
+ * `features/issue-page/`, so the page's word list loads with that page alone.
  */
 const SurfaceContext = createContext<PageWords | null>(null);
 

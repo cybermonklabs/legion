@@ -303,6 +303,8 @@ export function focusedNodeId(page: Page): Promise<string | null> {
 /** Whether the keyboard focus is inside `scope`: a chord that reaches a target has to put the
  *  focus in it, not only draw it. A scope the page does not draw answers false. */
 export async function focusInside(scope: Locator): Promise<boolean> {
+  // An answer for this instant, as a predicate is: a caller that means eventually polls it, and
+  // a scope not drawn answers false now rather than wait in `evaluate` for it to attach.
   if ((await scope.count()) === 0) return false;
   return await scope
     .first()
@@ -321,6 +323,8 @@ export async function focusInside(scope: Locator): Promise<boolean> {
  * control the page leaves the reader on rather than the whole part around it.
  */
 export async function onScreen(scope: Locator): Promise<boolean> {
+  // An answer for this instant, as a predicate is: a caller that means eventually polls it, and
+  // a scope not drawn answers false now rather than wait in `evaluate` for it to attach.
   if ((await scope.count()) === 0) return false;
   return await scope.first().evaluate(
     (element, { footHeight, selectors }) => {
@@ -683,11 +687,15 @@ const BRANCHES_OPENED_AT_MOST = 200;
 
 /** Opens every branch the tree folded to one line because it sits below the drawn levels
  *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a row reads the nodes such a branch holds as rows of
- *  their own, as `issue-page-g.ts`'s `unfoldEveryBranch` does with a fold control. */
+ *  their own, as `issue-page-g.ts`'s `unfoldEveryBranch` does with a fold control. It opens the
+ *  tree as it stands, so a caller first waits for the tree it means to open to be drawn. No row
+ *  of this part calls it: it is the later parts' (their rows import it from this file). */
 export async function openEveryDeeperBranch(page: Page): Promise<void> {
   const controls = branchMoreRows(page).getByRole("button");
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
+    // The first count reads the tree as its caller waited for it, and each press draws the
+    // branch it opens before its click resolves, so none left is every deeper branch open.
     if ((await first.count()) === 0) return;
     await first.click();
   }
@@ -709,7 +717,11 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
   // is still loading answers zero for both shapes.
   await row.waitFor();
   const toggle = row.getByRole("button", { exact: true, name });
+  // The wait above drew the row, which draws one shape or the other with it by one media query
+  // and its negation, so one count says which shape this width draws.
   if ((await toggle.count()) > 0) {
+    // Its `aria-pressed` is drawn with it, from the address the page is on, so it says whether
+    // its view is on now: a press on one already on would turn it off.
     if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
     return;
   }
@@ -727,6 +739,8 @@ export async function expectActivePreset(page: Page, name: string): Promise<void
   const row = presetRow(page);
   await row.waitFor();
   const toggle = row.getByRole("button", { exact: true, name });
+  // The wait above drew the row, which draws one shape or the other with it by one media query
+  // and its negation, so one count says which shape this width draws.
   if ((await toggle.count()) > 0) {
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
     return;

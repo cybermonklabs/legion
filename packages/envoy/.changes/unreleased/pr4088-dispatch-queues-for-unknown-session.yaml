@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Dispatch now queues a person's targeted message to a session that neither the listener's registry
+  nor its known-session store holds, by publishing it on the session's agent subject, instead of
+  failing it with `no live session`. The attempt reads `queued`, as one the listener stores for a
+  stopped session does, and the listener gives the copy up after its retry window with the agent
+  wake, so a released Legion pod comes back and its session reads the message. A Dispatch with no
+  NATS, a failed publish, a message to a role, a send that sets `connected_only`, and a model or
+  thinking switch still fail with `no live session`.

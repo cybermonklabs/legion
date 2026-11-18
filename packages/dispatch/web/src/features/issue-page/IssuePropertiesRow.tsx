@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -504,9 +504,14 @@ function HeaderLabels({
   // A width the line changes to is read again on the next frame, so the reading is a commit
   // of its own rather than one inside the observer's notification. A typeface that loads after
   // the reading can widen the chips while the box keeps its width, which the observer does not
-  // see, so the line is read again on each `loadingdone` of the document's fonts too.
+  // see, so the line is read again on each `loadingdone` of the document's fonts too. Both are
+  // added in a layout effect, which runs in the same commit right after the reading above, so no
+  // event falls between the two. Added after the page is drawn, they would miss a typeface that
+  // finished loading in that gap: its `loadingdone` would fire with no listener, and the
+  // observer's first notification would find the width unchanged, so the line would keep the
+  // fit it read with the old typeface.
   const hasLabels = labels.length > 0;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = box.current;
     if (!hasLabels || element === null || typeof ResizeObserver === "undefined") return;
     let frame = 0;
