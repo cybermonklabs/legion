@@ -246,7 +246,7 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		}
 		return read(key)
 	}
-	began := &factRuns{ends: runs.ends, closed: map[string]bool{}}
+	began := &factRuns{}
 	for _, key := range order {
 		stood, err := stoodThen(key)
 		if err != nil {

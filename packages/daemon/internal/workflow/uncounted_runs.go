@@ -45,7 +45,7 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 	}
 	read := func(key string) (*record.Issue, error) { return e.store.Issue(ctx, tx, key) }
 	// No fact runs at the boot, so no linger is closed by one (mergeCanLand).
-	booting := &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}}
+	booting := &factRuns{}
 	opened := 0
 	for _, issue := range issues {
 		step, ok := standingStep(issue)
