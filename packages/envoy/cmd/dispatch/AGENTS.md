@@ -455,40 +455,13 @@ write identity errors with `identity.WriteError`.
   `SignIn` retires the plain-text token it replaces through the same
   `retire`. A sealed value is never sent to the pool.
 - `DISPATCH_IDENTITY=iap` is for a Dispatch behind Google Cloud's
-  Identity-Aware Proxy. `identity.IAPIdentity` names the person from the
-  assertion IAP signs on each request (`X-Goog-IAP-JWT-Assertion`) and never
-  from IAP's unsigned `X-Goog-Authenticated-User-*` headers.
-  `oidc.IAPVerifier` (`internal/oidc/iap.go`) checks it: ES256 alone, against
-  IAP's key set at the fixed `oidc.IAPKeySetURL` (`oidc.NewKeysAt`, since IAP
-  publishes no discovery document; `bootConfig.IAPKeySetURL`, which no setting
-  changes, is how a test points it at a key set it serves), the issuer
-  `https://cloud.google.com/iap`, the audience `DISPATCH_IAP_AUDIENCE`, and
-  `exp` and `iat` each with `oidc.IAPClockSkew` (an `iat` ahead of it is
-  `oidc.ErrNotYetValid`). It reads `email`, `hd` and `sub` from the verified
-  payload (`readWorkspaceClaims`), and `EmailVerified` is true only for a
-  Google account's `sub` (`accounts.google.com:`). The membership rule is
-  `identity.DomainRule` from `DISPATCH_SIGNIN_DOMAIN`, which
-  `checkIAPSignInSettings` requires, refusing the issuer, client ID, client
-  secret and group by name. Each request is decided on its own: no session,
-  refresh token or `Membership`; an admitted person is `Record`ed; a refusal
-  is `ErrNoIdentity` (401), and an unreadable key set
-  `ErrSignInUnavailable` (503). An expired assertion is
-  `ErrCredentialExpired` (still `ErrNoIdentity`, 401) only when IAP signed
-  it and nothing else is wrong: go-oidc reports an expired payload before
-  the signature, and `classify` ranks exp ahead of it, so
-  `oidc.IAPVerifier.Verify` checks an expired assertion again with a second
-  go-oidc verifier on the same key set and `SkipExpiryCheck`, refusing a bad
-  signature as `ErrSignature`, and only then answers an
-  `*oidc.IAPExpiredError` carrying the claims; `IAPIdentity` applies the rule
-  to them, and a refused person is `ErrNoIdentity` at WARN. A websocket's
-  heartbeat re-checks the assertion its upgrade carried, which IAP gives ten
-  minutes, so `api.whileCallerResolves` reads `ErrCredentialExpired` as a
-  rotation: it cancels with `errCredentialExpired`, and the live socket
-  closes `4001` (`credential expired`) and the document socket `4412` (the
-  cause's `CloseCode`, which ygo sends); the page reopens on a fresh
-  assertion. Every other refusal closes `1008`/`1006` as before.
-  `routes.enforceCookieOrigin` holds an unsafe request that carries an
-  assertion to Dispatch's origin, as it holds one with a session cookie.
+  Identity-Aware Proxy; how it works is in the README's
+  [Identity](README.md#identity) section. Keep these true: a person is named
+  only from the `X-Goog-IAP-JWT-Assertion` that `oidc.IAPVerifier` verified,
+  never from IAP's unsigned headers; only the domain rule admits; and an
+  assertion is `identity.ErrCredentialExpired`, which a socket's heartbeat
+  rotates on and nothing admits on, only when IAP's keys verify it for this
+  audience and its person is admitted. Any other refusal is `ErrNoIdentity`.
 - `DISPATCH_IDENTITY=header:<Header-Name>` is for tests and local harnesses
   only, never for a production Dispatch deployment. It accepts the named
   header's value lowercased and records it in `people`; it requires

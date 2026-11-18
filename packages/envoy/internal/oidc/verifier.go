@@ -107,6 +107,11 @@ type Verifier struct {
 	verifier *gooidc.IDTokenVerifier
 	issuer   string
 	audience string
+	// skipExpiry is set when verifier skips the exp check (gooidc.Config.SkipExpiryCheck), as
+	// IAPVerifier's does, which checks the verified exp itself. classify then reports no failure
+	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
+	// and says nothing about a token's age.
+	skipExpiry bool
 }
 
 // New reads the issuer's OIDC discovery document now and returns a verifier for
@@ -271,6 +276,10 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 // cancelled says "no verdict is trustworthy", where the alternative spends
 // "signature" — the word an operator reads as a forgery attempt — on callers
 // that merely hung up.
+//
+// A verifier that skips the exp check (skipExpiry) has no ErrExpired here at all: go-oidc returns
+// it no TokenExpiredError, and the exp case below is passed over, so a token whose signature
+// failed is a signature failure (or ErrIssuerUnavailable) whatever its payload's exp says.
 func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%w: %v", ErrCancelled, ctxErr)
@@ -287,7 +296,7 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
 	case !slices.Contains(claims.Audience, v.audience):
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
-	case claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
+	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
 	case errors.Is(keySetErr, ErrKeySet):
 		return fmt.Errorf("%w: %w", ErrIssuerUnavailable, keySetErr)

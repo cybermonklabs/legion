@@ -2,7 +2,6 @@ package oidc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,7 +21,7 @@ const IAPKeySetURL = "https://www.gstatic.com/iap/verify/public_key-jwk"
 
 // IAPClockSkew is how far IAP's clock and this process's may disagree, the 30 seconds Google
 // documents for an assertion's exp and iat alike: an assertion is taken until this long after its
-// exp, and from this long before its iat.
+// exp, and from this long before its iat (or its nbf, which IAP does not write).
 const IAPClockSkew = 30 * time.Second
 
 // iapGoogleAccountSubject begins the sub of an assertion IAP signs for a Google account; an
@@ -49,38 +48,27 @@ func (e *IAPExpiredError) Unwrap() error { return ErrExpired }
 // IAPVerifier verifies the assertions IAP signs for one audience, over one key cache.
 type IAPVerifier struct {
 	verifier *Verifier
-	// ignoringExpiry is the same check on the same key set with no expiry check, which Verify asks
-	// only of an assertion the first check called expired: go-oidc reports an expired payload
-	// whatever its signature, and classify ranks a payload's exp ahead of the signature, so
-	// ErrExpired alone does not say that IAP signed the assertion.
-	ignoringExpiry *gooidc.IDTokenVerifier
 }
 
 // NewIAPVerifier returns the verifier of IAP's assertions to audience, checking each signature
 // against keys: NewKeysAt(IAPKeySetURL) in a deployment, a set the test serves in a test. It reads
 // nothing; the first Verify reads the set.
+//
+// go-oidc checks the algorithm (ES256 alone, the one IAP signs with, so an assertion under any
+// other is refused before a key is asked for), the signature, the issuer and the audience, and
+// skips the exp check: Verify checks the verified exp and iat itself, so an assertion is called
+// expired only once everything else about it holds. skipExpiry keeps classify to that too.
 func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
-	// ES256 alone, the one algorithm IAP signs with, so an assertion under any other is refused
-	// before a key is asked for.
-	algorithms := []string{string(jose.ES256)}
-	return &IAPVerifier{
-		verifier: &Verifier{
-			// Now runs IAPClockSkew behind this process's clock, so go-oidc's expiry check
-			// takes an assertion until the skew past its exp.
-			verifier: gooidc.NewVerifier(IAPIssuer, keySet{keys: keys}, &gooidc.Config{
-				ClientID:             audience,
-				SupportedSigningAlgs: algorithms,
-				Now:                  func() time.Time { return time.Now().Add(-IAPClockSkew) },
-			}),
-			issuer:   IAPIssuer,
-			audience: audience,
-		},
-		ignoringExpiry: gooidc.NewVerifier(IAPIssuer, keySet{keys: keys}, &gooidc.Config{
+	return &IAPVerifier{verifier: &Verifier{
+		verifier: gooidc.NewVerifier(IAPIssuer, keySet{keys: keys}, &gooidc.Config{
 			ClientID:             audience,
-			SupportedSigningAlgs: algorithms,
+			SupportedSigningAlgs: []string{string(jose.ES256)},
 			SkipExpiryCheck:      true,
 		}),
-	}
+		issuer:     IAPIssuer,
+		audience:   audience,
+		skipExpiry: true,
+	}}
 }
 
 // Verify checks raw, an X-Goog-IAP-JWT-Assertion header's value, as Google documents
@@ -95,66 +83,42 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 // EmailVerified is true for an assertion whose sub names a Google account and false for any
 // other, an external identity's.
 //
-// Every error wraps one of Verify's classes, ErrNotYetValid for an iat further ahead than the
-// skew, or ErrMalformed for an assertion with no iat or no exp. An assertion past its exp is an
-// *IAPExpiredError only once its signature verifies against IAP's key set and every other check
-// passes (expired); one whose signature does not is ErrSignature, or ErrIssuerUnavailable when
-// the key set cannot be read.
+// The checks run in this order, and an assertion is refused for the first that fails: the
+// compact serialization, then go-oidc's algorithm, signature, issuer and audience (Verifier.verify,
+// whose refusals classify names without ever calling one expired); then on the verified payload
+// an exp present (ErrMalformed), an iat present (ErrMalformed) and not further ahead than the skew
+// (ErrNotYetValid), an nbf, where one is written, not further ahead than the skew
+// (ErrNotYetValid), and claims of the right types (ErrMalformed). Only an assertion that passes
+// all of them and whose exp is more than the skew past is an *IAPExpiredError.
 func (v *IAPVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	token, claims, err := v.verifier.verify(ctx, raw)
-	if errors.Is(err, ErrExpired) {
-		return Claims{}, v.expired(ctx, raw)
-	}
 	if err != nil {
 		return Claims{}, err
 	}
-	return assertionClaims(token, claims)
-}
-
-// expired judges an assertion the first check called expired, by the same check with no expiry
-// check. go-oidc reads the issuer and audience before the exp, so the first check has passed them
-// already, and what this one adds is the algorithm and the signature against IAP's key set. An
-// assertion that passes, with an exp and an iat that pass, is an *IAPExpiredError carrying its
-// claims; one that does not is refused for what failed, an algorithm other than ES256 or a
-// signature IAP's keys do not verify being ErrSignature (the class Verify gives a fresh assertion
-// signed so), a key set that could not be read ErrIssuerUnavailable, and an ended context
-// ErrCancelled, each decided here and not by classify, which would call the assertion expired
-// again.
-func (v *IAPVerifier) expired(ctx context.Context, raw string) error {
-	keyCtx, keySetErr := withKeySetError(ctx)
-	token, err := v.ignoringExpiry.Verify(keyCtx, stripSpaces(raw))
-	if err != nil {
-		switch {
-		case ctx.Err() != nil:
-			return fmt.Errorf("%w: %v", ErrCancelled, ctx.Err())
-		case errors.Is(keySetErr.err, ErrKeySet):
-			return fmt.Errorf("%w: %w", ErrIssuerUnavailable, keySetErr.err)
-		default:
-			return fmt.Errorf("%w: the assertion is past its exp, and IAP's keys do not verify it", ErrSignature)
-		}
+	// go-oidc checks nbf only beside the exp it skips here, so it is read from the payload.
+	var times struct {
+		NotBefore *float64 `json:"nbf"`
 	}
-	if token.Expiry.IsZero() {
-		return fmt.Errorf("%w: the assertion carries no exp", ErrMalformed)
+	if err := token.Claims(&times); err != nil {
+		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
-	claims, err := assertionClaims(token, Claims{Subject: token.Subject, Issuer: token.Issuer, Audience: token.Audience, Expiry: token.Expiry})
-	if err != nil {
-		return err
-	}
-	return &IAPExpiredError{Claims: claims}
-}
-
-// assertionClaims holds a verified assertion to its iat and reads the account it names from the
-// payload the signature covers.
-func assertionClaims(token *gooidc.IDToken, claims Claims) (Claims, error) {
+	now := time.Now()
 	switch {
+	case token.Expiry.IsZero():
+		return Claims{}, fmt.Errorf("%w: the assertion carries no exp", ErrMalformed)
 	case token.IssuedAt.IsZero():
 		return Claims{}, fmt.Errorf("%w: the assertion carries no iat", ErrMalformed)
-	case token.IssuedAt.After(time.Now().Add(IAPClockSkew)):
+	case token.IssuedAt.After(now.Add(IAPClockSkew)):
 		return Claims{}, fmt.Errorf("%w: issued at %s", ErrNotYetValid, token.IssuedAt.UTC().Format(time.RFC3339))
+	case times.NotBefore != nil && time.Unix(int64(*times.NotBefore), 0).After(now.Add(IAPClockSkew)):
+		return Claims{}, fmt.Errorf("%w: not before %s", ErrNotYetValid, time.Unix(int64(*times.NotBefore), 0).UTC().Format(time.RFC3339))
 	}
 	if err := readWorkspaceClaims(token, &claims); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
 	claims.EmailVerified = strings.HasPrefix(claims.Subject, iapGoogleAccountSubject)
+	if token.Expiry.Add(IAPClockSkew).Before(now) {
+		return Claims{}, &IAPExpiredError{Claims: claims}
+	}
 	return claims, nil
 }

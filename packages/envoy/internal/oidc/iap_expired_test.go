@@ -23,9 +23,9 @@ func expiredClaims(change func(map[string]any)) func(map[string]any) {
 }
 
 // An assertion is expired only when IAP signed it and nothing else is wrong with it. go-oidc
-// reports an expired payload whatever its signature, and classify ranks a payload's exp ahead of
-// the signature, so a forged assertion with a past exp used to come back ErrExpired, which a
-// socket's heartbeat reads as a rotation. Each forged one is refused for its signature instead, an
+// checks the signature first, but classify used to read a refused token's exp ahead of its
+// signature, so a forged assertion with a past exp came back ErrExpired, which a socket's
+// heartbeat reads as a rotation. Each forged one is refused for its signature instead, an
 // IAP-signed one with no exp or no iat as malformed, and the control, an assertion IAP signed that
 // is only past its exp, is still ErrExpired.
 func TestIAPVerifierCallsOnlyAnAssertionIAPSignedExpired(t *testing.T) {

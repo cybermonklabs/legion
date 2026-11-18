@@ -599,7 +599,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   an ES256 signature by a key of IAP's set at `https://www.gstatic.com/iap/verify/public_key-jwk`, a fixed address, since IAP publishes no discovery document (`oidc.NewKeysAt`), read on the first request and cached as a service-account issuer's set is;
   the issuer `https://cloud.google.com/iap`;
   the audience `DISPATCH_IAP_AUDIENCE` (`/projects/<project number>/global/backendServices/<backend service id>` behind a load balancer);
-  and `exp` and `iat`, each with the 30 seconds of clock skew Google documents.
+  and `exp` and `iat` (and an `nbf`, which IAP does not write), each with the 30 seconds of clock skew Google documents.
   Who may use Dispatch is the domain sign-in's rule (`identity.DomainRule`), so `DISPATCH_SIGNIN_DOMAIN` is required:
   a person is admitted when the assertion's `hd` is that domain and its `sub` names a Google account (`accounts.google.com:<id>`), and is named by the assertion's `email`, lowercased.
   An assertion carries no `email_verified`; its `email` is the address of the Google account IAP signed in, which Google tells an app to take as the person.
@@ -611,7 +611,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
   a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and a refused person `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, at WARN, and an expired assertion logs `msg="dispatch: IAP assertion expired"` at DEBUG alone (below).
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
-  An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is; go-oidc reports an expired payload before it judges the signature, so the verifier checks the signature again, with no expiry check, before it calls an assertion expired.
+  An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
   An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
