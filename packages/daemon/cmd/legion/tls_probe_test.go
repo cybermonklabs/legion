@@ -381,7 +381,7 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 		"HOME=/home/legion", "XDG_CONFIG_HOME=/home/legion/.config", "GOPATH=/home/legion/go",
 		"GOMODCACHE=/legion/go/mod", "GOCACHE=/legion/go/build", "GOPROXY=https://proxy.golang.org",
 		"GOTOOLCHAIN=auto", "GOFLAGS=-mod=mod", "GOWORK=/legion/go.work", "KUBECONFIG=/home/legion/.kube/config",
-		"KUBERNETES_SERVICE_HOST=34.118.224.1", "KUBERNETES_SERVICE_PORT=443",
+		"KUBERNETES_SERVICE_HOST=192.0.2.1", "KUBERNETES_SERVICE_PORT=443",
 	}
 
 	if goClient.workDir != stateDir {
