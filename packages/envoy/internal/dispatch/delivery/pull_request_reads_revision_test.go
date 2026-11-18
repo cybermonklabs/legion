@@ -114,8 +114,8 @@ func TestAnOweThatADatabaseClockBehindTheReadDatesEarlierOutlivesTheRead(t *test
 			now := time.Now().UTC().Truncate(time.Second)
 			t1, t2 := now.Add(-10*time.Minute), now.Add(-5*time.Minute)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
-				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", IssueKey: &issue,
-				AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &t2, CheckedAt: &now})
+				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", EventAt: &t2, CheckedAt: &now},
+				releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 			github.set("acme/widgets", number, "open", older, branch, body, t1)
 			if _, err := intake.handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "synchronize", older, branch, body, t1)); err != nil {
@@ -177,18 +177,23 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 			client := fake.newTestClient()
 			github.set("acme/widgets", number, "open", older, branch, body, t1)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
-				HeadSHA: older, HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
-				AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &t1, CheckedAt: &now})
+				HeadSHA: older, HeadRef: branch, BaseRef: "main", State: "open", EventAt: &t1, CheckedAt: &now},
+				releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 
+			// Writer A writes GitHub's answer with its texts, as each writer of this build does, so
+			// its write is one transaction; it pauses at the upsert of pull_request_heads, the first
+			// statement of that transaction.
 			aWaiting, aRelease := make(chan struct{}, 1), make(chan struct{})
-			poolA := storetest.Traced(t, pool, pauseTracer{match: "for no key update", arrived: aWaiting, release: aRelease}, nil)
+			poolA := storetest.Traced(t, pool, pauseTracer{match: "insert into pull_request_heads", arrived: aWaiting, release: aRelease}, nil)
 			aDone := make(chan error, 1)
 			go func() {
-				aDone <- UpsertPullRequestHead(ctx, poolA, events.NewBroker(), PullRequestHead{Repo: "acme/widgets",
-					Number: number, HeadSHA: older, HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
-					AttributionSource: string(sourceBranch), AttributionComplete: true, Title: fmt.Sprintf("Change %d", number),
+				title := fmt.Sprintf("Change %d", number)
+				aDone <- UpsertPullRequestHead(ctx, poolA, PullRequestHead{Repo: "acme/widgets",
+					Number: number, HeadSHA: older, HeadRef: branch, BaseRef: "main", State: "open", Title: title,
 					URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number), EventAt: &t1, CheckedAt: &now,
-					GitHubReadAt: &now})
+					GitHubReadAt: &now, Texts: &PullRequestTexts{HeadRepo: "acme/widgets", BaseRef: "main",
+						Title: title, Body: body, CommitMessages: []string{}, MessagesRead: true}})
+
 			}()
 			waitOn(t, aWaiting, "writer A's transaction")
 			time.Sleep(age)
@@ -203,8 +208,8 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 			waitOn(t, bReading, "intake B's read of GitHub")
 			github.set("acme/widgets", number, "closed", newer, branch, body, t2)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
-				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", IssueKey: &issue,
-				AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &t2, CheckedAt: &now})
+				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", EventAt: &t2, CheckedAt: &now},
+				releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 			close(aRelease)
 			if err := <-aDone; err != nil {
 				t.Fatal(err)
@@ -313,10 +318,10 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 			}
 			github.set("acme/widgets", number, "closed", head, branch, body, second)
 			client := fake.newTestClient()
-			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: number,
-				HeadSHA: head, HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
-				AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &earlier,
-				CheckedAt: &earlier, GitHubReadAt: &earlier}); err != nil {
+			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
+				HeadSHA: head, HeadRef: branch, BaseRef: "main", State: "open", EventAt: &earlier,
+				CheckedAt: &earlier, GitHubReadAt: &earlier, Texts: &PullRequestTexts{HeadRepo: "acme/widgets",
+					BaseRef: "main", Body: body, CommitMessages: []string{}, MessagesRead: true}}); err != nil {
 				t.Fatal(err)
 			}
 			intakeA, intakeB := newIntake(nil, pool, nil, client, nil, nil), newIntake(nil, pool, nil, client, nil, nil)
@@ -384,11 +389,11 @@ func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testi
 			return err
 		}},
 		{name: "the_reconcile", read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, _ string, _ time.Time) error {
-			_, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, repo, number, time.Now())
+			_, _, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
 			return err
 		}},
 		{name: "the_read_a_result_starts", commits: true, read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ int, head string, _ time.Time) error {
-			_, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, repo, head, time.Now())
+			_, _, err := ReadThroughCommitPulls(ctx, pool, client, repo, head, time.Now())
 			return err
 		}},
 	} {

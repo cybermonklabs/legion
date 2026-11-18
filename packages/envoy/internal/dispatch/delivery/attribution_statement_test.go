@@ -470,7 +470,7 @@ func TestALinkMatchesAURLOfAtMostTheBound(t *testing.T) {
 
 	unbounded := strings.ReplaceAll(pullRequestIssuesStatement(readingSchema(t, ctx, pool)), urlBound("src.url"), "true")
 	var issue *string
-	if err := pool.QueryRow(ctx, unbounded, []string{statementRepo}, []int{23}).Scan(new(string), new(int), &issue, new(string), new(bool)); err != nil {
+	if err := pool.QueryRow(ctx, unbounded, []string{statementRepo}, []int{23}).Scan(new(string), new(int), &issue, new(string), new(bool), new(bool)); err != nil {
 		t.Fatalf("the control's statement: %v", err)
 	}
 	if issue == nil || *issue != "ACME-23" {
@@ -507,14 +507,75 @@ func TestTwoLinksThatDifferOnlyInCaseGiveOneIssue(t *testing.T) {
 }
 
 // Messages that were not read decide nothing: a higher source that names a held issue gives the
-// facts, and with none the pull request keeps its fallback.
+// facts. With none, the answer is not known: no issue, and not the issue that the row stores.
 func TestMessagesNotReadDecideNothingAndHideNothing(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	statementIssues(t, ctx, pool, "ACME-9", "ACME-3")
 	storeStatementRow(t, ctx, pool, statementRow{number: 9, branch: "legion/ACME-9", title: "no key", texts: &statementTexts{}})
 	storeStatementRow(t, ctx, pool, statementRow{number: 10, branch: "work/none", title: "no key", stored: new("ACME-3"), texts: &statementTexts{}})
 	wantAnswer(t, ctx, pool, statementRepo, 9, "ACME-9 from branch")
-	wantAnswer(t, ctx, pool, statementRepo, 10, "ACME-3 from none, no facts")
+	wantKnown(t, ctx, pool, statementRepo, 9, true)
+	wantAnswer(t, ctx, pool, statementRepo, 10, "nobody from none, no facts")
+	wantKnown(t, ctx, pool, statementRepo, 10, false)
+	wantListed(t, ctx, pool, "ACME-3")
+}
+
+// wantKnown fails the test where PullRequestIssues answers repo#number with another Known than
+// want, or answers it not at all.
+func wantKnown(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, want bool) {
+	t.Helper()
+	key := PullRequestKey{Repo: repo, Number: number}
+	answers, err := PullRequestIssues(ctx, pool, []PullRequestKey{key})
+	if err != nil {
+		t.Fatalf("PullRequestIssues(%s#%d): %v", repo, number, err)
+	}
+	answer, found := answers[key]
+	if !found {
+		t.Fatalf("PullRequestIssues answers nothing for %s#%d", repo, number)
+	}
+	if answer.Known != want {
+		t.Errorf("%s#%d answers %q with Known %v, want Known %v", repo, number, describeAttribution(answer), answer.Known, want)
+	}
+}
+
+// A pull request whose texts are current, whose messages are not read and whose texts name no
+// held issue has an answer that is not known. #581's branch names PRNT-581, a child of PRNT-180,
+// whose repository is the pull request's, so the branch's issue is held. Then the results row
+// stores PRNT-581, as the sync or a release before stores it, and PRNT-581 loses its parent. No
+// candidate is held now. The answer is nobody with Known false, and no reader lists #581 under the
+// stored issue. Control in the same test: the same rows with the messages read and empty answer
+// nobody with Known true, so the test can tell the two states apart.
+func TestAMoveAwayFromAPullRequestWhoseAnswerIsNotKnown(t *testing.T) {
+	for _, read := range []bool{false, true} {
+		name := map[bool]string{false: "messages_not_read", true: "control_messages_read"}[read]
+		t.Run(name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			seedProjectRepository(t, ctx, pool, "PRNT", "PRNT", "acme/prnt-main")
+			mapRepository(t, ctx, pool, "acme/prnt-side", "PRNT", false, nil)
+			insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-180", 180)
+			insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-581", 581)
+			execDispatchChange(t, ctx, pool, "give PRNT-180 its own repository", `update issues set repo = 'acme/prnt-side' where key = 'PRNT-180'`)
+			execDispatchChange(t, ctx, pool, "make PRNT-581 a child of PRNT-180", `update issues set parent_key = 'PRNT-180' where key = 'PRNT-581'`)
+			texts := &statementTexts{}
+			if read {
+				texts = readTexts("")
+			}
+			storeStatementRow(t, ctx, pool, statementRow{repo: "acme/prnt-side", number: 581, branch: "legion/PRNT-581", title: "no key", texts: texts})
+			wantAnswer(t, ctx, pool, "acme/prnt-side", 581, "PRNT-581 from branch")
+			wantKnown(t, ctx, pool, "acme/prnt-side", 581, true)
+			execDispatchChange(t, ctx, pool, "store the answer as the sync stores it",
+				`update pull_request_heads set issue_key = 'PRNT-581', attribution_source = 'branch' where repo = 'acme/prnt-side' and number = 581`)
+			execDispatchChange(t, ctx, pool, "move PRNT-581 away from PRNT-180", `update issues set parent_key = null where key = 'PRNT-581'`)
+			if read {
+				wantAnswer(t, ctx, pool, "acme/prnt-side", 581, "nobody from none")
+				wantKnown(t, ctx, pool, "acme/prnt-side", 581, true)
+			} else {
+				wantAnswer(t, ctx, pool, "acme/prnt-side", 581, "nobody from none, no facts")
+				wantKnown(t, ctx, pool, "acme/prnt-side", 581, false)
+			}
+			wantListed(t, ctx, pool, "PRNT-581")
+		})
+	}
 }
 
 // The trigger and the statement call the reading alike: for each text of the corpus, the lists

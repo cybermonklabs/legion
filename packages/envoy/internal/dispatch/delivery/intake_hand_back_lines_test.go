@@ -33,8 +33,8 @@ import (
 // Each case is a fault that hands one envelope back and makes each of its deliveries write a
 // line before the hand-back decides, from another part of the path: the read of the owed read's
 // revision while the table is locked (D9's own), the same while GitHub answers 404, so that both
-// of the delivery's owes fail, an attribution line before a head write that fails, and the GitHub
-// client's line for a shared rate limit it cannot read. Since N2 of the review at def907052c a
+// of the delivery's owes fail, and the GitHub client's line for a shared rate limit it cannot
+// read. Since N2 of the review at def907052c a
 // 404 whose owe fails writes no line of its own before the hand-back's, so the 404 case has the
 // locked table's line to bound, without which it passed with the cadence taken out (N13 of the
 // review at 3a21edb2c9); the line N2 moved, written once after its owe, is
@@ -82,24 +82,6 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 				delete(github.pulls, number)
 				github.mu.Unlock()
 				return poolWithLockTimeout(t, ctx, pool, 50*time.Millisecond), fake.newTestClient(), lockOwedReads(t, ctx, pool)
-			},
-		},
-		{
-			name: "an_attribution_line_before_a_head_write_that_fails", line: "head is in another repository names an issue",
-			cause: "branch_commits", final: "head is in another repository names an issue",
-			start: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func()) {
-				// A merge, so the head row is written with its branch seed, which fails without
-				// branch_commits; its head is a fork's, and its body names an issue, so the
-				// attribution logs the issue it passes over before that write.
-				github.mu.Lock()
-				pull := github.pulls[number]
-				pull["state"], pull["merged"] = "closed", true
-				pull["merge_commit_sha"] = "2222222222222222222222222222222222222222"
-				pull["head"].(map[string]any)["repo"] = map[string]any{"full_name": "fork/widgets"}
-				github.mu.Unlock()
-				restoreBranchCommits := withoutBranchCommits(t, ctx, pool)
-				restoreOwed := refuseOwedReads(t, ctx, pool)
-				return pool, fake.newTestClient(), func() { restoreOwed(); restoreBranchCommits() }
 			},
 		},
 		{

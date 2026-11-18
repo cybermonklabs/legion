@@ -84,7 +84,15 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 // write carry the branch seed this file's rows take branch_commits away under — is GitHub's.
 func serveMergedPullRequest(t *testing.T, fake *fakeGitHub, number int) {
 	t.Helper()
-	fake.handle(fmt.Sprintf("GET /repos/acme/widgets/pulls/%d", number), func(w http.ResponseWriter, _ *http.Request) {
+	serveMergedPullRequestHeld(t, fake, number, func(*http.Request) {})
+}
+
+// serveMergedPullRequestHeld is serveMergedPullRequest with before run ahead of each answer: the
+// intake reads the pull request before its head write, so a handler can be held there.
+func serveMergedPullRequestHeld(t *testing.T, fake *fakeGitHub, number int, before func(*http.Request)) {
+	t.Helper()
+	fake.handle(fmt.Sprintf("GET /repos/acme/widgets/pulls/%d", number), func(w http.ResponseWriter, r *http.Request) {
+		before(r)
 		mustEncode(t, w, map[string]any{
 			"number": number, "title": "A change", "state": "closed", "merged": true,
 			"merge_commit_sha": "2222222222222222222222222222222222222222",
@@ -103,8 +111,8 @@ func serveMergedPullRequest(t *testing.T, fake *fakeGitHub, number int) {
 const headWriteHoldNumber = 9104
 
 // headWriteProcess is one envoy-dispatch process of the row below: its intake, the lease pool
-// its hold is renewed on, which the row cuts to lapse that hold, and the count of the commit
-// reads its attribution made -- one per handling of the envelope, and the step the row holds a
+// its hold is renewed on, which the row cuts to lapse that hold, and the count of the reads of
+// the pull request it made -- one per handling of the envelope, and the step the row holds a
 // handler in.
 type headWriteProcess struct {
 	intake *Intake
@@ -116,10 +124,10 @@ type headWriteProcess struct {
 
 // startHeadWriteProcess runs a delivery intake as a process of its own on pool's database (a
 // pool of its own, storetest.SecondProcess) and natsURL's server, until the test ends. Its
-// GitHub answers the pull request's commit read with no commits, after counting it, and holds
-// the first one when hold is set until the row releases it or the handler making it is
-// abandoned. That read is where a handler can be held for this row: everything after it is the
-// head write, which is the failure under test.
+// GitHub counts each read of the pull request before it answers, and holds the first one when
+// hold is set until the row releases it or the handler making it is abandoned. That read is
+// where a handler can be held for this row: the head write comes after it, and the head write
+// is the failure under test. The commits read answers no commits.
 func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
@@ -134,14 +142,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	held := make(chan struct{})
 	var first sync.Once
 	fake := newFakeGitHub(t)
-	serveMergedPullRequest(t, fake, headWriteHoldNumber)
-	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
-		// The merge's own first-commit read (per_page=1, completeFetchedPullRequest) follows the
-		// head write and is no handling of its own: only the attribution's page is counted.
-		if r.URL.Query().Get("per_page") == "1" {
-			mustEncode(t, w, []any{})
-			return
-		}
+	serveMergedPullRequestHeld(t, fake, headWriteHoldNumber, func(r *http.Request) {
 		process.reads.Add(1)
 		holding := false
 		if hold {
@@ -153,6 +154,8 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 			case <-r.Context().Done():
 			}
 		}
+	})
+	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		mustEncode(t, w, []any{})
 	})
 	github := fake.newTestClient()
@@ -219,10 +222,10 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // pending entry and has the new holder delivered it a second time -- two processes fetching one
 // pull request at once, which is the thing the hold exists to stop.
 //
-// The row drives the window the fault lives in. The holder's handler is held inside the commit
-// read its attribution makes, its lease pool is then cut so no renewal of its hold lands, and
-// the read is released the moment the holder reports the hold lost and begins to stop
-// delivering (keyedRunnerStopped): the handler returns inside the budget that stop gives it, so
+// The row drives the window the fault lives in. The holder's handler is held inside the intake's
+// read of the pull request, before its head write, its lease pool is then cut so no renewal of
+// its hold lands, and the read is released the moment the holder reports the hold lost and
+// begins to stop delivering (keyedRunnerStopped): the handler returns inside the budget that stop gives it, so
 // it answers through deliver's own path rather than the stop's, with a hold that has already
 // lapsed. Its head write fails because branch_commits is away, and its owed read fails because
 // pull_request_reads_owed refuses writes (refuseOwedReads), which is the failure the hand-back is
@@ -270,8 +273,8 @@ func holdLapseRow(t *testing.T, headStored bool) {
 	keeper := startHeadWriteProcess(t, pool, natsURL, false)
 
 	// A merge, so the head row and its branch seed are written together and the write is the
-	// one that fails; its own head repository and a branch naming no issue, so the attribution
-	// reads the commit messages and the handler can be held there.
+	// one that fails. The intake reads the pull request before it writes the head, and the
+	// handler is held in that read.
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", headWriteHoldNumber, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 		"number": strconv.Itoa(headWriteHoldNumber), "author": "octocat",

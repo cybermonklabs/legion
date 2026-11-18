@@ -523,9 +523,9 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // PullRequestHeadBatch of them a pass, the longest unread first: the open rows Dispatch last
 // checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody that no read has
 // reached, and every merged row a rule older than this build's judged, each of those taken once
-// per rule version (AttributionRuleVersion). A row this pass moves from one issue to another
-// records that move on both issues, through the broker handed to the refresh
-// (UpsertPullRequestHead). GitHub's `pull_request` events carry every head move, so this is the
+// per rule version (AttributionRuleVersion). Each read stores GitHub's facts of the pull request
+// (RefreshPullRequestHead), and the statement gives its issue from them at each read.
+// GitHub's `pull_request` events carry every head move, so this is the
 // backstop for an event that never arrived — a delivery Dispatch was down for, a repository whose
 // webhook was installed late — and the one way a merge that happened while Dispatch was not
 // listening reaches the head row at all. The merged arm is the backstop for a row a write left
@@ -549,7 +549,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		if _, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, installations, head.Repo, head.Number, now); err != nil && !limited.keep(err) {
+		if _, _, err := RefreshPullRequestHead(ctx, r.pool, r.github, installations, head.Repo, head.Number, now); err != nil && !limited.keep(err) {
 			slog.Warn("dispatch delivery: re-read a pull request head", "repo", head.Repo, "number", head.Number, "error", err)
 		}
 		return nil
@@ -611,7 +611,7 @@ func (p *passRateLimit) err() error {
 // below does not take a row this has just read.
 func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, installations *passInstallations, limited *passRateLimit) error {
 	read := func(ctx context.Context, owed owedRead) error {
-		refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, installations, owed.Repo, owed.Number, now)
+		_, refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, installations, owed.Repo, owed.Number, now)
 		outcome := owedReadAnswered
 		switch {
 		case err != nil:

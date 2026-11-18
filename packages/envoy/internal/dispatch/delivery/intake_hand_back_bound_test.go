@@ -170,9 +170,10 @@ func randomName(n int) string {
 // at the intake as at the reconcile: the intake owes the pull request a read and acknowledges the
 // envelope once that is written, and the reconcile keeps the read owed and reads it again every
 // pass: no age of a failure and no count of tries ends a read that failed. GitHub answers the
-// pull request with a title that holds a NUL byte,
-// which no text column holds. At def907052c the intake acknowledged such an envelope with one
-// ERROR line and owed nothing, while the reconcile kept the same answer owed (review of
+// pull request with a head branch that holds a NUL byte, which no text column holds. A branch is
+// a value of identity, so the write refuses it; a title with a NUL is a text of free form, which
+// the write stores with U+FFFD (freeText). At def907052c the intake acknowledged such an envelope
+// with one ERROR line and owed nothing, while the reconcile kept the same answer owed (review of
 // cybermonklabs/legion#4209 at def907052c, N1).
 func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 	fastPageRetries(t)
@@ -183,10 +184,7 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	client := fake.newTestClient()
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-	github.set("acme/widgets", number, "open", poisonHead, "feature/x", "", at)
-	github.mu.Lock()
-	github.pulls[number]["title"] = "Change\x00"
-	github.mu.Unlock()
+	github.set("acme/widgets", number, "open", poisonHead, "feature/x\x00", "", at)
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
 		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
@@ -263,10 +261,9 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 	client := fake.newTestClient()
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 	earlier := at.Add(-time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: old, Number: pushed, HeadSHA: before, HeadRef: "feature/x", BaseRef: "main", State: "open",
-		AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &earlier, CheckedAt: &earlier,
-		GitHubReadAt: &earlier,
+		EventAt: &earlier, CheckedAt: &earlier, GitHubReadAt: &earlier,
 	}); err != nil {
 		t.Fatalf("store #%d under %s before the target went bad: %v", pushed, old, err)
 	}

@@ -331,7 +331,7 @@ func readLinkPairs(t *testing.T, ctx context.Context, q Querier, statements *att
 		for rows.Next() {
 			var key PullRequestKey
 			var answer PullRequestAttribution
-			if err := rows.Scan(&key.Repo, &key.Number, &answer.IssueKey, &answer.Source, &answer.HasFacts); err != nil {
+			if err := rows.Scan(&key.Repo, &key.Number, &answer.IssueKey, &answer.Source, &answer.HasFacts, &answer.Known); err != nil {
 				t.Fatal(err)
 			}
 			readers.byKey[pair.number] = describeAttribution(answer)

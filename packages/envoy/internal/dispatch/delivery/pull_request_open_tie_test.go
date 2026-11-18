@@ -10,11 +10,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// An open row is left to the reconcile, whatever issue it credits (OpenHeadAt): the first pass
-// that reaches it once PullRequestHeadStaleAfter has passed since its last read reads it again,
-// and attributes it with Dispatch's links, issues, parents and mappings as they stand then. So a
-// tie to an issue made after the open row's last event is followed by that pass, with no event
-// and no results read, for each of the four ties no event of the pull request carries:
+// An open row is left to the reconcile, whatever issue it credits (HeadStoredAt), and its issue is
+// the statement's at each read, from the facts the row's last read stored, with Dispatch's links,
+// issues, parents and mappings as they stand then. So a tie to an issue made after the open row's
+// last event is followed at once, with no event and no results read, for each of the four ties no
+// event of the pull request carries:
 //
 //   - a link of the issue to a GitHub issue the pull request's body cites (rank 2);
 //   - a parent, with a repository of its own, given to the issue the title names, which before it
@@ -25,10 +25,10 @@ import (
 //     first.
 //
 // The row is read 6 minutes after its last read, past PullRequestHeadStaleAfter, as the pass
-// finds a row whose event came 6 minutes before, and with no other row due the next pass reaches
-// it. A pass takes PullRequestHeadBatch rows, the due open rows read longest ago first
-// (ListStalePullRequestHeads), so where 200 open rows due since 10 minutes stand before it, the
-// next pass reads those 200 and the pass after it the row: the pass that reaches it.
+// finds a row whose event came 6 minutes before. A pass takes PullRequestHeadBatch rows, the due
+// open rows read longest ago first (ListStalePullRequestHeads), so where 200 open rows due since
+// 10 minutes stand before it, the next pass does not read it. The issue lists it after the first
+// pass all the same: the statement needs no read of the row.
 func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *testing.T) {
 	const repo = "acme/widgets"
 	const number = 9431
@@ -116,7 +116,7 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 			github.pulls[number]["title"] = kase.title
 			github.mu.Unlock()
 			client := fake.newTestClient()
-			if _, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, repo, number, time.Now()); err != nil {
+			if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			before := readHead(t, ctx, pool, repo, number)
@@ -136,7 +136,7 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 					from generate_series(1, $3::int) n
 				`, repo, second, kase.due)
 			}
-			want := (kase.due + 1 + PullRequestHeadBatch - 1) / PullRequestHeadBatch
+			want := 1
 			reconcile := NewReconcile(pool, client, events.NewBroker())
 			reached := 0
 			for pass := 1; pass <= want+1 && reached == 0; pass++ {

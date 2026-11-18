@@ -890,7 +890,7 @@ func githubPayload(event string, body map[string]any) string {
 			// head_repo is the repository the head branch lives in, which is this repository for a
 			// branch of it and another for a fork's. Dispatch compares a check's results with a
 			// pull request's head only when the two are the same, since anyone may open a fork's
-			// pull request at any commit and title it after an issue (delivery's headAttribution).
+			// pull request at any commit and title it after an issue (delivery's attributedTerms, own_head).
 			// GitHub sends null for it once a fork is deleted, which normalizes to the empty string.
 			"head_repo":        nestedString(body, "pull_request", "head", "repo", "full_name"),
 			"base_ref":         nestedString(body, "pull_request", "base", "ref"),

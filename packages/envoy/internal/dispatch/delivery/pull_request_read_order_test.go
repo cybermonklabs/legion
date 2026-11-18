@@ -31,9 +31,8 @@ func TestAStoredReadStartAheadOfTheReadersClocksKeepsNoOlderHeadPastOnePass(t *t
 	stale := time.Now().Add(-time.Hour)
 	stored := PullRequestHead{Repo: "acme/widgets", Number: number,
 		HeadSHA: older, HeadRef: "feature/x", BaseRef: "main", State: "open",
-		AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &second, CheckedAt: &stale,
-		GitHubReadAt: &ahead}
-	if err := UpsertPullRequestHead(ctx, pool, nil, readAheadOfTheOthers(t, ctx, pool, stored)); err != nil {
+		EventAt: &second, CheckedAt: &stale, GitHubReadAt: &ahead}
+	if err := UpsertPullRequestHead(ctx, pool, readAheadOfTheOthers(t, ctx, pool, stored)); err != nil {
 		t.Fatal(err)
 	}
 	fake := newFakeGitHub(t)
@@ -45,6 +44,42 @@ func TestAStoredReadStartAheadOfTheReadersClocksKeepsNoOlderHeadPastOnePass(t *t
 	if got.HeadSHA != newer {
 		t.Errorf("after one reconcile pass the row holds %.12s, want GitHub's %.12s: a stored read start an hour ahead of the readers' clocks keeps the older head of second %s",
 			got.HeadSHA, newer, second.Format(time.RFC3339))
+	}
+}
+
+// A read's place comes from the sequence, so a read that begins later takes a later place,
+// whatever the clock of the process that read. A row holds the older head A of second S, and its
+// read had a clock an hour ahead of the others. GitHub now holds B, in the same second S. One
+// reconcile pass reads B, and the row holds B after that pass. The test has no control case: its
+// control is a mutation of startRead in which a later read takes a lower place, as a clock ahead
+// did under the clock rule. That mutation is applied with go test -overlay, and the test then
+// fails (the deep audit's case place_from_the_sequence).
+func TestAPlaceFromTheSequenceLetsTheNextReadReplaceAnOlderHead(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	const number = 7801
+	second := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	older, newer := fakeSHA("a", number), fakeSHA("b", number)
+	ahead := time.Now().Add(time.Hour)
+	stale := time.Now().Add(-time.Hour)
+	read, err := startRead(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	place := read.order
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
+		HeadSHA: older, HeadRef: "feature/x", BaseRef: "main", State: "open",
+		EventAt: &second, CheckedAt: &stale, GitHubReadAt: &ahead, GitHubReadOrder: &place}); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, "acme/widgets")
+	github.set("acme/widgets", number, "open", newer, "feature/x", "", second)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	got := readHead(t, ctx, pool, "acme/widgets", number)
+	t.Logf("stored_place=%d head=%.1s github_reads=%d", place, got.HeadSHA, github.reads.Load())
+	if got.HeadSHA != newer {
+		t.Errorf("OLDER_HEAD_KEPT after one pass: %.1s", got.HeadSHA)
 	}
 }
 
@@ -138,10 +173,9 @@ func TestEveryLandingOrderOfAnswersOfOneSecondKeepsTheAnswerOfTheLastRead(t *tes
 func writeAnswer(t *testing.T, ctx context.Context, pool *store.Pool, number int, head string, second time.Time, read readStart) {
 	t.Helper()
 	now := time.Now()
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: number,
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 		HeadSHA: head, HeadRef: "feature/x", BaseRef: "main", State: "open",
-		AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &second, CheckedAt: &now,
-		GitHubReadAt: &read.at, GitHubReadOrder: &read.order}); err != nil {
+		EventAt: &second, CheckedAt: &now, GitHubReadAt: &read.at, GitHubReadOrder: &read.order}); err != nil {
 		t.Fatalf("write #%d at %.1s: %v", number, head, err)
 	}
 }

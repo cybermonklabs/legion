@@ -161,18 +161,22 @@ func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number in
 // the writer that seeds the one fact the merge itself proves: the base branch held the merge
 // commit, written as a branch_commits yes that is kept for good
 // (delivery.UpsertPullRequestHead). The head is headCommit and the merge commit
-// baseMergeCommit, which is what every caller here means by them.
+// baseMergeCommit, which is what every caller here means by them. The row has no texts, so its
+// issue is the one it stores, as a row of an older release stores it: one update writes it.
 func recordMerge(t *testing.T, database *store.Store, repo string, number int, issueKey, baseRef string) {
 	t.Helper()
-	attributed := issueKey
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
 		Repo: repo, Number: number, HeadSHA: headCommit, HeadRef: "legion/work",
-		BaseRef: baseRef, State: "merged", IssueKey: &attributed, AttributionSource: "title",
-		AttributionComplete: true, Title: "A change",
+		BaseRef: baseRef, State: "merged", Title: "A change",
 		URL:            fmt.Sprintf("https://github.com/%s/pull/%d", repo, number),
 		MergeCommitSHA: baseMergeCommit,
 	}); err != nil {
 		t.Fatalf("record the merge of %s#%d into %s: %v", repo, number, baseRef, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		update pull_request_heads set issue_key = $3, attribution_source = 'title' where repo = $1 and number = $2
+	`, repo, number, issueKey); err != nil {
+		t.Fatalf("store the issue of the merge of %s#%d: %v", repo, number, err)
 	}
 }
 
@@ -1574,18 +1578,108 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
-	var storedIssue *string
 	var state string
 	if err := database.Pool.QueryRow(context.Background(), `
-		select issue_key, state from pull_request_heads where repo = 'acme/widgets' and number = 12
-	`).Scan(&storedIssue, &state); err != nil {
+		select state from pull_request_heads where repo = 'acme/widgets' and number = 12
+	`).Scan(&state); err != nil {
 		t.Fatalf("read the pull request the read-through stored: %v", err)
 	}
+	// The issue is the statement's answer, which every reader gives (delivery.PullRequestIssues),
+	// and not the column issue_key, which no writer of GitHub's answer writes.
+	stored := delivery.PullRequestKey{Repo: "acme/widgets", Number: 12}
+	answers, err := delivery.PullRequestIssues(context.Background(), database.Pool, []delivery.PullRequestKey{stored})
+	if err != nil {
+		t.Fatalf("read the issue of the pull request the read-through stored: %v", err)
+	}
+	storedIssue := answers[stored].IssueKey
 	if storedIssue == nil || *storedIssue != issue.Key || state != "open" {
 		t.Fatalf("the read-through stored issue=%v state=%q, want %s open", storedIssue, state, issue.Key)
 	}
 	standsAt(t, readResults(t, handler, issue.Key), "k1", recorded.Result.ID,
 		"a result at a head the read-through learned", model.CommitAtBasis, false)
+}
+
+// A link written after a merged row is stored is followed at the next read of the results, with
+// no read of GitHub. GitHub names the merged acme/widgets#93 for the commit of a pass of k1, and
+// its branch, title and body name no issue. The record's read-through stores #93 with its texts.
+// Then the issue links #93's URL, and no event of #93 comes. The next read compares k1 with #93,
+// the pass stands, and the read asks GitHub nothing: the statement reads the link at the read.
+// Control, texts=false: the texts row of #93 is deleted, as a row of the release before has none.
+// The next read compares k1 with nothing and asks GitHub nothing, since the statement answers no
+// stored issue for a row with no facts. A pass that reads #93's facts then makes it compare.
+func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
+	for _, withTexts := range []bool{true, false} {
+		t.Run(fmt.Sprintf("texts=%v", withTexts), func(t *testing.T) {
+			handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
+			issue := issueInRepository(t, handler, "RESL", "acme/widgets", "Linked after the merge")
+			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+			pull := func(repo, sha string) string {
+				return fmt.Sprintf(`{"number":93,"title":"No key here","body":"","html_url":"https://github.com/%s/pull/93",
+					"state":"closed","merged_at":"2026-11-05T07:15:08Z","updated_at":"2026-11-05T07:15:08Z",
+					"merge_commit_sha":"9393939393939393939393939393939393939393",
+					"head":{"ref":"work/none","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}`, repo, sha, repo)
+			}
+			fake.answers(func(repo, sha string) string { return "[" + pull(repo, sha) + "]" })
+			recordResult(t, handler, issue.Key, resultBody("k1", "pass", newHeadCommit, nil))
+			var rows int
+			if err := database.Pool.QueryRow(context.Background(),
+				`select count(*) from pull_request_heads where repo = 'acme/widgets' and number = 93 and state = 'merged'`).Scan(&rows); err != nil || rows != 1 {
+				t.Fatalf("the record's read-through stored %d merged rows of #93 (%v), want 1", rows, err)
+			}
+			if !withTexts {
+				if _, err := database.Pool.Exec(context.Background(),
+					`delete from pull_request_texts where repo = 'acme/widgets' and number = 93`); err != nil {
+					t.Fatalf("delete the texts of #93: %v", err)
+				}
+			}
+			served.commitPulls = delivery.CommitPullReads{}
+			if before := checkOf(t, readResults(t, handler, issue.Key), "k1"); len(before.ComparedWith) != 0 {
+				t.Fatalf("before the link k1 compares with %+v, want nothing: #93 names no issue", before.ComparedWith)
+			}
+
+			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
+				"external_links": []map[string]string{{"url": "https://github.com/acme/widgets/pull/93"}},
+			}, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("link #93: status=%d body=%s", response.Code, response.Body.String())
+			}
+			numbersOf := func(check model.CheckBlock) []int {
+				numbers := []int{}
+				for _, basis := range check.ComparedWith {
+					if basis.PullRequest != nil {
+						numbers = append(numbers, *basis.PullRequest)
+					}
+				}
+				return numbers
+			}
+			served.commitPulls = delivery.CommitPullReads{}
+			spent := fake.asks("acme/widgets")
+			after := checkOf(t, readResults(t, handler, issue.Key), "k1")
+			if asked := fake.asks("acme/widgets") - spent; asked != 0 {
+				t.Errorf("the read after the link asked GitHub %d times, want 0", asked)
+			}
+			if withTexts {
+				if fmt.Sprint(numbersOf(after)) != "[93]" || after.PassStands.Answer != "yes" {
+					t.Errorf("after the link k1 compares with %v and pass_stands %s, want [93] and yes", numbersOf(after), after.PassStands.Answer)
+				}
+				return
+			}
+			if len(after.ComparedWith) != 0 {
+				t.Errorf("after the link the row with no texts compares with %v, want nothing in this read (the control)", numbersOf(after))
+			}
+			// A pass reads #93's facts, and the next read compares with it.
+			fake.pullAnswers(func(repo, number string) string {
+				if number != "93" {
+					return ""
+				}
+				return pull(repo, newHeadCommit)
+			})
+			onePass(t, database, served)
+			served.commitPulls = delivery.CommitPullReads{}
+			if passed := checkOf(t, readResults(t, handler, issue.Key), "k1"); fmt.Sprint(numbersOf(passed)) != "[93]" {
+				t.Errorf("after a pass read #93's facts k1 compares with %v, want [93]", numbersOf(passed))
+			}
+		})
+	}
 }
 
 // The same case at the surface a reviewer reads: a pull request of acme/gadgets whose title

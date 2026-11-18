@@ -44,15 +44,16 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			const stale = "1111111111111111111111111111111111111111"
 			const actual = "2222222222222222222222222222222222222222"
 			branch, body := "legion/"+issue, "Dispatch: "+issue
-			err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			// A row of an older release, which stored its verdict: the branch's issue.
+			err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: "acme/widgets", Number: 98767, HeadSHA: stale,
-				HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
-				AttributionSource: "branch", AttributionComplete: true,
+				HeadRef: branch, BaseRef: "main", State: "open",
 				EventAt: &eventAt, CheckedAt: &now,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
+			seedStoredIssue(t, ctx, pool, "acme/widgets", 98767, &issue, "branch")
 			gh.set("acme/widgets", 98767, "closed", actual, branch, body, now)
 			_, err = intake.handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", 98767, "closed", actual, branch, body, now))
@@ -61,7 +62,7 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			}
 			afterEvent := readHead(t, ctx, pool, "acme/widgets", 98767)
 			eventReads := gh.reads.Load()
-			_, err = RefreshPullRequestHead(ctx, pool, client, nil, nil, "acme/widgets", 98767, time.Now())
+			_, _, err = RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", 98767, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -114,14 +115,29 @@ const releaseBeforeUpsertHeadRow = `
 // its writes stamp.
 const releaseBeforeAttributionRule = 2
 
+// releaseBeforeAttribution is the issue the release before's write carries with a head: the issue
+// and the source its own attribution gave, and whether that attribution read every source, which
+// lets the write replace the stored issue. This build stores no issue with a head, so a test of a
+// row that release writes gives the issue here.
+type releaseBeforeAttribution struct {
+	issue    *string
+	source   string
+	complete bool
+}
+
+// noAttribution is the release before's write of an attribution that named nobody and read
+// no source: it keeps the issue the row held.
+var noAttribution = releaseBeforeAttribution{source: string(sourceNone)}
+
 // writeHeadAsTheReleaseBefore stores head with the release before's own statement, as that
-// release's envelope writer handed it: the envelope's head, state, branch, title and updated_at.
-func writeHeadAsTheReleaseBefore(t *testing.T, ctx context.Context, pool *store.Pool, head PullRequestHead) {
+// release's envelope writer handed it: the envelope's head, state, branch, title and updated_at,
+// and the issue of that release's attribution.
+func writeHeadAsTheReleaseBefore(t *testing.T, ctx context.Context, pool *store.Pool, head PullRequestHead, attribution releaseBeforeAttribution) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, releaseBeforeUpsertHeadRow,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
-		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, releaseBeforeAttributionRule,
+		attribution.issue, attribution.source, head.Title, head.URL, head.EventAt, head.CheckedAt,
+		attribution.complete, releaseBeforeAttributionRule,
 	); err != nil {
 		t.Fatalf("write the head of %s#%d as the release before does: %v", head.Repo, head.Number, err)
 	}
@@ -166,12 +182,15 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 				t.Fatalf("HeadAttributedTo(%s, GitHub's head) after the opening = %v, %v; want true", issue, attributed, err)
 			}
 
+			// The release before keeps the issue the row held, and no writer of this build stores
+			// one: the row stores the issue as a release before stored it.
+			seedStoredIssue(t, ctx, pool, "acme/widgets", 98769, &issue, "branch")
 			ahead := opened.Add(time.Hour)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{
 				Repo: "acme/widgets", Number: 98769, HeadSHA: forged, HeadRef: branch, BaseRef: "main",
-				State: "merged", AttributionSource: string(sourceNone), Title: "Change 98769",
+				State: "merged", Title: "Change 98769",
 				URL: "https://github.com/acme/widgets/pull/98769", EventAt: &ahead,
-			})
+			}, noAttribution)
 			// The precondition: the release before's write is the row B3 of the review names, the
 			// forged head a basis of the issue's check.
 			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || !attributed {

@@ -690,13 +690,13 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	})
 
 	stale := time.Now().Add(-2 * PullRequestHeadStaleAfter)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 55, HeadSHA: headWas, HeadRef: "legion/" + key, BaseRef: "main",
-		State: "open", IssueKey: &key, AttributionSource: "title_body", AttributionComplete: true,
-		Title: key + " the work", URL: "https://github.com/acme/widgets/pull/55", CheckedAt: &stale,
+		State: "open", Title: key + " the work", URL: "https://github.com/acme/widgets/pull/55", CheckedAt: &stale,
 	}); err != nil {
 		t.Fatalf("store the stale head: %v", err)
 	}
+	seedStoredIssue(t, ctx, pool, "acme/widgets", 55, &key, "title_body")
 
 	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
 
@@ -767,9 +767,9 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	})
 
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/gadgets", Number: 60, HeadSHA: sha, HeadRef: "legion/" + own, BaseRef: "main",
-		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
+		State: "merged",
 		Title: title, URL: "https://github.com/acme/gadgets/pull/60", CheckedAt: &stamped,
 	}); err != nil {
 		t.Fatalf("store the merged head the old rule left: %v", err)
@@ -837,9 +837,9 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	// the rule that took the first candidate outright, which attribution_rule numbers 0. No
 	// writer stamps that rule, so the row is written and then stamped with it.
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/gadgets", Number: 61, HeadSHA: sha, HeadRef: "topic", BaseRef: "main",
-		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
+		State: "merged",
 		Title: title, URL: "https://github.com/acme/gadgets/pull/61", CheckedAt: &stamped,
 	}); err != nil {
 		t.Fatalf("store the merged head the old rule left: %v", err)

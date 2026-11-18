@@ -375,8 +375,8 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 				}
 				ops["release_before_write"]++
 				writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
-					HeadSHA: ev.head, HeadRef: branch, BaseRef: "main", State: ev.state, IssueKey: &issue,
-					AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &ev.updatedAt})
+					HeadSHA: ev.head, HeadRef: branch, BaseRef: "main", State: ev.state, EventAt: &ev.updatedAt},
+					releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 				note("P writes %v", ev)
 			case op < 12 && running("R") == 0:
 				ops["reconcile"]++

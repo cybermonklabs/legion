@@ -93,18 +93,20 @@ func seedGadgetsIssueUnderTheOldName(t *testing.T, ctx context.Context, pool *st
 }
 
 // storedHead is one stored row as a test reads it: the shape every writer fills in
-// (PullRequestHead), plus the attribution_rule column, which is no field of it —
-// UpsertPullRequestHead binds AttributionRuleVersion itself, so only the row says which rule
-// judged it.
+// (PullRequestHead), plus the attribution_rule column, which is no field of it, and the issue and
+// the source that every reader answers for the pull request (PullRequestIssues): the rule's answer
+// for a pull request with facts, and R4's fallback for one with none. No writer names the columns
+// issue_key and attribution_source, so a test reads what the readers answer.
 type storedHead struct {
 	PullRequestHead
-	attributionRule int
+	IssueKey          *string
+	AttributionSource string
+	attributionRule   int
 }
 
 // stampLegacyAttributionRule sets a stored row's attribution_rule to 0, the rule a row written
 // before that column has: the rule that took the first candidate outright, whatever repository
-// its issue resolved to. No writer stamps it, so a test that needs such a row writes it with
-// this one update (UpsertPullRequestHead).
+// its issue resolved to. A test that needs such a row writes it with this one update.
 func stampLegacyAttributionRule(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
@@ -114,18 +116,34 @@ func stampLegacyAttributionRule(t *testing.T, ctx context.Context, pool *store.P
 	}
 }
 
+// seedStoredIssue stores issue and source on the results row of repo#number with one update: a
+// row of an older release, whose writer stored its verdict. No writer of this build stores one,
+// and the statement reads it only as R4's fallback, for a pull request with no current texts.
+func seedStoredIssue(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, issue *string, source string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		update pull_request_heads set issue_key = $3, attribution_source = $4 where repo = $1 and number = $2
+	`, repo, number, issue, source); err != nil {
+		t.Fatalf("store the issue of %s#%d as an older release stored it: %v", repo, number, err)
+	}
+}
+
 func readHead(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) storedHead {
 	t.Helper()
 	var head storedHead
 	if err := pool.QueryRow(ctx, `
-		select repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-			checked_at, attribution_rule
+		select repo, number, head_sha, head_ref, base_ref, state, checked_at, attribution_rule
 		from pull_request_heads where repo = $1 and number = $2
 	`, repo, number).Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.HeadRef, &head.BaseRef,
-		&head.State, &head.IssueKey, &head.AttributionSource, &head.CheckedAt,
-		&head.attributionRule); err != nil {
+		&head.State, &head.CheckedAt, &head.attributionRule); err != nil {
 		t.Fatalf("read the head of %s#%d: %v", repo, number, err)
 	}
+	key := PullRequestKey{Repo: repo, Number: number}
+	answers, err := PullRequestIssues(ctx, pool, []PullRequestKey{key})
+	if err != nil {
+		t.Fatalf("read the issue of %s#%d: %v", repo, number, err)
+	}
+	head.IssueKey, head.AttributionSource = answers[key].IssueKey, answers[key].Source
 	return head
 }
 
@@ -160,7 +178,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 
 	// The row stands at an older head, last checked ten minutes ago.
 	stale := time.Now().Add(-10 * time.Minute)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 42, HeadSHA: "1111111111111111111111111111111111111111",
 		HeadRef: "legion/HEAD-1", BaseRef: "main", State: "open", CheckedAt: &stale,
 	}); err != nil {
@@ -168,7 +186,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	}
 	// A row checked just now is not in the batch.
 	fresh := time.Now()
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 43, HeadSHA: "4444444444444444444444444444444444444444",
 		State: "open", CheckedAt: &fresh,
 	}); err != nil {
@@ -245,8 +263,9 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 	fake.handle("GET /repos/acme/widgets/pulls/8/commits", func(w http.ResponseWriter, _ *http.Request) {
 		mustEncode(t, w, []any{map[string]any{"commit": map[string]any{"message": "fix: a typo"}}})
 	})
-	written, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), nil, "acme/widgets",
+	written, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets",
 		"5555555555555555555555555555555555555555", time.Now())
+
 	if err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
@@ -272,15 +291,15 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 	}
 }
 
-// OpenHeadAt compares the repository without case, and the two spellings meet here: a row the
+// HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
 // `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling the
 // repository-to-project mapping stores (api/results_comparison.go, comparisonReader.repositoryOf).
 // An exact comparison would answer "no row" for every repository whose owner writes their name
 // with capitals, and the read would spend a GitHub call on each commit Dispatch already holds
-// the open pull request for. Another repository's row is still another repository's: the case is
-// all that is forgiven. An open row answers whatever issue it credits; a merged row answers no.
-func TestOpenHeadAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
+// the pull request for. Another repository's row is still another repository's: the case is all
+// that is forgiven. An open row and a merged row answer, whatever issue each credits.
+func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 41)
 	const open, merged = "cccccccccccccccccccccccccccccccccccccccc", "dddddddddddddddddddddddddddddddddddddddd"
@@ -289,25 +308,25 @@ func TestOpenHeadAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 		sha    string
 		state  string
 	}{{41, open, "open"}, {42, merged, "merged"}} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: "Acme/Widgets", Number: row.number, HeadSHA: row.sha, HeadRef: "legion/x", BaseRef: "main",
-			State: row.state, IssueKey: &issue, AttributionSource: string(sourceTitleBody), AttributionComplete: true,
-			Title: issue + " the work", URL: fmt.Sprintf("https://github.com/Acme/Widgets/pull/%d", row.number),
+			State: row.state, Title: issue + " the work", URL: fmt.Sprintf("https://github.com/Acme/Widgets/pull/%d", row.number),
 		}); err != nil {
 			t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
 		}
+		seedStoredIssue(t, ctx, pool, "Acme/Widgets", row.number, &issue, string(sourceTitleBody))
 	}
 	for _, ask := range []struct {
 		repo, sha string
 		want      bool
 	}{
 		{"acme/widgets", open, true},
-		{"acme/widgets", merged, false},
+		{"acme/widgets", merged, true},
 		{"acme/gadgets", open, false},
 	} {
-		kept, err := OpenHeadAt(ctx, pool, ask.repo, ask.sha)
+		kept, err := HeadStoredAt(ctx, pool, ask.repo, ask.sha)
 		if err != nil || kept != ask.want {
-			t.Errorf("OpenHeadAt(%s, %.4s) = %v, %v; want %v", ask.repo, ask.sha, kept, err, ask.want)
+			t.Errorf("HeadStoredAt(%s, %.4s) = %v, %v; want %v", ask.repo, ask.sha, kept, err, ask.want)
 		}
 	}
 }
@@ -324,14 +343,13 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	none := seedHeadIssue(t, ctx, pool, 92)
 	writeHead := func(number int, sha, state, issueKey string) {
 		t.Helper()
-		attributed := issueKey
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: "acme/widgets", Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main",
-			State: state, IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
-			Title: issueKey + " the work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+			State: state, Title: issueKey + " the work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 		}); err != nil {
 			t.Fatalf("store #%d: %v", number, err)
 		}
+		seedStoredIssue(t, ctx, pool, "acme/widgets", number, &issueKey, "title")
 	}
 	newest := func(issueKey string) (NewestHead, bool) {
 		t.Helper()
@@ -397,7 +415,7 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 	fake.handle("GET /repos/acme/other/pulls/11/commits", func(w http.ResponseWriter, _ *http.Request) {
 		mustEncode(t, w, []any{map[string]any{"commit": map[string]any{"message": "work"}}})
 	})
-	if _, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), nil, "acme/other",
+	if _, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/other",
 		"7777777777777777777777777777777777777777", time.Now()); err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
@@ -477,7 +495,7 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 	}
 
 	// The read-through path: #22, the same title, learned from the commit alone.
-	if _, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, "acme/gadgets", sha, time.Now()); err != nil {
+	if _, _, err := ReadThroughCommitPulls(ctx, pool, client, "acme/gadgets", sha, time.Now()); err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
 	fromReadThrough := readHead(t, ctx, pool, "acme/gadgets", 22)
@@ -607,7 +625,7 @@ func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
 		t.Error("the read-through paged a fork's commit messages; a fork attributes nobody whatever they say")
 		mustEncode(t, w, []any{})
 	})
-	if _, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), nil, "acme/widgets",
+	if _, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets",
 		"9999999999999999999999999999999999999999", time.Now()); err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
@@ -686,8 +704,9 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 // it. The read-through reads the commit messages, the fifth source, exactly as the event path
 // does, so a merged row attributed by them — which the reconcile never revisits — keeps its
 // issue when another result's read-through lists it again. #32 is the same row when that read
-// fails with something other than a rate limit: an incomplete read attributes nobody, and
-// nobody is not an answer it may write over the issue the row holds.
+// fails with something other than a rate limit: its texts are stored with the messages not read,
+// so its answer is not known. No reader answers the issue its row stores, and the read stamps
+// nothing, so the reconcile reads it again.
 func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -696,14 +715,13 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 	merged := time.Date(2026, 2, 5, 0, 0, 0, 0, time.UTC)
 	issue := "HEAD-6"
 	for _, number := range []int{31, 32} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: "acme/widgets", Number: number, HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			HeadRef: "topic", BaseRef: "main", State: "merged", IssueKey: &issue,
-			AttributionSource: string(sourceCommitMessage), AttributionComplete: true,
-			EventAt: &merged, CheckedAt: &merged,
+			HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &merged, CheckedAt: &merged,
 		}); err != nil {
 			t.Fatalf("store the merged head of #%d attributed by its commit messages: %v", number, err)
 		}
+		seedStoredIssue(t, ctx, pool, "acme/widgets", number, &issue, string(sourceCommitMessage))
 	}
 
 	fake := newFakeGitHub(t)
@@ -731,7 +749,7 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	})
-	if _, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), nil, "acme/widgets",
+	if _, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets",
 		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", time.Now()); err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
@@ -744,8 +762,12 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 		t.Fatalf("HeadAttributedTo(HEAD-6) = %v, %v; want true: the merged head still answers for the issue", attributed, err)
 	}
 	unread := readHead(t, ctx, pool, "acme/widgets", 32)
-	if unread.IssueKey == nil || *unread.IssueKey != "HEAD-6" || unread.AttributionSource != string(sourceCommitMessage) {
-		t.Fatalf("#32 = %+v, want HEAD-6 kept: a read that could not page the commit messages attributes nobody and deletes nobody", unread)
+	if unread.IssueKey != nil || unread.AttributionSource != string(sourceNone) {
+		t.Fatalf("#32 = %+v, want nobody: its messages are not read, so its answer is not known", unread)
+	}
+	wantKnown(t, ctx, pool, "acme/widgets", 32, false)
+	if stored := storedIssueOf(t, ctx, pool, "acme/widgets", 32); stored == nil || *stored != issue {
+		t.Fatalf("#32's row stores %v, want %s kept: a write names no issue", stored, issue)
 	}
 	if unread.CheckedAt == nil || !unread.CheckedAt.Equal(merged) {
 		t.Fatalf("#32's checked_at = %v, want the stamp it had: this read-through was no complete read of it", unread.CheckedAt)
@@ -769,7 +791,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	})
 	for _, repo := range []string{"acme/hidden", "acme/walled"} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: repo, Number: 51, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
 			HeadRef: "topic", BaseRef: "main", State: "open",
 		}); err != nil {
@@ -891,9 +913,9 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 
 	// The merge, as such a build stored it: merged, credited to nobody, and unstamped.
 	mergedAt := time.Date(2026, 2, 6, 0, 0, 0, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 61, HeadSHA: mergedHead, HeadRef: "legion/HEAD-7", BaseRef: "main",
-		State: "merged", AttributionSource: "none", Title: "HEAD-7 the work",
+		State: "merged", Title: "HEAD-7 the work",
 		URL: "https://github.com/acme/widgets/pull/61", EventAt: &mergedAt,
 	}); err != nil {
 		t.Fatalf("store the merged row an older build left: %v", err)
@@ -909,19 +931,19 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	// The bound, from the other side: a merged row that carries an attribution, and one this
 	// rule has already judged and left unattributed, are no business of the pass.
 	eventAt := time.Date(2026, 2, 6, 0, 0, 0, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 62, HeadSHA: "dddddddddddddddddddddddddddddddddddddddd",
-		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", IssueKey: &issue,
-		AttributionSource: "title_body", EventAt: &eventAt,
+		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
 	}); err != nil {
 		t.Fatalf("store the attributed merged head: %v", err)
 	}
+	seedStoredIssue(t, ctx, pool, "acme/widgets", 62, &issue, "title_body")
 	// Read an hour ago by this build's own rule, which is what takes it out of the merged arm:
 	// the arm offers a merged row to each rule once, and this row has had its offer. A row
 	// stamped by an older rule is taken, which is
 	// TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody (reconcile_test.go).
 	read := time.Now().Add(-time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 63, HeadSHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &eventAt, CheckedAt: &read,
 	}); err != nil {
@@ -930,14 +952,14 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	// The fork's merge as an envelope stored it, with the title and the URL GitHub answers: an
 	// answer of the row's own second that changed a fact of GitHub's would owe one more read
 	// (the trigger pull_request_heads_older_read), which is no part of the merged arm's bound.
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 64, HeadSHA: "ffffffffffffffffffffffffffffffffffffffff",
 		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", Title: "HEAD-7 the work",
 		URL: "https://github.com/acme/widgets/pull/64", EventAt: &eventAt,
 	}); err != nil {
 		t.Fatalf("store the merged head of a fork's pull request: %v", err)
 	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 66, HeadSHA: "9999999999999999999999999999999999999999",
 		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
 	}); err != nil {
@@ -945,7 +967,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}
 	// The gone pull request, as a row an older rule judged: merged, credited to nobody, and
 	// stamped read by that rule's own pass. Its offer to this rule is open, so the pass takes it.
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 65, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
 		CheckedAt: &read,
@@ -1193,7 +1215,7 @@ func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
 	noRuns(t, fake)
 
 	stale := time.Now().Add(-10 * time.Minute)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: gadgetsOldRepo, Number: 520, HeadSHA: "2020202020202020202020202020202020202020",
 		HeadRef: "legion/work", BaseRef: "main", State: "open", CheckedAt: &stale,
 	}); err != nil {
@@ -1227,7 +1249,7 @@ func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) 
 
 	const head = "4141414141414141414141414141414141414141"
 	fake := gadgetsFake(t, 521, issue+": the work, on the new name", head)
-	if _, err := RefreshPullRequestHead(ctx, pool, fake.newTestClient(), nil, nil, gadgetsRepo, 521, time.Now()); err != nil {
+	if _, _, err := RefreshPullRequestHead(ctx, pool, fake.newTestClient(), nil, gadgetsRepo, 521, time.Now()); err != nil {
 		t.Fatalf("refresh %s#521: %v", gadgetsRepo, err)
 	}
 
@@ -1257,7 +1279,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	// to nobody, and its event older than the one GitHub answers with below.
 	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	stale := time.Now().Add(-10 * time.Minute)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: gadgetsOldRepo, Number: 522, HeadSHA: "6262626262626262626262626262626262626262",
 		HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &earlier, CheckedAt: &stale,
 	}); err != nil {
@@ -1266,7 +1288,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 
 	fake := gadgetsFake(t, 522, issue+": the work", head)
 	client := fake.newTestClient()
-	written, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now())
+	written, _, err := ReadThroughCommitPulls(ctx, pool, client, gadgetsRepo, head, time.Now())
 	if err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
 	}
@@ -1274,7 +1296,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 		t.Fatalf("#522 is stored under %v once it has arrived under both names, want both rows", repos)
 	}
 
-	if _, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
+	if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
 		t.Fatalf("refresh the row stored under the old name: %v", err)
 	}
 	if repos := headRepos(t, ctx, pool, 522); len(repos) != 1 || repos[0] != gadgetsRepo {
@@ -1380,10 +1402,10 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 	const base = "integration/138"
 	merged := PullRequestHead{
 		Repo: "acme/widgets", Number: 91, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
-		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
+		BaseRef: base, State: "merged", Title: "A change",
 		URL: "https://github.com/acme/widgets/pull/91", MergeCommitSHA: mergeCommit,
 	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, merged); err != nil {
+	if err := UpsertPullRequestHead(ctx, pool, merged); err != nil {
 		t.Fatalf("store the head of a merged pull request: %v", err)
 	}
 	stored, found, err := readBranchCommit(ctx, pool, merged.Repo, base, mergeCommit)
@@ -1399,12 +1421,12 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 	// has nothing to record. Neither leaves a row, so the one row above is still the only one.
 	open := merged
 	open.Number, open.State, open.MergeCommitSHA = 92, "open", unaskedCommit
-	if err := UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
+	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
 		t.Fatalf("store the head of an open pull request: %v", err)
 	}
 	unread := merged
 	unread.Number, unread.MergeCommitSHA = 93, ""
-	if err := UpsertPullRequestHead(ctx, pool, nil, unread); err != nil {
+	if err := UpsertPullRequestHead(ctx, pool, unread); err != nil {
 		t.Fatalf("store the head of a merge whose merge commit nobody read: %v", err)
 	}
 	if rows := branchCommitsOn(t, ctx, pool, merged.Repo, base); rows != 1 {
@@ -1425,10 +1447,10 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 	const base = "integration/138"
 	merged := PullRequestHead{
 		Repo: "Acme/Widgets", Number: 94, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
-		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
+		BaseRef: base, State: "merged", Title: "A change",
 		URL: "https://github.com/Acme/Widgets/pull/94", MergeCommitSHA: mergeCommit,
 	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, merged); err != nil {
+	if err := UpsertPullRequestHead(ctx, pool, merged); err != nil {
 		t.Fatalf("store the head of a merged pull request: %v", err)
 	}
 
@@ -1484,10 +1506,10 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 	withoutBranchCommits(t, ctx, pool)
 	merged := PullRequestHead{
 		Repo: "acme/widgets", Number: 95, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
-		BaseRef: "integration/138", State: "merged", AttributionSource: "none", Title: "A change",
+		BaseRef: "integration/138", State: "merged", Title: "A change",
 		URL: "https://github.com/acme/widgets/pull/95", MergeCommitSHA: mergeCommit,
 	}
-	if err := UpsertPullRequestHead(ctx, pool, nil, merged); err == nil {
+	if err := UpsertPullRequestHead(ctx, pool, merged); err == nil {
 		t.Fatal("storing a merged head whose branch seed could not be written = nil, want that write's error")
 	}
 	var rows int
@@ -1505,7 +1527,7 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 	// so the table being gone costs it nothing at all.
 	open := merged
 	open.Number, open.State, open.MergeCommitSHA = 96, "open", ""
-	if err := UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
+	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
 		t.Fatalf("store the head of an open pull request, which seeds no branch answer: %v", err)
 	}
 }

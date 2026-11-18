@@ -35,7 +35,7 @@ import (
 // issue — someone branched for it, someone linked it — while a key in a title or a body is a
 // mention, which a pull request that reverts, follows or merely cites another issue's work
 // carries as readily as one that does that work. The commit messages stay last: they are the
-// weakest mention of all, and the only source that costs a GitHub call to read (attributeHead).
+// weakest mention of all, and the only source that costs a GitHub call to read (storePullRequestFacts).
 //
 // The holding to the repository is the server's one repository-resolution rule, spliced into the
 // same statement as the candidates (refs.IssueRepoTerms, attributionHeld), so what an
@@ -390,8 +390,7 @@ var attributionBatchQuery = `
 
 // attributionCandidate is one issue a pull request's sources name: the key, the source that
 // named it, and whether it resolves to the repository the pull request is in. Only a held
-// candidate may be the pull request's issue; the unheld ones above it are what a caller names
-// when it reports what it passed over (headAttribution).
+// candidate may be the pull request's issue.
 type attributionCandidate struct {
 	key    string
 	source attributionSource
@@ -439,10 +438,8 @@ func resolveStoredIssueKey(ctx context.Context, pool *store.Pool, repo, url stri
 }
 
 // firstHeldCandidate is the index of the first candidate held to the pull request's own
-// repository, -1 when none is: the pick made over one pull request's ranked list, which both
-// readers of that list share — resolveStoredIssueKey and headAttribution
-// (pull_request_heads.go), the second of which also needs the index to name what it passed
-// over — so the two cannot come to answer one list differently.
+// repository, -1 when none is: the pick made over one pull request's ranked list
+// (resolveStoredIssueKey).
 //
 // The pick is made in two places, not one: a whole batch of stored rows is picked for in SQL
 // instead, by attributionBatchQuery's `distinct on (pr_repo, pr_number) … order by … rank, n`
@@ -518,7 +515,7 @@ const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 // stored name, for the schema that holds the reading. A caller adds its own select over
 // `attributed`, one row for each judged pull request: repo (the canonical name), number,
 // stored_repo and timeline_repo (the names its results row and its timeline row are stored under,
-// null where it has none), has_facts, fallback, issue_key and source.
+// null where it has none), has_facts, known, fallback, issue_key and source.
 //
 //   - now_reading: the identity of the reading that runs now, and whether any texts row is on
 //     another. Each of min and max is one probe of pull_request_texts_reading, whatever the
@@ -539,9 +536,12 @@ const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 //     attributionCandidateBound and held to the pull request's repository (attributionHeld). A
 //     tie of rank and place, two links of one URL in two letter cases, is ended by the key in byte
 //     order, so no collation, plan or row order picks the issue.
-//   - attributed: the rule's pick where the pull request has facts, and the fallback where it has
-//     none. Messages that were not read decide nothing: a held candidate of a higher source gives
-//     facts without them.
+//   - attributed: one of three states. The rule's answer where the pull request has facts: its
+//     texts are current, and its messages are read or a held candidate of a higher source
+//     decides. Not known where its texts are current, its messages are not read and no held
+//     candidate decides: no issue, the source none, has_facts false and known false. Messages
+//     that were not read decide nothing, and the issue that a write stored is no answer either.
+//     R4's fallback where the pull request has no current texts.
 func attributedTerms(schema, judged string) string {
 	hasFacts := `b.texts_current and (b.messages_read or p.key is not null)`
 	return `with recursive now_reading as materialized (
@@ -622,8 +622,11 @@ func attributedTerms(schema, judged string) string {
 		from held order by pr_repo, pr_number, rank, n, key collate "C"
 	), attributed as (
 		select b.repo, b.number, b.stored_repo, b.timeline_repo, b.fallback, ` + hasFacts + ` as has_facts,
-			case when ` + hasFacts + ` then p.key else b.fallback end as issue_key,
-			case when ` + hasFacts + ` then coalesce(p.source, '` + string(sourceNone) + `') else coalesce(b.stored_source, '` + string(sourceNone) + `') end as source
+			(` + hasFacts + `) or not b.texts_current as known,
+			case when ` + hasFacts + ` then p.key when b.texts_current then null else b.fallback end as issue_key,
+			case when ` + hasFacts + ` then coalesce(p.source, '` + string(sourceNone) + `')
+				when b.texts_current then '` + string(sourceNone) + `'
+				else coalesce(b.stored_source, '` + string(sourceNone) + `') end as source
 		from batch b left join picked p on p.pr_repo = b.repo and p.pr_number = b.number
 	)`
 }
@@ -656,7 +659,7 @@ const pullRequestKeys = `select k.repo, k.number from unnest($1::text[], $2::int
 // gave, matched under the renaming rule, for each key with a results row or a timeline row.
 func pullRequestIssuesStatement(schema string) string {
 	return attributedTerms(schema, pullRequestKeys) + `
-	select k.repo, k.number, a.issue_key, a.source, a.has_facts
+	select k.repo, k.number, a.issue_key, a.source, a.has_facts, a.known
 	from (` + pullRequestKeys + `) k
 	join attributed a on a.number = k.number and lower(` + refs.CanonicalRepoSQL("k.repo") + `) = lower(a.repo)
 	where a.stored_repo is not null or a.timeline_repo is not null`
@@ -726,12 +729,14 @@ type PullRequestKey struct {
 }
 
 // PullRequestAttribution is the statement's answer for one pull request: its issue (nil for
-// nobody), the source that named it, and whether it was read from facts. Without facts, the
-// issue is the fallback and the source the results row's stored one.
+// nobody), the source that named it, whether it was read from facts, and whether it is known.
+// Without facts and with current texts the answer is not known: no issue, and Known false. Without
+// current texts, the issue is the fallback and the source the results row's stored one.
 type PullRequestAttribution struct {
 	IssueKey *string
 	Source   string
 	HasFacts bool
+	Known    bool
 }
 
 // PullRequestIssues is the statement's answer for each of keys, keyed by each key as the caller
@@ -757,7 +762,7 @@ func PullRequestIssues(ctx context.Context, q Querier, keys []PullRequestKey) (m
 	for rows.Next() {
 		var key PullRequestKey
 		var answer PullRequestAttribution
-		if err := rows.Scan(&key.Repo, &key.Number, &answer.IssueKey, &answer.Source, &answer.HasFacts); err != nil {
+		if err := rows.Scan(&key.Repo, &key.Number, &answer.IssueKey, &answer.Source, &answer.HasFacts, &answer.Known); err != nil {
 			return nil, fmt.Errorf("read the issues of %d pull requests: %w", len(keys), err)
 		}
 		answers[key] = answer

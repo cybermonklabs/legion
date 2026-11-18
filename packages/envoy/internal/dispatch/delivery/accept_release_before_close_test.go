@@ -45,16 +45,14 @@ func TestAcceptACloseTheReleaseBeforeWritesOverAReadRowIsReadAgain(t *testing.T)
 			at := now.Add(-10 * time.Minute)
 			head := fakeSHA("d8", kase.number)
 			github.set("acme/widgets", kase.number, "open", head, "topic", "", at)
-			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
+			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
 				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "open",
-				AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &at, CheckedAt: &now,
-				GitHubReadAt: &now}); err != nil {
+				EventAt: &at, CheckedAt: &now, GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
 			}
 			closedAt := at.Add(kase.ahead)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
-				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "closed",
-				AttributionSource: string(sourceNone), EventAt: &closedAt})
+				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "closed", EventAt: &closedAt}, noAttribution)
 			if got := readHead(t, ctx, pool, "acme/widgets", kase.number); got.State != "closed" {
 				t.Fatalf("the release before's write left the row %s, want closed: the setup did not happen", got.State)
 			}

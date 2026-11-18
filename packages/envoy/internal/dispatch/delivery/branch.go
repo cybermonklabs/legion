@@ -537,7 +537,7 @@ func cannotSeeRepository(err error) bool {
 // (UpsertPullRequestHead).
 //
 // It is lowercased on the way in rather than compared with `lower(repo)`, which is how
-// OpenHeadAt meets the same split one table over, because the two tables were in different
+// HeadStoredAt meets the same split one table over, because the two tables were in different
 // positions when each was keyed. pull_request_heads already held rows under GitHub's spelling,
 // with an index built on `(lower(repo), head_sha)` to read them by; branch_commits was new and
 // held no row in any deployment, so it could be keyed once instead. One spelling per row is

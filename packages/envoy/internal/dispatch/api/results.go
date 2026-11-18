@@ -952,7 +952,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 		return
 	}
 	if _, _, err := delivery.ReadThroughCommitPulls(
-		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
+		ctx, s.deps.Store.Pool, s.deps.GitHub, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)
 	}

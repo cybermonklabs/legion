@@ -96,11 +96,11 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 			owedBefore, headsBefore := tableRows(t, pool, "pull_request_reads_owed"), tableRows(t, pool, "pull_request_heads")
 			oweErr := owePullRequestRead(ctx, pool, owedUnder, row.number, owedFailure)
 			owed := tableRows(t, pool, "pull_request_reads_owed") - owedBefore
-			headErr := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			headErr := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: row.repo, Number: row.number, HeadSHA: sha, HeadRef: "topic", BaseRef: "main", State: "open",
-				AttributionSource: string(sourceNone), AttributionComplete: true,
 				Title: "Change " + strconv.Itoa(i), URL: "https://github.com/acme/widgets/pull/" + strconv.Itoa(i),
 			})
+
 			heads := tableRows(t, pool, "pull_request_heads") - headsBefore
 
 			for _, write := range []struct {
@@ -134,48 +134,69 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 
 // A head row holds every value an index of the write can hold, and refuses one past its bound
 // where the row is built, before any statement (checkHeadRow, headRefBound). The values an index
-// holds are the head commit (pull_request_heads_repo_head) and, for a merge, the base branch and
-// the merge commit (branch_commits' primary key), so each is taken at 1,024 bytes and refused at
-// 1,025 with errNoRowHolds and no row written; the widest entry, a repository of 140 bytes with a
-// base branch and a merge commit of 1,024 each, is written. The head branch is held by no index,
-// so an honest one of 5,000 bytes is written. The values are random letters and digits, which
-// Postgres does not compress (randomName). At ef5112db43 no value was bounded, so each value past
-// its bound was written.
+// holds are the head commit (pull_request_heads_repo_head), the URL (pull_request_heads_url_lower)
+// and, for a merge, the base branch and the merge commit (branch_commits' primary key), so each
+// is taken at 1,024 bytes and refused at 1,025 with errNoRowHolds and no row written; the widest
+// entry, a repository of 140 bytes with a base branch and a merge commit of 1,024 each, is
+// written. The head branch is held by no index, so an honest one of 5,000 bytes is written. A
+// title is a text of free form: one with a NUL is written, with U+FFFD in place of the NUL. The
+// values are random letters and digits, which Postgres does not compress (randomName). At
+// ef5112db43 no value was bounded, so each value past its bound was written; at def907052c the
+// URL was bounded by nothing, so the URL of 1,025 bytes was written.
 func TestAHeadRowTakesEveryValueAnIndexCanHoldAndRefusesOnePast(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	short := "4209420942094209420942094209420942094209"
 	// The bound's own numbers, not headRefBound: a test that read the constant would move with it.
 	at, past := randomName(1024), randomName(1025)
 	longest := strings.Repeat("o", 39) + "/" + strings.Repeat("n", 100)
+	urlOf := func(n int) string {
+		prefix := "https://github.com/acme/widgets/pull/1?"
+		return prefix + randomName(n-len(prefix))
+	}
 	for i, row := range []struct {
 		name                  string
 		repo                  string
 		head, base, merge     string
-		headRef               string
+		headRef, title, url   string
 		merged, takes, seeded bool
 	}{
 		{name: "a_head_commit_at_the_bound", repo: "acme/widgets", head: at, base: "main", headRef: "topic", takes: true},
 		{name: "a_base_branch_and_a_merge_commit_at_the_bound_with_the_longest_repository", repo: longest, head: short, base: at, merge: at, headRef: "topic", merged: true, takes: true, seeded: true},
 		{name: "an_honest_head_branch_of_5000_bytes", repo: "acme/widgets", head: short, base: "main", headRef: randomName(5000), takes: true},
+		{name: "a_url_at_the_bound", repo: "acme/widgets", head: short, base: "main", headRef: "topic", url: urlOf(1024), takes: true},
+		{name: "a_title_with_a_nul", repo: "acme/widgets", head: short, base: "main", headRef: "topic", title: "Change\x00 of the notes", takes: true},
 		{name: "a_head_commit_one_past_the_bound", repo: "acme/widgets", head: past, base: "main", headRef: "topic"},
 		{name: "a_base_branch_one_past_the_bound", repo: "acme/widgets", head: short, base: past, merge: short, headRef: "topic", merged: true},
 		{name: "a_merge_commit_one_past_the_bound", repo: "acme/widgets", head: short, base: "main", merge: past, headRef: "topic", merged: true},
+		{name: "a_url_one_past_the_bound", repo: "acme/widgets", head: short, base: "main", headRef: "topic", url: urlOf(1025)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			state := "open"
 			if row.merged {
 				state = "merged"
 			}
+			title, url := row.title, row.url
+			if title == "" {
+				title = "Change " + strconv.Itoa(700+i)
+			}
+			if url == "" {
+				url = "https://github.com/acme/widgets/pull/" + strconv.Itoa(700+i)
+			}
 			heads, seeds := tableRows(t, pool, "pull_request_heads"), tableRows(t, pool, "branch_commits")
-			err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: row.repo, Number: 700 + i, HeadSHA: row.head, HeadRef: row.headRef, BaseRef: row.base,
-				State: state, MergeCommitSHA: row.merge, AttributionSource: string(sourceNone), AttributionComplete: true,
-				Title: "Change " + strconv.Itoa(700+i), URL: "https://github.com/acme/widgets/pull/" + strconv.Itoa(700+i),
+				State: state, MergeCommitSHA: row.merge, Title: title, URL: url,
 			})
+
 			wroteHead, wroteSeed := tableRows(t, pool, "pull_request_heads")-heads, tableRows(t, pool, "branch_commits")-seeds
 			if row.takes {
 				if want := map[bool]int{true: 1, false: 0}[row.seeded]; err != nil || wroteHead != 1 || wroteSeed != want {
 					t.Errorf("the head row was not stored: %d head rows and %d branch rows written (want 1 and %d): %v", wroteHead, wroteSeed, want, err)
+				}
+				want := strings.ReplaceAll(title, "\x00", "\uFFFD")
+				var stored string
+				if err := pool.QueryRow(ctx, `select title from pull_request_heads where repo = $1 and number = $2`, row.repo, 700+i).Scan(&stored); err != nil || stored != want {
+					t.Errorf("the stored title = %q (%v), want %q", stored, err, want)
 				}
 				return
 			}

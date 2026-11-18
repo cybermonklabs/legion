@@ -243,12 +243,11 @@ func TestAnOlderReadOverANewerRowOfTheReleaseBeforeIsReadAgain(t *testing.T) {
 			github.set("acme/widgets", number, "closed", newer, "topic", "", t2)
 			github.merge(number)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
-				HeadSHA: newer, HeadRef: "topic", BaseRef: "main", State: "merged",
-				AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &t2, CheckedAt: &now})
-			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: number,
+				HeadSHA: newer, HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &t2, CheckedAt: &now},
+				releaseBeforeAttribution{source: string(sourceNone), complete: true})
+			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 				HeadSHA: older, HeadRef: "topic", BaseRef: "main", State: olderState,
-				AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &t1, CheckedAt: &now,
-				GitHubReadAt: &now}); err != nil {
+				EventAt: &t1, CheckedAt: &now, GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
 			}
 			NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
@@ -293,10 +292,9 @@ func TestNoOrderOfTwoBuildsWritesLeavesAMarkedRowWithFactsThisBuildNeverWrote(t 
 					where repo = 'acme/widgets' and number = $1`, number).Scan(&priorMarked, &priorAt) == nil
 				head := PullRequestHead{Repo: "acme/widgets", Number: number,
 					HeadSHA: fakeSHA("c", rng.IntN(1000)), State: states[rng.IntN(3)],
-					AttributionSource: string(sourceNone), AttributionComplete: true,
 					EventAt: &at, CheckedAt: &now, GitHubReadAt: &now}
 				ours[fmt.Sprintf("%s|%s|%d", head.HeadSHA, head.State, at.Unix())] = true
-				if err := UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
+				if err := UpsertPullRequestHead(ctx, pool, head); err != nil {
 					t.Fatal(err)
 				}
 				if hadRow && !priorMarked && priorAt != nil && priorAt.After(at) && owedCount(t, ctx, pool, "acme/widgets", number) == 0 {
@@ -320,8 +318,8 @@ func TestNoOrderOfTwoBuildsWritesLeavesAMarkedRowWithFactsThisBuildNeverWrote(t 
 				}
 				writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 					HeadSHA: fakeSHA("f", rng.IntN(1000)), State: states[rng.IntN(3)],
-					AttributionSource: string(sourceNone), AttributionComplete: rng.IntN(2) == 0,
-					EventAt: at, CheckedAt: checked})
+					EventAt: at, CheckedAt: checked},
+					releaseBeforeAttribution{source: string(sourceNone), complete: rng.IntN(2) == 0})
 			case 3:
 				ops["release_before_stamp"]++
 				if _, err := pool.Exec(ctx, `update pull_request_heads set checked_at = $3, attribution_rule = $4

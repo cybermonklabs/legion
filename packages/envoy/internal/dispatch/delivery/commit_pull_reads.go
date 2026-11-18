@@ -15,7 +15,7 @@ import (
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
 // run for that commit. Each read costs one GET /repos/{owner}/{repo}/commits/{sha}/pulls, and
 // one more per pull request GitHub names whose title, body, branch and links name nobody held to
-// the repository, since that one's commit messages are paged too (attributeHead). The
+// the repository, since that one's commit messages are paged too (storePullRequestFacts). The
 // Verification tab refetches an issue's results on every result.recorded, so without a bound
 // every refetch would spend those calls again for every result at a commit heading no pull
 // request Dispatch knows — for ever, since nothing about such a commit is stored. Five minutes

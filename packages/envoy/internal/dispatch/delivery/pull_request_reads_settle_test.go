@@ -61,8 +61,8 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Second)
 			t1, t2 := now.Add(-10*time.Minute), now.Add(-5*time.Minute)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
-				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", IssueKey: &issue,
-				AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &t2, CheckedAt: &now})
+				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", EventAt: &t2, CheckedAt: &now},
+				releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 			github.set("acme/widgets", number, "open", older, branch, body, t1)
 			if _, err := intake.handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "synchronize", older, branch, body, t1)); err != nil {

@@ -93,7 +93,7 @@ type comparisonReader struct {
 	baseBranches map[string]baseBranchAnswer
 	bases        map[[2]string]comparison
 	readThroughs map[[2]string]struct{}
-	openHeads    map[[2]string]bool
+	storedHeads  map[[2]string]bool
 	commits      map[[3]string]delivery.BranchAnswer
 }
 
@@ -156,7 +156,7 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 		defaults:     map[string]defaultBranchAnswer{},
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
-		readThroughs: map[[2]string]struct{}{}, openHeads: map[[2]string]bool{},
+		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
 		commits: map[[3]string]delivery.BranchAnswer{},
 	}
 }
@@ -656,20 +656,18 @@ func (c *comparisonReader) measuredBranches(
 // each is a fact about the repository and the commit, never about the result that is being
 // answered:
 //
-//   - The commit heads an open pull request Dispatch holds, whatever issue that row is attributed
-//     to (delivery.OpenHeadAt). The reconcile reads an open row again at the first pass that
-//     reaches it once delivery.PullRequestHeadStaleAfter has passed since its last read, and
-//     attributes it with Dispatch's state then, so a read from here repairs nothing; an open row
-//     of another issue is left to that pass because a child's result on its parent's tab heads
-//     the child's own open row, and reading it would cost a GitHub call once a
-//     delivery.CommitPullReadStaleAfter for each such commit for as long as the parent's tab is
-//     read. A merged row is read through: nothing but its next event reads it again, so a tie
-//     made after its last read (a link to a GitHub issue its body cites, a new parent, a changed
-//     repository mapping, a link moved to this issue) is followed only here, as it was while no
-//     row was stored for such a commit. A merged row of the check's own issue is never asked
-//     about, since it is a basis of the check and learn reads through no result at a basis. A
-//     closed-unmerged row is counted for nothing, because the reconcile keeps none and a pull
-//     request closed at a commit does not stop another opening from the same head.
+//   - The commit heads an open or merged pull request Dispatch holds (headStoredAt), whatever
+//     issue that row is attributed to and whether it is attributed at all. The statement gives
+//     such a row's issue from its stored facts at each read, with Dispatch's links, issues,
+//     parents and mappings as they stand then, and the reconcile reads an open row again at the
+//     first pass that reaches it once delivery.PullRequestHeadStaleAfter has passed since its
+//     last read. So a read from here repairs nothing. This is a child's result on its parent's
+//     tab: the row is the child's own pull request, attributed to the child, and no answer of
+//     GitHub's puts that commit among the parent's heads, since the issue a result was recorded on
+//     counts for nothing here. A merged row a release before stored has no facts, and the
+//     reconcile reads its facts. A closed-unmerged row is counted for nothing, because the
+//     reconcile keeps none and a pull request closed at a commit does not stop another opening
+//     from the same head.
 //   - Or a read within the last delivery.CommitPullSettledFor has asked GitHub about that
 //     repository and commit and been told of a pull request whose head is another commit
 //     (delivery.CommitPullReads.Settle, which that read records and Claim refuses from). GitHub
@@ -701,7 +699,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		return false
 	}
 	repo, _ := c.repositoryOf(ctx, result.CheckIssueKey)
-	if c.openHeadAt(ctx, *repo, result.CommitSHA) {
+	if c.headStoredAt(ctx, *repo, result.CommitSHA) {
 		return false
 	}
 	now := time.Now()
@@ -709,8 +707,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		return false
 	}
 	written, atHead, err := delivery.ReadThroughCommitPulls(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.server.deps.Events,
-		*repo, result.CommitSHA, now)
+		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, *repo, result.CommitSHA, now)
 	if err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a result's commit",
 			"repo", *repo, "commit", result.CommitSHA, "error", err)
@@ -722,23 +719,23 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	return atHead
 }
 
-// openHeadAt is whether Dispatch holds an open pull request whose head is that commit of that
-// repository (delivery.OpenHeadAt), read once per read of the results. A read that failed answers
-// that it may hold one, so a database hiccup spends no GitHub call and the bases stand exactly as
-// the stored rows leave them, as they do after any failed read here.
-func (c *comparisonReader) openHeadAt(ctx context.Context, repo, sha string) bool {
+// headStoredAt is whether Dispatch holds an open or merged pull request whose head is that
+// commit of that repository (delivery.HeadStoredAt), read once per read of the results. A read
+// that failed answers that it may hold one, so a database hiccup spends no GitHub call and the
+// bases stand exactly as the stored rows leave them, as they do after any failed read here.
+func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) bool {
 	memo := [2]string{repo, sha}
-	if open, memoized := c.openHeads[memo]; memoized {
-		return open
+	if stored, memoized := c.storedHeads[memo]; memoized {
+		return stored
 	}
-	open, err := delivery.OpenHeadAt(ctx, c.server.deps.Store.Pool, repo, sha)
+	stored, err := delivery.HeadStoredAt(ctx, c.server.deps.Store.Pool, repo, sha)
 	if err != nil {
 		slog.Warn("dispatch: read the stored pull request heads of a commit",
 			"repo", repo, "commit", sha, "error", err)
-		open = true
+		stored = true
 	}
-	c.openHeads[memo] = open
-	return open
+	c.storedHeads[memo] = stored
+	return stored
 }
 
 // checkIssueRepository is the repository a check's issue resolves to: its own, the nearest one

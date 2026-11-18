@@ -138,27 +138,29 @@ func pr2808Envelope() map[string]string {
 
 // storePR2808AsAnOlderRuleJudgedIt writes #2808's row as the older build left it: credited to
 // ACME-3044 from the title and the body, judged by a rule older than this build's, read at
-// pr2808Judged.
+// pr2808Judged. The row has the texts of GitHub's answer, as a writer of this build stores them,
+// and the older build's verdict is stored with one update, as that build stored it.
 func storePR2808AsAnOlderRuleJudgedIt(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
-	wrong := pr2808Wrong
 	updated := time.Date(2026, 11, 12, 0, 49, 50, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: pr2808Repo, Number: pr2808Number, HeadSHA: pr2808Head, HeadRef: pr2808Branch,
-		BaseRef: "main", State: "merged", IssueKey: &wrong, AttributionSource: string(sourceTitleBody),
-		AttributionComplete: true, Title: pr2808Title, URL: pr2808URL, EventAt: &updated,
+		BaseRef: "main", State: "merged", Title: pr2808Title, URL: pr2808URL, EventAt: &updated,
+		Texts: &PullRequestTexts{HeadRepo: pr2808Repo, BaseRef: "main", Title: pr2808Title, Body: pr2808Body,
+			CommitMessages: []string{"ci-review: the split\n\nDispatch: ACME-3044"}, MessagesRead: true},
 	}); err != nil {
 		t.Fatalf("store #2808 as the older rule judged it: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		update pull_request_heads set attribution_rule = $3, checked_at = $4::timestamptz
+		update pull_request_heads set issue_key = $5, attribution_source = $6, attribution_rule = $3, checked_at = $4::timestamptz
 		where repo = $1 and number = $2
-	`, pr2808Repo, pr2808Number, AttributionRuleVersion-1, pr2808Judged); err != nil {
+	`, pr2808Repo, pr2808Number, AttributionRuleVersion-1, pr2808Judged, pr2808Wrong, string(sourceTitleBody)); err != nil {
 		t.Fatalf("make #2808 a row of the rule before this one: %v", err)
 	}
 }
 
-// pr2808Credit is the issue and the source #2808's stored row credits, "none" for nobody.
+// pr2808Credit is the issue and the source that every reader answers for #2808
+// (PullRequestIssues), "none" for nobody.
 func pr2808Credit(t *testing.T, ctx context.Context, pool *store.Pool) (string, string) {
 	t.Helper()
 	head := readHead(t, ctx, pool, pr2808Repo, pr2808Number)
@@ -197,12 +199,12 @@ func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 			}
 		}},
 		{"the read-through of the head commit, which a recorded result makes", func(t *testing.T) {
-			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, broker, pr2808Repo, pr2808Head, time.Now()); err != nil {
+			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, pr2808Repo, pr2808Head, time.Now()); err != nil {
 				t.Fatalf("read the head commit through: %v", err)
 			}
 		}},
 		{"the read-through of an earlier commit of the branch, which a results read makes", func(t *testing.T) {
-			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, broker, pr2808Repo, pr2808Earlier, time.Now()); err != nil {
+			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, pr2808Repo, pr2808Earlier, time.Now()); err != nil {
 				t.Fatalf("read the earlier commit through: %v", err)
 			}
 		}},
@@ -299,9 +301,10 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) (issue, source string, 
 	})
 	earlier := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	for number := 1; number <= ahead; number++ {
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: pr2808Repo, Number: number, HeadSHA: fmt.Sprintf("%040d", number), HeadRef: fmt.Sprintf("chore/tidy-%d", number),
-			BaseRef: "main", State: "merged", AttributionSource: string(sourceNone), AttributionComplete: true,
+			BaseRef: "main", State: "merged",
+			Texts: &PullRequestTexts{HeadRepo: pr2808Repo, BaseRef: "main", CommitMessages: []string{}, MessagesRead: true},
 		}); err != nil {
 			t.Fatalf("store merged row #%d: %v", number, err)
 		}

@@ -28,7 +28,8 @@ import (
 // githubPulls is what the fake GitHub answers about each pull request of one repository: `GET
 // /repos/{owner}/{repo}/pulls/{number}` from the answer a row last set, and 404 for a number it
 // was never given, as GitHub answers a pull request it does not have. Each pull request's commits
-// are an empty page, and `GET /repos/{owner}/{repo}` answers the repository, as GitHub answers an
+// are the messages a test gave it (messages), else an empty page, and 500 for each read while
+// commitsFailing is set. `GET /repos/{owner}/{repo}` answers the repository, as GitHub answers an
 // installation that can read it. The absence query of GraphQL (absenceQuery, answerAbsenceQuery)
 // answers the repository and the pull request, or GitHub's NOT_FOUND for a number it was never
 // given. It counts the four reads, so a row can show what an envelope cost. limited answers every
@@ -42,8 +43,10 @@ import (
 type githubPulls struct {
 	mu             sync.Mutex
 	pulls          map[int]map[string]any
+	messages       map[int][]string
 	limited        bool
 	failing        bool
+	commitsFailing bool
 	hidden         bool
 	holdFirst      func()
 	before         map[int]func()
@@ -92,9 +95,22 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 			mustEncode(t, w, pull)
 		}
 	})
-	fake.handle("GET /repos/"+repo+"/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+	fake.handle("GET /repos/"+repo+"/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		g.commitReads.Add(1)
-		mustEncode(t, w, []any{})
+		number, _ := strconv.Atoi(r.PathValue("number"))
+		g.mu.Lock()
+		messages, failing := g.messages[number], g.commitsFailing
+		g.mu.Unlock()
+		if failing {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		}
+		commits := make([]map[string]any, len(messages))
+		for i, message := range messages {
+			commits[i] = map[string]any{"sha": fmt.Sprintf("%040d", i+1), "commit": map[string]any{"message": message}}
+		}
+		mustEncode(t, w, commits)
 	})
 	fake.handle("GET /repos/"+repo, func(w http.ResponseWriter, _ *http.Request) {
 		// The answer is taken before the read is counted, so a test that waits for the count
@@ -301,12 +317,13 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 // The events of one pull request that waited together cost one read of it, and one more for its
 // events of the second GitHub's answer holds. A first start replays what the stream kept: here 200
 // pull requests, each opened and pushed twice, 600 envelopes, the last push of each at the second
-// of GitHub's answer, and none naming an issue, so each read reads the pull request's commit
-// messages too. The first envelope of each reads GitHub, and the row it writes holds GitHub's
-// answer, which answers for the first push, ten minutes older (headReadCovers). The last push is
-// of the answer's own second, which an answer covers no event of, since GitHub's updated_at is
-// whole seconds and that answer may be one GitHub gave before the event; so it reads GitHub once
-// more.
+// of GitHub's answer, and none naming an issue, so the first read of each reads the pull request's
+// commit messages too. The first envelope of each reads GitHub, and the row it writes holds
+// GitHub's answer, which answers for the first push, ten minutes older (headReadCovers). The last
+// push is of the answer's own second, which an answer covers no event of, since GitHub's updated_at
+// is whole seconds and that answer may be one GitHub gave before the event; so it reads GitHub once
+// more. That read reads no commits: the stored texts hold the messages of the same head and base
+// (storePullRequestFacts).
 // The repository is the row's own, so no commit messages another row of this test binary read
 // answer for these.
 func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *testing.T) {
@@ -334,8 +351,8 @@ func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *te
 			}
 		}
 	}
-	if reads, commits := github.reads.Load(), github.commitReads.Load(); reads != 2*pulls || commits != 2*pulls {
-		t.Errorf("600 envelopes of %d pull requests read GitHub's pull request %d times and its commits %d times; want %d of each", pulls, reads, commits, 2*pulls)
+	if reads, commits := github.reads.Load(), github.commitReads.Load(); reads != 2*pulls || commits != pulls {
+		t.Errorf("600 envelopes of %d pull requests read GitHub's pull request %d times and its commits %d times; want %d and %d", pulls, reads, commits, 2*pulls, pulls)
 	}
 	t.Logf("600 envelopes: %d pull request reads, %d commit reads", github.reads.Load(), github.commitReads.Load())
 	if got := readHead(t, ctx, pool, repo, pulls); got.HeadSHA != head(pulls, 2) {

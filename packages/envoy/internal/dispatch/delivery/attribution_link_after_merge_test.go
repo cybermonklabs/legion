@@ -30,7 +30,7 @@ func TestALinkAfterAMergedRowReachesItWithinOnePass(t *testing.T) {
 
 	// The row is written by a writer of GitHub's answer, never by SQL: a row written by SQL
 	// holds no facts of a read, so no rule over stored facts could give it to the link.
-	if _, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, "acme/widgets", number, time.Now()); err != nil {
+	if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", number, time.Now()); err != nil {
 		t.Fatalf("write #%d through the refresh: %v", number, err)
 	}
 	listed := func() []int {
@@ -179,7 +179,7 @@ func TestAChangeInDispatchReachesAMergedRowWithinOnePass(t *testing.T) {
 			github.mu.Unlock()
 			client := fake.newTestClient()
 			// A writer of GitHub's answer stores the row, never SQL, as in the test above.
-			if _, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, c.repo, c.number, time.Now()); err != nil {
+			if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, c.repo, c.number, time.Now()); err != nil {
 				t.Fatalf("write #%d through the refresh: %v", c.number, err)
 			}
 			listed := func() []int {
