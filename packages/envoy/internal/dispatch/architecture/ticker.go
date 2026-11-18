@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // SyncInterval is how often the server re-imports every enabled architecture
@@ -42,8 +43,19 @@ func Run(ctx context.Context, importer *Importer, leases duty.Leases) {
 
 // syncAllLeased runs one import pass under the lease, for the SyncInterval this loop ticks on and
 // the tick due at due.
+//
+// The pass the lease runs is one attempt at reading GitHub (githubreads), recorded through
+// importer.GitHubReads when it ends: the GitHub client notes on it each request and each failure
+// no caller takes as data, and each sync notes the reads of GitHub it gave up (syncOnce). It opens
+// here and not in Sync, which the Settings Refresh route and `dispatch architecture-sync` also
+// run, and it is recorded on the context the lease handed the pass, so a pass this process's
+// shutdown cut short records nothing.
 func syncAllLeased(ctx context.Context, importer *Importer, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, architectureImportLease, due, SyncInterval, func(ctx context.Context) { syncAll(ctx, importer) })
+	duty.Exclusive(ctx, leases, architectureImportLease, due, SyncInterval, func(caller context.Context) {
+		ctx, attempt := githubreads.Begin(caller)
+		defer githubreads.Finish(caller, githubreads.ArchitectureImport, attempt, importer.GitHubReads, nil)
+		syncAll(ctx, importer)
+	})
 }
 
 // syncAll imports every enabled source, ordered by project and then id; a
