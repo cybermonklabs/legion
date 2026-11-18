@@ -834,6 +834,13 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// agents-route request set it. Absent, which is every other sender and every older
 			// client, nothing changes.
 			ConnectedOnly bool `json:"connected_only"`
+			// Role marks a send Dispatch makes for a route to a role with that role, which the
+			// envelope then carries (contracts.Envelope.Role): the target is the session the
+			// role's claim named when Dispatch resolved the route. It is accepted from Dispatch's
+			// own verified principal alone (d.dispatchPrincipal, verifiedPrincipal), since the
+			// body's source is the caller's own word, and every other caller carrying it is
+			// refused 403 naming the field. Absent, nothing changes.
+			Role string `json:"role"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "invalid json")
@@ -845,6 +852,16 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if refusal := sessionNotBound(r, logger, strings.TrimSpace(body.SourceSession)); refusal != "" {
 			record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "source_session")
 			return
+		}
+		if request.Role != "" {
+			if refusal := roleMarkRefusal(r, d.dispatchPrincipal); refusal != "" {
+				record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "role")
+				return
+			}
+			if !roles.Valid(request.Role) {
+				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, fmt.Sprintf("role %q is no role a claim can name", request.Role), "role")
+				return
+			}
 		}
 		if targetSession == "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "target_session is required", "target_session")
@@ -860,6 +877,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		item := contracts.AgentSendEnvelope(targetSession, body.IdempotencyKey, body.message(bodyExpectsReply))
+		item.Role = request.Role
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
@@ -870,6 +888,26 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		defer charge.settle()
+		// A send for a role goes to its target only while the role's claim names that target: the
+		// claim read from the role bucket under the role routes' own bound (readRoleClaimHolder),
+		// never from this listener's watched copy of it. A claim that names another session, or
+		// none, is a role that moved between Dispatch's resolution and this send, and the message
+		// is the role's, so it is kept for the role's next live holder, as a role publish that
+		// finds no live holder is (keepRoleSend).
+		if item.Role != "" {
+			holder, err := readRoleClaimHolder(ctx, *d.delivery, item.Role)
+			switch {
+			case errors.Is(err, store.ErrMalformedRoleClaim):
+				record.refuseRoleClaimUnreadable(w, item.Role, err)
+				return
+			case err != nil:
+				record.refuseBusUnavailable(w, err)
+				return
+			case holder != targetSession:
+				keepRoleSend(w, d, record, charge, &item, targetSession, holder, expectsReplyAnswer(body.ExpectsReply))
+				return
+			}
+		}
 		// The cache alone cannot say a session is gone: it trails the bucket it follows, and is
 		// still being refilled after a reconnect, so a miss is read through to the bucket itself.
 		// Only the bucket's own word for it (nats.ErrKeyNotFound, which Refresh also returns for a

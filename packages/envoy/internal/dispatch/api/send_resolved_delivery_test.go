@@ -65,7 +65,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 			}
 			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(150*time.Millisecond))}}
 			outcome := s.sendResolvedDelivery(
-				context.Background(), tc.target, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+				context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
 				outcome.queued != tc.wantQueued || (outcome.failure != "") != tc.wantFailure {
 				t.Fatalf("sendResolvedDelivery = %+v, want envelope %v, duplicate %v, queued %v, failure %v",
