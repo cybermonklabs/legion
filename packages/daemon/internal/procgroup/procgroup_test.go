@@ -152,6 +152,58 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 	}
 }
 
+// Run starts cmd through the caller's Starter and calls its done only once the wait has read the
+// exit, which is what keeps a PID 1 reaper's hold on the child until then; a start that fails is
+// answered as it is, with no wait and no done; NoReaper is cmd.Run's own start; and no Starter at
+// all panics before anything starts, rather than run the command under one nobody chose.
+func TestRunStartsThroughTheStarterAndIsDoneOnceTheExitIsRead(t *testing.T) {
+	t.Run("a starter", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "exit 3")
+		starts := 0
+		var stateAtDone *os.ProcessState
+		err := Run(cmd, func(started *exec.Cmd) (func(), error) {
+			starts++
+			if started != cmd {
+				t.Errorf("the starter was given %v, want the command Run was", started)
+			}
+			return func() { stateAtDone = started.ProcessState }, started.Start()
+		})
+		if Err(err) != nil || cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 3 {
+			t.Fatalf("Run = %v with exit %v, want the command's own exit 3", err, cmd.ProcessState)
+		}
+		if starts != 1 {
+			t.Errorf("the starter ran %d times, want once", starts)
+		}
+		if stateAtDone == nil || stateAtDone.ExitCode() != 3 {
+			t.Errorf("done ran with the exit %v, want it called only once the wait had read exit 3", stateAtDone)
+		}
+	})
+	t.Run("a start that fails", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "exit 0")
+		refused := errors.New("the guard refused the start")
+		doneCalled := false
+		err := Run(cmd, func(*exec.Cmd) (func(), error) { return func() { doneCalled = true }, refused })
+		if !errors.Is(err, refused) || cmd.Process != nil || doneCalled {
+			t.Fatalf("Run = %v, process %v, done called %v; want the start's own error, no process and no done", err, cmd.Process, doneCalled)
+		}
+	})
+	t.Run("NoReaper", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "exit 4")
+		if err := Run(cmd, NoReaper); Err(err) != nil || cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 4 {
+			t.Fatalf("Run(NoReaper) = %v with exit %v, want the command's own exit 4", err, cmd.ProcessState)
+		}
+	})
+	t.Run("no starter", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "exit 0")
+		defer func() {
+			if recover() == nil || cmd.Process != nil {
+				t.Fatalf("Run(nil) started %v and did not panic, want a panic before any start", cmd.Process)
+			}
+		}()
+		_ = Run(cmd, nil)
+	})
+}
+
 // The rows below write their own children, and these are the shell pieces they share. A shell
 // runs a trap when the command it is waiting for ends, so a child spends its life in a loop of
 // short sleeps rather than in one long one: a signal it handles is then acted on within one sleep

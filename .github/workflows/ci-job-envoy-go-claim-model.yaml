@@ -71,8 +71,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # The mention sender's claim model (TestTheMentionSenderClaimModel): every order, within
       # three claim-refresh periods, of the real sender's locked sections, statements and timers
       # with two comments' attempt rows, the delivery sweep and the outbox, the sender as built

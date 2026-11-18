@@ -140,7 +140,7 @@ type testServerOptions struct {
 	buildCommit string
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
-	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
+	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.

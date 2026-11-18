@@ -586,6 +586,15 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
+// RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
+// package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
+// reads every route the router mounts from the mounting itself rather than from a list kept beside
+// it, and finds a write mounted beside the table, which runs outside keyedWrites.
+type RouteMux interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
 // Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
 // same table answers GET /api/v1.
 //
@@ -623,7 +632,7 @@ type queryer interface {
 // on no context that ever ends, so they would outlive the process's shutdown, or the test that
 // built the server, and the returned wait would block for ever once an events subscription had
 // started the relay, or at once under the test hooks.
-func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
+func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
 }
@@ -725,7 +734,7 @@ func (b *backgroundWork) wait() {
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
 // one of those: it needs Deps.TestHooksEnabled and a Store and dials on a goroutine of its own,
 // since a process has to be listening before another process calls a hook.
-func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
+func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
@@ -1048,9 +1057,10 @@ func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value
 // place, so a retry goes out on the new cookie before this tab knows. A request whose caller is
 // another person, or no person at all (a bearer), is answered 409 LOGIN_CHANGED before anything
 // runs - before its Idempotency-Key is read, so its key is untouched. A caller that resolves to
-// nobody (a lapsed cookie) is left to the route's own refusal, a 401, so a write a session lapsed
-// under waits for the sign-in that follows. A request without the header - the dispatch command,
-// an agent, a script - is not checked. Logins are compared as model.CanonicalLogin compares them.
+// nobody (a lapsed cookie) is passed on to the 401 written further in - the keyed layer's for a
+// keyed write, the handler's for any other - so a write a session lapsed under waits for the
+// sign-in that follows. A request without the header - the dispatch command, an agent, a script -
+// is not checked. Logins are compared as model.CanonicalLogin compares them.
 func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pressed := r.Header.Values(contracts.DispatchLoginHeader)
