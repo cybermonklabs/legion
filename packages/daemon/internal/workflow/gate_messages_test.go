@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A new version of an approved spec closes the tree's design gate under the workers already
@@ -134,9 +135,9 @@ func TestTheOpeningIsOwedToAnAcceptingChildsRowOnlyWhereAChildsArchitectHoldsIt(
 			seedTold(t, pool, root, record.AudienceHolder, took3)
 			seedTold(t, pool, child, record.AudienceHolder, took3)
 			seedTold(t, pool, root, record.AudienceArchitect, took3)
-			seedArchitectClaim(t, pool, root)
+			seedArchitectClaimIn(t, pool, root, root, 4, supervise.StateWorking, "")
 			if tc.own {
-				seedChildArchitectClaim(t, pool, root, child)
+				seedArchitectClaimIn(t, pool, root, child, 4, supervise.StateWorking, "")
 			}
 			engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -410,18 +411,6 @@ func nothingChangedClause(version int) string {
 // version for the tree.
 func treeNothingChangedClause(version int) string {
 	return fmt.Sprintf("Nothing the tree holds changed since version %d, which you took.", version)
-}
-
-// seedChildArchitectClaim records the architect claim of child, a member of tree, as working: a
-// claim that holds its role (record.HoldsRole), which the owner walk reads.
-func seedChildArchitectClaim(t *testing.T, pool *pgxpool.Pool, tree, child string) {
-	t.Helper()
-	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, 'legion', $2, $3, 'architect', 4, 'ses', '/sessions/ses.jsonl', 'working', 0, 0, 0, 0)`,
-		treeRoleToken(t, child, claim.RoleArchitect), tree, child); err != nil {
-		t.Fatalf("seed the architect claim of %s: %v", child, err)
-	}
 }
 
 // seedTold records what issue's audience took of its tree's approved design: each step of versions

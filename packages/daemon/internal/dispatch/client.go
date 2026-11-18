@@ -191,10 +191,10 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // entry's `holds` ignores that member, as it ignores every member a body carries that it does not
 // declare (its decodeJSON), and answers 200: the publish finishes, and that Dispatch keeps no
 // `holds` for the row. Its advice then reads the row by the project's gated steps, so a `criteria`
-// row a root registered beside a deployment of `spec` alone is left out of the superseded-approval
-// advice until the set is published again, which every daemon boot does
-// (queueRecordedGatesPublish). So deploy Dispatch first, or restart the daemon once Dispatch has
-// the column.
+// row a root registered beside a deployment whose list names `spec` and not `criteria` is left out
+// of the superseded-approval advice until the set is published again, which every daemon boot
+// does (queueRecordedGatesPublish). So deploy Dispatch first, or restart the daemon once Dispatch
+// has the column.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}

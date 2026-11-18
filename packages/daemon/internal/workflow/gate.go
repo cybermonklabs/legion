@@ -983,7 +983,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // opening as owed, so the task that carries its news leads with the opening; every other holder is
 // sent the opened message, which says as well that nothing its issue holds changed since the
 // version its phase took. So each holder is told the opening once. A member in accepting that a
-// child's architect holds is told the opening by its news alone (settleChildArchitectOpenings).
+// child's architect holds is told the opening by its news alone (heldByChildArchitects).
 //
 // Each of those deliveries settles the told row's owed opening here, in the transaction that moves
 // the gate, through the one rule every writer of the owed opening calls (the SQL function
@@ -1074,11 +1074,29 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		}
 		messages++
 	}
-	held, err := e.settleChildArchitectOpenings(ctx, tx, *root, members, owed, facts.Told, opened, step, version)
+	// A member in accepting is held by the architect that owns it, and one a child's architect
+	// holds, owed news, has the opening settled as owed on its holder row, so the task that carries
+	// its news to that architect leads with the opening, as a phase worker's does. It is sent no
+	// opened message, since a child's own architect is not told of the root's gate: the gate's merge
+	// hold reaches the member's merger once it holds merging. A member the tree root's architect
+	// holds is passed over, since that architect is told the opening once, on its own row.
+	var owedByNews []record.Issue
+	for _, member := range members {
+		if member.Phase == phase.Accepting && !claim.IsTreeRoot(member.Key, member.Tree) &&
+			openingDelivery(owed, facts.Told, member.Key, record.AudienceHolder, opened, step, version).byNews {
+			owedByNews = append(owedByNews, member)
+		}
+	}
+	held, err := e.heldByChildArchitects(ctx, tx, *root, members, owedByNews)
 	if err != nil {
 		return err
 	}
-	byNews += held
+	for _, member := range held {
+		if err := e.store.SettleOpening(ctx, tx, member.Key, record.AudienceHolder, true); err != nil {
+			return err
+		}
+	}
+	byNews += len(held)
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", messages)
 	if byNews > 0 {
@@ -1088,52 +1106,33 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	return nil
 }
 
-// settleChildArchitectOpenings settles the gate's opening on the holder row of each member of
-// root's tree that stands in accepting and that a child's architect holds: the architect the owner
-// walk from the member itself ends at (record.ReadOwnerWalk, over the architect claims this
-// transaction reads), which is the architect the reviewer's approval that moved the member there
-// went to, and the one sign_off accepts from. That architect holds the member's phase as the root's
-// architect holds a member it owns, so the member's news reaches it by its own news-only start (the
-// daemon's settleNews). Where openingDelivery owes the member's row news, the row records the
-// opening as owed, and the task that carries that news leads with the opening, as a phase worker's
-// does. A member owed nothing is sent no opened message, since a child's own architect is not told
-// of the root's gate: the gate's merge hold reaches the member's merger once it holds merging. A
-// member the tree root's architect holds is passed over, since that architect is told the opening
-// once, on its own row. It answers how many rows it settled as owed, and reads the owner walk only
-// where a member below the root stands in accepting.
-func (e *Engine) settleChildArchitectOpenings(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue,
-	owed record.TreeNews, told []record.DesignTold, opened string, step record.DesignStep, version int) (int, error) {
-	var accepting []record.Issue
-	for _, member := range members {
-		if member.Phase == phase.Accepting && !claim.IsTreeRoot(member.Key, member.Tree) {
-			accepting = append(accepting, member)
-		}
-	}
+// heldByChildArchitects is each of accepting, members of root's tree in accepting, that a child's
+// architect holds, in the order given: those the owner walk from the member itself
+// (record.OwningIssue) ends at an architect other than the tree root's. That is the walk the
+// reviewer's approval that moved the member there was routed by, and the architect sign_off
+// accepts it from. The walk reads members, the tree's issues as its caller read them in tx, and the
+// architect claims the store records (record.ArchitectRuns), which are read only where accepting
+// names a member.
+func (e *Engine) heldByChildArchitects(ctx context.Context, tx pgx.Tx, root record.Issue, members, accepting []record.Issue) ([]record.Issue, error) {
 	if len(accepting) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	project, err := claim.ProjectToken(root.Project)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	walk, err := record.ReadOwnerWalk(ctx, e.store, tx, project, root.Tree)
+	tree := record.TreeByKey(members)
+	runs, err := record.ArchitectRuns(ctx, e.store, tx, project, tree)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	settled := 0
+	var held []record.Issue
 	for _, member := range accepting {
-		if walk.Owner(member, false) == root.Tree {
-			continue
+		if record.OwningIssue(project, tree, member, false, runs) != root.Tree {
+			held = append(held, member)
 		}
-		if !openingDelivery(owed, told, member.Key, record.AudienceHolder, opened, step, version).byNews {
-			continue
-		}
-		if err := e.store.SettleOpening(ctx, tx, member.Key, record.AudienceHolder, true); err != nil {
-			return 0, err
-		}
-		settled++
 	}
-	return settled, nil
+	return held, nil
 }
 
 // openingWay is how the opening of a tree's design gate reaches one holder (openingDelivery): by
@@ -1146,10 +1145,10 @@ type openingWay struct {
 
 // openingDelivery is the one place the opening of a tree's design gate is decided for each holder
 // it reaches (tellGateMoved): the session holding a member's phase (audience holder, issue the
-// member), a child's architect holding a member in accepting among them
-// (settleChildArchitectOpenings), or the tree's root architect (audience architect, issue the tree
-// root). So a merger's opening is decided here too: one delivery of the opening per holder, decided
-// in one function, which is condition 1 of dispatch://INFRA-3522's R1 (spec v6).
+// member), a child's architect holding a member in accepting among them (heldByChildArchitects),
+// or the tree's root architect (audience architect, issue the tree root). So a merger's opening is
+// decided here too: one delivery of the opening per holder, decided in one function, which is
+// condition 1 of dispatch://INFRA-3522's R1 (spec v6).
 //
 // A holder owed news (owed, record.OwedNews over the record the opening leaves: a member's holder
 // row, or the root architect's own row) is told the opening by the task that carries that news,

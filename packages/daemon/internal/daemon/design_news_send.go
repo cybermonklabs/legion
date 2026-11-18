@@ -506,15 +506,14 @@ func (n newsRecorded) carriedChange(item record.DeliveryNewsItem) (workflow.News
 }
 
 // memberDraft is one member of a tree as the root architect's summary reads it before the change
-// sets are read: its record, what it is told, and, for a member owed news, the items its holder is
-// owed now (record.OwedNews), whether its holder row owes the opening, and the issue whose
-// architect holds it in accepting where that is not the tree root's (architect, "" elsewhere).
+// sets are read: its record, how it is told (memberTelling: its state, and the issue whose
+// architect holds it in accepting where that is not the tree root's), and, for a member owed news,
+// the items its holder is owed now (record.OwedNews) and whether its holder row owes the opening.
 type memberDraft struct {
+	memberTelling
 	issue       record.Issue
-	state       workflow.NewsState
 	owed        []record.NewsItem
 	openingOwed bool
-	architect   string
 }
 
 // told is the member as the summary names it, given what is recorded: its owed items with their
@@ -585,8 +584,7 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 	for _, member := range members {
 		draft := memberDraft{issue: member, openingOwed: record.ToldRow(facts.Told, member.Key, record.AudienceHolder).OpeningOwed}
 		if news, owes := owed.Member(member.Key); owes {
-			telling := told[member.Key]
-			draft.owed, draft.state, draft.architect = news.Items, telling.state, telling.architect
+			draft.owed, draft.memberTelling = news.Items, told[member.Key]
 		} else {
 			draft.state = untoldReason(owed.Untold[member.Key])
 		}

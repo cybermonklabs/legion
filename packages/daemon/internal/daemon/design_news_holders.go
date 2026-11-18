@@ -7,6 +7,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -48,13 +49,14 @@ func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
 // newsClaims names the holder of each member of one tree (holderOf). project is the tree's project
 // token, read from its root's record as notice routing reads it (readNoticeRoute), "" where that
 // project names none. members is the tree's issues by key: those its caller read in its own
-// transaction, and those member read from the record on a miss. Every reader takes a member's
-// issue from the record, through member or, at a send, through records.Issue (readNewsAtSend),
-// which skips a key the record holds no issue of. So none mistakes such a key for an issue in no
-// phase. runs is the outbox's live view of whether an architect's claim holds its role, which the
-// outbox's start weighs the owner walk by (withLiveView), nil for a reader that weighs the claims
-// the store records. owner is that walk, read the first time an owner is asked (owningIssue), and
-// nil until then.
+// transaction, which a caller that hands any over hands over whole (record.TreeNewsFacts), and
+// those member read from the record on a miss. Every reader takes a member's issue from the
+// record, through member or, at a send, through records.Issue (readNewsAtSend), which skips a key
+// the record holds no issue of. So none mistakes such a key for an issue in no phase. runs is the
+// outbox's live view of whether an architect's claim holds its role, which the outbox's start
+// weighs the owner walk by (withLiveView), nil for a reader that weighs the claims the store
+// records. owner is that walk, built the first time an owner is asked (owningIssue), and nil until
+// then.
 type newsClaims struct {
 	project string
 	root    record.Issue
@@ -146,30 +148,28 @@ func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Sto
 }
 
 // owningIssue is the key of the issue whose architect owns member now: the owner walk from the
-// member itself (record.OwningIssue), read once for c's tree in the caller's transaction. A reader
-// in a transaction weighs the architect claims the store records (record.ReadOwnerWalk); the
-// outbox's start weighs the machine's live view (runs, withLiveView) over the tree's issues, as the
-// outbox routes a notice (noticeArchitect). Both read every issue of the tree, since the walk
-// climbs through the member's parents.
+// member itself (record.OwningIssue), built once for c's tree in the caller's transaction. The walk
+// climbs through the member's parents, so it reads every issue of the tree: those c holds, which a
+// caller that hands any over hands over whole (record.TreeNewsFacts), and otherwise those member
+// reads, once, with the root's key, which c always holds after. A reader in a transaction weighs
+// the architect claims the store records (record.ArchitectRuns); the outbox's start weighs the
+// machine's live view (runs, withLiveView), as the outbox routes a notice (noticeArchitect).
 func (c *newsClaims) owningIssue(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (string, error) {
 	if c.owner != nil {
 		return c.owner(member), nil
 	}
-	if c.runs == nil {
-		walk, err := record.ReadOwnerWalk(ctx, records, tx, c.project, c.root.Tree)
-		if err != nil {
-			return "", err
-		}
-		c.owner = func(issue record.Issue) string { return walk.Owner(issue, false) }
-		return c.owner(member), nil
-	}
-	issues, err := records.TreeIssues(ctx, tx, c.root.Tree)
-	if err != nil {
+	if _, err := c.member(ctx, tx, records, c.root.Key); err != nil {
 		return "", err
 	}
-	c.seed(issues)
-	tree := record.TreeByKey(issues)
-	c.owner = func(issue record.Issue) string { return record.OwningIssue(c.project, tree, issue, false, c.runs) }
+	tree := record.TreeByKey(slices.Collect(maps.Values(c.members)))
+	runs := c.runs
+	if runs == nil {
+		var err error
+		if runs, err = record.ArchitectRuns(ctx, records, tx, c.project, tree); err != nil {
+			return "", err
+		}
+	}
+	c.owner = func(issue record.Issue) string { return record.OwningIssue(c.project, tree, issue, false, runs) }
 	return c.owner(member), nil
 }
 

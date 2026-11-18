@@ -583,12 +583,13 @@ func (s *server) supersededApprovalAdvice(
 // column reads that daemon's rows as it always read them. A Dispatch older than the column takes
 // a newer daemon's publish and answers 200, dropping holds, since decodeJSON ignores a member it
 // does not declare, and nothing retries the publish. Each row it took that way is null once
-// Dispatch has the column, so a `criteria` row a root registered beside a deployment that gates
-// `spec` alone is left out of this advice until the daemon publishes the set again, which every
-// daemon boot does. So the operator deploys Dispatch first, or restarts the daemon once Dispatch
-// has the column. For a null row, a project whose daemon has published no list gates nothing, and
-// prints no clause, which is the direction this whole change takes: a reader told nothing asks the
-// architect, where a reader told a gate that is not there stops working.
+// Dispatch has the column, so a `criteria` row a root registered beside a deployment whose list
+// names `spec` and not `criteria` is left out of this advice until the daemon publishes the set
+// again, which every daemon boot does. So the operator deploys Dispatch first, or restarts the
+// daemon once Dispatch has the column. For a null row, a project whose daemon has published no
+// list gates nothing, and prints no clause, which is the direction this whole change takes: a
+// reader told nothing asks the architect, where a reader told a gate that is not there stops
+// working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
