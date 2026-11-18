@@ -271,6 +271,10 @@ type mentionSender struct {
 	// after starts the timer that ends a park (unpark), once no goroutine serves the parked lane
 	// (serve): time.AfterFunc, which only a test replaces.
 	after func(time.Duration, func())
+	// parking, when set, runs in serve between a send's last statement and its park, with the send
+	// about to park: only the claim model sets it, to hold the goroutine there so that a refresh or
+	// a re-read can land in that window (TestTheMentionSenderClaimModel).
+	parking func(mentionSend)
 
 	mu sync.Mutex
 	// lanes holds each lane's sends that have not started. A key is present while its lane is
@@ -454,6 +458,9 @@ func (m *mentionSender) serve(lane laneKey) {
 		}
 		finished = mentionKey{}
 		claimed := !again.claimed.Equal(item.claimed)
+		if m.parking != nil {
+			m.parking(again)
+		}
 		held, delay := m.park(lane, again, claimed, known)
 		wake := func() { m.after(delay, func() { m.unpark(held) }) }
 		if held == lane {

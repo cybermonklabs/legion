@@ -61,6 +61,9 @@ func (r *cmRun) key() string {
 			addAll(try.read.found)
 		}
 	}
+	for _, parking := range r.parking {
+		add(parking.try.item.claimed)
+	}
 	if r.refresh != nil {
 		addAll(r.refresh.queued)
 		addAll(r.refresh.written)
@@ -96,7 +99,8 @@ func (r *cmRun) key() string {
 		return fmt.Sprintf("%s:%s:%s", s.comment.ID, canon(s.claimed), s.heldFor)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "s%d pub%t took%v broke%v failed%d out%d|", r.slot, r.published, r.took, r.broke, r.readFailures, r.outages)
+	fmt.Fprintf(&b, "s%d pub%t/%t took%v broke%v failed%d out%d|", r.slot, r.published, r.publishedBetween, r.took,
+		r.broke, r.readFailures, r.outages)
 	for _, row := range r.rows {
 		fmt.Fprintf(&b, "row %t %t %s %s|", row.committed, row.pending, canon(row.created), canon(row.claim))
 	}
@@ -116,13 +120,21 @@ func (r *cmRun) key() string {
 	}
 	slices.Sort(timers)
 	fmt.Fprintf(&b, "timers %v|", timers)
-	// Each attempt's trying is left out: the sender sets it exactly while the model's try of that
-	// comment is trying, which the key names.
+	// Each attempt's lost count is keyed as whether it moved since a re-read in flight named it,
+	// which is all claimKnown and rereadUnsure compare.
 	var held []string
 	for key, state := range r.sender.held {
 		entry := key.comment + ":" + canon(state.claimed)
 		if state.unsure {
 			entry += ":unsure"
+		}
+		if state.trying {
+			entry += ":trying"
+		}
+		for _, read := range r.readsInFlight() {
+			if began, named := read.lost[key.comment]; named && began != state.lost {
+				entry += ":lostSinceRead"
+			}
 		}
 		held = append(held, entry)
 	}
@@ -138,11 +150,17 @@ func (r *cmRun) key() string {
 	}
 	slices.Sort(lanes)
 	var waits []string
-	for lane := range r.sender.waits {
-		waits = append(waits, fmt.Sprint(lane))
+	for lane, wait := range r.sender.waits {
+		waits = append(waits, fmt.Sprintf("%v:%d", lane, wait.by.EventID))
 	}
 	slices.Sort(waits)
-	fmt.Fprintf(&b, "lanes %v waits %v ready %v serving %d", lanes, waits, r.sender.ready, r.sender.serving)
+	var parking []string
+	for c, p := range r.parking {
+		parking = append(parking, fmt.Sprintf("%d %v %t %s", c, p.try.lane, p.try.began < r.slot, send(p.try.item)))
+	}
+	slices.Sort(parking)
+	fmt.Fprintf(&b, "lanes %v waits %v parking %v ready %v serving %d", lanes, waits, parking, r.sender.ready,
+		r.sender.serving)
 	return b.String()
 }
 
@@ -159,9 +177,9 @@ type cmResult struct {
 }
 
 func (r cmResult) String() string {
-	return fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %s |", r.variant.name, r.periods, r.states, r.depth,
-		r.found["stale"], r.found["dropped"], r.found["order"], r.found["twice"], r.found["lapsed"],
-		r.duration.Round(time.Millisecond))
+	return fmt.Sprintf("| %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s |", r.variant.name, r.periods, r.states,
+		r.depth, r.found["stale"], r.found["dropped"], r.found["order"], r.found["twice"], r.found["unnamed"],
+		r.found["lapsed"], r.duration.Round(time.Millisecond))
 }
 
 // cmVisit is what replaying one run's steps came to: the SHA-256 of its state's key, the checks
@@ -251,18 +269,21 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 }
 
 // The sender's claim model: the sender as built must keep every claim it trusts in step with its
-// row, never let a send it holds go with its attempt pending, and never let s1 take A-2 first or a
-// comment twice - with any refresh's answer lost and two re-reads failed, and, in the full run, at
-// five periods with up to two refreshes failed before they commit, so that a claim may lapse. Two
-// controls show the model sees each failure: a sender whose re-reads learn nothing of a lost
-// refresh must trust a stale claim, and, in the full run, the refresh and take before this change,
-// under the same failures, must trust a stale claim, drop a send and let A-2 pass A-1. After a
-// claim lapses the delivery sweep keeps no order between two comments, which the spec puts outside
-// this change: the table counts those runs in their own column, and they fail nothing.
+// row, never let a send it holds go with its attempt pending, never report a held send behind no
+// event, and never let s1 take A-2 first or a comment twice - with any refresh's answer lost and
+// two re-reads failed, and, in the full run, with up to two refreshes failed before they commit,
+// so that a claim may lapse. Two controls show the model sees each failure: a sender whose re-reads
+// learn nothing of a lost refresh must trust a stale claim, and, in the full run, the refresh and
+// take before this change, under the same failures, must trust a stale claim, drop a send and let
+// A-2 pass A-1. After a claim lapses the delivery sweep keeps no order between two comments, which
+// the spec puts outside this change: the table counts those runs in their own column, and they
+// fail nothing.
 //
-// CI runs four periods, about two minutes on two cores; the outage runs take three more each
-// there, so CI leaves them to the full run (ENVOY_MENTION_ORDER_MODEL=full) and guards what they
-// found with TestALostRefreshNeverRevivesALapsedClaim on the database.
+// CI runs three periods, about two and a half minutes on two cores, which is enough for a refresh
+// to land between a try and its park and for a send to park after a failed read; the full run
+// (ENVOY_MENTION_ORDER_MODEL=full) runs five periods and the outage runs, and CI guards what only
+// they reach with TestALostRefreshNeverRevivesALapsedClaim and
+// TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim on the database.
 func TestTheMentionSenderClaimModel(t *testing.T) {
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",
@@ -280,23 +301,23 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 		breaks []string
 	}
 	runs := []modelRun{
-		{v: cmAsBuilt, periods: 4},
-		{v: cmBlindRepair, periods: 4, breaks: []string{"stale"}},
+		{v: cmAsBuilt, periods: 3},
+		{v: cmBlindRepair, periods: 3, breaks: []string{"stale"}},
 	}
 	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
 		// A claim lapses only after a lease with no committed refresh, and the refresh before
 		// this change then wrote it again: that takes a claim a lease and a slot old, so five
 		// periods at least.
 		runs = []modelRun{
-			{v: cmAsBuilt, periods: 7},
-			{v: cmBlindRepair, periods: 7, breaks: []string{"stale"}},
+			{v: cmAsBuilt, periods: 5},
+			{v: cmBlindRepair, periods: 5, breaks: []string{"stale"}},
 			{v: cmOutage, periods: 5},
 			{v: cmOldStatements, periods: 5, breaks: []string{"stale", "dropped", "order"}},
 		}
 	}
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
-	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | A-2 first by the sweep after its claim lapsed | time |")
-	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | held behind event 0 | A-2 first by the sweep after its claim lapsed | time |")
+	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, run := range runs {
 		result := cmExplore(t, run.v, run.periods)
 		t.Logf("%s", result)

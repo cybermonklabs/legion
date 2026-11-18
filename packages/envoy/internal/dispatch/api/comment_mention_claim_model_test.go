@@ -25,11 +25,14 @@ import (
 //
 // The sender runs inside a testing/synctest bubble, so the model knows when every goroutine it
 // started has stopped, and each of them stops only where the model holds it: inside the sender's
-// send, refresh or reread function. Each step of the model is one thing that may happen next,
-// and the search tries every one from every state it reaches, the sender's own code running
-// between them. The search keys on the sender's maps and the model's own state, every claim in it
-// named by its order among the claims in play and its age, which is all the code compares
-// (model.DeliveryClaimSinceSQL, model.DeliveryClaimFreeSQL).
+// send, refresh or reread function, or in its parking seam (mentionSender.parking), between a
+// send's last statement and its park, so that a refresh or a re-read can land in that window.
+// Each step of the model is one thing that may happen next, and the search tries every one from
+// every state it reaches, the sender's own code running between them. The search keys on the
+// sender's maps and the model's own state, every claim in it named by its order among the claims
+// in play and its age, which is all the code compares (model.DeliveryClaimSinceSQL,
+// model.DeliveryClaimFreeSQL), and each attempt's lost count by whether it moved since a re-read
+// in flight began, which is all the code compares of it.
 //
 // What the model holds:
 //   - comments A-1 and A-2 of issue T-1, each mentioning session s1 under attempt 1, which commits
@@ -38,15 +41,14 @@ import (
 //   - one earlier event of T-1 that s1 must take first, until the outbox sends it, at any step;
 //   - the rows' claims, and the statements on them, restated from their SQL: a send's try
 //     (sendCommentMention), which reads the rule alone for a send that waited before and otherwise
-//     claims the attempt as claimCommentDeliveryAttempt does - its own live claim with the row's
-//     at or past it, or a free one - then waits for the earlier event or sends; the refresh's
-//     statement (refreshMentionClaims), which writes only a row that carries the claim the sender
-//     names, and whose answer may be lost once the statement has committed, as a connection that
-//     drops after the commit loses it; the re-read (rereadMentionClaims), which answers a row's
-//     claim while it is at or past the claim named and less than a lease after it
-//     (model.DeliveryClaimSinceSQL), and which may fail once a run; and the delivery sweep
-//     (resumeOwedDelivery), which takes an attempt committed a lease ago whose claim lapsed, and
-//     sends it or hands it back to the sender;
+//     claims the attempt as claimCommentDeliveryAttempt does - a free claim, or one at or past the
+//     send's own and less than a lease after it - then waits for the earlier event or sends; the
+//     refresh's statement (refreshMentionClaims), which writes only a row that carries the live
+//     claim the sender names, and which may fail before it commits or lose its answer after; the
+//     re-read (rereadMentionClaims), which answers a row's claim while it is at or past the claim
+//     named and less than a lease after it (model.DeliveryClaimSinceSQL), and which may fail; and
+//     the delivery sweep (resumeOwedDelivery), which takes an attempt committed a lease ago whose
+//     claim lapsed, and sends it or hands it back to the sender;
 //   - time in slots of half a claim-refresh period (mentionClaimRefresh), which a step of its own
 //     ends: the sender's loop (keepClaims) starts a refresh as every period begins, a claim lapses
 //     one lease (model.DeliveryClaimLapse, cmLapsePeriods periods) after it was written, and every
@@ -67,15 +69,16 @@ import (
 //     is not trusted, and the sender reads its row before it acts on it. A trusted record behind
 //     its row is never written again, since the refresh writes only a row that carries the claim
 //     the sender names, so the row's claim lapses with its send still held;
-//   - dropped: no try of a send the sender holds finds its attempt held by another sender;
-//   - order and twice: s1 takes A-1 before A-2, and each of them once. Either ends the run.
+//   - dropped: the sender never lets a refused send go with its attempt still pending;
+//   - unnamed: every held lane's wait names the earlier event its send waited behind, which the
+//     held gauges and the WARN report (checkHeldReport);
+//   - order and twice: s1 takes A-1 before A-2, and each of them once. Either ends the run; an
+//     A-2 the delivery sweep sends first is counted apart (deliver).
 //
 // What it leaves out: the drain (wait), a keyed repeat (replayComment), the queue's bound, more
 // than one recipient or owner, and a send or a statement of the sweep's that fails.
 //
-// The control loses every refresh's answer and has every re-read answer no row: a sender that
-// learns nothing of what its refresh wrote, which the model must see as a stale claim, a dropped
-// send and A-2 before A-1.
+// Its controls are in TestTheMentionSenderClaimModel.
 
 // cmLapsePeriods is model.DeliveryClaimLapse in claim-refresh periods (mentionClaimRefresh), and
 // cmSlots how many slots of the model's time one period is.
@@ -93,9 +96,26 @@ var cmBase = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 var cmComments = [2]string{"A-1", "A-2"}
 
-var cmEarlier = model.MentionCopyHolder{EventID: 1}
+// cmEarlier is the earlier event both comments wait behind, and cmBetween one written between
+// them, which only A-2 waits behind: it lets A-2's first try, which claims its attempt, wait and
+// park long after a refresh began, as a send queued behind a busy lane's does.
+var (
+	cmEarlier = model.MentionCopyHolder{EventID: 1}
+	cmBetween = model.MentionCopyHolder{EventID: 2}
+)
 
-var cmChecks = []string{"stale", "dropped", "order", "twice"}
+// holder is the earlier event comment c waits behind now, if any.
+func (r *cmRun) holder(c int) (model.MentionCopyHolder, bool) {
+	switch {
+	case !r.published:
+		return cmEarlier, true
+	case c == 1 && !r.publishedBetween:
+		return cmBetween, true
+	}
+	return model.MentionCopyHolder{}, false
+}
+
+var cmChecks = []string{"stale", "dropped", "order", "twice", "unnamed"}
 
 // errCmLost is a statement's answer the model loses, or a read it fails.
 var errCmLost = errors.New("the model loses the answer: the connection dropped")
@@ -110,6 +130,7 @@ const (
 	cmTryRuns
 	cmTryAnswers
 	cmTimerRuns
+	cmParkRuns
 	cmTimePasses
 	cmRefreshRereadRuns
 	cmRefreshRereadAnswers
@@ -119,6 +140,7 @@ const (
 	cmRefreshRecords
 	cmRefreshAnswerLost
 	cmPublish
+	cmPublishBetween
 	cmSweep
 )
 
@@ -181,12 +203,39 @@ type cmRow struct {
 	created, claim     time.Time
 }
 
-// cmRead is a re-read in flight: the claims it names, and, once it read the rows, what it found.
+// cmRead is a re-read in flight: the claims it names, each attempt's lost count as the read
+// began, and, once it read the rows, what it found.
 type cmRead struct {
 	named []mentionClaim
+	lost  map[string]uint64
 	reply chan cmReadAnswer
 	ran   bool
 	found []mentionClaim
+}
+
+// newRead is a re-read of named, which arrived now, its reply reply.
+func (r *cmRun) newRead(named []mentionClaim, reply chan cmReadAnswer) *cmRead {
+	read := &cmRead{named: named, reply: reply, lost: map[string]uint64{}}
+	r.sender.mu.Lock()
+	for _, claim := range named {
+		read.lost[claim.key.comment] = r.sender.held[claim.key].lost
+	}
+	r.sender.mu.Unlock()
+	return read
+}
+
+// readsInFlight is every re-read in flight: the tries' and the refresh's.
+func (r *cmRun) readsInFlight() []*cmRead {
+	var reads []*cmRead
+	for _, try := range r.tries {
+		if try.read != nil {
+			reads = append(reads, try.read)
+		}
+	}
+	if r.refresh != nil && r.refresh.read != nil {
+		reads = append(reads, r.refresh.read)
+	}
+	return reads
 }
 
 type cmReadAnswer struct {
@@ -202,6 +251,9 @@ type cmTry struct {
 	began  int
 	read   *cmRead
 	trying bool
+	// atPark is a re-read the send makes after a try that waited and took no claim, before it
+	// parks: the sender before 81991d025a made it, the sender now does not.
+	atPark bool
 	item   mentionSend
 	reply  chan cmAnswer
 	ran    bool
@@ -245,6 +297,15 @@ type cmArrival struct {
 	refresh chan cmWritten
 	named   []mentionClaim
 	reread  chan cmReadAnswer
+	// park is a send about to park, held in the sender's parking seam until its step runs.
+	park chan struct{}
+}
+
+// cmParking is a send held between its last statement and its park (mentionSender.parking):
+// the try it ends, with the send it parks, and the reply that lets its park run.
+type cmParking struct {
+	try   *cmTry
+	reply chan struct{}
 }
 
 // cmRun is one run of the model in its own bubble.
@@ -262,16 +323,18 @@ type cmRun struct {
 	started []func()
 	timers  map[laneKey]cmTimer
 	// refreshing is that the step being taken runs the refresh's goroutine.
-	refreshing   bool
-	slot         int
-	seq          time.Duration
-	published    bool
-	readFailures int
-	outages      int
-	rows         [2]cmRow
-	took         []int
-	tries        map[int]*cmTry
-	refresh      *cmRefresh
+	refreshing       bool
+	slot             int
+	seq              time.Duration
+	published        bool
+	publishedBetween bool
+	readFailures     int
+	outages          int
+	rows             [2]cmRow
+	took             []int
+	tries            map[int]*cmTry
+	parking          map[int]*cmParking
+	refresh          *cmRefresh
 	// broke is every check the run has broken, in order, and fresh those its last step broke.
 	broke, fresh []string
 	// tracing has the run write its trace: a replay of a run the search found breaking a check,
@@ -285,6 +348,7 @@ func newCmRun(v cmVariant, periods int, tracing bool) *cmRun {
 	r := &cmRun{
 		v: v, slots: periods * cmSlots, stop: stop, done: make(chan struct{}), tracing: tracing,
 		arrivals: make(chan cmArrival, 16), timers: map[laneKey]cmTimer{}, tries: map[int]*cmTry{},
+		parking: map[int]*cmParking{},
 	}
 	r.sender = newMentionSender(lifetime, 1000*time.Hour,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
@@ -324,6 +388,14 @@ func newCmRun(v cmVariant, periods int, tracing bool) *cmRun {
 		r.mu.Lock()
 		r.started = append(r.started, f)
 		r.mu.Unlock()
+	}
+	r.sender.parking = func(item mentionSend) {
+		reply := make(chan struct{})
+		r.arrivals <- cmArrival{item: item, park: reply}
+		select {
+		case <-reply:
+		case <-r.done:
+		}
 	}
 	r.sender.mu.Unlock()
 	r.commit(0)
@@ -483,7 +555,7 @@ func (r *cmRun) runTry(try *cmTry) {
 	try.ran = true
 	item := try.item
 	c := cmIndex(item.comment.ID)
-	if item.heldFor != "" && !r.published {
+	if _, waits := r.holder(c); item.heldFor != "" && waits {
 		try.answer = cmAnswer{item: item, waits: true}
 		r.log("%s's try reads the rule alone: the earlier event still owes s1, so it writes nothing", cmComments[c])
 		return
@@ -506,9 +578,9 @@ func (r *cmRun) runTry(try *cmTry) {
 	}
 	row.claim = r.now()
 	try.took = true
-	if !r.published {
+	if by, waits := r.holder(c); waits {
 		item.claimed = row.claim
-		item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: cmEarlier})
+		item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: by})
 		try.answer = cmAnswer{item: item, waits: true}
 		r.log("%s's try claims its attempt %s and waits behind the earlier event", cmComments[c], r.name(row.claim))
 		return
@@ -529,13 +601,14 @@ func (r *cmRun) owed(c int) bool {
 func (r *cmRun) sweep(c int) {
 	row := &r.rows[c]
 	row.claim = r.now()
-	if r.published {
+	by, waits := r.holder(c)
+	if !waits {
 		r.deliver(c, fmt.Sprintf("the delivery sweep claims %s's owed attempt %s and", cmComments[c], r.name(row.claim)), true)
 		return
 	}
 	item := r.item(c)
 	item.claimed = row.claim
-	item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: cmEarlier})
+	item.held(&mentionHeldForOrder{target: item.mention, claim: attemptClaim{attempt: 1, claimedAt: row.claim}, by: by})
 	r.log("the delivery sweep claims %s's owed attempt %s, which waits behind the earlier event, and hands it to the sender",
 		cmComments[c], r.name(row.claim))
 	r.sender.enqueue(context.Background(), item)
@@ -572,11 +645,22 @@ collect:
 				r.refresh.read, r.refresh.queued, r.refresh.reply = nil, a.queued, a.refresh
 				r.log("the refresh's statement names %s", r.names(a.queued))
 			case r.refreshing && a.reread != nil:
-				r.refresh = &cmRefresh{began: r.slot, read: &cmRead{named: a.named, reply: a.reread}}
+				r.refresh = &cmRefresh{began: r.slot, read: r.newRead(a.named, a.reread)}
 				r.log("the refresh re-reads the unknown claims %s", r.names(a.named))
 			case a.refresh != nil:
 				r.failModel("a refresh statement the model did not begin")
 				return
+			case a.park != nil:
+				// The goroutine the step let go on stops in the parking seam, its park to come as
+				// a step of its own; so the step starts no timer.
+				if parked == nil {
+					r.failModel("a send of %s came to its park with no try behind it", a.item.comment.ID)
+					return
+				}
+				parked.item = a.item
+				r.parking[cmIndex(a.item.comment.ID)] = &cmParking{try: parked, reply: a.park}
+				r.log("%s comes to its park", a.item.comment.ID)
+				parked = nil
 			case arrived != nil:
 				r.failModel("two of a lane's statements started in one step")
 				return
@@ -620,6 +704,15 @@ collect:
 		item = mentionSend{comment: model.Comment{ID: arrived.named[0].key.comment}}
 	}
 	c := cmIndex(item.comment.ID)
+	if arrived.reread != nil && parked != nil && cmIndex(parked.item.comment.ID) == c {
+		// The sender before 81991d025a re-read a claim that turned unknown during the try before
+		// it parked; the model keeps that step so that it runs against that sender too.
+		r.tries[c] = &cmTry{lane: parked.lane, began: parked.began, atPark: true, item: parked.item,
+			read: r.newRead(arrived.named, arrived.reread)}
+		r.log("the claim of %s turned unknown during its try: it re-reads it %s before it parks", item.comment.ID,
+			r.names(arrived.named))
+		return
+	}
 	if try := r.tries[c]; try != nil {
 		// The goroutine whose re-read answered goes on to the try, on the lane it serves.
 		if try.read != nil || try.trying || arrived.try == nil {
@@ -648,6 +741,9 @@ collect:
 	for _, try := range r.tries {
 		delete(served, try.lane)
 	}
+	for _, parking := range r.parking {
+		delete(served, parking.try.lane)
+	}
 	if len(served) != 1 {
 		r.failModel("the send of %s started on none or several of the lanes %v (lanes %v)", item.comment.ID, served, r.lanes())
 		return
@@ -658,7 +754,7 @@ collect:
 	}
 	r.tries[c] = try
 	if arrived.reread != nil {
-		try.read = &cmRead{named: arrived.named, reply: arrived.reread}
+		try.read = r.newRead(arrived.named, arrived.reread)
 		r.log("the sender takes %s on its %s and re-reads its unknown claim %s first", item.comment.ID,
 			cmLaneName(try.lane), r.names(arrived.named))
 		return
@@ -700,7 +796,7 @@ func (r *cmRun) apply(s cmStep) {
 		reply := try.read.reply
 		try.read = nil
 		var parked *cmTry
-		if s.kind == cmRereadFails {
+		if try.atPark || s.kind == cmRereadFails {
 			// The goroutine parks the send, with no try when the read before it failed, and moves on.
 			delete(r.tries, s.comment)
 			try.item = r.item(s.comment)
@@ -730,6 +826,13 @@ func (r *cmRun) apply(s cmStep) {
 		if try.refused && !holds && r.rows[s.comment].pending {
 			r.fail("dropped", "the sender lets its refused send of %s go with the attempt still pending", cmComments[s.comment])
 		}
+	case cmParkRuns:
+		parking := r.parking[s.comment]
+		delete(r.parking, s.comment)
+		r.log("%s's park runs", cmComments[s.comment])
+		close(parking.reply)
+		r.settle(parking.try)
+		r.checkHeldReport()
 	case cmTimerRuns:
 		lane := cmLane(s.held)
 		timer := r.timers[lane]
@@ -814,11 +917,28 @@ func (r *cmRun) apply(s cmStep) {
 	case cmPublish:
 		r.published = true
 		r.log("the outbox sends the earlier event to s1")
+	case cmPublishBetween:
+		r.publishedBetween = true
+		r.log("the outbox sends the event between the comments to s1")
 	case cmSweep:
 		r.sweep(s.comment)
 	}
 	if !slices.Contains(r.broke, "stale") {
 		r.checkClaims()
+	}
+}
+
+// checkHeldReport is the unnamed check: every held lane's wait names the earlier event its send
+// waited behind, so the held gauges and the WARN report a real event; a send parked with no event
+// to wait behind - its claim could not be read - is no held copy.
+func (r *cmRun) checkHeldReport() {
+	r.sender.mu.Lock()
+	defer r.sender.mu.Unlock()
+	for lane, wait := range r.sender.waits {
+		if wait.by.EventID == 0 {
+			r.fail("unnamed", "the held %s reports its send held behind event 0, which does not exist", cmLaneName(lane))
+			return
+		}
 	}
 }
 
@@ -843,6 +963,10 @@ func (r *cmRun) checkClaims() {
 			continue
 		}
 		if try := r.tries[c]; try != nil && try.took {
+			continue
+		}
+		// A try that took the row and has not parked yet: its park records the claim it took.
+		if parking := r.parking[c]; parking != nil && parking.try.took {
 			continue
 		}
 		r.fail("stale", "the sender trusts %s's claim as %s while its row carries %s: no refresh writes that row again",
@@ -885,6 +1009,12 @@ func (r *cmRun) enabled() []cmStep {
 	for _, timer := range r.timers {
 		waits = waits || timer.began < r.slot
 	}
+	for c := range 2 {
+		if parking := r.parking[c]; parking != nil {
+			steps = append(steps, cmStep{kind: cmParkRuns, comment: c})
+			waits = waits || parking.try.began < r.slot
+		}
+	}
 	for _, held := range []bool{false, true} {
 		if _, parked := r.timers[cmLane(held)]; parked {
 			steps = append(steps, cmStep{kind: cmTimerRuns, held: held})
@@ -916,6 +1046,9 @@ func (r *cmRun) enabled() []cmStep {
 	}
 	if !r.published {
 		steps = append(steps, cmStep{kind: cmPublish})
+	}
+	if !r.publishedBetween {
+		steps = append(steps, cmStep{kind: cmPublishBetween})
 	}
 	for c := range 2 {
 		if r.owed(c) {
