@@ -1,5 +1,10 @@
 package api
 
+import (
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
+)
+
 // This file is the decision, field by field, about what the daemon's surfaces serve of the
 // three durable records a reader of this wire acts on: `supervise.Claim`, `record.Issue` and
 // `record.Assignment`. It is data and nothing else — no route, no view and no projection reads
@@ -147,7 +152,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "ActivityKinds", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Reach", Column: ColumnAgents, Keys: []string{"unreachable"},
-		Reason: "the mark of a claim whose session Envoy has not heard from for 20 minutes, which keeps its state and is the case for the controller's relaunch (R5)"},
+		Reason: "the mark of a claim whose session Envoy has not heard from for " + timewords.Words(supervise.UnreachableAfter) + ", which keeps its state and is the case for the controller's relaunch (R5)"},
 	// The relaunch's own record: the relaunch route reads LastRelaunch for its six-hour refusal,
 	// whose answer (RELAUNCHED_RECENTLY) names that time, and the reach keeper counts the claim's
 	// later launches from LastRelaunchGeneration. No reader of these routes acts on either.

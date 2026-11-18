@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // UnreachableAfter is how long a claim's session may go without registering with Envoy before the
@@ -114,8 +115,9 @@ var (
 	// or an activity report since its launch that shows background work or a subagent running, or
 	// no report at all.
 	ErrRelaunchGuard = errors.New("the relaunch guard refuses the claim")
-	// ErrRelaunchedRecently: a relaunch reached the claim less than 6 hours ago.
-	ErrRelaunchedRecently = errors.New("the claim was relaunched less than 6 hours ago")
+	// ErrRelaunchedRecently: a relaunch reached the claim less than 6 hours ago
+	// (RelaunchAgainAfter).
+	ErrRelaunchedRecently = errors.New("the claim was relaunched less than " + timewords.Words(RelaunchAgainAfter) + " ago")
 	// ErrPodUnreachable: every claim of the pod the claim runs in, two or more, is out of reach,
 	// so a relaunch into it would recover none of them.
 	ErrPodUnreachable = errors.New("every claim of the claim's pod is out of reach")
@@ -160,7 +162,7 @@ func RelaunchGuard(c Claim, steppedAt, now time.Time) string {
 		last = steppedAt
 	}
 	if !last.IsZero() && now.Sub(last) < UnreachableAfter {
-		return fmt.Sprintf("its worker stream showed a step at %s, less than %s ago", last.UTC().Format(time.RFC3339), UnreachableAfter)
+		return fmt.Sprintf("its worker stream showed a step at %s, less than %s ago", last.UTC().Format(time.RFC3339), timewords.Words(UnreachableAfter))
 	}
 	// A call is open while the record holds its start and no end at or after it, the shape the
 	// daemon's stall notice reads a call by too (internal/daemon's stallRecordInWords).
@@ -182,7 +184,7 @@ func RelaunchGuard(c Claim, steppedAt, now time.Time) string {
 	// nothing running.
 	if c.inTurn() && c.ActivityAt.After(c.LastTurnStart) && now.Sub(c.ActivityAt) < UnreachableAfter {
 		return fmt.Sprintf("its session sent an activity report at %s, less than %s ago, in the turn it began at %s, so its process still runs that turn",
-			c.ActivityAt.UTC().Format(time.RFC3339), UnreachableAfter, c.LastTurnStart.UTC().Format(time.RFC3339))
+			c.ActivityAt.UTC().Format(time.RFC3339), timewords.Words(UnreachableAfter), c.LastTurnStart.UTC().Format(time.RFC3339))
 	}
 	return ""
 }
