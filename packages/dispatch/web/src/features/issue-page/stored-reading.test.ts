@@ -10,6 +10,15 @@ import { plainWordsRaw } from "./tree-drafts";
  *  parse fails only an unbounded one. */
 const NESTING_BUDGET_MS = 3_000;
 
+/** A wall-clock budget for drawing again the lines of an issue's stored texts, each read once
+ *  already. A result has no reading, so its line is read from its stored text, and an issue
+ *  under review holds hundreds of results: the redesign's own root issue held 431 results and
+ *  492 distinct stored texts on 2026-11-18. Reading 900 such texts again from what the first
+ *  draw read costs tens of milliseconds; parsing each again, as a first draw does, costs about
+ *  a second on a pod's CPU. So a budget far above the first and far below the second fails only
+ *  a draw that parses every text again. */
+const REDRAW_BUDGET_MS = 300;
+
 // sjawhar/legion#2519: a stored text is read on the page's own thread, and micromark gives every
 // open list or quote a turn on every line, so a body that opens thousands of them cost seconds or
 // overflowed the stack. The parse holds lists and quotes to the document service's bound of 100
@@ -39,4 +48,23 @@ test("a stored text's front matter reads as its fenced lines, and an unclosed fe
   const unclosed = "---\n\nKeep the model pure.";
   expect(plainWordsRaw(unclosed)).toBe("Keep the model pure.");
   expect(lineWordsRaw({ text: unclosed })).toBe("Keep the model pure.");
+});
+
+// A page draws its rows again on every read that lands and every event, and a row's line is read
+// from its stored text where the node has no reading, a result's always. The readings of the texts
+// a draw read are remembered so that the next draw reads them rather than parses them again: an
+// issue with more distinct stored texts than the memo holds must still draw again within the
+// budget, the second draw in the same order as the first, as a page draws its rows.
+test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
+  const texts = Array.from(
+    { length: 900 },
+    (_, at) =>
+      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed.\n` +
+      `- the first named test of case ${at}: pass\n- the second named test of case ${at}: pass\n` +
+      `${"It held at the head, read with the junit report. ".repeat(12)}`
+  );
+  for (const text of texts) lineWordsRaw({ text });
+  const start = performance.now();
+  for (const text of texts) lineWordsRaw({ text });
+  expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
 });
