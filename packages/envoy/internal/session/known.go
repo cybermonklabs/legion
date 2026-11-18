@@ -776,7 +776,18 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 	}
 	kv, epoch := watcher.Handle()
-	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, s.ownLayout(record.SessionID, held.stored()), func(head []byte) (uint64, error) {
+	// A chunked record's manifest carries the record with the topics it can fit in place of its
+	// full list (store.ChunkedRecordView), which a listener of an earlier build reads as this
+	// session: such a listener does not join chunks, and would otherwise know nothing of a session
+	// whose topics outgrew one message.
+	view := func(room int) ([]byte, error) {
+		return store.ChunkedRecordView(room, record.Topics, func(topics []string) ([]byte, error) {
+			seen := record
+			seen.Topics = topics
+			return json.Marshal(seen)
+		})
+	}
+	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, view, s.ownLayout(record.SessionID, held.stored()), func(head []byte) (uint64, error) {
 		return kv.Put(record.SessionID, head)
 	}, s.now, s.logger(), knownRecord)
 	if err != nil {

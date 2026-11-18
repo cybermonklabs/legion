@@ -131,12 +131,12 @@ func TestADeleteThatFindsAChunkedRecordStoredSinceLogsNoUndecodableRecord(t *tes
 // key nats.go accepts, and two whose numbers are a write's shape but claim far more than the bucket
 // holds, which only a reader that sizes nothing by a manifest's claim reads without crashing.
 var forgedManifests = map[string]string{
-	"a negative length":         `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":1,"bytes":-1,"sha256":"` + strings.Repeat("0", 64) + `"}`,
-	"more chunks than bytes":    `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`,
-	"a generation with a space": `chunked {"generation":"bad gen","chunks":1,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`,
-	"a length no record has":    `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":1,"bytes":4611686018427387904,"sha256":"` + strings.Repeat("0", 64) + `"}`,
-	"a chunk count no record has": `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":4611686018427387904,"sha256":"` +
-		strings.Repeat("0", 64) + `"}`,
+	"a negative length":         `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":1,"bytes":-1,"sha256":"` + strings.Repeat("0", 64) + `"}}`,
+	"more chunks than bytes":    `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}}`,
+	"a generation with a space": `{"chunked":{"generation":"bad gen","chunks":1,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}}`,
+	"a length no record has":    `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":1,"bytes":4611686018427387904,"sha256":"` + strings.Repeat("0", 64) + `"}}`,
+	"a chunk count no record has": `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":4611686018427387904,"sha256":"` +
+		strings.Repeat("0", 64) + `"}}`,
 }
 
 // A manifest no write of this build makes is a record this build cannot decode, wherever it is
@@ -290,7 +290,7 @@ func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the forged manifest: %v", err)
 	}
-	if _, err := kv.Put("ses_borrower", append([]byte("chunked "), forged...)); err != nil {
+	if _, err := kv.Put("ses_borrower", append(append([]byte(`{"chunked":`), forged...), '}')); err != nil {
 		t.Fatalf("store the forged manifest: %v", err)
 	}
 	if _, _, err := reg.RefreshAt(t.Context(), "ses_borrower"); !errors.Is(err, ErrMalformedInterest) {
@@ -336,7 +336,7 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the borrowed manifest: %v", err)
 	}
-	manifests := map[string][]byte{"an exact copy": head.Value(), "a forged SHA-256": append([]byte("chunked "), forged...)}
+	manifests := map[string][]byte{"an exact copy": head.Value(), "a forged SHA-256": append(append([]byte(`{"chunked":`), forged...), '}')}
 	requireOwnerWhole := func(after string) {
 		t.Helper()
 		row, _, err := reg.RefreshAt(t.Context(), "ses_owner")
@@ -362,7 +362,7 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 				return err
 			}},
 			{"the unsubscribe of one topic of " + what, func() error {
-				_, err := reg.Remove(t.Context(), "ses_copy", []string{topics[0]}, RoleReleaseAuthority{})
+				_, err := reg.Remove(t.Context(), "ses_copy", []string{topics[len(topics)-1]}, RoleReleaseAuthority{})
 				return err
 			}},
 			{"the deregistration of " + what, func() error {

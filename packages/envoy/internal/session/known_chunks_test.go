@@ -48,9 +48,9 @@ func heartbeatDay(t *testing.T, purge bool) (int, int) {
 	t.Cleanup(conn.Close)
 	clock := &knownClock{at: time.Now()}
 	known := openKnownOn(t, conn, clock.Now)
-	topics := make([]string, 300)
-	for i := range topics {
-		topics[i] = fmt.Sprintf("notifications.dispatch.issue.K-0.t%04d-%s", i, strings.Repeat("x", 3900))
+	topics := []string{"notifications.dispatch.issue.K-0.>"}
+	for i := range 300 {
+		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.K-0.t%04d-%s", i, strings.Repeat("x", 3900)))
 	}
 	record := KnownSession{SessionID: "ses_known_day", Topics: topics}
 	if err := known.RecordWithin(t.Context(), record); err != nil {
@@ -628,7 +628,7 @@ func TestAChunkedKnownSessionRecordWithAMissingChunkIsNoRecordNotAPartialOne(t *
 // session's next write replaces it.
 func TestAForgedKnownSessionManifestIsNoRecordAndTheNextWriteReplacesIt(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
-	forged := `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`
+	forged := `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`
 	known := openKnownOn(t, conn, time.Now)
 	if _, err := rawKnown(t, conn).Put("ses_known_forged", []byte(forged)); err != nil {
 		t.Fatalf("store the forged manifest: %v", err)
@@ -687,4 +687,41 @@ func TestAKnownSessionWriteOverACopiedManifestLeavesTheOwnersChunks(t *testing.T
 			t.Fatalf("after the owner's own rewrite the bucket still holds %s, a chunk of the record it replaced", key)
 		}
 	}
+}
+
+// While builds share the known-session bucket, a listener of an earlier build reads a chunked
+// record's manifest as a KnownSession: every earlier build decodes a value with encoding/json into
+// that type and ignores a member it does not know (origin/main's decodeKnownSession). So the
+// manifest carries the session's id, title, capabilities and last-seen time, and the covering
+// topics, which match every subject the full list does: that listener keeps sending to and counting
+// the stopped session. This build reads the same manifest as the full record.
+func TestAnEarlierBuildReadsAChunkedKnownSessionRecordAsTheSameSession(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	known := openKnownOn(t, conn, time.Now)
+	registered := []string{"notifications.dispatch.issue.K-0.>"}
+	for i := range 400 {
+		registered = append(registered, fmt.Sprintf("notifications.dispatch.issue.K-0.t%04d-%s", i, strings.Repeat("x", 270)))
+	}
+	record := KnownSession{SessionID: "ses_known_overlap", Title: "overlap", Capabilities: []string{"steer"}, Topics: registered}
+	if err := known.RecordWithin(t.Context(), record); err != nil {
+		t.Fatalf("record the session: %v", err)
+	}
+	head, err := rawKnown(t, conn).Get("ses_known_overlap")
+	if err != nil {
+		t.Fatalf("read the session's key: %v", err)
+	}
+	if !kvchunk.IsManifest(head.Value()) {
+		t.Fatalf("the session's key holds %.60q, want a manifest", head.Value())
+	}
+	var earlier KnownSession
+	if err := json.Unmarshal(head.Value(), &earlier); err != nil {
+		t.Fatalf("an earlier build's decode of the manifest: %v, want the session", err)
+	}
+	if earlier.SessionID != record.SessionID || earlier.Title != "overlap" || !slices.Equal(earlier.Capabilities, []string{"steer"}) || earlier.LastSeen == 0 {
+		t.Fatalf("an earlier build reads the manifest as %+v, want ses_known_overlap titled overlap with its capability and last-seen time", earlier)
+	}
+	if want := []string{"notifications.dispatch.issue.K-0.>"}; !slices.Equal(earlier.Topics, want) {
+		t.Fatalf("an earlier build reads the topics %v, want the covering %v", earlier.Topics, want)
+	}
+	requireKnownTopics(t, "this build's store", openKnownOn(t, conn, time.Now), "ses_known_overlap", registered)
 }

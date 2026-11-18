@@ -34,12 +34,16 @@ func SmallPayloadNATS(t *testing.T) *natsgo.Conn {
 	return conn
 }
 
-// Topics is count topics of about 300 bytes each under the team subject named label, so 220 of
-// them are past MaxPayload as a record.
+// Topics is the wildcard `notifications.team.<label>.>` and count topics of about 300 bytes each
+// under it, so 220 of them are past MaxPayload as a record. A registration that outgrows one
+// message carries such a wildcard: one whose topics no wildcard covers has a session consumer
+// filter past one message too, which the listener refuses, and a record of it has no view an
+// earlier build can read in one message (store.ChunkedRecordView), which the store refuses.
 func Topics(label string, count int) []string {
-	topics := make([]string, count)
-	for i := range topics {
-		topics[i] = fmt.Sprintf("notifications.team.%s.%04d-%s", label, i, strings.Repeat("x", 270))
+	topics := make([]string, 0, count+1)
+	topics = append(topics, fmt.Sprintf("notifications.team.%s.>", label))
+	for i := range count {
+		topics = append(topics, fmt.Sprintf("notifications.team.%s.%04d-%s", label, i, strings.Repeat("x", 270)))
 	}
 	return topics
 }

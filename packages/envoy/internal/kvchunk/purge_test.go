@@ -45,7 +45,7 @@ func TestAMalformedChunkKeyIsRefusedAndPurgesNothing(t *testing.T) {
 		t.Fatalf("create the bucket: %v", err)
 	}
 	record := []byte(`{"topics":["` + strings.Repeat("x", 3*kvchunktest.MaxPayload) + `"]}`)
-	written, err := kvchunk.Write(t.Context(), kv, "live", record, kvchunk.Layout{}, func(head []byte) (uint64, error) {
+	written, err := kvchunk.Write(t.Context(), kv, "live", record, nil, kvchunk.Layout{}, func(head []byte) (uint64, error) {
 		return kv.Put("live", head)
 	}, time.Now, slog.Default(), "record")
 	if err != nil || !written.Layout.Chunked() {

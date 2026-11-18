@@ -9,6 +9,12 @@
 // of a chunk is read from the connection's max payload at each write (bus.KeyValue.MaxPayload), so
 // a server that raises or lowers its max payload changes the layout with no new build.
 //
+// A manifest is itself a record an earlier build reads: a JSON object whose first member,
+// `"chunked"`, holds the layout, and whose other members are the store's view of the record for a
+// reader that does not join chunks (Write's view), which fits in one message. Every earlier build
+// decodes a record with encoding/json and ignores a member it does not know, so while builds share
+// a bucket, an earlier listener serves the session from that view rather than losing it.
+//
 // Every reader gets the whole record one write stored, or an error (ErrDamaged), never part of one
 // and never parts of two. Three things make that so. A chunk is written once, under a generation
 // no other write uses, and never rewritten. A write stores its chunks before its manifest, with the
@@ -51,11 +57,12 @@ import (
 // names its chunks under another prefix.
 const Prefix = "=chunk."
 
-// manifestPrefix begins a manifest, the layout as JSON after it. A record stored whole is JSON and
-// begins with `{`, so the two are told apart by their first byte, and a build that reads every
-// value as one JSON record, as every earlier build does, reads a manifest as a record it cannot
-// decode rather than as an empty one.
-var manifestPrefix = []byte("chunked ")
+// manifestPrefix begins a manifest: the opening of a JSON object and its first member's name, which
+// holds the layout. A record stored whole is its own JSON object, whose first member is never
+// "chunked" (each store's record type opens with session_id), so a manifest is told apart by this
+// prefix alone, and a build that does not know the member decodes the rest of the object - the
+// store's view of the record - as a record.
+var manifestPrefix = []byte(`{"chunked":`)
 
 // HeaderBytes is the room a value leaves under the server's max payload for the headers nats.go
 // adds to a KV write: a compare-and-swap's expected-last-sequence header is under 100 bytes.
@@ -173,7 +180,12 @@ func (ReservedKey) Is(target error) bool { return target == bus.ErrRefused }
 // so the answer of the leader's read of it (Read), which carries the chunk in base64 inside a JSON
 // object, fits under the max payload too, and a server that holds an answer to it - a leafnode
 // connection does - takes it. A max payload that leaves a chunk no room refuses the larger record.
-func layOut(record []byte, maxPayload int) ([]byte, Layout, [][]byte, error) {
+//
+// The manifest is the layout's member followed by view's members: view is called with the bytes
+// the manifest leaves it, and must answer a JSON object no longer than that, or an error (a
+// bus.ErrTooLarge when no view of the record fits), which refuses the write before anything is
+// sent. A nil view is the empty object.
+func layOut(record []byte, maxPayload int, view func(room int) ([]byte, error)) ([]byte, Layout, [][]byte, error) {
 	whole := maxPayload - HeaderBytes
 	if len(record) <= whole {
 		return record, Layout{}, nil, nil
@@ -187,11 +199,30 @@ func layOut(record []byte, maxPayload int) ([]byte, Layout, [][]byte, error) {
 	layout := Layout{Generation: rand.Text(), Bytes: len(record), SHA256: hex.EncodeToString(sum[:])}
 	chunks := slices.Collect(slices.Chunk(record, limit))
 	layout.Chunks = len(chunks)
-	manifest, err := json.Marshal(layout)
+	member, err := json.Marshal(layout)
 	if err != nil {
 		return nil, Layout{}, nil, err
 	}
-	return append(slices.Clone(manifestPrefix), manifest...), layout, chunks, nil
+	manifest := append(slices.Clone(manifestPrefix), member...)
+	object := []byte("{}")
+	if view != nil {
+		if object, err = view(whole - len(manifest)); err != nil {
+			return nil, Layout{}, nil, err
+		}
+	}
+	if len(object) < 2 || object[0] != '{' || object[len(object)-1] != '}' || !json.Valid(object) {
+		return nil, Layout{}, nil, fmt.Errorf("the view of a chunked record is no JSON object: %.80q", object)
+	}
+	if len(object) > 2 {
+		manifest = append(append(manifest, ','), object[1:]...)
+	} else {
+		manifest = append(manifest, '}')
+	}
+	if len(manifest) > whole {
+		return nil, Layout{}, nil, fmt.Errorf("%w: the manifest of a record of %d bytes is %d bytes, past the %d a whole record may take",
+			bus.ErrTooLarge, len(record), len(manifest), whole)
+	}
+	return manifest, layout, chunks, nil
 }
 
 // generationLength is the length of a generation, the 26 characters of crypto/rand.Text, from the
@@ -206,16 +237,21 @@ const generationLength = 26
 // writer of the bucket can store a value under a record's key, so nothing a reader does - an
 // allocation, a key it builds - is sized or named by a manifest that fails this.
 func ReadLayout(value []byte) (Layout, error) {
-	manifest, ok := bytes.CutPrefix(value, manifestPrefix)
-	if !ok {
+	if !IsManifest(value) {
 		return Layout{}, nil
 	}
-	var layout Layout
-	if err := json.Unmarshal(manifest, &layout); err != nil {
+	var manifest struct {
+		Chunked *Layout `json:"chunked"`
+	}
+	if err := json.Unmarshal(value, &manifest); err != nil {
 		return Layout{}, fmt.Errorf("%w: decode its manifest: %w", ErrDamaged, err)
 	}
+	if manifest.Chunked == nil {
+		return Layout{}, fmt.Errorf("%w: its manifest names no layout", ErrDamaged)
+	}
+	layout := *manifest.Chunked
 	if !validGeneration(layout.Generation) || layout.Bytes < 1 || layout.Chunks < 1 || layout.Chunks > layout.Bytes || !lowerHex(layout.SHA256, sha256.Size) {
-		return Layout{}, fmt.Errorf("%w: its manifest is no write's: %.200s", ErrDamaged, manifest)
+		return Layout{}, fmt.Errorf("%w: its manifest is no write's: %+v", ErrDamaged, layout)
 	}
 	return layout, nil
 }
@@ -356,12 +392,18 @@ type Written struct {
 // the store's clock, and WriteBound is read off its wall time, so a host that slept between the
 // chunks and the head counts the sleep. what names the record in the line a chunk left behind
 // logs (Delete).
-func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, replaced Layout, head func(value []byte) (uint64, error),
-	now func() time.Time, log *slog.Logger, what string) (Written, error) {
+//
+// view is the store's view of the record for a reader that does not join chunks - an earlier
+// build - which the manifest carries beside its layout (layOut): called only for a record past one
+// message, with the bytes the manifest leaves it, it answers a JSON object of the record's type
+// that an earlier build reads as the same session, or a bus.ErrTooLarge that refuses the write
+// before anything is sent. nil carries no view.
+func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, view func(room int) ([]byte, error), replaced Layout,
+	head func(value []byte) (uint64, error), now func() time.Time, log *slog.Logger, what string) (Written, error) {
 	if IsChunkKey(key) {
 		return Written{}, ReservedKey(key)
 	}
-	value, layout, chunks, err := layOut(record, kv.MaxPayload())
+	value, layout, chunks, err := layOut(record, kv.MaxPayload(), view)
 	if err != nil {
 		return Written{}, fmt.Errorf("write the %s %s of %d bytes: %w", what, key, len(record), err)
 	}

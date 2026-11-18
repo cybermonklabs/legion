@@ -34,7 +34,7 @@ func TestReadAnswersADamagedRecordWithNoLayout(t *testing.T) {
 	record := []byte(`{"topics":["` + strings.Repeat("x", 3*kvchunktest.MaxPayload) + `"]}`)
 	write := func(key string) kvchunk.Written {
 		t.Helper()
-		written, err := kvchunk.Write(t.Context(), kv, key, record, kvchunk.Layout{}, func(head []byte) (uint64, error) {
+		written, err := kvchunk.Write(t.Context(), kv, key, record, nil, kvchunk.Layout{}, func(head []byte) (uint64, error) {
 			return kv.Put(key, head)
 		}, time.Now, slog.Default(), "record")
 		if err != nil || !written.Stored || !written.Layout.Chunked() {
@@ -95,7 +95,7 @@ func TestReadOfAManifestARewriteReplacedAnswersTheNewRecord(t *testing.T) {
 	}
 	write := func(record []byte, replaced kvchunk.Layout) kvchunk.Written {
 		t.Helper()
-		written, err := kvchunk.Write(t.Context(), kv, "rewritten", record, replaced, func(head []byte) (uint64, error) {
+		written, err := kvchunk.Write(t.Context(), kv, "rewritten", record, nil, replaced, func(head []byte) (uint64, error) {
 			return kv.Put("rewritten", head)
 		}, time.Now, slog.Default(), "record")
 		if err != nil || !written.Stored || !written.Layout.Chunked() {

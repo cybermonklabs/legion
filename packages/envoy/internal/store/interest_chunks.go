@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -101,18 +104,99 @@ func (r *Registry) malformedRecord(sessionID string, revision uint64, err error)
 // same compare-and-swap, and the chunks replaced named are deleted once it lands, unless another
 // session's row names them too (ownLayout): a manifest copied under this session's key names
 // another record's chunks, and an unsubscribe of this session lands over it (kvchunk.Write says
-// what else a write deletes and what it leaves to the reaper's collection). A session id under
-// the chunk keys' prefix is refused (kvchunk.ReservedKey): no record stands there.
-func (r *Registry) putInterestAt(ctx context.Context, sessionID string, record []byte, revision uint64, replaced kvchunk.Layout) (kvchunk.Written, uint64, error) {
+// what else a write deletes and what it leaves to the reaper's collection). The manifest carries
+// row's view for an earlier build (ChunkedRecordView), so a listener of that build serves and
+// counts the session from it. A session id under the chunk keys' prefix is refused
+// (kvchunk.ReservedKey): no record stands there.
+func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Interest, record []byte, revision uint64, replaced kvchunk.Layout) (kvchunk.Written, uint64, error) {
 	replaced = r.ownLayout(sessionID, replaced)
 	kv, epoch := r.watcher.Handle()
-	written, err := kvchunk.Write(ctx, kv, sessionID, record, replaced, func(head []byte) (uint64, error) {
+	view := func(room int) ([]byte, error) {
+		return ChunkedRecordView(room, row.Topics, func(topics []string) ([]byte, error) {
+			seen := row
+			seen.Topics = topics
+			return json.Marshal(seen)
+		})
+	}
+	written, err := kvchunk.Write(ctx, kv, sessionID, record, view, replaced, func(head []byte) (uint64, error) {
 		if revision == 0 {
 			return kv.Create(sessionID, head)
 		}
 		return kv.Update(sessionID, head, revision)
 	}, r.now, r.logger(), interestRecord)
 	return written, epoch, err
+}
+
+// ChunkedRecordView is the view of a record of topics that a manifest carries for a listener of an
+// earlier build (kvchunk.Write), encoded by encode with the topics it keeps, in at most room bytes.
+// Such a listener reads a manifest as a record of its own type and does not join its chunks, so
+// the view is the record with a topic list that matches every subject topics match and fits: the
+// covering topics first (CoveringTopics), the same subjects in fewer topics, and when those do not
+// fit, the role lanes beside the session consumer filter's reduction of the rest
+// (bus.ReduceFilterSubjects), which a registration's consumer was created with and so fits one
+// message, and which may match more. A record whose topics fit neither is bus.ErrTooLarge.
+func ChunkedRecordView(room int, topics []string, encode func(topics []string) ([]byte, error)) ([]byte, error) {
+	covering := CoveringTopics(topics)
+	var lanes, rest []string
+	for _, topic := range covering {
+		if strings.HasPrefix(topic, contracts.RoleTopicPrefix) {
+			lanes = append(lanes, topic)
+		} else {
+			rest = append(rest, topic)
+		}
+	}
+	reduced := slices.Sorted(slices.Values(append(lanes, bus.ReduceFilterSubjects(rest)...)))
+	sizes := make([]int, 0, 2)
+	for _, view := range [][]string{covering, reduced} {
+		encoded, err := encode(view)
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) <= room {
+			return encoded, nil
+		}
+		sizes = append(sizes, len(encoded))
+	}
+	return nil, fmt.Errorf("%w: the view of a record of %d topics an earlier build reads takes %d bytes, or %d reduced, past the %d a manifest leaves it",
+		bus.ErrTooLarge, len(topics), sizes[0], sizes[1], room)
+}
+
+// CoveringTopics is topics without each topic another of them covers, sorted and each once: a list
+// that matches every subject topics match, and no other, in fewer topics. A topic is covered when
+// every name form of it (contracts.TopicForms, which the subject index matches) is contained by a
+// form of the other (bus.SubjectContains); of two that cover each other the first in order stays. A
+// role lane (contracts.RoleTopicPrefix) always stays, since a reader of the row weighs a role lane
+// by its name as well as by what it matches.
+func CoveringTopics(topics []string) []string {
+	unique := slices.Compact(slices.Sorted(slices.Values(topics)))
+	forms := make([][]string, len(unique))
+	for i, topic := range unique {
+		forms[i] = contracts.TopicForms(topic)
+	}
+	covers := func(pattern, subject int) bool {
+		for _, form := range forms[subject] {
+			if !slices.ContainsFunc(forms[pattern], func(p string) bool { return bus.SubjectContains(p, form) }) {
+				return false
+			}
+		}
+		return true
+	}
+	kept := make([]string, 0, len(unique))
+	for i, topic := range unique {
+		covered := false
+		if !strings.HasPrefix(topic, contracts.RoleTopicPrefix) {
+			for j := range unique {
+				if j != i && covers(j, i) && (j < i || !covers(i, j)) {
+					covered = true
+					break
+				}
+			}
+		}
+		if !covered {
+			kept = append(kept, topic)
+		}
+	}
+	return kept
 }
 
 // deleteChunks deletes the chunks of sessionID's record that a delete of it left unnamed

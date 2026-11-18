@@ -336,7 +336,7 @@ func (r *Registry) writeRowAt(ctx context.Context, cur storedRow, revision uint6
 	if unchanged {
 		return cur.Interest, true, nil
 	}
-	written, epoch, err := r.putInterestAt(ctx, merged.SessionID, buf, revision, cur.layout)
+	written, epoch, err := r.putInterestAt(ctx, merged.SessionID, merged, buf, revision, cur.layout)
 	if err != nil {
 		return Interest{}, false, err
 	}
@@ -720,7 +720,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		if err != nil {
 			return err
 		}
-		written, epoch, err := r.putInterestAt(ctx, sessionID, buf, revision, read.layout)
+		written, epoch, err := r.putInterestAt(ctx, sessionID, item, buf, revision, read.layout)
 		if err != nil {
 			return err
 		}

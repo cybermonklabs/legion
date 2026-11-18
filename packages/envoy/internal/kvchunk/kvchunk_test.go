@@ -42,16 +42,16 @@ func TestAChunkMarkerAPutFollowsIsNotDueForItsPurge(t *testing.T) {
 func TestARecordThatFitsIsStoredWholeWhateverTheMaxPayload(t *testing.T) {
 	small := []byte(`{"session_id":"s"}`)
 	for _, maxPayload := range []int{2048, 2389, 2390, 4096} {
-		value, layout, chunks, err := layOut(small, maxPayload)
+		value, layout, chunks, err := layOut(small, maxPayload, nil)
 		if err != nil || layout.Chunked() || len(chunks) != 0 || string(value) != string(small) {
 			t.Fatalf("a record of %d bytes under a max payload of %d is laid out as %q in %d chunks (%v), want it whole", len(small), maxPayload, value, len(chunks), err)
 		}
 	}
 	large := make([]byte, 2000)
-	if _, _, _, err := layOut(large, 2048); !errors.Is(err, bus.ErrTooLarge) {
+	if _, _, _, err := layOut(large, 2048, nil); !errors.Is(err, bus.ErrTooLarge) {
 		t.Fatalf("a record of 2000 bytes under a max payload of 2048 answered %v, want bus.ErrTooLarge", err)
 	}
-	if _, layout, chunks, err := layOut(large, 1600+HeaderBytes); err != nil || !layout.Chunked() || len(chunks) < 2 {
+	if _, layout, chunks, err := layOut(large, 1600+HeaderBytes, nil); err != nil || !layout.Chunked() || len(chunks) < 2 {
 		t.Fatalf("a record of 2000 bytes under a max payload of %d is %d chunks (%v), want two or more", 1600+HeaderBytes, len(chunks), err)
 	}
 }
