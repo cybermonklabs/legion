@@ -486,14 +486,7 @@ func TestOperatorBearerGrantRedeemsDespiteTheControllerRecordsStaleContract(t *t
 	}
 
 	sessionRecorder := h.controllerSessionGrant("ses_operator", registration.Secret)
-	if sessionRecorder.Code != http.StatusConflict {
-		t.Fatalf("controller session's own grant mint = %d, want 409; body %s", sessionRecorder.Code, sessionRecorder.Body)
-	}
-	var sessionFailure Failure
-	decodeInto(t, sessionRecorder, &sessionFailure)
-	if want := claim.StaleControllerContract(stale, DaemonAPIVersion).Message; sessionFailure.Error != want {
-		t.Fatalf("controller session grant refusal sentence = %q, want %q", sessionFailure.Error, want)
-	}
+	refusedSaying(t, sessionRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StaleControllerContract(stale, DaemonAPIVersion).Message)
 }
 
 // Wrong secret is still refused 403, exactly as today, regardless of the claim's recorded

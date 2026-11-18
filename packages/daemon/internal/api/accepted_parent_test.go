@@ -50,11 +50,8 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 			holdFrom(t, h, statusRoot, from)
 
 			recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("rerun under a root held from %s = %d %s, want 409", from, recorder.Code, recorder.Body)
-			}
-			if body := recorder.Body.String(); !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) {
-				t.Fatalf("rerun refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s", body, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
+				t.Fatalf("rerun refusal under a root held from %s says %q, want it to name %s", from, sentence, statusRoot)
 			}
 
 			// The same for a child Dispatch holds in backlog that the daemon has never recorded,
@@ -66,11 +63,8 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 			writes := len(statuses.writes)
 
 			recorder = h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{grandchild}}, nil)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("release under a root held from %s = %d %s, want 409", from, recorder.Code, recorder.Body)
-			}
-			if body := recorder.Body.String(); !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) {
-				t.Fatalf("release refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s", body, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
+				t.Fatalf("release refusal under a root held from %s says %q, want it to name %s", from, sentence, statusRoot)
 			}
 			if len(statuses.writes) != writes {
 				t.Fatalf("Dispatch writes of the refused release = %#v, want none", statuses.writes[writes:])
@@ -93,12 +87,8 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 			acceptPhase(t, h, statusRoot, at)
 
 			recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("rerun under a root in %s = %d %s, want 409", at, recorder.Code, recorder.Body)
-			}
-			body := recorder.Body.String()
-			if !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) {
-				t.Fatalf("rerun refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s", body, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
+				t.Fatalf("rerun refusal under a root in %s says %q, want it to name %s", at, sentence, statusRoot)
 			}
 
 			// Once the ancestor has closed there is no order left to keep, and the rerun runs.
@@ -125,12 +115,9 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 		Status: "backlog", Parent: &parent, Rank: "C", LastSeq: 7}
 
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{grandchild}}, nil)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("release of a grandchild under a merged root = %d %s, want 409", recorder.Code, recorder.Body)
-	}
-	body := recorder.Body.String()
-	if !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) || !strings.Contains(body, grandchild) {
-		t.Fatalf("release refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s and %s", body, grandchild, statusRoot)
+	sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
+	if !strings.Contains(sentence, statusRoot) || !strings.Contains(sentence, grandchild) {
+		t.Fatalf("release refusal of a grandchild under a merged root says %q, want it to name %s and %s", sentence, grandchild, statusRoot)
 	}
 	if len(statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: the whole wave is refused before anything is written", statuses.writes)
