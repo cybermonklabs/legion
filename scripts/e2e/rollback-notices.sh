@@ -44,9 +44,10 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
-# The nats-server the run installs when the caller names none: the line the daemon's own NATS tests
-# pin (packages/daemon/internal/testnats/nats.go), as lib/live-daemon-proof.sh installs it.
-nats_version=v2.10.22
+# The nats-server the run installs when the caller names none: lib/live-daemon-proof.sh's pin, the
+# hub's v2.15.1, the version packages/envoy/go.mod pins. The daemon refuses a nats-server below
+# v2.11.12, v2.12.4 or v2.14.0 (packages/envoy/natsversion).
+nats_version=v2.15.1
 
 # The two driver files, relative to packages/daemon: the rollback run's, which the release before
 # is built with, and the seed's and the roll-forward's, which only this change's tree compiles.
