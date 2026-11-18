@@ -537,10 +537,10 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 	}
 	records := podRecords(t, st)
 	inTx(t, st, func(tx pgx.Tx) error {
-		if taken, err := records.TakeHeldPodWake(ctx, tx, "LEGION-208", claim.RoleImplementer, pods.WakePause, pausedAt, pause.ID); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, "LEGION-208", claim.RoleImplementer, pods.WakePause, pausedAt, pause.ID); err != nil || !taken {
 			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
 		}
-		if taken, err := records.TakeHeldPodWake(ctx, tx, "LEGION-208", claim.RoleTester, pods.WakeChecks, pausedAt, 0); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, "LEGION-208", claim.RoleTester, pods.WakeChecks, pausedAt, 0); err != nil || !taken {
 			t.Fatalf("take the tester's wake = %t, %v; want it taken", taken, err)
 		}
 		return nil
@@ -583,9 +583,9 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 
 // Decision 15 of dispatch://INFRA-3759, for a claim of another project's issue, which the
 // operator's spawn (`legion claims spawn`) makes under this project's token: a wake of it is held
-// by this project's pause, as every other claim's is. The rule of a wake's pause (WakePause) reads
-// the open pause of the project whose pod tables it is, never another project's: it answers no
-// pause while only OTHER is paused, and LEGION's pause once LEGION is paused too.
+// by this project's pause, as every other claim's is. The rule of a wake's pause (PauseOfWake)
+// reads the open pause of the project whose pod tables it is, never another project's: it answers
+// no pause while only OTHER is paused, and LEGION's pause once LEGION is paused too.
 func TestAWakeOfAClaimOfAnotherProjectsIssueIsHeldByThisProjectsPause(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -599,7 +599,7 @@ func TestAWakeOfAClaimOfAnotherProjectsIssueIsHeldByThisProjectsPause(t *testing
 		var pause int64
 		inTx(t, st, func(tx pgx.Tx) error {
 			var err error
-			pause, _, err = records.WakePause(ctx, tx, "OTHER-5", token, 0)
+			pause, _, err = records.PauseOfWake(ctx, tx, "OTHER-5", token, 0)
 			return err
 		})
 		return pause
@@ -617,10 +617,11 @@ func TestAWakeOfAClaimOfAnotherProjectsIssueIsHeldByThisProjectsPause(t *testing
 }
 
 // A delivery wake taken while the project is paused is the open pause's, whatever mark its row
-// carries (WakePause, decision 15 of dispatch://INFRA-3759): a row a lane leased before the pause
-// runs to its end while the pause stands, and its mark is 0, or the id of an older pause that
-// held it. Its resume names the open pause and pairs with no release, as a wake the workflow takes
-// while the project is paused does. Before the fix the delivery wake read its row's mark alone.
+// carries (PauseOfWake, decision 15 of dispatch://INFRA-3759): a row a lane leased before the
+// pause runs to its end while the pause stands, and its mark is 0, or the id of an older pause
+// that held it. Its resume names the open pause and pairs with no release, as a wake the workflow
+// takes while the project is paused does. Before the fix the delivery wake read its row's mark
+// alone.
 func TestADeliveryWakeTakenWhileTheProjectIsPausedIsTheOpenPauses(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -637,7 +638,7 @@ func TestADeliveryWakeTakenWhileTheProjectIsPausedIsTheOpenPauses(t *testing.T) 
 		{token: releasedToken, role: claim.RoleImplementer, mark: older.ID},
 		{token: "legion-legion-legion-208-tester", role: claim.RoleTester},
 	} {
-		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, wake.token, wake.role, pods.WakeDelivery, pausedAt.Add(time.Minute), wake.mark); err != nil || !taken {
+		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, wake.token, pods.WakeDelivery, pausedAt.Add(time.Minute), wake.mark); err != nil || !taken {
 			t.Fatalf("take the %s's wake = %t, %v; want it taken", wake.role, taken, err)
 		}
 		var release, held int64

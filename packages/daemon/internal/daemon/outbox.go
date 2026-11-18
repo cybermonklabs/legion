@@ -180,7 +180,7 @@ type outboxTrees interface {
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
-	TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error)
+	TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error)
 	OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
@@ -1545,24 +1545,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
 // the listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392).
-//
-// A row a pause held (record.OutboxRow.HeldByPause) first wakes its role where that role is
-// released, as the notice executor wakes a released architect (wakeForDelivery, with the row's
-// mark), so the wake that brings the role back is that pause's whatever stopped the role. The
-// listener's report of the publish would otherwise be the wake, through the workflow, which has
-// no row's mark to read: a role released before the pause, which no pause stopped, would come
-// back on a wake of that earlier release. The publish then goes as for any row, and the
-// listener's report of it finds the role's open resume, or the role running, and takes no second
-// wake. The payload's role is the claim's token (record.RoleMessage.Role). A row no pause held
-// wakes nothing here: the listener's report of its publish is what wakes a released role.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
-	}
-	if row.HeldByPause > 0 {
-		if _, err := r.wakeForDelivery(ctx, claim.Token(payload.Role), "a role message of "+row.Issue, row.HeldByPause); err != nil {
-			return err
-		}
 	}
 	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {

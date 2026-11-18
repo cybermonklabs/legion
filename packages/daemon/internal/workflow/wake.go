@@ -36,10 +36,10 @@ import (
 // PodRecordsOf), which holds the project as the claim-keyed tables spell it, so the engine carries
 // one project and reaches Postgres through an interface here as it does through record.Store.
 //
-// A wake is taken whole by TakeHeldPodWake: the resume recorded against the release the wake
-// ends, or against the pause that holds it, which the role's one open resume refuses a second of,
-// and the woken role's backstop cancelled. The store owns that order, and this package never
-// writes a part of it.
+// A wake is taken whole by TakePodWake: the resume recorded against the release the wake ends,
+// or against the pause that holds it, which the role's one open resume refuses a second of, and
+// the woken role's backstop cancelled. The store owns that order, and this package never writes a
+// part of it.
 type Pods interface {
 	// RecordListenerReady stamps when the Envoy listener last said it is alive and reporting,
 	// which is the whole of R7's gate.
@@ -51,20 +51,17 @@ type Pods interface {
 	// Every daemon reads the report and only the one holding a released claim of that name acts.
 	ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
 	ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
-	// TakeHeldPodWake takes one wake of issue's role and answers whether this call took it; false
-	// is a wake another pass already took, which is already bringing the pod back. pause is the
+	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
+	// a wake another pass already took, which is already bringing the pod back. pause is the
 	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
 	// no release (decision 15 of dispatch://INFRA-3759).
-	TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
-	// WakePause is which pause holds a wake of the claim token, issue's role, and which pause
-	// stopped it, by the one rule every wake reads (store's PodRecords.WakePause): held is the
-	// project's open pause, read with its row locked for share, so the resume's end of it waits
-	// for the wake's fact; else mark, the pause that held the outbox row the wake is taken for,
-	// which a wake of this package, taken for no row, passes as 0; else stopping, the pause of the
-	// claim's newest stop where that stop is newer than issue's newest pod release and the claim's
-	// last ready. The wake is a held wake of held (decision 15), and the session it brings back is
-	// one stopping stopped in a pod it kept (decision 16).
-	WakePause(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
+	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
+	// PauseOfWake is which pause holds a wake of the claim token, issue's role, by the store's one
+	// rule of it (store's PodRecords.PauseOfWake), and which pause stopped the claim. mark is the
+	// pause that held the outbox row the wake is taken for, which a wake of this package, taken
+	// for no row, passes as 0. The wake is a held wake of held (decision 15), and the session it
+	// brings back is one stopping stopped in a pod it kept (decision 16).
+	PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
 	// has gone away: a release of the issue recorded since that wake was taken. It answers the
 	// issue's newest release where it closed a row, and 0 where it closed none.
@@ -283,23 +280,19 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 //
 // A wake of a role whose resume is already open wakes nothing a second time: that pod is coming
 // back, and the start row of the wake that took it carries the task. A wake that takes it records
-// itself against the release it ends and cancels the woken role's backstop
-// (Pods.TakeHeldPodWake), and writes the one outbox row that resumes the role and gives it the
-// task naming the wake. Both are this transaction's, so a wake this daemon took is a wake whose
-// start row is queued: a take that committed without one is what wedges a role, which is why the
-// outbox's own delivery wake, which resumes a claim in process instead, heals a refused wake
-// (wakeForDelivery).
+// itself against the release it ends and cancels the woken role's backstop (Pods.TakePodWake), and
+// writes the one outbox row that resumes the role and gives it the task naming the wake. Both are
+// this transaction's, so a wake this daemon took is a wake whose start row is queued: a take that
+// committed without one is what wedges a role, which is why the outbox's own delivery wake, which
+// resumes a claim in process instead, heals a refused wake (wakeForDelivery).
 //
-// Which pause holds the wake is read by the one rule every wake reads (Pods.WakePause, decision 15
-// of dispatch://INFRA-3759), on this fact's own transaction: the open pause, where the daemon's
-// project is paused, else the pause that stopped the role, where the role's newest stop is that
-// pause's and newer than both the issue's newest release and the role's last ready. A wake of
-// this file is taken for no outbox row, so it carries no row's mark, which the rule reads between
-// the two for the outbox's delivery wake (wakeForDelivery). A held wake is recorded on the resume,
-// which pairs with no release, and on the start row, which the outbox holds while a pause stands:
-// what kept the role down was the pause, not a release. The pause that stopped the role is also
-// what the task names as what stopped the session (WakeTask, decision 16): the pause where one
-// stopped it, and the release otherwise.
+// Which pause holds the wake is the store's one rule of it (Pods.PauseOfWake, decision 15 of
+// dispatch://INFRA-3759), read on this fact's own transaction. A wake of this file is taken for no
+// outbox row, so it passes no row's mark. A held wake is recorded on the resume, which pairs with
+// no release, and on the start row, which the outbox holds while a pause stands: what kept the
+// role down was the pause, not a release. The pause that stopped the role is also what the task
+// names as what stopped the session (WakeTask, decision 16): the pause where one stopped it, and
+// the release otherwise.
 //
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
@@ -321,7 +314,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
-	pause, stopping, err := e.cfg.Pods.WakePause(ctx, tx, issue.Key, released.Token, 0)
+	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)
 	if err != nil {
 		return false, err
 	}
@@ -333,7 +326,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
-	taken, err := e.cfg.Pods.TakeHeldPodWake(ctx, tx, issue.Key, released.Role, kind, at, pause)
+	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at, pause)
 	if err != nil || !taken {
 		return false, err
 	}

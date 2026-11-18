@@ -131,7 +131,7 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // role's unpushed work; and, for a stop that ends after its pause ended, only where no role of the
 // pod is live then (store.IssueHasLiveRoleTx, decision 6) — and its role's open resume closed
 // (store.CloseRoleOpenResumeTx); and either the launch it is owed — a held wake of the pause
-// (store.PodRecords.TakeHeldPodWake with pods.WakePause, which cancels the role's own backstop)
+// (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A start owed once the pause has ended, with no
 // pause open after it, is logged as a released held row (decision 23), and the outbox runs it at
@@ -273,7 +273,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if !owed {
 		return made, nil
 	}
-	taken, err := p.pods.TakeHeldPodWake(ctx, tx, c.Issue, c.Role, pods.WakePause, at, held.ID)
+	taken, err := p.pods.TakePodWake(ctx, tx, c.Issue, c.Role, pods.WakePause, at, held.ID)
 	if err != nil || !taken {
 		return made, err
 	}

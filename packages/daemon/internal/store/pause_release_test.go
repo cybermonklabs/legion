@@ -197,7 +197,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			if tc.woken {
 				records := podRecords(t, st)
 				inTx(t, st, func(tx pgx.Tx) error {
-					if taken, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
+					if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
 						t.Fatalf("take the held wake = %t, %v", taken, err)
 					}
 					return nil
@@ -343,7 +343,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 	st := migratedStore(t)
 	woke := pausedAt.Add(-2 * time.Hour)
 	recordRelease(t, st, woke.Add(-time.Hour))
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
 		pods.WakeDelivery, woke, 0); err != nil || !taken {
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
@@ -379,7 +379,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 	}
 	records := podRecords(t, st)
 	inTx(t, st, func(tx pgx.Tx) error {
-		if taken, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
 			t.Fatalf("take the implementer's held wake = %t, %v", taken, err)
 		}
 		return nil

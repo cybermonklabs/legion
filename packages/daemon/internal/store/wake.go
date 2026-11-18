@@ -121,24 +121,23 @@ func CancelPodBackstops(ctx context.Context, tx pgx.Tx, project, issue string, r
 // of an issue or of its tree takes the whole released pod over, and the arming of a release's
 // backstops drops what the release before it armed; both name no role. Dropping the backstops is
 // the whole of what taking a released pod over leaves to do, since a wake's own record is the
-// resume the index holds (TakeHeldPodWake).
+// resume the index holds (TakePodWake).
 func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, role) })
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice, a phase-ended message, a hook prompt, a merge-queue removal or, where a pause held it, a
-// role message, that found the role it is for released (internal/daemon's wakeForDelivery).
-// Inside a fact's transaction the workflow takes its wakes through PodRecords.TakeHeldPodWake,
-// which is where taking a wake is written out.
+// notice, a phase-ended message, a hook prompt or a merge-queue removal that found the role it is
+// for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow takes
+// its wakes through PodRecords.TakePodWake, which is where taking a wake is written out.
 //
-// token is the claim of issue's role that the wake brings back, and mark the pause that held the
-// outbox row the wake is taken for (record.OutboxRow.HeldByPause, which the resume writes on every
-// row its pause holds), 0 for a row no pause held. The pause that holds the wake is read by the
-// one rule every wake reads (PodRecords.WakePause): the open pause, else mark, else the pause that
-// stopped the claim. A project's pause holds a row, whatever its due time, and the row runs, and
-// wakes its role, only after the resume: its wake is a held wake of that pause, marked with it and
-// paired with no release (TakeHeldPodWake, decision 15 of dispatch://INFRA-3759), as the wakes the
+// token is the claim the wake brings back, and the role it names is the role woken: a token that
+// names no role is an error. mark is the pause that held the outbox row the wake is taken for
+// (record.OutboxRow.HeldByPause, which the resume writes on every row its pause holds), 0 for a
+// row no pause held. PodRecords.PauseOfWake reads which pause holds the wake from the token and
+// the mark. A project's pause holds a row, whatever its due time, and the row runs, and wakes its
+// role, only after the resume: its wake is a held wake of that pause, marked with it and paired
+// with no release (PodRecords.TakePodWake, decision 15 of dispatch://INFRA-3759), as the wakes the
 // workflow takes while the project is paused are, and so is the wake of a row written after the
 // resume for a role that pause stopped. So the update round over the role's pod counts that
 // pause's hold on to the role's let-out (PausePodHoldsSince), and the release records leave the
@@ -147,15 +146,19 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 // project is the project token the claim-keyed tables hold, as it is for every other
 // project-keyed method of this file: the daemon derives it once at boot (claim.ProjectToken,
 // internal/daemon/bootreads.go) and its outbox carries that, so nothing is derived again here.
-func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error) {
+func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
+	role, ok := token.Role()
+	if !ok {
+		return false, fmt.Errorf("take a wake of %s: claim token %q names no role", issue, token)
+	}
 	records := &PodRecords{store: s, project: project}
 	var taken bool
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		pause, _, err := records.WakePause(ctx, tx, issue, token, mark)
+		pause, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
 			return err
 		}
-		taken, err = records.TakeHeldPodWake(ctx, tx, issue, role, kind, at, pause)
+		taken, err = records.TakePodWake(ctx, tx, issue, role, kind, at, pause)
 		return err
 	})
 	return taken, err
@@ -571,9 +574,9 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 	return oneReleasedClaim(ctx, tx, `and session = $4`, p.project, session, "session")
 }
 
-// TakeHeldPodWake takes one wake of issue's role inside the caller's transaction, and is the
-// whole of what taking a wake is: the mark under the wake's own key, the resume recorded against
-// the release that wake ends, and the role's own backstop cancelled. It answers whether this call
+// TakePodWake takes one wake of issue's role inside the caller's transaction, and is the whole
+// of what taking a wake is: the mark under the wake's own key, the resume recorded against the
+// release that wake ends, and the role's own backstop cancelled. It answers whether this call
 // took the wake; false is a wake another pass already took, and then the caller resumes nothing,
 // because the first wake is already bringing the pod back.
 //
@@ -605,12 +608,12 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 // owed launch (pods.WakePause) — so there is one account of what a wake writes and one order it
 // writes it in.
 //
-// pause is the pause that holds the wake (WakePause decides it for every wake but the stop's own,
-// which names its pause), and 0 is a wake no pause holds. A held wake records its pause on the
-// resume (pod_resumes.pause_id) and pairs with release 0 rather than the issue's latest release
-// (decision 15 of dispatch://INFRA-3759): the pause, not a release, is what kept the role down,
-// so the release measurements leave its wait out.
-func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error) {
+// pause is the pause that holds the wake (PauseOfWake decides it for every wake but the stop's
+// owed launch, which names its own pause), and 0 is a wake no pause holds. A held wake records its
+// pause on the resume (pod_resumes.pause_id) and pairs with release 0 rather than the issue's
+// latest release (decision 15 of dispatch://INFRA-3759): the pause, not a release, is what kept
+// the role down, so the release measurements leave its wait out.
+func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error) {
 	var release int64
 	if pause == 0 {
 		var err error
@@ -626,10 +629,11 @@ func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue strin
 	return true, CancelPodBackstops(ctx, tx, p.project, issue, role)
 }
 
-// WakePause is the one rule of which pause holds a wake of claim token, issue's role (decision 15
-// of dispatch://INFRA-3759), and every wake reads it: the outbox's delivery wake
-// (Store.TakePodWake) and the workflow's wakes (its wakeReleased). held is the first of these
-// that names a pause, and 0 where none does:
+// PauseOfWake is the one rule of which pause holds a wake of claim token, issue's role (decision
+// 15 of dispatch://INFRA-3759), and every wake but the stop's owed launch reads it: the outbox's
+// delivery wake (Store.TakePodWake) and the workflow's wakes (its wakeReleased). The stop
+// transaction's owed launch (pods.WakePause) names its own pause. held is the first of these that
+// names a pause, and 0 where none does:
 //
 //   - the project's open pause, read on tx with its row locked for share
 //     (LockOpenPauseByTokenTx), so the resume's end of it waits for the wake to commit: a wake
@@ -642,7 +646,7 @@ func (p *PodRecords) TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue strin
 //
 // stopping is answered whatever held is, because it is also what the woken role's task names as
 // what stopped its session (workflow.WakeTask, decision 16).
-func (p *PodRecords) WakePause(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error) {
+func (p *PodRecords) PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error) {
 	// open is the zero Pause, whose id is 0, while the project runs (scanOpenPause).
 	open, _, err := LockOpenPauseByTokenTx(ctx, tx, p.project)
 	if err != nil {

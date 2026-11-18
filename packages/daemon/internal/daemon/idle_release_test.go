@@ -529,8 +529,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
 	}
 
-	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer,
-		pods.WakeDelivery, time.Now().UTC(), 0)
+	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeDelivery, time.Now().UTC(), 0)
 	if err != nil || !taken {
 		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
 	}

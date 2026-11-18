@@ -19,7 +19,7 @@ import (
 // request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
 // published to a role topic of the pod and one sent to the agent subject of a released session;
 // WakeBackstop is the stored backstop a release armed; WakePause is the launch a project's pause
-// owed a role it stopped, held until the resume (store's PodRecords.TakeHeldPodWake).
+// owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what

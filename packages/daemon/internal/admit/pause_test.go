@@ -412,7 +412,7 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 			putArchitectHandshake(t, pool, architectToken(t, root), seededEntry, architectWakeGeneration, tc.queued, tc.confirmed)
 			if !tc.letOut.IsZero() {
 				// The resume the pause's stop took for the launch it owed the architect
-				// (store.PodRecords.TakeHeldPodWake), whose stuck clock the reservation of that
+				// (store.PodRecords.TakePodWake), whose stuck clock the reservation of that
 				// launch moved to its let-out (store.Store.SetResumeClock).
 				project, err := claim.ProjectToken(testProject)
 				if err != nil {

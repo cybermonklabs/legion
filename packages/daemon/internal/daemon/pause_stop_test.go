@@ -316,10 +316,10 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 // the launch it was owed, which is running, no backstop for the open phase's worker, no pod hold,
 // and the role's open resume left open, since it is the wake that launch is answering. That wake
 // is taken before the pause, so it is no wake of the pause: a wake taken while the project is
-// paused is the open pause's (store.PodRecords.WakePause).
+// paused is the open pause's (store.PodRecords.PauseOfWake).
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
-	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester), claim.RoleTester,
+	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester),
 		pods.WakeChecks, time.Now(), 0); err != nil || !taken {
 		t.Fatalf("take the tester's wake = %t, %v", taken, err)
 	}

@@ -488,10 +488,10 @@ func LockOpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, boo
 
 // LockOpenPauseByTokenTx is the open pause of the project whose token is token
 // (readOpenPauseByToken) with its row locked for share, and whether one is open. A wake reads it
-// to mark a wake the pause holds (decision 15 of dispatch://INFRA-3759, PodRecords.WakePause), and
-// a cancel of an idle release reads it to record the roles it would resume as stopped by the pause
-// (decision 12, CancelIssueRelease). The resume's end of that pause then waits for the caller to
-// commit, and sets the stuck clock of a held wake it wrote (SetProjectResumeClocksTx).
+// to mark a wake the pause holds (decision 15 of dispatch://INFRA-3759, PodRecords.PauseOfWake),
+// and a cancel of an idle release reads it to record the roles it would resume as stopped by the
+// pause (decision 12, CancelIssueRelease). The resume's end of that pause then waits for the
+// caller to commit, and sets the stuck clock of a held wake it wrote (SetProjectResumeClocksTx).
 func LockOpenPauseByTokenTx(ctx context.Context, tx pgx.Tx, token string) (Pause, bool, error) {
 	return readOpenPauseByToken(ctx, tx, token, " for share")
 }
@@ -778,7 +778,7 @@ type PauseStopRecord struct {
 // dispatch://INFRA-3759): the stop row (RecordPauseStoppedTx) and, on that stop's first record,
 // the pod's hold where rec.HoldPod asks for one (OpenPausePodHoldTx) and rec.Backstop where the
 // stop owes no launch (ArmPodBackstopTx) — a role owed a launch comes back by that launch, whose
-// held wake cancels the role's backstop (PodRecords.TakeHeldPodWake). It answers whether this was
+// held wake cancels the role's backstop (PodRecords.TakePodWake). It answers whether this was
 // the stop's first record, as RecordPauseStoppedTx does: a stop recorded again writes no second
 // hold and no second backstop. The stop transaction (internal/daemon's projectPause.stopTx) and a
 // cancel of a release made while the project is paused (stopReleasedForPause) record their stops
@@ -856,15 +856,15 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 // StoppingPauseTx is the id of the pause that stopped claim token, through tx: the pause of the
 // claim's newest stop, where that stop ended `stopped` after both issue's newest pod release and
 // the claim's last ready (claims.last_ready), and 0 otherwise. It is the one statement of which
-// pause stopped a claim, and a wake of the claim reads it twice over (PodRecords.WakePause): the
+// pause stopped a claim, and a wake of the claim reads it twice over (PodRecords.PauseOfWake): the
 // session the wake brings back is one that pause stopped in a pod it kept, which the wake's task
 // says (decision 16 of dispatch://INFRA-3759, workflow.WakeTask), and a wake taken once that pause
-// has ended, for no row a pause held, is that pause's held wake, which pairs with no release
-// (decision 15, PodRecords.TakeHeldPodWake). A release recorded after that stop took the pod, and
-// the release's words are the true ones. A ready after it is the agent of a launch since, such as
-// the resume's, so something later stopped that session: an idle release suspends the role (its
-// outbox `suspend` row) before its teardown records the release, and a wake taken in between is
-// the release's. project is the project token, as pod_releases holds it.
+// has ended can be that pause's held wake, which pairs with no release (decision 15,
+// PodRecords.TakePodWake). A release recorded after that stop took the pod, and the release's
+// words are the true ones. A ready after it is the agent of a launch since, such as the resume's,
+// so something later stopped that session: an idle release suspends the role (its outbox
+// `suspend` row) before its teardown records the release, and a wake taken in between is the
+// release's. project is the project token, as pod_releases holds it.
 func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
 	if err := tx.QueryRow(ctx, `select coalesce((select case when s.ended_as = $4
