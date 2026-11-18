@@ -141,22 +141,50 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 	}
 }
 
-// TestAirlockCheckRefusesAHostTheProxyNeverCompares: the proxy writes a request's host that is an
-// IP address as netaddr.Host writes it before it compares it with an entry's hosts, so a host
-// written in another form binds nothing, and airlock-check refuses it as the boot does. The
-// refusal names the form to write and repeats nothing of the host as written, whose zone is any
-// text. The control is the same addresses in that form, and an IPv6 address in upper case,
-// which fold.ASCII alone changes and airlock.HostBound folds: those files are valid.
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares is one row for each spelling of a host that
+// airlock.HostBound, comparing text, would never match against a request's host as the proxy
+// writes it, so that the entry binds nothing; airlock-check refuses each as the boot does. The
+// proxy takes a CONNECT host's port and brackets off and writes an IP address as netaddr.Host
+// writes it, so an address in any other form is refused naming that form. A host that holds no
+// address to name is refused naming no form. No refusal repeats the host as written, whose zone
+// or label is any text. The control is a file of hosts in the form the proxy compares, and in
+// upper or mixed case, which fold.ASCII alone changes and HostBound folds on both sides: it is
+// valid.
 func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
+	const notCanonical = "canonical form"
+	// bindsNothing is what each row says but the wildcard's, which binds addresses by their text.
+	bindsNothing := func(want ...string) []string { return append([]string{"binds nothing"}, want...) }
 	for _, c := range []struct {
-		name      string
-		host      string
-		canonical string
-		absent    string
+		name   string
+		host   string
+		want   []string
+		absent string
 	}{
-		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", "2001:db8:7::1", "2001:db8:7:0::1"},
-		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", "93.184.216.34", "::ffff:"},
-		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 \"x`, "2001:db8:7::1", "eth0"},
+		// An address in a form netaddr.Host rewrites.
+		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "2001:db8:7:0::1"},
+		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "0db8"},
+		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", bindsNothing(notCanonical, "write it as 93.184.216.34"), "::ffff:"},
+		{"an IPv6 address with an embedded IPv4 part", "2001:db8::93.184.216.34", bindsNothing(notCanonical, "write it as 2001:db8::5db8:d822"), "::93.184"},
+		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 \"x`, bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "eth0"},
+		// An address in a spelling netaddr.Host does not read.
+		{"an IPv6 address in brackets", "[2001:db8:7::1]", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "[2001"},
+		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 \"x]`, bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "eth0"},
+		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:93.184.216.34]", bindsNothing(notCanonical, "write it as 93.184.216.34"), "::ffff:"},
+		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "[2001"},
+		{"an IPv4 address with a trailing dot", "93.184.216.34.", bindsNothing(notCanonical, "write it as 93.184.216.34"), "216.34."},
+		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "::1."},
+		{"an IPv4 address with a port", "93.184.216.34:443", bindsNothing(notCanonical, "write it as 93.184.216.34"), ":443"},
+		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", bindsNothing(notCanonical, "write it as 2001:db8:7::1"), "]:443"},
+		// A host that holds no address to name.
+		{"a host name with a port", "api.github.com:443", bindsNothing("holds a port", "write the host alone"), ":443"},
+		{"a host name in brackets", "[api.github.com]", bindsNothing("bracket or a %", "no IP address"), "[api"},
+		{"a host name holding a %", "api%x.github.com", bindsNothing("bracket or a %", "no IP address"), "%x"},
+		{"a colon in no IP address", "2001:db8::g", bindsNothing("holds a colon", "no IP address"), "::g"},
+		{"an IPv4 address with a leading zero", "093.184.216.34", bindsNothing("ends in a number", "leading zero"), "093.184"},
+		{"an IPv4 address of fewer than four parts", "93.184.54818", bindsNothing("ends in a number", "four decimal"), "184.54818"},
+		{"an IPv4 address written as one number", "1572395042", bindsNothing("ends in a number", "four decimal"), "1572395042"},
+		{"an IPv4 address written in hex", "0x5db8d822", bindsNothing("ends in a number", "four decimal"), "0x5db8"},
+		{"a wildcard over the last labels of an address", "*.216.34", []string{"wildcard", "last label is a number", "match addresses by their text"}, "*.216"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "`+c.host+`"]}]}`)
@@ -164,7 +192,7 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 			if code != 1 || stdout != "" {
 				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
 			}
-			for _, want := range []string{`secrets[0] "GITHUB"`, "hosts[1]", "canonical form", "binds nothing", "write it as " + c.canonical} {
+			for _, want := range append([]string{`secrets[0] "GITHUB"`, "hosts[1]"}, c.want...) {
 				if !strings.Contains(stderr, want) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
@@ -174,10 +202,10 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 			}
 		})
 	}
-	t.Run("the control: each address in the form the proxy compares", func(t *testing.T) {
-		path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}]}`)
+	t.Run("the control: each host in the form the proxy compares, in any case", func(t *testing.T) {
+		path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "API.GitHub.com", "*.googleapis.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1", "2001:db8::5db8:d822"]}]}`)
 		if code, _, stderr := runAirlockCheck(t, path); code != 0 || stderr != "" {
-			t.Fatalf("a file of canonical addresses = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+			t.Fatalf("a file of hosts in the form the proxy compares = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
 		}
 	})
 }

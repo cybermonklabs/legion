@@ -832,10 +832,15 @@ path prefixes it may travel on
 the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
-A host written as an IP address is written in its canonical form, `2001:db8:7::1` and not
-`2001:db8:7:0::1`, `93.184.216.34` and not `::ffff:93.184.216.34`, because the proxy compares
-a request's address in that form; the broker refuses to start with a file that writes it another
-way, and `airlock-check` refuses that file too.
+A host written as an IP address is written in its canonical form, with no brackets, zone, port
+or trailing dot: `2001:db8:7::1` and not `2001:db8:7:0::1` or `[2001:db8:7::1]`, `93.184.216.34`
+and not `::ffff:93.184.216.34`, `93.184.216.34.` or `093.184.216.34`, because the proxy compares a
+request's address in that form. The broker refuses to start with a file that writes an address
+any other way, that gives any host a port, or whose host ends in a number that is no such
+address, and `airlock-check` refuses that file too. Even written that way, an IP-address host
+carries no value for a client that sends no SNI for an address, which is every standard client:
+the proxy decrypts the request and then refuses it `sni mismatch`. The refusal at start still
+matters, because the proxy tunnels a CONNECT to a host in any other form unread.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate

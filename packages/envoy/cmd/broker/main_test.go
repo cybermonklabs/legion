@@ -1039,11 +1039,13 @@ func airlockEnv(t *testing.T) []string {
 
 // TestMainRefusesAnAirlockRulesFileItCannotServe drives the real binary with each kind of rules
 // file it must refuse — one whose entry the airlock will not validate, one whose entry names a
-// secret by a name no session can ask for, one whose host is an IP address the proxy never
-// compares in the form it is written, one that is not JSON, and a path that is not there — and
-// asserts it exits non-zero naming the file and what is wrong with it, without ever binding. The
-// database it is given is unreachable, so a broker that read the file after opening the store
-// would fail on the host instead of on the file.
+// secret by a name no session can ask for, some whose host is a spelling the proxy never
+// compares a request's host with (each spelling has its row in
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares, through the same validateRulesFile), one
+// that is not JSON, and a path that is not there — and asserts it exits non-zero naming the file
+// and what is wrong with it, without ever binding. The database it is given is unreachable, so a
+// broker that read the file after opening the store would fail on the host instead of on the
+// file.
 func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
@@ -1082,6 +1084,27 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["::ffff:93.184.216.34"]}]}`),
 			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
 			absent: []string{"::ffff:"},
+		},
+		// A CONNECT's host reaches the proxy without its brackets (net.SplitHostPort), so a
+		// host written in brackets matches no request either.
+		"an IPv6 address in brackets": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "[2001:db8:7::1]"]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 2001:db8:7::1"},
+			absent: []string{"[2001"},
+		},
+		// A client writes an address with no dot after it, so a host written with one matches
+		// no request.
+		"an IPv4 address with a trailing dot": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "93.184.216.34."]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
+			absent: []string{"216.34."},
+		},
+		// netip reads no IPv4 address with a leading zero, and clients read one as different
+		// addresses, so the refusal names no form.
+		"an IPv4 address with a leading zero": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "093.184.216.34"]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "ends in a number", "binds nothing", "leading zero"},
+			absent: []string{"093.184"},
 		},
 		"a file that is not JSON": {
 			path: airlockRulesFile(t, "these are not the rules you are looking for\n"),
