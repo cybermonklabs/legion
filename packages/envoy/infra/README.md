@@ -799,10 +799,22 @@ group, `signInOutside` and `outsideOrigin` as it takes them beside the front doo
 sign-in group its host must be one Google takes in a redirect URI, as `outsideOrigin`'s must, and
 the Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
 the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
-labelled `app=<hostname>`, through a network endpoint group of its own Service, and admits its own
-traffic to port 8766 with a NetworkPolicy of its own, since policies add up; for a Google load
-balancer that is its proxies' and health checks' ranges, `35.191.0.0/16` and `130.211.0.0/22`. The
-app's own policy then admits the `allowedNamespaces` alone, none when it names none.
+labelled `app=<hostname>`, through a network endpoint group of that Service.
+
+`loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
+entrance, and each needs `publicOrigin`; beside the tailnet group or in the sandbox each is refused,
+naming it. `loadBalancerSourceRanges` is the CIDRs the entrance reaches the app's pods from, which
+the component renders as `ipBlock` peers on port 8766 in the app's own NetworkPolicy, beside the
+`allowedNamespaces` peers, so one policy selects the Dispatch pods; for a Google load balancer they
+are its proxies' and health checks' ranges, `35.191.0.0/16` and `130.211.0.0/22`. Each is a CIDR
+written as the network it names (`130.211.0.0/22`, not `130.211.1.2/22`). Unset, the app's policy
+admits the `allowedNamespaces` alone, none when it names none, and a deployment admits its entrance
+with a NetworkPolicy of its own, since policies add up. `networkEndpointGroupName` names the
+[standalone network endpoint group](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg)
+GKE makes for the app's Service on 8766, which the load balancer takes as its backend: the Service
+carries `cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}}}`. It is a Compute Engine
+resource name, a lowercase letter, then up to 62 lowercase letters, digits or hyphens, the last not a
+hyphen. With both unset, the component renders what it rendered before they existed.
 
 `iapAudience`, unset by default, turns on the IAP door: a browser reaches Dispatch through
 [Identity-Aware Proxy](https://cloud.google.com/iap/docs/signed-headers-howto) on the

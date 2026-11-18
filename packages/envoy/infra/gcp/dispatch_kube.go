@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -537,14 +538,23 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}
 		return workload, nil
 	}
-	service := func(name string, port int) (*corev1.Service, error) {
+	// serviceWith is the Service name on port, with annotations on it where there are any, and
+	// service the same with none.
+	serviceWith := func(name string, port int, annotations pulumi.StringMap) (*corev1.Service, error) {
+		meta := metadata(name)
+		if len(annotations) > 0 {
+			meta.Annotations = annotations
+		}
 		return corev1.NewService(ctx, name, &corev1.ServiceArgs{
-			Metadata: metadata(name),
+			Metadata: meta,
 			Spec: &corev1.ServiceSpecArgs{
 				Selector: pulumi.StringMap{"app": pulumi.String(name)},
 				Ports:    corev1.ServicePortArray{corev1.ServicePortArgs{Port: pulumi.Int(port), TargetPort: pulumi.Int(port)}},
 			},
 		}, child...)
+	}
+	service := func(name string, port int) (*corev1.Service, error) {
+		return serviceWith(name, port, nil)
 	}
 
 	seedMount := corev1.VolumeMountArray{corev1.VolumeMountArgs{Name: pulumi.String("nats-seed"), MountPath: pulumi.String("/var/run/secrets/envoy"), ReadOnly: pulumi.Bool(true)}}
@@ -872,7 +882,13 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, pulumi.DependsOn(appGrants)); err != nil {
 		return err
 	}
-	if _, err := service(s.hostname, 8766); err != nil {
+	// With networkEndpointGroupName, GKE makes a standalone network endpoint group of that name for
+	// the app's Service on 8766, which the deployment's load balancer takes as its backend.
+	var appAnnotations pulumi.StringMap
+	if args.NetworkEndpointGroupName != "" {
+		appAnnotations = pulumi.StringMap{"cloud.google.com/neg": pulumi.String(dispatchNEGAnnotation(args.NetworkEndpointGroupName))}
+	}
+	if _, err := serviceWith(s.hostname, 8766, appAnnotations); err != nil {
 		return err
 	}
 
@@ -882,12 +898,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if len(args.AllowedNamespaces) > 0 {
 		appIngress = append(appIngress, ingressFrom(8766, namespacePeers(args.AllowedNamespaces)))
 	}
+	// With publicOrigin, the deployment's load balancer reaches the app from
+	// loadBalancerSourceRanges, which this same policy admits on 8766, so one policy selects the
+	// app's pods; a deployment that sets none admits its entrance by a policy of its own, since
+	// policies add up.
+	if len(args.LoadBalancerSourceRanges) > 0 {
+		appIngress = append(appIngress, ingressFrom(8766, ipBlockPeers(args.LoadBalancerSourceRanges)))
+	}
 	// The front door is a pod of this namespace, which no namespace selector covers, so without
 	// this rule Serve reaches the app at no port at all. Without a front door there is no such pod
 	// and no such rule: in the sandbox the allowedNamespaces rule is then the policy's only one,
 	// which is why the resolver requires at least one namespace in that mode, and with
-	// publicOrigin the deployment's own entrance admits its traffic by a policy of its own, since
-	// policies add up, so the namespaces are optional there.
+	// publicOrigin the entrance is admitted as above, so the namespaces are optional there.
 	if s.frontDoor {
 		appIngress = append(appIngress, ingressFrom(8766, networkingv1.NetworkPolicyPeerArray{podPeer(tailnetName)}))
 	}
@@ -906,6 +928,28 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 // labels.
 func labelPeer(labels map[string]string) networkingv1.NetworkPolicyPeerArgs {
 	return networkingv1.NetworkPolicyPeerArgs{PodSelector: &metav1.LabelSelectorArgs{MatchLabels: pulumi.ToStringMap(labels)}}
+}
+
+// ipBlockPeers are one ipBlock peer for each of cidrs, in their order: the sources a load balancer
+// reaches a pod from, which no namespace or pod selector names.
+func ipBlockPeers(cidrs []string) networkingv1.NetworkPolicyPeerArray {
+	peers := make(networkingv1.NetworkPolicyPeerArray, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		peers = append(peers, networkingv1.NetworkPolicyPeerArgs{IpBlock: &networkingv1.IPBlockArgs{Cidr: pulumi.String(cidr)}})
+	}
+	return peers
+}
+
+// dispatchNEGAnnotation is the cloud.google.com/neg annotation that has GKE make a standalone
+// network endpoint group named name for the app's Service on 8766
+// (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg), with the name written
+// as JSON writes a string, though negNameRule leaves nothing in it to escape.
+func dispatchNEGAnnotation(name string) string {
+	value, err := json.Marshal(map[string]map[string]map[string]string{"exposed_ports": {"8766": {"name": name}}})
+	if err != nil {
+		panic(err) // a map of strings always marshals
+	}
+	return string(value)
 }
 
 // namespacePeers are NetworkPolicy peers admitting every pod of each namespace named, by the

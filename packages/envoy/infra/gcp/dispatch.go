@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -193,8 +194,9 @@ type DispatchArgs struct {
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
-	// Service <hostname> on 8766 and admits its own traffic to the app's pods (labelled
-	// app=<hostname>) with a NetworkPolicy of its own, since policies add up. It is an origin
+	// Service <hostname> on 8766. The app's pods (labelled app=<hostname>) admit that entrance by
+	// loadBalancerSourceRanges, which the component renders into the app's own NetworkPolicy, or by
+	// a NetworkPolicy of the deployment's own, since policies add up. It is an origin
 	// weborigin.Parse takes, https, and with the sign-in inputs set its host is one
 	// weborigin.GoogleRedirectHost takes, since the Google client then lists
 	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
@@ -218,6 +220,20 @@ type DispatchArgs struct {
 	// outsideOrigin: IAP signs a person in, and a browser reaches Dispatch through it alone.
 	// Unset renders none of the three variables, and Dispatch keeps its default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
+	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
+	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
+	// peers on 8766 in the app's own NetworkPolicy, beside allowedNamespaces' peers, so one policy
+	// selects the Dispatch pods. Each is a CIDR net.ParseCIDR takes, written as its network
+	// (10.0.0.0/8, not 10.1.2.3/8). It needs publicOrigin, the origin that load balancer serves.
+	// Unset renders no such peer.
+	LoadBalancerSourceRanges []string `pulumi:"loadBalancerSourceRanges,optional"`
+	// NetworkEndpointGroupName names the standalone network endpoint group GKE makes for the app's
+	// Service on 8766, which the deployment's load balancer takes as its backend: the Service gets
+	// the annotation cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}}}
+	// (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg). It is a Compute
+	// Engine resource name, a lowercase letter, then up to 62 lowercase letters, digits or hyphens,
+	// not ending in a hyphen. It needs publicOrigin. Unset renders no annotation.
+	NetworkEndpointGroupName string `pulumi:"networkEndpointGroupName,optional"`
 
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
 	// DISPATCH_AGENT_SECRETS_URL (an absolute http(s) URL with no path; a trailing slash is
@@ -461,6 +477,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"signInDomain", args.SignInDomain},
 		{"outsideOrigin", args.OutsideOrigin},
 		{"publicOrigin", args.PublicOrigin},
+		{"networkEndpointGroupName", args.NetworkEndpointGroupName},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
@@ -515,6 +532,11 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 	for i, namespace := range args.AllowedNamespaces {
 		if bus.HoldsSeed(namespace) {
 			return fmt.Sprintf("allowedNamespaces[%d]", i), true
+		}
+	}
+	for i, cidr := range args.LoadBalancerSourceRanges {
+		if bus.HoldsSeed(cidr) {
+			return fmt.Sprintf("loadBalancerSourceRanges[%d]", i), true
 		}
 	}
 	if args.AzureFederationAudience != nil && bus.HoldsSeed(*args.AzureFederationAudience) {
@@ -895,6 +917,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"signInOutside", args.SignInOutside},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
+		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
+		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
 		{"envoyImage", args.EnvoyImage != ""},
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
@@ -1187,6 +1211,42 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 	return origin.String(), nil
 }
 
+// negNameRule is a Compute Engine resource name, which a network endpoint group's is: a lowercase
+// letter, then up to 62 lowercase letters, digits or hyphens, the last not a hyphen
+// (https://cloud.google.com/compute/docs/naming-resources).
+var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
+// publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
+// from, and networkEndpointGroupName, the endpoint group it takes as its backend. Each needs
+// publicOrigin: a Dispatch on the tailnet is reached through its front door and one in the sandbox
+// inside its cluster, and neither has a load balancer to admit or to name a group for. Each range
+// must be a CIDR written as its network, which net.ParseCIDR takes and which is the network it
+// names, so the rule admits what it says; the name must be negNameRule's.
+func refuseDispatchEntrance(args *DispatchArgs) error {
+	for _, in := range []dispatchInput{
+		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
+		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
+	} {
+		if in.set && args.PublicOrigin == "" {
+			return fmt.Errorf("%s needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset %s", in.input, in.input)
+		}
+	}
+	for i, cidr := range args.LoadBalancerSourceRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
+		}
+		if network.String() != cidr {
+			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+		}
+	}
+	if name := args.NetworkEndpointGroupName; name != "" && !negNameRule.MatchString(name) {
+		return fmt.Errorf("networkEndpointGroupName %q must match %s, a Compute Engine resource name", name, negNameRule)
+	}
+	return nil
+}
+
 // refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one
 // weborigin.ReservedLabel refuses, since the front door puts <hostname>.<tailnetDnsName> on its
 // certificate (dispatch_frontdoor.go, its certificate field). Both resolvers run it, in every mode:
@@ -1266,6 +1326,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 		signInOn = false
+	}
+	if err := refuseDispatchEntrance(args); err != nil {
+		return dispatchSettings{}, err
 	}
 	var outsideOrigin, publicOrigin string
 	switch {
