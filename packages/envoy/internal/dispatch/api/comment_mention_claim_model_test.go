@@ -202,9 +202,6 @@ type cmTry struct {
 	began  int
 	read   *cmRead
 	trying bool
-	// atPark is a re-read the send makes after a try that waited and took no claim, before it
-	// parks, its claim having turned unknown while the try was in flight.
-	atPark bool
 	item   mentionSend
 	reply  chan cmAnswer
 	ran    bool
@@ -623,13 +620,6 @@ collect:
 		item = mentionSend{comment: model.Comment{ID: arrived.named[0].key.comment}}
 	}
 	c := cmIndex(item.comment.ID)
-	if arrived.reread != nil && parked != nil && cmIndex(parked.item.comment.ID) == c {
-		r.tries[c] = &cmTry{lane: parked.lane, began: parked.began, atPark: true, item: parked.item,
-			read: &cmRead{named: arrived.named, reply: arrived.reread}}
-		r.log("the claim of %s turned unknown during its try: it re-reads it %s before it parks", item.comment.ID,
-			r.names(arrived.named))
-		return
-	}
 	if try := r.tries[c]; try != nil {
 		// The goroutine whose re-read answered goes on to the try, on the lane it serves.
 		if try.read != nil || try.trying || arrived.try == nil {
@@ -710,7 +700,7 @@ func (r *cmRun) apply(s cmStep) {
 		reply := try.read.reply
 		try.read = nil
 		var parked *cmTry
-		if try.atPark || s.kind == cmRereadFails {
+		if s.kind == cmRereadFails {
 			// The goroutine parks the send, with no try when the read before it failed, and moves on.
 			delete(r.tries, s.comment)
 			try.item = r.item(s.comment)

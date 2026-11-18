@@ -159,7 +159,7 @@ type mentionClaimState struct {
 	// applies what it read only while the count is the one it began under: a refresh that lost
 	// its answer after the read took the row may have written a claim the read never saw.
 	lost uint64
-	// trying is that a try of the attempt is in flight (mentionSender.trying), from before the try
+	// trying is that a try of the attempt is in flight (mentionSender.markTrying), from before the try
 	// until its park records its claim or the send ends (next), which the re-read of the unsure
 	// claims leaves alone (rereadUnsure).
 	trying bool
@@ -433,8 +433,8 @@ func (m *mentionSender) serve(lane laneKey) {
 		again, waits := item, true
 		for known {
 			// The try stays marked in flight until park records its claim, under park's lock, so
-			// no re-read records the try's own claim in between (trying, park).
-			m.trying(item.key(), true)
+			// no re-read records the try's own claim in between (markTrying, park).
+			m.markTrying(item.key())
 			if again, waits = m.send(m.ctx, item); waits {
 				break
 			}
@@ -500,15 +500,15 @@ func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, la
 	return item, lane, true
 }
 
-// trying marks key's try in flight: the one writer of this sender's own its row can have beside
-// the refresh, which rereadUnsure leaves alone while it runs. The mark stays until the try's park
-// clears it, under the lock it records the try's claim under (park), or the send ends (next). A
-// send that only reads its claim (claimKnown) writes nothing, and is not marked.
-func (m *mentionSender) trying(key mentionKey, inFlight bool) {
+// markTrying marks key's try in flight: the one writer of this sender's own its row can have
+// beside the refresh, which rereadUnsure leaves alone while it runs. The mark stays until the try's
+// park clears it, under the lock it records the try's claim under (park), or the send ends (next).
+// A send that only reads its claim (claimKnown) writes nothing, and is not marked.
+func (m *mentionSender) markTrying(key mentionKey) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if state, mine := m.held[key]; mine {
-		state.trying = inFlight
+		state.trying = true
 		m.held[key] = state
 	}
 }
