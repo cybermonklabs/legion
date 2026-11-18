@@ -537,11 +537,12 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 }
 
 // A rollback to a release before 20261111225552_phase_entry drops the phase entries
-// (docs/kubernetes.md, the contract 146 block), and that migration numbers them again at the roll
-// forward, from 1, so an entry then is no count of the starts the earlier release made. The roll
-// forward reads no such entry: a running step of an issue the earlier release did not move stands
-// open, and where the issue or its root moved, every place of it reads as one that release may
-// have started again, as it reads where no entry says otherwise.
+// (docs/kubernetes.md, the phase entry's block: the eleven statements of the rollback to contract
+// 87), and that migration numbers them again at the roll forward, from 1, so an entry then is no
+// count of the starts the earlier release made. The roll forward reads no such entry: a running
+// step of an issue the earlier release did not move stands open, and where the issue or its root
+// moved, every place of it reads as one that release may have started again, as it reads where no
+// entry says otherwise.
 func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testing.T) {
 	s := newRollBackStore(t)
 	s.issue("LEGION-361", "LEGION-361", "testing", "", 1)
