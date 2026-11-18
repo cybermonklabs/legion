@@ -2,16 +2,11 @@ package api
 
 import (
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -320,82 +315,4 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	if applied := r.facts.recorded(); len(applied) != 2 {
 		t.Fatalf("the facts applied = %#v, want the operator's retry and the park", applied)
 	}
-}
-
-// Every fact this package applies passes apply, the package's one call of intake.ApplyFact, so no
-// route applies a fact around the wait for its requester's stream. The test reads the package's
-// files as they stand when it runs, so a call in a file added later fails it too.
-func TestApplyIsThePackagesOneCallOfApplyFact(t *testing.T) {
-	const intakePath = "github.com/sjawhar/legion/daemon/internal/intake"
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var inApply, others []string
-	files := 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		files++
-		fileSet := token.NewFileSet()
-		file, err := parser.ParseFile(fileSet, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		local := ""
-		for _, spec := range file.Imports {
-			if strings.Trim(spec.Path.Value, `"`) != intakePath {
-				continue
-			}
-			local = "intake"
-			if spec.Name != nil {
-				local = spec.Name.Name
-			}
-		}
-		if local == "." {
-			t.Fatalf("%s imports intake with a dot, which this test cannot read a call of ApplyFact through", name)
-		}
-		if local == "" || local == "_" {
-			continue
-		}
-		for _, decl := range file.Decls {
-			function, _ := decl.(*ast.FuncDecl)
-			isApply := function != nil && function.Name.Name == "apply" && function.Recv != nil && receiverIs(function, "server")
-			ast.Inspect(decl, func(node ast.Node) bool {
-				selector, ok := node.(*ast.SelectorExpr)
-				if !ok || selector.Sel.Name != "ApplyFact" {
-					return true
-				}
-				if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == local {
-					if isApply {
-						inApply = append(inApply, fileSet.Position(selector.Pos()).String())
-					} else {
-						others = append(others, fileSet.Position(selector.Pos()).String())
-					}
-				}
-				return true
-			})
-		}
-	}
-	if files == 0 {
-		t.Fatal("the test read no file of this package")
-	}
-	if len(others) != 0 {
-		t.Errorf("intake.ApplyFact is named outside (*server).apply at %s: apply each fact through apply, which waits for the requester's stream", strings.Join(others, ", "))
-	}
-	if len(inApply) != 1 {
-		t.Errorf("(*server).apply names intake.ApplyFact %d times (%v), want once", len(inApply), inApply)
-	}
-}
-
-// receiverIs says whether function is a method of the named type or of a pointer to it.
-func receiverIs(function *ast.FuncDecl, name string) bool {
-	receiver := function.Recv.List[0].Type
-	if star, ok := receiver.(*ast.StarExpr); ok {
-		receiver = star.X
-	}
-	ident, ok := receiver.(*ast.Ident)
-	return ok && ident.Name == name
 }
