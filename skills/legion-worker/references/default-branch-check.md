@@ -67,3 +67,10 @@ too, and each carries the lines of its own role.
   one file that every workspace of the clone shares, and a `templates.commit_trailers` there
   replaces the overlay's trailers. A `trailer.*` key in Git's config changes how git writes the
   git wrapper's lines.
+- A commit on a fork's member branch keeps both lines. The `forbidden` list of `knives audit`
+  reads only the lines a diff adds, never a commit message (sjawhar/knives `src/forbidden.rs`),
+  and what goes upstream is the one squashed commit knives writes.
+- A `--config` on one command is a scope too: never pass `templates.commit_trailers` to
+  `jj commit` or `jj describe`.
+- `jj metaedit -m` writes a description with no trailer (measured by INFRA-2791's tester on
+  2026-11-18). Set a description with `jj describe` or `jj commit`.
