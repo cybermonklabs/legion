@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,7 +108,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
-		return len(sender.held) == 0 && sender.inflight == 0
+		return len(sender.held) == 0
 	})
 	logged := logs.String()
 	t.Logf("WARN lines: %d", strings.Count(logged, marker))
@@ -123,5 +125,63 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		if lines != 1 {
 			t.Fatalf("%d WARN lines name %s, which waited past the threshold, want one:\n%s", lines, id, logged)
 		}
+	}
+}
+
+// A held lane whose head waits again is parked by the goroutine that served it, and that goroutine
+// gives it up then and there: the lane's timer, run here the moment the park ends (after), starts
+// one goroutine on it before the first goes on, and no two goroutines ever send two of its sends
+// at once. A-1's first send waits three times, A-1's second waits behind it; each send takes 5 ms,
+// so two goroutines on the lane would have both in flight together.
+func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
+	lifetime, stop := context.WithCancel(context.Background())
+	var tries, active, most atomic.Int32
+	var mu sync.Mutex
+	var sent []string
+	sender := newMentionSender(lifetime, time.Hour,
+		func(_ context.Context, item mentionSend) (mentionSend, bool) {
+			now := active.Add(1)
+			defer active.Add(-1)
+			for seen := most.Load(); now > seen && !most.CompareAndSwap(seen, now); seen = most.Load() {
+			}
+			time.Sleep(5 * time.Millisecond)
+			if item.comment.ID == "a-first" && tries.Add(1) <= 3 {
+				item.heldFor, item.heldBy = "s1", model.MentionCopyHolder{EventID: 7}
+				return item, true
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			sent = append(sent, item.comment.ID)
+			return mentionSend{}, false
+		},
+		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		func(context.Context, []mentionClaim) error { return nil },
+	)
+	sender.mu.Lock()
+	sender.after = func(_ time.Duration, f func()) { f() }
+	sender.mu.Unlock()
+	t.Cleanup(func() {
+		stop()
+		sender.wait()
+	})
+	for _, id := range []string{"a-first", "a-second"} {
+		sender.enqueue(context.Background(), mentionSend{
+			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+			attempt: 1, claimed: time.Now(),
+		})
+	}
+	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		return len(sender.held) == 0
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("sent %v; at most %d sends in flight at once", sent, most.Load())
+	if most.Load() != 1 {
+		t.Fatalf("%d sends of one lane were in flight at once, want one: two goroutines served the held lane", most.Load())
+	}
+	if !slices.Equal(sent, []string{"a-first", "a-second"}) {
+		t.Fatalf("sent %v, want A-1's first, then its second, each once", sent)
 	}
 }

@@ -884,7 +884,7 @@ func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
 // A mention past the sender's queue bound is not queued: the claim its attempt committed with is
 // given back, so the attempt is pending and unclaimed, and the delivery sweep, once the queue has
 // room and the attempt has waited a claim lease, sends it, once. The bound counts the send in
-// flight as well as the queued one (mentionSender.inflight), so a capacity of two holds both.
+// flight as well as the queued one (mentionSender.held), so a capacity of two holds both.
 func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -934,7 +934,7 @@ func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 }
 
 // The queue's bound holds at a capacity of one: the send in flight takes the one place
-// (mentionSender.inflight), so a second mention, accepted while the first is in flight, is not
+// (mentionSender.held), so a second mention, accepted while the first is in flight, is not
 // queued. The claim its attempt committed with is given back, so the attempt is pending and
 // unclaimed, and the delivery sweep sends it once it has waited a claim lease: once, after the
 // first.
@@ -957,7 +957,7 @@ func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
 	state.awaitSend(t)
 	refused := post("past the bound")
 	served.mentions.mu.Lock()
-	queued, inflight := len(served.mentions.claims), served.mentions.inflight
+	queued, inflight := len(served.mentions.claims), len(served.mentions.held)-len(served.mentions.claims)
 	served.mentions.mu.Unlock()
 	t.Logf("with the first send in flight: queued %d, in flight %d, of a capacity of 1", queued, inflight)
 	if !unclaimedPending(t, database, refused, "session:s1") {

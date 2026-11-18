@@ -20,7 +20,7 @@ const mentionSendLanes = 8
 
 // maxQueuedMentionSends bounds the sends the mention sender holds: those that have not started and
 // those in flight, each of which keeps its place so it can park if it must wait for an earlier
-// event (mentionSender.inflight, park). A send past it is not queued: the claim its attempt
+// event (mentionSender.held, park). A send past it is not queued: the claim its attempt
 // committed with is given back, so the attempt is pending and unclaimed, and the delivery sweep
 // sends it once it has waited a claim lease (resumeOwedDeliveries).
 const maxQueuedMentionSends = 4096
@@ -224,6 +224,8 @@ type mentionSender struct {
 	// heldWarnAfter is how long a send waits behind an earlier event before park logs its one WARN:
 	// model.MentionCopyHeldWarnAfter, which only a test shortens.
 	heldWarnAfter time.Duration
+	// after starts the timer that ends a park (unpark): time.AfterFunc, which only a test replaces.
+	after func(time.Duration, func())
 
 	mu sync.Mutex
 	// lanes holds each lane's sends that have not started. A key is present while its lane is
@@ -241,17 +243,15 @@ type mentionSender struct {
 	ready []string
 	// serving is how many goroutines serve lanes.
 	serving int
-	// inflight is how many sends goroutines have started and not finished: each keeps its place
-	// in the queue's capacity, so a send that waits for an earlier event always finds room to park
-	// (park) and the owner's later sends never pass it.
-	inflight int
 	// claims is the claim this sender holds on each send that has not started, as it last wrote
 	// it, so one statement writes them all again and no statement of its own ever touches the
-	// claim a send has taken over. Its size is how many sends are queued, which capacity bounds
-	// together with inflight.
+	// claim a send has taken over. Its size is how many sends are queued.
 	claims map[mentionKey]time.Time
-	// held is every attempt this sender queued whose send has not finished, so that one attempt is
-	// never queued twice: a keyed repeat of a comment answers while its first send is still queued.
+	// held is every attempt this sender queued whose send has not finished - queued, parked or in
+	// flight - so that one attempt is never queued twice: a keyed repeat of a comment answers while
+	// its first send is still queued. Its size is what capacity bounds, so a send in flight keeps
+	// its place, a send that must wait always has room to park (park), and the owner's later sends
+	// never pass it.
 	held map[mentionKey]struct{}
 	// closed is set by wait; nothing starts after it, and stopped is closed with it.
 	closed  bool
@@ -279,6 +279,7 @@ func newMentionSender(
 	m := &mentionSender{
 		lifetime: lifetime, ctx: ctx, cancel: cancel, send: send, refresh: refresh, release: release,
 		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, heldWarnAfter: model.MentionCopyHeldWarnAfter,
+		after: func(delay time.Duration, f func()) { time.AfterFunc(delay, f) },
 		lanes: map[string][]mentionSend{}, parked: map[string]struct{}{}, waits: map[string]heldWait{},
 		claims: map[mentionKey]time.Time{}, held: map[mentionKey]struct{}{}, stopped: make(chan struct{}),
 	}
@@ -334,7 +335,7 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 		}
 		return true, false
 	}
-	if len(m.claims)+m.inflight >= m.capacity {
+	if len(m.held) >= m.capacity {
 		return false, true
 	}
 	m.held[key] = struct{}{}
@@ -367,9 +368,11 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 
 // serve sends lane's queue, then any lane waiting for a goroutine, until none waits. A send that
 // waited for an earlier event of its comment's owner parks the owner's sends to its recipient
-// (park), and the goroutine goes on with what is left of its lane, or a lane that waits. A send
-// that leaves a held lane past heldWarnAfter with no WARN logged for it logs its WARN as it goes
-// (reportLate).
+// (park). When the lane park parks is the one this goroutine serves - a held lane whose head waited
+// again - the goroutine gives it up there and then, before the lane's timer can start another
+// goroutine on it (unpark), and goes on with a lane that waits; otherwise it goes on with what is
+// left of its lane. So no two goroutines ever serve one lane. A send that leaves a held lane past
+// heldWarnAfter with no WARN logged for it logs its WARN as it goes (reportLate).
 func (m *mentionSender) serve(lane string) {
 	defer m.done.Done()
 	var finished mentionKey
@@ -380,7 +383,9 @@ func (m *mentionSender) serve(lane string) {
 		}
 		lane, finished = next, item.key()
 		if again, waits := m.send(m.ctx, item); waits {
-			m.park(lane, again)
+			if !m.park(lane, again) {
+				lane = ""
+			}
 			finished = mentionKey{}
 		} else {
 			m.reportLate(lane, item)
@@ -390,44 +395,36 @@ func (m *mentionSender) serve(lane string) {
 
 // next releases finished, the attempt whose send the goroutine serving lane has just finished (the
 // zero key when it has finished none), and takes that goroutine's next send and the lane it now
-// serves. The send it takes leaves the claims this sender writes again: from here its attempt's
-// claim is the send's own. A lane parked since its last send is no longer this goroutine's, which
-// takes a lane that waits instead. ok is false when the goroutine is done: the sender stopped, or
-// no lane has a send left for it.
+// serves. lane is empty when the goroutine gave its lane up to a park (serve), and it then takes a
+// lane that waits. The send it takes leaves the claims this sender writes again: from here its
+// attempt's claim is the send's own. ok is false when the goroutine is done: the sender stopped,
+// or no lane has a send left for it.
 func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.held, finished)
-	if finished != (mentionKey{}) {
-		m.inflight--
-	}
 	if m.stoppedLocked() {
 		m.serving--
 		return mentionSend{}, "", false
 	}
-	_, parked := m.parked[lane]
-	if !parked && len(m.lanes[lane]) > 0 && len(m.ready) > 0 {
+	if len(m.lanes[lane]) > 0 && len(m.ready) > 0 {
 		m.ready = append(m.ready, lane)
 		lane, m.ready = m.ready[0], m.ready[1:]
 	}
-	for parked || len(m.lanes[lane]) == 0 {
-		if !parked {
-			delete(m.lanes, lane)
-			delete(m.waits, lane)
-		}
+	for len(m.lanes[lane]) == 0 {
+		delete(m.lanes, lane)
+		delete(m.waits, lane)
 		if len(m.ready) == 0 {
 			m.serving--
 			return mentionSend{}, "", false
 		}
-		// A lane in ready is never parked: only unpark puts a parked lane there.
-		lane, m.ready, parked = m.ready[0], m.ready[1:], false
+		lane, m.ready = m.ready[0], m.ready[1:]
 	}
 	item := m.lanes[lane][0]
 	m.lanes[lane][0] = mentionSend{}
 	m.lanes[lane] = m.lanes[lane][1:]
 	item.claimed = m.claims[item.key()]
 	delete(m.claims, item.key())
-	m.inflight++
 	return item, lane, true
 }
 
@@ -452,8 +449,10 @@ func heldLane(lane, owner string) string {
 // deleted once it is empty and served (next), after which the owner's sends join lane again. Its
 // attempt stays held, so a keyed repeat of the comment queues it no second time. A park once the
 // sender stopped still records the claim, which the drain gives back with the rest (wait). Its
-// send kept its place in the queue while it was in flight (inflight), so the park never passes the
-// queue's capacity and never has to give its place to the owner's later sends.
+// send kept its place in the queue while it was in flight (held), so the park never passes the
+// queue's capacity and never has to give its place to the owner's later sends. keepsLane is
+// whether the goroutine that served lane still serves it: not when lane is the held lane it
+// parked, which is no goroutine's until unpark (serve).
 //
 // The wait has no bound, so it shows instead: the held gauges count every send on a held lane
 // (heldSamples), each from when it started waiting there, and each send held heldWarnAfter since it
@@ -461,7 +460,7 @@ func heldLane(lane, owner string) string {
 // at WARN (warnHeld), naming its owner, the earlier event it waits behind and that event's last
 // publish error, beside the ERROR the outbox writes for that event's own failed publish, which is
 // the cause: here when a park finds it past the threshold, else as it leaves the lane (reportLate).
-func (m *mentionSender) park(lane string, item mentionSend) {
+func (m *mentionSender) park(lane string, item mentionSend) (keepsLane bool) {
 	item.parks++
 	now := time.Now()
 	if item.heldSince.IsZero() {
@@ -471,7 +470,6 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 	owner := item.owner()
 	held := heldLane(lane, owner)
 	m.mu.Lock()
-	m.inflight--
 	m.claims[item.key()] = item.claimed
 	if held == lane {
 		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
@@ -508,7 +506,8 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 	for _, send := range warned {
 		warnHeld(send, wait, now)
 	}
-	time.AfterFunc(delay, func() { m.unpark(held) })
+	m.after(delay, func() { m.unpark(held) })
+	return held != lane
 }
 
 // heldWait is what the sends of a held lane wait behind: the session the lane's head send last

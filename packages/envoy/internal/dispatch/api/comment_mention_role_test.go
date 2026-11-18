@@ -272,7 +272,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 		return parked
 	})
 	sender.mu.Lock()
-	queued, inflight := len(sender.claims), sender.inflight
+	queued, inflight := len(sender.claims), len(sender.held)-len(sender.claims)
 	sender.mu.Unlock()
 	mu.Lock()
 	defer mu.Unlock()

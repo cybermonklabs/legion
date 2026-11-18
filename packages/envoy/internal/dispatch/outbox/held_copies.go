@@ -19,13 +19,16 @@ import (
 // own failed publish (backOff) - the cause, which is what an operator acts on.
 //
 // The wait itself has no bound - a bound would let the copy pass the event - so this is how it
-// shows. A row leaves the record when a pass decides it otherwise (forget), and an entry no pass
-// has found waiting for fallbackClaim - the hold moved to another process, whose passes read the
-// row now - is dropped as the gauges read it, so a process that stopped publishing reports no
-// copy it no longer reads. A nil record, a pass's that New did not make, records nothing.
+// shows. A row leaves the record when a pass decides it otherwise (forget). An entry no pass has
+// found waiting for fallbackClaim - the hold moved to another process, whose passes read the row
+// now - is out of the gauges (samples, which only read), and the passes drop it: hold drops every
+// such entry at most once each fallbackClaim, so the record holds no more than the rows this
+// process last found waiting. A nil record, a pass's that New did not make, records nothing.
 type heldCopies struct {
-	mu         sync.Mutex
-	rows       map[heldCopyKey]*heldCopy
+	mu   sync.Mutex
+	rows map[heldCopyKey]*heldCopy
+	// swept is when hold last dropped the entries no pass had found waiting for fallbackClaim.
+	swept      time.Time
 	registered sync.Once
 }
 
@@ -74,6 +77,14 @@ func (h *heldCopies) hold(row fallbackCopy, event model.Event, by model.MentionC
 	now := time.Now()
 	key := heldCopyKey{comment: row.commentID, destination: row.destination}
 	h.mu.Lock()
+	if now.Sub(h.swept) > fallbackClaim {
+		for stale, entry := range h.rows {
+			if now.Sub(entry.seen) > fallbackClaim {
+				delete(h.rows, stale)
+			}
+		}
+		h.swept = now
+	}
 	entry := h.rows[key]
 	if entry == nil {
 		entry = &heldCopy{owner: eventOwner(event), since: now}
@@ -106,7 +117,7 @@ func (h *heldCopies) forget(row fallbackCopy) {
 }
 
 // samples is, by owner, how many copies wait and how long the oldest has, in whole seconds, as of
-// now. An entry no pass has found waiting for fallbackClaim is dropped first.
+// now, leaving out an entry no pass has found waiting for fallbackClaim. It only reads.
 func (h *heldCopies) samples(now time.Time) (count, oldest []metrics.GaugeSample) {
 	if h == nil {
 		return nil, nil
@@ -115,9 +126,8 @@ func (h *heldCopies) samples(now time.Time) (count, oldest []metrics.GaugeSample
 	defer h.mu.Unlock()
 	counts := map[string]int64{}
 	ages := map[string]time.Duration{}
-	for key, entry := range h.rows {
+	for _, entry := range h.rows {
 		if now.Sub(entry.seen) > fallbackClaim {
-			delete(h.rows, key)
 			continue
 		}
 		counts[entry.owner]++
