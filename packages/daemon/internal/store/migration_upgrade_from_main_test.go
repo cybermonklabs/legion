@@ -62,9 +62,9 @@ import (
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// that version stands above every other of this list, so an upgrade of a database main migrated
-// applies it last, which adds pull_requests.statuses at its default, the empty list, and it
-// touches no outbox_kind_check.
+// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
+// so an upgrade of a database main migrated applies it just before that one, which adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // cybermonklabs/legion#3575's experiment assignments (20261111045636, dispatch://INFRA-2566) are
 // named here as well, though that version stands below main's newest: the migration was written
 // after main recorded its newest, so a database main migrated has not recorded it, and the loop
@@ -74,8 +74,10 @@ import (
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // dispatch://INFRA-1997's 20261117112334, which adds a column to pull_requests and touches no
-// outbox_kind_check: the kind list is now the last word of outbox_kind_check, and it names every
-// kind the merge-queue list names and its own.
+// outbox_kind_check, and dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
+// which touches no outbox_kind_check either: it clears a claim's ask mark where that claim's ask is
+// still queued. The kind list is the last word of outbox_kind_check, and it names every kind the
+// merge-queue list names and its own.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -83,7 +85,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116165926, 20261117112334,
+	20261114061900, 20261116165926, 20261117112334, 20261117200337,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -94,9 +96,9 @@ var thisBranchsMigrations = []int{
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
-// publication's 20261116165926, and dispatch://INFRA-1997's 20261117112334, which is why the loop
-// below holds the list rather than counting it, so that a version added above any of them is
-// named here rather than read as main's.
+// publication's 20261116165926, dispatch://INFRA-1997's 20261117112334 and dispatch://INFRA-4109's
+// 20261117200337, which is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
