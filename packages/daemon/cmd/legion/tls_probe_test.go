@@ -328,14 +328,51 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 	}
 }
 
-// go runs in the probe's state directory, as every client does, and reads the go.mod that
-// directory holds (newTLSStateDir) in place of a parent directory's. Every path go writes is under
-// the state directory; it fetches the module path from the site's host itself, never downloads a
-// toolchain and runs no authentication command. No KUBECONFIG, KUBERNETES_SERVICE_HOST or
-// KUBERNETES_SERVICE_PORT of the pod's reaches kubectl: it reads its default configuration under
-// its own empty home, and client-go never takes the in-cluster configuration, which would send the
-// pod's service-account token to a test site. The pod's values below are ones each client's own
-// environment must override or drop.
+// No image client reads configuration from the probe's working directory or from a directory
+// above the state directory newTLSStateDir makes. What each guard keeps its client from, with the
+// measurement at that client's spec in workerTLSClients:
+//
+//   - every client runs in the state directory: each, from the probe's working directory;
+//   - the state directory's go.mod: go, from a parent directory's go.mod;
+//   - --no-config as mise's first argument: mise, from a parent directory's mise.toml;
+//   - --no-config among uv's arguments: uv, from a parent directory's uv.toml and pyproject.toml;
+//   - GIT_CEILING_DIRECTORIES at the state directory's parent: git, from a parent repository.
+func TestImageTLSClientsReadNoConfigurationAboveTheStateDirectory(t *testing.T) {
+	stateDir, remove, err := newTLSStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remove)
+	if goMod, err := os.ReadFile(filepath.Join(stateDir, "go.mod")); err != nil || !slices.Contains(strings.Split(string(goMod), "\n"), "module legion-tls-probe") {
+		t.Errorf("the state directory's go.mod is %q, %v; want one holding module legion-tls-probe", goMod, err)
+	}
+	clients := imageTLSClientsOf[tlsCommandClient](t, nil, stateDir, workerTLSClientNames()...)
+	for _, client := range clients {
+		if client.workDir != stateDir {
+			t.Errorf("%s runs in %q, want the state directory %s", client.name(), client.workDir, stateDir)
+		}
+	}
+	ceiling := "GIT_CEILING_DIRECTORIES=" + filepath.Dir(stateDir)
+	for _, site := range tlsSites {
+		if _, args, _ := clients["mise"].commandLine(site); len(args) == 0 || args[0] != "--no-config" {
+			t.Errorf("mise at %s runs %q, want --no-config first", site.name, args)
+		}
+		if _, args, _ := clients["uv"].commandLine(site); !slices.Contains(args, "--no-config") {
+			t.Errorf("uv at %s runs %q, want --no-config among its arguments", site.name, args)
+		}
+		if _, _, env := clients["git"].commandLine(site); !slices.Contains(env, ceiling) {
+			t.Errorf("git at %s runs under %q, want %s", site.name, env, ceiling)
+		}
+	}
+}
+
+// Every path go writes is under the probe's state directory, which it runs in and whose go.mod it
+// reads (TestImageTLSClientsReadNoConfigurationAboveTheStateDirectory); it fetches the module path
+// from the site's host itself, never downloads a toolchain and runs no authentication command. No
+// KUBECONFIG, KUBERNETES_SERVICE_HOST or KUBERNETES_SERVICE_PORT of the pod's reaches kubectl: it
+// reads its default configuration under its own empty home, and client-go never takes the
+// in-cluster configuration, which would send the pod's service-account token to a test site. The
+// pod's values below are ones each client's own environment must override or drop.
 func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 	stateDir, remove, err := newTLSStateDir()
 	if err != nil {
@@ -352,9 +389,6 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 	goClient, kubectl := clients["go"], clients["kubectl"]
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 
-	if goClient.workDir != stateDir {
-		t.Errorf("go runs in %q, want the state directory %s", goClient.workDir, stateDir)
-	}
 	for site, host := range tlsSiteHosts {
 		program, args, env := goClient.commandLine(site)
 		if want := []string{"mod", "download", host + "/legion-tls-probe@latest"}; program != "go" || !slices.Equal(args, want) {
@@ -384,9 +418,10 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 }
 
 // redis-cli connects to the site's host, names that host in its SNI, and uses the https port,
-// since no site's URL names another; it sends PING, which no site answers as Redis. Of the pod's
-// variables, the kept PATH reaches it with the pod's value, its HOME is its own in the state
-// directory, and REDISCLI_AUTH, the credential it would send as AUTH, is dropped.
+// since no site's URL names another; it sends PING, which no site answers as Redis. It runs under
+// three variables and no other: the kept PATH with the pod's value, a HOME of its own in the state
+// directory, and LEGION_TLS_URL naming the site. REDISCLI_AUTH, the credential it would send as
+// AUTH, is dropped with every other variable of the pod's.
 func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 	stateDir := t.TempDir()
 	pod := []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
@@ -399,10 +434,9 @@ func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 		if slices.ContainsFunc(env, func(pair string) bool { return tlsVariableName(pair) == "REDISCLI_AUTH" }) {
 			t.Errorf("redis-cli at %s has REDISCLI_AUTH=%q, want it absent: redis-cli sends it as AUTH to the site", site.name, envValue(env, "REDISCLI_AUTH"))
 		}
-		for name, want := range map[string]string{"HOME": filepath.Join(stateDir, "redis-cli"), "PATH": "/usr/bin"} {
-			if got := envValue(env, name); got != want {
-				t.Errorf("redis-cli at %s has %s=%q, want %q", site.name, name, got, want)
-			}
+		want := slices.Sorted(slices.Values([]string{"PATH=/usr/bin", "HOME=" + filepath.Join(stateDir, "redis-cli"), "LEGION_TLS_URL=" + site.url}))
+		if got := slices.Sorted(slices.Values(env)); !slices.Equal(got, want) {
+			t.Errorf("redis-cli at %s runs under %q, want %q in any order", site.name, got, want)
 		}
 	}
 }
@@ -412,10 +446,15 @@ func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 // credential from it or from the file it names, and four that list missed. Among them, measured on
 // 2026-11-18: gh 2.98.0's `gh auth token --hostname <host>` printed GH_ENTERPRISE_TOKEN or
 // GITHUB_ENTERPRISE_TOKEN, which `gh api https://<host>/` would send; git sent an http.extraHeader
-// given through GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT or the file GIT_CONFIG_SYSTEM names;
-// redis-cli sent REDISCLI_AUTH as AUTH; and wget sent a header of the wgetrc SYSTEM_WGETRC names,
-// gcloud the token in the file CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE names, and mise a login of
-// the netrc MISE_NETRC_FILE names. client-go takes the in-cluster configuration, with the pod's
+// given through GIT_CONFIG_PARAMETERS or GIT_CONFIG_COUNT; and redis-cli sent REDISCLI_AUTH as
+// AUTH. The four the list missed were measured on the pull request's image (sha256:8f30d2f0…, with
+// the legion of 1af3e416) against a local listener, each client run as the probe then ran it: GNU
+// wget 1.25.0 sent the `header = Authorization: Bearer …` of the wgetrc SYSTEM_WGETRC named, git
+// 2.47.3 the http.extraHeader of the configuration GIT_CONFIG_SYSTEM named with `git ls-remote`,
+// gcloud 594.0.0 the contents of the file CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE named as
+// x-goog-iam-authorization-token to the compute endpoint, and mise 2026.8.12's http: backend the
+// `default` login of the netrc MISE_NETRC_FILE named as Basic at its first request; without the
+// variable, none sent such a header. client-go takes the in-cluster configuration, with the pod's
 // service-account token, from KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT, and the SDK
 // reads CLOUDSDK_AUTH_ACCESS_TOKEN before its token file (credentials/store.py of SDK 589). The pod
 // also holds a sentinel no list names, with a value made at run time, which stands for a variable
