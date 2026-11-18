@@ -13,6 +13,7 @@ package airlockproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding"
 	"encoding/json"
@@ -23,7 +24,6 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
@@ -37,6 +37,11 @@ import (
 var placeholderPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(requests.PlaceholderPrefix) + `[0-9a-z]*`)
 
 const placeholderMark = "[placeholder]"
+
+// valueHeld is what the mask writes in place of a value of kind any that holds a placeholder,
+// over a handler that is neither slog's JSON handler nor its text handler: the mask cannot know
+// which form of the value such a handler writes, so it writes none of them.
+const valueHeld = "[a value that holds a placeholder]"
 
 // peerQuoted is a run of text a library quotes with %q: a double quotation mark, any characters
 // but a quotation mark or a backslash, or a backslash and the character after it, and a closing
@@ -65,12 +70,14 @@ func hidePeerBytes(text string) string {
 // the host of a CONNECT whose authority is its Host header - and a command can write its own
 // placeholder into any of it. A cut to 256 bytes keeps a line small and lowercasing a host keeps
 // it one spelling; neither keeps a placeholder out. So every text of every line - the message,
-// each string, each error's text and each value in each form a handler may write it (anyForms) -
-// has each placeholder written whole, in any case, replaced by placeholderMark before the line
-// reaches the handler it was given. The 32 characters after the prefix written without it are no
-// text this can tell from any other, and stay as they came, as does a []byte inside a struct, a
-// map or a slice, which the JSON handler writes in base64. A line that holds no placeholder is
-// handed on as it is.
+// each string, each error's text and each value in the form the handler behind the mask writes it
+// (maskAny) - has each placeholder written whole, in any case, replaced by placeholderMark before
+// the line reaches the handler it was given. The mask writes only what that handler would write,
+// masked, and never a form of a value that handler does not write, since that form can hold what
+// the written one leaves out - a real value among it. The 32 characters after the prefix written
+// without it are no text this can tell from any other, and stay as they came, as does a []byte
+// inside a struct, a map or a slice, which the JSON handler writes in base64. A line that holds no
+// placeholder is handed on as it is.
 type maskedHandler struct{ slog.Handler }
 
 // SetDefaultLog makes handler, behind the placeholder mask (maskedHandler), the process's default
@@ -108,9 +115,10 @@ func (w standardLog) Write(p []byte) (int, error) {
 }
 
 func (h maskedHandler) Handle(ctx context.Context, record slog.Record) error {
+	to := h.downstream()
 	holds := placeholderPattern.MatchString(record.Message)
 	record.Attrs(func(a slog.Attr) bool {
-		holds = holds || maskAttr(a) != nil
+		holds = holds || maskAttr(a, to) != nil
 		return !holds
 	})
 	if !holds {
@@ -118,7 +126,7 @@ func (h maskedHandler) Handle(ctx context.Context, record slog.Record) error {
 	}
 	masked := slog.NewRecord(record.Time, record.Level, placeholderPattern.ReplaceAllString(record.Message, placeholderMark), record.PC)
 	record.Attrs(func(a slog.Attr) bool {
-		if replaced := maskAttr(a); replaced != nil {
+		if replaced := maskAttr(a, to); replaced != nil {
 			a = *replaced
 		}
 		masked.AddAttrs(a)
@@ -128,10 +136,11 @@ func (h maskedHandler) Handle(ctx context.Context, record slog.Record) error {
 }
 
 func (h maskedHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	to := h.downstream()
 	masked := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
 		masked[i] = a
-		if replaced := maskAttr(a); replaced != nil {
+		if replaced := maskAttr(a, to); replaced != nil {
 			masked[i] = *replaced
 		}
 	}
@@ -142,30 +151,55 @@ func (h maskedHandler) WithGroup(name string) slog.Handler {
 	return maskedHandler{h.Handler.WithGroup(name)}
 }
 
-// maskAttr is a, written as its text with each placeholder replaced (maskedHandler), and nil for
+// handlerKind is the kind of handler a mask hands its lines to.
+type handlerKind int
+
+const (
+	toOther handlerKind = iota // a handler the mask does not know the forms of (valueHeld)
+	toJSON                     // slog's JSON handler, which logging.NewCloudHandler is
+	toText                     // slog's text handler
+)
+
+// downstream is the kind of handler h writes to, read through each mask between: the airlock's
+// lines pass a mask of their own (New) and then the default logger's (SetDefaultLog), so both
+// are masks over the same JSON handler. A JSON or text handler's WithAttrs and WithGroup answer a
+// handler of the same type, so a logger made With attributes keeps its kind.
+func (h maskedHandler) downstream() handlerKind {
+	next := h.Handler
+	for {
+		switch handler := next.(type) {
+		case maskedHandler:
+			next = handler.Handler
+		case *slog.JSONHandler:
+			return toJSON
+		case *slog.TextHandler:
+			return toText
+		default:
+			return toOther
+		}
+	}
+}
+
+// maskAttr is a, written with each placeholder in its text replaced (maskedHandler), and nil for
 // an attribute whose text holds none. The text is a string's, each attribute's of a group, and
-// for a value of kind any each form a handler may write it in (anyForms): an attribute one of
-// whose forms holds a placeholder is written as the first form that holds one, masked, so the
-// form that is written holds none. A number, a time and a duration are no text a caller wrote and
-// are never read.
-func maskAttr(a slog.Attr) *slog.Attr {
+// for a value of kind any the form the handler behind the mask writes it in (maskAny). A number,
+// a time and a duration are no text a caller wrote and are never read.
+func maskAttr(a slog.Attr, to handlerKind) *slog.Attr {
 	value := a.Value.Resolve()
-	var text string
 	switch value.Kind() {
 	case slog.KindString:
-		text = value.String()
-	case slog.KindAny:
-		forms := anyForms(value.Any())
-		holds := slices.IndexFunc(forms, placeholderPattern.MatchString)
-		if holds < 0 {
+		if !placeholderPattern.MatchString(value.String()) {
 			return nil
 		}
-		text = forms[holds]
+		replaced := slog.String(a.Key, placeholderPattern.ReplaceAllString(value.String(), placeholderMark))
+		return &replaced
+	case slog.KindAny:
+		return maskAny(a.Key, value.Any(), to)
 	case slog.KindGroup:
 		group := value.Group()
 		var masked []slog.Attr
 		for i, member := range group {
-			if replaced := maskAttr(member); replaced != nil {
+			if replaced := maskAttr(member, to); replaced != nil {
 				if masked == nil {
 					masked = append([]slog.Attr(nil), group...)
 				}
@@ -177,68 +211,112 @@ func maskAttr(a slog.Attr) *slog.Attr {
 		}
 		replaced := slog.Attr{Key: a.Key, Value: slog.GroupValue(masked...)}
 		return &replaced
+	}
+	return nil
+}
+
+// maskAny is a value of kind any written under key with each placeholder replaced, and nil for a
+// value whose text holds none. Over slog's JSON or text handler it reads only the form that
+// handler writes (jsonForm, textForm) and writes that form, masked, in the shape the handler
+// writes it: JSON as JSON, a byte slice as bytes, any other as a string. A form that handler does
+// not write is never read, since it can hold what the written one leaves out - an error whose
+// Error is a fixed text and whose MarshalText or Format quotes a real value, or a value whose
+// String shows what its JSON does not. Over any other handler the mask cannot know the form, so
+// it reads both handlers' forms and fmt's "%v", Value.String's, and writes valueHeld for a value
+// any of them holds a placeholder in.
+func maskAny(key string, v any, to handlerKind) *slog.Attr {
+	var replaced slog.Attr
+	switch to {
+	case toJSON, toText:
+		read := jsonForm
+		if to == toText {
+			read = textForm
+		}
+		form, ok := read(v)
+		if !ok || !placeholderPattern.MatchString(form.text) {
+			return nil
+		}
+		masked := placeholderPattern.ReplaceAllString(form.text, placeholderMark)
+		switch form.shape {
+		case asJSON:
+			replaced = slog.Any(key, json.RawMessage(masked))
+		case asBytes:
+			replaced = slog.Any(key, []byte(masked))
+		default:
+			replaced = slog.String(key, masked)
+		}
 	default:
-		return nil
+		holds := func(read func(any) (valueForm, bool)) bool {
+			form, ok := read(v)
+			return ok && placeholderPattern.MatchString(form.text)
+		}
+		if !holds(jsonForm) && !holds(textForm) && !holds(fmtForm) {
+			return nil
+		}
+		replaced = slog.String(key, valueHeld)
 	}
-	if !placeholderPattern.MatchString(text) {
-		return nil
-	}
-	replaced := slog.String(a.Key, placeholderPattern.ReplaceAllString(text, placeholderMark))
 	return &replaced
 }
 
-// anyForms is each text a handler may write a value of kind any as, computed as that handler
-// computes it. The JSON handler writes an error that does not marshal itself as its Error, and any
-// other value as its JSON, which follows a pointer and calls a MarshalJSON method. The text
-// handler writes a value's AppendText, else its MarshalText, else a byte slice's bytes (its type
-// and its element's may be named), else fmt's "%+v", which prints a pointer's address and calls a
-// Format, an Error or a String method instead. So the two can hold different text: a field a
-// String hides, a pointer's target, a []byte the JSON writes in base64, or the text an error's
-// MarshalText or Format shows that its Error does not.
-//
-// Each form is computed under a recover of its own (formOf), since a method of a nil receiver - an
-// Error, a MarshalText - may dereference it, encoding/json re-panics the panic of a MarshalJSON,
-// and fmt re-panics a String whose panic value panics in its turn, while a panic in a handler
-// would be the whole process's (SetDefaultLog). A form that failed is read as what slog writes in
-// its place, "!ERROR:" and the error's text for a method that answered an error and "!PANIC: "
-// and the value for one that panicked, since that text can hold what the value held. So a value
-// no form of which holds a placeholder is handed to the handler as it is, and written as slog
-// writes it, and one some form of which does is written as the first such form, masked. A nil
-// value has no form of its own: a nil receiver's String may show text all the same, which the
-// text handler would write, so its forms are read as any value's are.
-func anyForms(v any) []string {
-	var forms []string
-	add := func(form func() (string, error)) {
-		forms = append(forms, formOf(form)...)
-	}
+// valueForm is the text a handler writes for a value, and the shape it writes it in.
+type valueForm struct {
+	text  string
+	shape formShape
+}
+
+type formShape int
+
+const (
+	asString formShape = iota // a string, as an error's text and a failure's text are
+	asJSON                    // JSON, as the JSON handler writes a value it marshals
+	asBytes                   // a byte slice's bytes, which the text handler writes quoted
+)
+
+// jsonForm is the form slog's JSON handler writes a value of kind any in, computed as it computes
+// it: an error that does not marshal itself as its Error, and any other value as its JSON, which
+// follows a pointer and calls a MarshalJSON method, encoded with HTML left unescaped.
+func jsonForm(v any) (valueForm, bool) {
 	err, isError := v.(error)
 	if _, marshals := v.(json.Marshaler); isError && !marshals {
-		add(func() (string, error) { return err.Error(), nil })
-	} else {
-		add(func() (string, error) {
-			encoded, err := json.Marshal(v)
-			return string(encoded), err
-		})
+		return formOf(v, func() (string, error) { return err.Error(), nil }, asString)
 	}
+	return formOf(v, func() (string, error) {
+		var encoded bytes.Buffer
+		encoder := json.NewEncoder(&encoded)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(v); err != nil {
+			return "", err
+		}
+		return strings.TrimSuffix(encoded.String(), "\n"), nil
+	}, asJSON)
+}
+
+// textForm is the form slog's text handler writes a value of kind any in, computed as it computes
+// it: the value's AppendText, else its MarshalText, else a byte slice's bytes (its type and its
+// element's may be named), else fmt's "%+v", which prints a pointer's address and calls a
+// Format, an Error or a String method.
+func textForm(v any) (valueForm, bool) {
 	switch text := v.(type) {
 	case encoding.TextAppender:
-		add(func() (string, error) {
+		return formOf(v, func() (string, error) {
 			appended, err := text.AppendText(nil)
 			return string(appended), err
-		})
+		}, asString)
 	case encoding.TextMarshaler:
-		add(func() (string, error) {
+		return formOf(v, func() (string, error) {
 			marshaled, err := text.MarshalText()
 			return string(marshaled), err
-		})
-	default:
-		if raw, ok := byteSlice(v); ok {
-			forms = append(forms, string(raw))
-		} else {
-			add(func() (string, error) { return fmt.Sprintf("%+v", v), nil })
-		}
+		}, asString)
 	}
-	return forms
+	if raw, ok := byteSlice(v); ok {
+		return valueForm{string(raw), asBytes}, true
+	}
+	return formOf(v, func() (string, error) { return fmt.Sprintf("%+v", v), nil }, asString)
+}
+
+// fmtForm is fmt's "%v" of a value, which slog's Value.String answers for a value of kind any.
+func fmtForm(v any) (valueForm, bool) {
+	return formOf(v, func() (string, error) { return fmt.Sprint(v), nil }, asString)
 }
 
 // byteSlice is v's bytes when v is a slice of bytes, its type and its element's named or not, as
@@ -253,46 +331,50 @@ func byteSlice(v any) ([]byte, bool) {
 	return nil, false
 }
 
-// formOf is the text a handler may write for one form of a value: the form's own text; for a form
-// whose method answered an error, "!ERROR:" and the error, as slog writes it; and for one whose
-// method panicked, "!PANIC: " and the panic's value, as slog writes it. Each is computed under a
-// recover. fmt reports a panic of an Error or String it calls in its place, "%!v(PANIC=Error
-// method: …)", as it does for slog. Where fmt panics again - the value that panic carried cannot
-// be printed either - the form is "!PANIC: " and the value of that second panic: for an error's
-// text, that is what slog's own recover writes; for a panic's value, slog's recover, reading the
-// same form, panics as well and the log call with it, but the second panic's value can hold what
-// the value held, so the mask reads it and writes a line. A text whose own computation panics
-// past that is dropped.
-func formOf(form func() (string, error)) []string {
+// formOf is the text a handler writes for one form of v, computed under a recover, since a
+// method of a nil receiver - an Error, a MarshalText - may dereference it, encoding/json
+// re-panics the panic of a MarshalJSON, and fmt re-panics a String whose panic value panics in
+// its turn, while a panic in a handler would be the whole process's (SetDefaultLog). It is the
+// form's own text, in shape; for a form whose method answered an error, "!ERROR:" and the error,
+// as slog writes it; and for one whose method panicked, or whose error's text panicked, what
+// slog's own recover writes: "<nil>" for a nil pointer, and "!PANIC: " and the panic's value for
+// any other value. A failure's text is a string, and can hold what the value held. fmt reports a
+// panic of an Error or String it calls in its place, "%!v(PANIC=Error method: …)", as it does for
+// slog. Where fmt panics again printing a panic's value - the value that panic carried cannot be
+// printed either - slog's recover panics as well and the log call with it, but the second panic's
+// value can hold what the value held, so the form is "!PANIC: " and that second value, and the
+// mask writes a line. A text whose own computation panics past that is none, and false: a value
+// with no form is handed on as it is, and slog itself panics for it.
+func formOf(v any, compute func() (string, error), shape formShape) (valueForm, bool) {
 	var (
 		text     string
 		err      error
 		panicked any
-		failed   bool
 	)
 	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicked, failed = r, true
-			}
-		}()
-		text, err = form()
+		defer func() { panicked = recover() }()
+		text, err = compute()
 	}()
-	switch {
-	case failed:
-		texts, again := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
-		if again != nil {
-			texts, _ = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) })
-		}
-		return texts
-	case err != nil:
-		texts, again := guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) })
-		if again != nil {
-			texts, _ = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) })
-		}
-		return texts
+	if panicked == nil && err == nil {
+		return valueForm{text, shape}, true
 	}
-	return []string{text}
+	if panicked == nil {
+		var texts []string
+		if texts, panicked = guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) }); panicked == nil {
+			return valueForm{texts[0], asString}, true
+		}
+	}
+	if pointer := reflect.ValueOf(v); pointer.Kind() == reflect.Pointer && pointer.IsNil() {
+		return valueForm{"<nil>", asString}, true
+	}
+	texts, again := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+	if again != nil {
+		texts, _ = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) })
+	}
+	if len(texts) == 0 {
+		return valueForm{}, false
+	}
+	return valueForm{texts[0], asString}, true
 }
 
 // guarded is text's one result, and none where computing it panicked, with the value it panicked
