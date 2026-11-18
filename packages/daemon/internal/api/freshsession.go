@@ -258,7 +258,7 @@ func roleList() string {
 // It is three operator commands in a row, and nothing else: `legion claims suspend` for a claim
 // that runs an agent and for the one no process stands behind, then `legion claims
 // forget-session`, then the start — `legion claims resume` for a suspended claim, and the retry
-// for one that failed or an operator stopped, which a resume is refused for (supervise's table).
+// for one that failed or retired, which a resume is refused for (supervise's table).
 // A phase worker is started through its issue's phase whichever of those two started it, since
 // that is what hands the relaunched role the phase's task (restartWorkedPhase). The new session
 // also puts the claim's run of provider-error turns back to zero

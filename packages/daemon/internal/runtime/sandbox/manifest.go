@@ -715,12 +715,14 @@ func SessionFromVolume(file, root string) (string, error) {
 // by --extension twice, which the boot gate's pod lane refuses an image for.
 //
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
-// for the `default` model role, which every pod's operator overlay sets, and a resumed session
-// otherwise runs the model its first launch saved for ever. A launch under the flag writes no
-// `model_change` entry of its own, so the saved pin stays in the session file and a later launch
-// without the flag would read it again. A profile with no `default` role is not refused here: Oh
-// My Pi launches silently on a built-in model instead, which is the deployment's to notice
-// (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
+// for the `default` model role, which every pod's operator overlay sets, the operator's current
+// role is resolved per launch, and a resumed session without the flag runs the session file's
+// recorded model. From Oh My Pi 18.18.6 of the fork (upstream oh-my-pi #18534), a resumed launch
+// under this role alias appends a replacement `model_change` for its resolved model, which later
+// launches without the flag read; that replacement is the role as it stood at the launch that
+// wrote it, so it stands in for no later launch's flag. A profile with no `default` role is not
+// refused here: Oh My Pi launches silently on a built-in model instead, which is the deployment's
+// to notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
@@ -902,13 +904,19 @@ func kubeletEscape(text string) string {
 // containers mount (podKind.initVolumes), then each launcher role's token projection, private
 // credential directory, state and gh volume: each bundle directory's two gh files of its role
 // Secret (GitHubHostsKey(dir) as <dir>/hosts.yml, GitHubConfigKey(dir) as <dir>/config.yml) for
-// the launch's directories (gitHubDirs), read-only to the pod's user, from the same Secret as the
+// the launch's directories (gitHubDirs), and the bundle's configured renames beside them in the
+// root (GitHubPairsKey as ghconfig.PairsFile, which `legion gh` and `legion git-credential` route
+// a moved repository by), read-only to the pod's user, from the same Secret as the
 // launcher token, so the refresher's one Update reaches the role's gh directory. A directory
-// names a GitHub owner or one of its repositories, `<owner>/<repo>`, which projects as a
-// directory under the owner's own. A projection's items are fixed for the pod's life, so a pod
-// holds the directories of its creation. A launch with no
+// names one GitHub owner account, never one of its repositories, since a bundle holds no
+// repository directory (ghconfig refuses one). A projection's items are fixed for the pod's
+// life, so a pod holds the directories of its creation, and a pod created before the pairs file
+// existed holds no item for it, which the drift check reads and replaces the pod for
+// (movedGhDirs). A launch
+// with no
 // directory — a controller whose project has no GitHub owner to mint for, and the Sandbox's first
-// template (sandboxManifest), which never runs — gets an empty directory instead: a Secret
+// template (sandboxManifest), which never runs — gets an empty directory instead, the pairs file
+// included: a Secret
 // projection with no items would project every key of the Secret, the launcher token among them.
 // Then the volumes its kind's one container alone mounts (podKind.mainVolumes), the agent-secrets
 // volumes, a microVM pod's workload identity token (workloadIdentityVolumes), the providers and
@@ -917,12 +925,15 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	providers, _ := r.providers()
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	roleVolumes := make([]corev1.Volume, 0, len(l.roles)*4)
-	ghItems := make([]corev1.KeyToPath, 0, 2*len(l.gitHubDirs))
+	ghItems := make([]corev1.KeyToPath, 0, 2*len(l.gitHubDirs)+1)
 	for _, dir := range l.gitHubDirs {
 		ghItems = append(ghItems,
 			corev1.KeyToPath{Key: GitHubHostsKey(dir), Path: dir + "/" + ghconfig.HostsFile},
 			corev1.KeyToPath{Key: GitHubConfigKey(dir), Path: dir + "/" + ghconfig.ConfigFile},
 		)
+	}
+	if len(ghItems) > 0 {
+		ghItems = append(ghItems, corev1.KeyToPath{Key: GitHubPairsKey, Path: ghconfig.PairsFile})
 	}
 	for _, role := range l.roles {
 		roleVolumes = append(roleVolumes,

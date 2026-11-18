@@ -76,6 +76,7 @@ type Response struct {
 	CredentialID        string        `json:"credential_id,omitempty"`         // sign-launcher: the machine credential the proof names, so a machine revoke can tell this machine's own login
 	RequestObject       string        `json:"request_object,omitempty"`        // sign-request: the signed compact JWS
 	Sessions            []SessionInfo `json:"sessions,omitempty"`
+	Version             string        `json:"version,omitempty"` // version: the release the running helper was built as, so a client names the process serving the socket, not the binary on disk a pin move may have replaced
 }
 
 // The causes for which the helper drops the launcher credential it holds, as login-status's

@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  An Envoy tool that fails now answers a tool result with `isError: true` and the error's text, so the model reads the listener's sentence for a refused send or publish. An unknown tool, and a call before the server has started, stay JSON-RPC errors.
+  `envoy-send` sends through `@legion/envoy-client`, names its shell's session as `source_session`, and prints the listener's sentence when the listener refuses the message.

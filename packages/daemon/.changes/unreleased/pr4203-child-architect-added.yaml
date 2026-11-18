@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  Every child issue that starts now gets its own architect. The daemon starts it when it starts
+  the child's first phase, through any door (a release, a rerun, a person's `todo` under a live
+  tree, or the close of the last issue the child waited on), before the child's planner, and
+  a child that comes back resumes the same architect session, or a new one once supervise's
+  `forgetSession` has dropped it. At each launch that
+  architect gets a `catch-up` that lists its own issue and every issue under it, with no design
+  gate. When its claim fails, the architect above it gets a `worker-died` and takes the child's
+  notices, and the daemon starts the failed architect again, with fresh budgets, at the child's
+  next phase start.
