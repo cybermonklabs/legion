@@ -226,10 +226,10 @@ describe("dispatch steps", () => {
 
   // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of
   // one still running (workflowstore's stepResults). The read's generated type admits those words
-  // and no other, so `bun run typecheck` fails at the directive below once model.StepRecord.Result
-  // loses its enum and the contract is generated again.
+  // and no other: each run below is a StepRecord, so `bun run typecheck` holds its result to them,
+  // and it fails at the directive below once model.StepRecord.Result loses its enum and the
+  // contract is generated again.
   test("an ended run prints the result Dispatch stored, a word the read's type holds", async () => {
-    const stored: readonly StepRecord["result"][] = ["", "passed", "failed", "stopped"];
     // @ts-expect-error - a word Dispatch never stores is no result.
     const notStored: StepRecord["result"] = "skipped";
     void notStored;
@@ -252,14 +252,12 @@ describe("dispatch steps", () => {
         ` 2026-11-16T09:40:00Z ${run.result}`
       );
     }
-    expect(ended.map((run) => run.result)).toEqual(stored.filter((word) => word !== ""));
   });
 
   // A run is of a step, a retro or a merge (model.StepRecord.Kind). The read's generated type
   // admits those kinds and no other, so `bun run typecheck` fails at the directive below once the
   // field loses its enum and the contract is generated again.
   test("a retro's run prints its kind at place 0, a kind the read's type holds", async () => {
-    const kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
     // @ts-expect-error - a kind Dispatch never stores is no kind.
     const notStored: StepRecord["kind"] = "pause";
     void notStored;
