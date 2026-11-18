@@ -2467,7 +2467,8 @@ const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets"].map((repo) => (
 }));
 
 /** A repository picker on CORE-1, whose own repository is `repo` and which resolves to
- *  `resolved`, with the project's mappings read. */
+ *  `resolved`, with the project's mappings read once the reader reaches for it. The picker is a
+ *  box: what is typed into it is written as Enter is pressed, and an emptied box is Inherit. */
 function renderRepo(repo: string | null, resolved: string | null) {
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
   // The issue's read, which the test seeds: the one asked of it is the issue read again.
@@ -2494,16 +2495,19 @@ function renderRepo(repo: string | null, resolved: string | null) {
     );
   }
   const view = renderIn(client, <CachedRepo />);
-  const select = () =>
-    screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLSelectElement;
-  /** What the select says it shows, which names a repository that is not the issue's own. */
+  const box = () =>
+    screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+  /** The repositories the box suggests, its datalist's. */
+  const suggestions = () => Array.from(box().list?.options ?? [], (option) => option.value);
+  /** What the box says it stands for, which names a repository that is not the issue's own. */
   const described = () =>
-    document.getElementById(select().getAttribute("aria-describedby") ?? "")?.textContent;
+    document.getElementById(box().getAttribute("aria-describedby") ?? "")?.textContent;
   return {
+    box,
     client,
     described,
     detailRead,
-    select,
+    suggestions,
     unmount: () => {
       view.unmount();
       listRepoProjects.mockRestore();
@@ -2515,16 +2519,21 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
   const patchIssue = answerIssuePatches().mockRejectedValueOnce(
     new ApiError(400, { code: "REPO_NOT_MAPPED", error: "acme/gadgets is not mapped to CORE" })
   );
-  const { client, described, detailRead, select, unmount } = renderRepo(null, "acme/widgets");
+  const { box, client, described, detailRead, suggestions, unmount } = renderRepo(
+    null,
+    "acme/widgets"
+  );
   const user = userEvent.setup();
   try {
-    await user.hover(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "acme/gadgets");
+    await user.hover(box());
+    await waitFor(() => expect(suggestions().sort()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    await user.keyboard("{Enter}");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("acme/gadgets is not mapped to CORE");
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
-    expect(select().value).toBe("");
+    expect(box().value).toBe("");
     expect(described()).toBe("acme/widgets, inherited or the project's default");
     const [row] = client.getQueryData<IssueSummary[]>(listKey) ?? [];
     expect([row?.repo, row?.resolved_repo]).toEqual([null, "acme/widgets"]);
@@ -2539,13 +2548,14 @@ test("a refused repository pick puts back the repository Dispatch last confirmed
 test("an Inherit pick of the repository shows the repository the issue showed before, not as its own, until the answer names the inherited one", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { described, select, unmount } = renderRepo("acme/gadgets", "acme/gadgets");
+  const { box, described, suggestions, unmount } = renderRepo("acme/gadgets", "acme/gadgets");
   const user = userEvent.setup();
   try {
     expect(described()).toBe("acme/gadgets");
-    await user.hover(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "");
+    await user.hover(box());
+    await waitFor(() => expect(suggestions().sort()).toEqual(["acme/gadgets", "acme/widgets"]));
+    await user.clear(box());
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(bodies(patchIssue)).toEqual([{ repo: null }]));
     expect(described()).toBe("acme/gadgets, inherited or the project's default");
 

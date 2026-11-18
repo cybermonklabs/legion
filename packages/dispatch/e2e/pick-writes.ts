@@ -317,9 +317,10 @@ async function exposeShown(page: Page): Promise<{ binding: string; shown: Shown 
 /**
  * Records every value the controls named `name` (an `aria-label`, such as `Priority of CORE-1`)
  * show in `page`, read at every animation frame of every document the page loads from now on -
- * so from the first frame a reload paints. A `<select>` shows its value; any other element its
- * text. `within`, a CSS selector, reads only the controls inside what it matches - the page's
- * `main`, `main` and Details (`ISSUE_PAGE_PICKERS`), or the Inbox drawer
+ * so from the first frame a reload paints. A `<select>` or an `<input>` shows its value - an
+ * input's is what is typed into it as well as what it holds; any other element its text.
+ * `within`, a CSS selector, reads only the controls inside what it matches - the page's `main`,
+ * `main` and Details (`ISSUE_PAGE_PICKERS`), or the Inbox drawer
  * (`[role="dialog"][aria-label="Inbox"]`). Call it before the page loads the document a row
  * watches.
  */
@@ -337,7 +338,9 @@ export async function watchShown(page: Page, name: string, within = ":root"): Pr
             ? "(none)"
             : controls
                 .map((element) =>
-                  element instanceof HTMLSelectElement ? element.value : (element.textContent ?? "")
+                  element instanceof HTMLSelectElement || element instanceof HTMLInputElement
+                    ? element.value
+                    : (element.textContent ?? "")
                 )
                 .join("|");
         if (value !== last) {

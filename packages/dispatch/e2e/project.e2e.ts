@@ -376,9 +376,9 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
     await revealPagePicker(page, `Repository of ${issue.key}`);
     await expect(picker).toHaveValue("acme/widgets");
 
-    // Its project's mappings are read once the reader reaches for the control.
-    await picker.focus();
-    await picker.selectOption("acme/gadgets");
+    // The reader types the repository into the box and presses Enter, which writes it.
+    await picker.fill("acme/gadgets");
+    await picker.press("Enter");
     await expect.poll(() => shown.values.at(-1)).toBe("acme/gadgets");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);

@@ -93,7 +93,8 @@ function Picker({
 }
 
 /** Renders the picker of `field` on CORE-1, with the people who have signed in and the
- *  project's repositories read once the reader reaches for it. */
+ *  project's repositories read once the reader reaches for it. The assignee's picker is a
+ *  `<select>`; the repository's is a box, which suggests the project's repositories. */
 async function renderPicker(field: "assignee" | "repo") {
   const listUsers = spyOn(api, "listUsers").mockResolvedValue(
     ["alice", "bob", "carol", "dave"].map((login) => ({ login }))
@@ -109,15 +110,39 @@ async function renderPicker(field: "assignee" | "repo") {
   );
   const name = field === "assignee" ? "Assignee of CORE-1" : "Repository of CORE-1";
   const select = () => screen.getByRole("combobox", { name }) as HTMLSelectElement;
+  const box = () => screen.getByRole("combobox", { name }) as HTMLInputElement;
   const user = userEvent.setup();
-  // Its options are read once the reader reaches for the control: Unassigned or Inherit first.
-  await user.hover(select());
-  await waitFor(() => expect(select().options.length).toBe(field === "assignee" ? 5 : 4));
+  // What the control offers is read once the reader reaches for it: the select's people,
+  // Unassigned first, or the box's suggestions, the project's repositories.
+  if (field === "assignee") {
+    await user.hover(select());
+    await waitFor(() => expect(select().options.length).toBe(5));
+  } else {
+    await user.hover(box());
+    await waitFor(() =>
+      expect(Array.from(box().list?.options ?? [], (option) => option.value).sort()).toEqual([
+        "acme/gadgets",
+        "acme/tools",
+        "acme/widgets",
+      ])
+    );
+  }
   return {
     ...server,
     client,
-    pick: (value: string) => user.selectOptions(select(), value),
-    select,
+    /** The picker, whose value is what it shows. */
+    control: field === "assignee" ? select : box,
+    // A pick of the select is its option; a pick of the box is the repository typed into it,
+    // written as Enter is pressed.
+    pick:
+      field === "assignee"
+        ? (value: string) => user.selectOptions(select(), value)
+        : async (value: string) => {
+            await user.clear(box());
+            await user.click(box());
+            await user.paste(value);
+            await user.keyboard("{Enter}");
+          },
     unmount: () => {
       view.unmount();
       server.patchIssue.mockRestore();
@@ -166,7 +191,7 @@ test("each repository pick in the issue's picker joins the issue's line in the w
 });
 
 test("three assignee picks made while the first is out send two requests, the first and the newest, and no error shows", async () => {
-  const { client, patchIssue, pick, release, select, unmount } = await renderPicker("assignee");
+  const { client, control, patchIssue, pick, release, unmount } = await renderPicker("assignee");
   try {
     await pick("bob");
     await pick("carol");
@@ -177,14 +202,14 @@ test("three assignee picks made while the first is out send two requests, the fi
       ["CORE-1 assigned to bob", "issue:CORE-1", "sending"],
       ["CORE-1 assigned to dave", "issue:CORE-1", "queued"],
     ]);
-    expect(select().value).toBe("dave");
+    expect(control().value).toBe("dave");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await act(async () => release());
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ assignee: "bob" }, { assignee: "dave" }]);
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "dave" }, keyedAttempt);
-    expect(select().value).toBe("dave");
+    expect(control().value).toBe("dave");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -192,7 +217,7 @@ test("three assignee picks made while the first is out send two requests, the fi
 });
 
 test("three repository picks made while the first is out send two requests, the first and the newest, and no error shows", async () => {
-  const { client, patchIssue, pick, release, select, unmount } = await renderPicker("repo");
+  const { client, control, patchIssue, pick, release, unmount } = await renderPicker("repo");
   try {
     await pick("acme/gadgets");
     await pick("acme/tools");
@@ -201,14 +226,14 @@ test("three repository picks made while the first is out send two requests, the 
       ["CORE-1 on acme/gadgets", "issue:CORE-1", "sending"],
       ["CORE-1 on acme/widgets", "issue:CORE-1", "queued"],
     ]);
-    expect(select().value).toBe("acme/widgets");
+    expect(control().value).toBe("acme/widgets");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await act(async () => release());
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ repo: "acme/gadgets" }, { repo: "acme/widgets" }]);
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt);
-    expect(select().value).toBe("acme/widgets");
+    expect(control().value).toBe("acme/widgets");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();
