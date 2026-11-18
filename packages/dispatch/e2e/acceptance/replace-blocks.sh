@@ -103,6 +103,10 @@ require_commands bun curl jq grep sed head mktemp date
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
 readonly repo_root="$script_dir/../../../.."
+# proc_group reads one process's group from its own /proc entry, where `ps -p` reads every process
+# on the host for that answer.
+# shellcheck source=../../../../scripts/e2e/lib/process-tree.sh
+. "$repo_root/scripts/e2e/lib/process-tree.sh"
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
 
 # How long the instance this run starts may take to print its signed-in line. It builds the
@@ -360,14 +364,14 @@ start_instance() {
   (cd "$repo_root" && DATABASE_URL="$database_url" exec setsid bun run dispatch:local) \
     >"$work/instance.log" 2>&1 </dev/null &
   instance_pid=$!
-  own_group="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
+  own_group="$(proc_group $$)"
   # The child is in this shell's own group until it reaches setsid, and a group of this shell's
   # own is never signalled: that would stop this run with the instance. So the group is read
   # until it is one of the instance's own, which is what stop_instance signals to reach the two
   # `bun run` parents and the server under them.
   instance_group=""
   while ((SECONDS < deadline)); do
-    instance_group="$(ps -o pgid= -p "$instance_pid" 2>/dev/null | tr -d ' ' || true)"
+    instance_group="$(proc_group "$instance_pid")"
     if [[ -z "$instance_group" || "$instance_group" != "$own_group" ]]; then
       break
     fi
