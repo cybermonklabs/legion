@@ -958,6 +958,7 @@ jobs:
               - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
+              - 'scripts/e2e/lib/process-tree.sh'
               - 'scripts/e2e/lib/built-from.sh'
               - 'packages/pi-legion/package.json'
               - 'packages/pi-envoy/package.json'

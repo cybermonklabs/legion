@@ -6001,13 +6001,16 @@ Each item below names a function, then what it does.
   it freezes the loop, stops each child the same way, then kills the loop, so the `kubectl`, `jq` or `sleep` the loop was waiting on goes with it.
   It signals a pid only while its parent is the calling shell, so a pid the watcher left and another process reused is never hit, and refuses the same pids `stop_pid` does:
   `kill -STOP 0` would freeze the whole driver and a later `kill -KILL 0` end it.
+  It and the refusal read only the `/proc` entries of the processes they ask about ([`proc_parent`, `proc_group` and `proc_children`](#libprocess-treesh)), never every process of the machine as `ps -p` and `pgrep -P` do.
   Stage 3's and Stage 4b's watchers are stopped with it
 
 - `run_processes`
 
-  prints every pid whose working directory or command line names `$work`.
-  It reads `/proc` in one `find` pass and runs no command for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
-  A process whose working directory this user cannot read is another user's, so it is none of the run's
+  prints every pid whose working directory or command line names `$work`: the run's search for its leftovers, a process that left every tree the run recorded among them (a double-forked daemon the kernel gave to pid 1), so it reads every process of the machine.
+  One `find` reads each `/proc/<pid>/cwd` link and the shell reads each command line, with no command run for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
+  The shell's own glob lists the entries and hands them to `find` on stdin (`-files0-from -`), never as its arguments, which could not start past ARG_MAX: at about 80,000 processes `find /proc/[0-9]*/cwd` failed with E2BIG, and the empty answer read as a run with nothing left.
+  A process whose working directory this user cannot read is another user's, so it is none of the run's, and neither is one that ended during the walk.
+  Any other complaint of `find`'s, and a walk that read no process, prints the reason and exits 2, which the cleanup checkpoint's wait and the two stage proofs' last checks fail on
 
 - `real_bin_path DEST NAME…`
 
@@ -6023,6 +6026,8 @@ Each item below names a function, then what it does.
 
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
+It names a process double-forked into the run's directory, which no tree the run started holds.
+Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it, where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process; the form it replaced names none
 
 ## lib/process-tree.sh
 
@@ -6035,6 +6040,18 @@ It needs nothing of its caller's.
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
 ```
+
+- `proc_parent PID`, `proc_group PID`, `proc_children PID`
+
+  print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read past its last `) `, since a command name may hold both) and every thread's `/proc/PID/task/*/children`.
+  None reads every process of the machine, as procps-ng's `ps -p` and `pgrep -P` do: one `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times at about 13,000 processes.
+  Each prints nothing for a process that is gone; a host with no `/proc` asks `ps` and `pgrep`.
+  `signalable` and `stop_tree` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them
+
+- `proc_describe PID…`
+
+  prints one line for each PID that runs, with its parent, process group, session, start time (from `/proc/stat`'s `btime`) and command line, the fields of `ps -o pid,ppid,pgid,sid,lstart,args -p`, and nothing for one that has ended.
+  The parked-decision proof's cleanup wait names each survivor with it when it fails
 
 - `record_pid_sh`
 
@@ -6083,6 +6100,8 @@ the pid file names the process the command execs into and nothing once it ends; 
 `launched` finds a program below `bash` and `sh -c`, and beside a helper child of its parent, which `child_of` refuses as two children, and refuses two matches, none, and a tree where only another program runs;
 and the processes of the rows that start a line or a helper are gone when they end;
 and `first_native` takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim.
+Its process-scan rows put a `ps`, `pgrep` and `pkill` on `PATH` that log each call and run nothing: `signalable` refuses the calling shell and its group's leader, `stop_tree` leaves a process whose parent is not the one it is given and then ends a parent and its two children, the cleanup wait's failure names each survivor that runs with its command line and none that has ended, and none of them starts any of the three.
+Where `strace` is on the host, a traced row holds that they open no other process's `/proc` entry, list no directory but the asked processes' `task` directories, and read no other `/proc` file than `/proc/stat` and bash's own `/proc/self/maps`; against the helpers before them each row fails.
 `lib/claude-backend-guards.test.ts` finds a pane's Claude Code under its bridge when its path holds a space and when it runs under another name, which the lookup by `argv[0]` before it did not;
 answers nothing while the bridge's child is still the bridge's own fork, the first wrapper of a chain of two (bash) or the second (sh), and then names the program the chain ends in;
 and takes a pane's Claude Code for its agent where that Claude Code, under another name, runs an Oh My Pi below itself, an Oh My Pi the lookup before it took for the agent

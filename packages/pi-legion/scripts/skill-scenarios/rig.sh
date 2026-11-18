@@ -648,11 +648,12 @@ run_env_pids() {
 
 # stop_env_processes DIR stops, with stop_tree, each process run_env_pids DIR finds and everything
 # under it, a child that dropped the variable included; the parent stop_tree checks is the one the
-# process has now, read a moment after the list.
+# process has now, read a moment after the list, from that process's own /proc entry (proc_parent,
+# scripts/e2e/lib/process-tree.sh).
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
   local pid
-  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"; done
+  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(proc_parent "$pid")"; done
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's

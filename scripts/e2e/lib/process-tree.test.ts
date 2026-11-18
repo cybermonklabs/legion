@@ -3,13 +3,15 @@ import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptFunctions } from "./script-functions";
 
 // lib/process-tree.sh (sourced through lib/rig.sh): how a proof knows a process it started by the
 // pid it started, never by a search of the machine's /proc — record_pid_sh and recorded_pid,
-// launched, child_of and omp_program. Each row runs under the stage scripts' own
-// `set -Eeuo pipefail`, with an ERR trap that prints, against processes it starts: the stand-in
-// programs are copies of sleep under names of their own, so the kernel's record of what a process
-// runs (/proc/<pid>/exe) tells them apart from every sleep the machine runs.
+// launched, child_of, the proc_* reads of one process and omp_program, and the rig helpers that use
+// them. Each row runs under the stage scripts' own `set -Eeuo pipefail`, with an ERR trap that
+// prints, against processes it starts: the stand-in programs are copies of sleep under names of
+// their own, so the kernel's record of what a process runs (/proc/<pid>/exe) tells them apart from
+// every sleep the machine runs.
 const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("process-tree-test");
@@ -330,3 +332,173 @@ echo "none: status $st: \${why%%:*}"
     );
   }
 );
+
+// The rig helpers' process-scan rows: signalable and stop_tree (lib/rig.sh), the proc_* reads they
+// use (lib/process-tree.sh) and the failure note of parked-decision-devbox.sh's
+// wait_for_run_processes each read only the /proc entries of the processes they ask about. Each row
+// puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing: those
+// read every process on the machine (procps-ng's `ps -p` included), so a helper that still calls one
+// is named in the log, and the row fails. The traced row, where strace is on the host, also holds
+// that the helpers list no directory but the task directory of a process they ask about and open no
+// other process's entry.
+const waitForRunProcesses = scriptFunctions(
+  join(import.meta.dir, "..", "parked-decision-devbox.sh")
+)("wait_for_run_processes");
+const noStrace = skipWithout("strace");
+// standIns is the shell that puts the logging ps, pgrep and pkill first on PATH, logging to
+// $scratch/calls.
+const standIns = `mkdir -p "$scratch/bin"
+for n in ps pgrep pkill; do printf '#!/bin/sh\\necho "$0 $*" >>%s/calls\\nexit 1\\n' "$scratch" >"$scratch/bin/$n"; chmod +x "$scratch/bin/$n"; done
+PATH="$scratch/bin:$PATH"`;
+// tree starts a parent with two children, and sets g and kids once both children run.
+const tree = `(sleep 300 & sleep 301 & wait) </dev/null >/dev/null 2>&1 &
+g=$!
+started+=("$g")
+until_true 10 "two children of $g" sh -c '[ "$(cat /proc/$1/task/*/children | wc -w)" = 2 ]' sh "$g"
+kids=$(cat /proc/"$g"/task/*/children)`;
+
+describe.skipIf(skip)("the rig helpers' process-scan rows", () => {
+  test(
+    "signalable refuses this shell and its group's leader, stop_tree refuses a wrong parent and then ends a tree, and none starts ps, pgrep or pkill",
+    async () => {
+      const r = run(`${standIns}
+${tree}
+if signalable $$ 2>/dev/null; then echo "signalable took this shell"; else echo "this shell: refused"; fi
+read -r stat </proc/$$/stat
+read -r -a fields <<<"\${stat##*) }"
+leader=\${fields[2]}
+if [ "$leader" = $$ ] || ! signalable "$leader" 2>/dev/null; then echo "its group's leader: refused"; else echo "signalable took the group leader $leader"; fi
+stop_tree "$g" 1
+sleep 1
+read -r stat </proc/"$g"/stat
+case \${stat##*) } in S* | R*) echo "a wrong parent: left running" ;; *) echo "a wrong parent: acted on, state \${stat##*) }" ;; esac
+# The shell's own "Killed" notice of the tree it reaps goes nowhere: it is no output of the row.
+exec 3>&2 2>/dev/null
+stop_tree "$g"
+wait "$g" || :
+exec 2>&3 3>&-
+echo "stopped: $g" $kids
+[ "$(proc_parent $$) $(proc_group $$)" = "$PPID $leader" ] && echo "proc_parent and proc_group: this shell's" || echo "proc_parent and proc_group: $(proc_parent $$) $(proc_group $$)"
+echo "a pid that runs nothing: [$(proc_parent 999999999)$(proc_group 999999999)$(proc_children 999999999)$(proc_describe 999999999)]"
+calls=$(cat "$scratch/calls" 2>/dev/null || :)
+echo "calls: [\${calls//$'\\n'/;}]"
+`);
+      expect(r.err).toBe("");
+      const lines = r.out.trimEnd().split("\n");
+      const stopped = /^stopped: (\d+) (\d+)\s+(\d+)$/.exec(lines[3] ?? "");
+      expect(stopped).not.toBeNull();
+      expect([lines[0], lines[1], lines[2], ...lines.slice(4)]).toEqual([
+        "this shell: refused",
+        "its group's leader: refused",
+        "a wrong parent: left running",
+        "proc_parent and proc_group: this shell's",
+        "a pid that runs nothing: []",
+        "calls: []",
+      ]);
+      for (const pid of stopped?.slice(1) ?? []) expect(await gone(Number(pid))).toBe(true);
+    },
+    slow
+  );
+
+  test(
+    "wait_for_run_processes's failure names each survivor that runs with its command line, and none that has ended, starting no ps, pgrep or pkill",
+    () => {
+      const r = run(`${standIns}
+true &
+ended=$!
+wait "$ended"
+${waitForRunProcesses}
+run_processes() { printf '%s\\n' "$$" "$PPID" "$ended"; }
+since() { printf '0s'; }
+(
+  note() { printf '   %s\\n' "$*"; }
+  fail() { printf 'FAIL: %s\\n' "$*"; exit 1; }
+  wait_for_run_processes 0 3
+) >"$scratch/note" 2>&1 || true
+printf 'shell=%s test=%s ended=%s\\n' "$$" "$PPID" "$ended"
+cat "$scratch/note"
+calls=$(cat "$scratch/calls" 2>/dev/null || :)
+echo "calls: [\${calls//$'\\n'/;}]"
+`);
+      expect(r.err).toBe("");
+      const ids = /^shell=(\d+) test=(\d+) ended=(\d+)$/m.exec(r.out);
+      expect(ids).not.toBeNull();
+      const [, shell, testPid, ended] = ids ?? [];
+      expect(r.out).toContain(
+        `FAIL: timed out after 0s (3 polls) waiting for every process of the run to end; still running: ${shell} ${testPid} ${ended}\n`
+      );
+      expect(r.out).toMatch(
+        new RegExp(
+          `^ +${shell} ppid ${testPid} pgid \\d+ sid \\d+ started .+: bash -c set -Eeuo pipefail`,
+          "m"
+        )
+      );
+      expect(r.out).toMatch(new RegExp(`^ +${testPid} ppid \\d+ .*: \\S*bun`, "m"));
+      expect(r.out).not.toMatch(new RegExp(`^ +${ended} `, "m"));
+      expect(r.out).toEndWith("calls: []\n");
+    },
+    slow
+  );
+
+  test.skipIf(noStrace)(
+    "the helpers open no other process's /proc entry and list no directory but the task directories of the processes they ask about",
+    async () => {
+      // strace follows the traced shell and every process it starts. The traced shell records the
+      // pids it asks about first (the tree's three and its own, which signalable reads), so each
+      // /proc path the trace names can be held to them.
+      const r = run(`${tree}
+st=0
+export ASKED="$scratch/asked"
+# The shell's own "Killed" notice of the tree the traced shell stops goes to a file of its own, with
+# the traced shell's stderr, which the row prints when the traced shell fails.
+exec 3>&2 2>"$scratch/traced.err"
+strace -f -qq -z -y -e trace=openat,getdents64 -e signal=none -o "$scratch/trace" bash -c '
+  set -Eeuo pipefail
+  root=$1 work=/nonexistent evidence=/nonexistent timeout_hook=
+  . "$root/scripts/e2e/lib/rig.sh"
+  g=$2 asker=$3
+  shift 3
+  echo "$g $* $$" >"$ASKED"
+  proc_parent "$g" >/dev/null
+  proc_group "$g" >/dev/null
+  proc_children "$g" >/dev/null
+  proc_describe "$g" "$@" 999999999 >/dev/null
+  signalable "$g"
+  stop_tree "$g" "$asker"' traced "$root" "$g" $$ $kids || st=$?
+{ wait "$g"; } 2>/dev/null || :
+exec 2>&3 3>&-
+echo "traced: exit $st"
+[ "$st" = 0 ] || cat "$scratch/traced.err"
+echo "scratch: $scratch"
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toMatch(/^traced: exit 0\n/);
+      const scratch = /^scratch: (.+)$/m.exec(r.out)?.[1] ?? "";
+      const asked = readFileSync(join(scratch, "asked"), "utf8").trim().split(/\s+/);
+      expect(asked.length).toBe(4);
+      const trace = readFileSync(join(scratch, "trace"), "utf8");
+      const paths = [
+        ...new Set(
+          [...trace.matchAll(/"(\/proc\/[^"]*)"/g)].map((m) => (m[1] ?? "").replace(/\/$/, ""))
+        ),
+      ];
+      const others = [
+        ...new Set(paths.flatMap((p) => /^\/proc\/(\d+)(\/|$)/.exec(p)?.[1] ?? [])),
+      ].filter((pid) => !asked.includes(pid));
+      const globals = paths.filter(
+        (p) => !/^\/proc\/\d+\//.test(p) && p !== "/proc/stat" && p !== "/proc/self/maps"
+      );
+      const listed = [
+        ...new Set([...trace.matchAll(/getdents64\(\d+<([^>]*)>/g)].map((m) => m[1] ?? "")),
+      ].filter((p) => !asked.some((pid) => p === `/proc/${pid}/task`));
+      expect({ others, globals, listed, readsStat: paths.includes("/proc/stat") }).toEqual({
+        others: [],
+        globals: [],
+        listed: [],
+        readsStat: true,
+      });
+      for (const pid of asked.slice(0, 3)) expect(await gone(Number(pid))).toBe(true);
+    },
+    slow
+  );
+});

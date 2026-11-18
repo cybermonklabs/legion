@@ -250,7 +250,8 @@ start_process() {
 }
 
 # signalable PID is whether PID can name one process the run started: a number without a leading
-# zero other than 1, this shell, and this shell's process group leader. 0, however many digits spell
+# zero other than 1, this shell, and this shell's process group leader (proc_group,
+# lib/process-tree.sh, which reads this shell's own /proc entry alone). 0, however many digits spell
 # it, and a negative number name a whole process group, so `kill -STOP 0` would stop the caller with
 # everything else in its group and a later `kill -KILL 0` end them all; no pid is written with a
 # leading zero. A refusal is printed, since a caller that hands one over has a bug.
@@ -260,7 +261,7 @@ signalable() {
     '' | *[!0-9]* | 0* | 1) ;;
     *)
       [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] &&
-        [ "$pid" != "$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')" ] && return 0
+        [ "$pid" != "$(proc_group "$$")" ] && return 0
       ;;
   esac
   echo "refused to signal pid '$pid': it is not one process this run started" >&2
@@ -285,52 +286,83 @@ stop_pid() {
 # outlives the loop when only the loop is stopped; the loop is frozen first, so it starts nothing new
 # while its children go. PID is signalled only while its parent is PARENT (default this shell), so a
 # pid the watcher left and another process reused is never hit. An empty PID is a watcher that
-# never started: nothing to stop.
-# pgrep exits 1 for a process with no children, which is no error: under a driver's `set -E` it would
-# run the ERR trap inside the substitution, and a trap that prints there would hand its words over
-# as child pids (the `0` of an `exit 0` among them).
+# never started: nothing to stop. The parent and the children are read from PID's own /proc entry
+# (proc_parent and proc_children, lib/process-tree.sh), never from every process on the machine.
+# proc_children prints nothing for a process with no children, which is no error: under a driver's
+# `set -E` a failing command would run the ERR trap inside the substitution, and a trap that prints
+# there would hand its words over as child pids (the `0` of an `exit 0` among them).
 stop_tree() {
   local pid=${1:-} parent=${2:-$$} child
   [ -n "$pid" ] || return 0
   signalable "$pid" || return 0
-  [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$parent" ] || return 0
+  [ "$(proc_parent "$pid")" = "$parent" ] || return 0
   kill -STOP "$pid" 2>/dev/null || return 0
-  for child in $(pgrep -P "$pid" || true); do stop_tree "$child" "$pid"; done
+  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
   kill -KILL "$pid" 2>/dev/null || true
 }
 
 # run_processes prints every pid of this run still alive: any whose working directory is under
 # $work, and any whose command line names $work. A process whose working directory this user cannot
 # read is another user's, so it is none of the run's and gets no further look, as a kill of it would
-# fail anyway.
-# One `find` reads every /proc/<pid>/cwd link, and the command lines are read by the shell itself:
-# a `readlink` and a `grep` for each of a devbox's thousands of /proc entries cost seconds of every
-# teardown, the sweeps of a checkpoint among them. `%l` is empty for a link find could not read.
+# fail anyway. It is the run's search for its leftovers, so it reads every process of the machine:
+# a process that left every tree the run recorded, a double-forked daemon that the kernel gave to
+# pid 1, is one of them, and no rig runs under a subreaper, a cgroup or a PID namespace whose member
+# list would name it.
+# One `find` reads every /proc/<pid>/cwd link, and the command lines are read by the shell itself: a
+# `readlink` and a `grep` for each of a devbox's thousands of /proc entries cost seconds of every
+# teardown, the sweeps of a checkpoint among them. The shell's own glob lists the entries and its
+# printf builtin hands them to find on stdin (`-files0-from -`, GNU findutils 4.9), so no program is
+# handed them as its arguments: `find /proc/[0-9]*/cwd`, as this was, could not start once argv and
+# the environment passed ARG_MAX (2 MiB at an 8 MiB stack, about 80,000 processes at about 25 bytes
+# an entry), and its `2>/dev/null || :` turned the E2BIG into an empty answer: a run with nothing left.
+# find exits 1 for a cwd link it cannot read, another user's process's, and for an entry whose
+# process ended during the walk, and neither is an error here. Any other complaint of find's, and a
+# walk that read no process at all, is: run_processes prints it and exits 2, so no caller reads an
+# unread /proc as a clean one. `%l` is empty for a link find could not read.
 run_processes() {
-  local p cwd arg entry
-  local -a args
-  while IFS= read -r -d '' entry; do
-    p=${entry%% *}
-    cwd=${entry#* }
+  local p cwd arg err line status=0 walked=
+  local -a args complaints=()
+  err=$(mktemp "${TMPDIR:-/tmp}/run-processes.XXXXXX") || {
+    echo "run_processes: no file to keep find's complaints in, so /proc was not read" >&2
+    return 2
+  }
+  # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
+  while IFS= read -r -d '' p && IFS= read -r -d '' cwd; do
+    walked=1
     [ -n "$cwd" ] || continue
     case "$cwd/" in
-      "$work"/*) printf '%s\n' "${p#/proc/}"; continue ;;
+      "$work"/*) printf '%s\n' "${p##*/}"; continue ;;
     esac
     args=()
     { mapfile -d '' -t args <"$p/cmdline"; } 2>/dev/null || continue
     for arg in ${args[@]+"${args[@]}"}; do
       case $arg in
-        *"$work"*) printf '%s\n' "${p#/proc/}"; break ;;
+        *"$work"*) printf '%s\n' "${p##*/}"; break ;;
       esac
     done
-    # find exits 1 for the cwd links it cannot read, every root process's among them, which is no
-    # error here: under the callers' `set -E` an unguarded status would run their ERR trap inside
-    # this substitution and print a warning, or a check's FAIL line, on a run that is going well.
-  done < <(find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0' 2>/dev/null || :)
+  done < <(printf '%s\0' /proc/[0-9]*/cwd | LC_ALL=C find -files0-from - -maxdepth 0 -printf '%h\0%l\0' 2>"$err" || exit)
+  wait "$!" || status=$?
+  if [ "$status" != 0 ]; then
+    while IFS= read -r line; do
+      [[ $line =~ ^[^:]*find:\ \'/proc/[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] ||
+        complaints+=("$line")
+    done <"$err"
+  fi
+  rm -f -- "$err"
+  if [ "${#complaints[@]}" -gt 0 ]; then
+    printf 'run_processes: find exited %s reading /proc: %s\n' "$status" "${complaints[0]}" >&2
+    return 2
+  fi
+  if [ -z "$walked" ]; then
+    echo "run_processes: find read no /proc/<pid>/cwd at all (exit $status), so the run's processes were not read" >&2
+    return 2
+  fi
 }
 
 # lib/process-tree.sh holds how a proof knows a process it started by the pid it started, never by
-# a walk of the machine's /proc for its name: record_pid_sh, recorded_pid, launched, child_of and
-# omp_program. It needs nothing of this rig's, and stage2-tmux-supervision.sh sources it without it.
+# a walk of the machine's /proc: proc_parent, proc_group, proc_children and proc_describe, which
+# read one process's own /proc entry (signalable and stop_tree above use them), record_pid_sh,
+# recorded_pid, launched, child_of and omp_program. It needs nothing of this rig's, and
+# stage2-tmux-supervision.sh sources it without it.
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
 . "$root/scripts/e2e/lib/process-tree.sh"

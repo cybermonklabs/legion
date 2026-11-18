@@ -42,16 +42,76 @@ recorded_pid() {
   printf '%s\n' "$pid"
 }
 
-# children_of PID prints PID's children, one a line, read from PID itself, every thread's list
-# (/proc/<pid>/task/*/children), since a Go process forks from whichever thread runs the call. A
-# PID that has gone has none.
-children_of() {
+# proc_parent PID and proc_group PID print PID's parent pid and process group, and proc_children
+# PID prints each of PID's children, one a line. Each reads that one process: fields 4 and 5 of
+# /proc/PID/stat, read past the last `) ` because the command name between the parentheses may hold
+# both, and every thread's list of children (/proc/PID/task/*/children), since a Go process forks
+# from whichever thread runs the call. None reads every process on the machine as `ps -p` and
+# `pgrep -P` do: procps-ng's `ps -o args= -p PID` opened /proc/<pid>/stat 12,564 times for one pid
+# at about 13,000 processes, about a second on a loaded devbox. Each prints nothing for a process
+# that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with `read`:
+# under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE, even on the left of `||`.
+#
+# proc_children's list is complete only while the children are stopped or frozen:
+# proc_tid_children(5) calls this interface less reliable than a walk of the numbered directories
+# of /proc, because when a child the read has passed then exits, the kernel goes on by position in
+# the list and can leave a surviving child out. `pgrep -P`, which stop_tree called before, walks
+# those directories and reads each process's parent, so it does not meet that case; each form can
+# still miss a child that its walk has passed. stop_tree stops the parent first, so it starts no new
+# child, and it does not stop the children. So this changes what the list can miss, and neither
+# form is the frozen read that the man page asks for.
+proc_stat_field() {
+  local stat
+  local -a fields
+  if [ -d /proc/self ]; then
+    { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 0
+    read -r -a fields <<<"${stat##*) }"
+    printf '%s\n' "${fields[$2 - 3]}"
+  else
+    ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' '
+  fi
+}
+proc_parent() { proc_stat_field "$1" 4 ppid; }
+proc_group() { proc_stat_field "$1" 5 pgid; }
+proc_children() {
   local list
   local -a more
+  if [ ! -d /proc/self ]; then
+    pgrep -P "$1" || true
+    return 0
+  fi
   for list in /proc/"$1"/task/*/children; do
     more=()
     { read -r -a more <"$list"; } 2>/dev/null || :
     [ "${#more[@]}" = 0 ] || printf '%s\n' "${more[@]}"
+  done
+}
+
+# proc_describe PID... prints one line for each PID that runs: its pid, parent, process group,
+# session, start time and command line, in the fields of `ps -o pid,ppid,pgid,sid,lstart,args -p`,
+# read from that process alone and from /proc/stat, whose btime turns a start into a clock time.
+# The command line's words are joined by spaces, and each control character becomes a space, which
+# keeps one process on one line; procps-ng prints a control character as `?` instead, so a line of
+# this and a line of ps are not the same bytes. A PID that is gone prints nothing, as ps prints no
+# line for it. A host with no /proc asks ps.
+proc_describe() {
+  local pid stat boot ticks IFS=' '
+  local -a fields words
+  if [ ! -d /proc/self ]; then
+    IFS=,
+    ps -o pid,ppid,pgid,sid,lstart,args -p "$*" 2>&1 || true
+    return 0
+  fi
+  boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+  ticks=$(getconf CLK_TCK)
+  for pid in "$@"; do
+    { read -r stat <"/proc/$pid/stat"; } 2>/dev/null || continue
+    read -r -a fields <<<"${stat##*) }"
+    words=()
+    { mapfile -d '' -t words <"/proc/$pid/cmdline"; } 2>/dev/null || true
+    words=(${words[@]+"${words[@]//[[:cntrl:]]/ }"})
+    printf '%s ppid %s pgid %s sid %s started %s: %s\n' "$pid" "${fields[1]}" "${fields[2]}" \
+      "${fields[3]}" "$(date -d "@$((boot + fields[19] / ticks))" '+%a %b %e %T %Y')" "${words[*]-}"
   done
 }
 
@@ -82,7 +142,7 @@ launched() {
   while [ "${#pending[@]}" -gt 0 ]; do
     pid=${pending[0]}
     pending=("${pending[@]:1}")
-    for child in $(children_of "$pid"); do
+    for child in $(proc_children "$pid"); do
       seen=$(readlink "/proc/$child/exe" 2>/dev/null || :)
       hit=
       for want in "${programs[@]}"; do [ "$seen" != "$want" ] || hit=1; done
@@ -153,11 +213,11 @@ first_native() {
   return 1
 }
 
-# child_of PID prints PID's one child (children_of), and fails naming what it found when PID has
+# child_of PID prints PID's one child (proc_children), and fails naming what it found when PID has
 # none or more than one.
 child_of() {
   local -a children
-  mapfile -t children < <(children_of "$1")
+  mapfile -t children < <(proc_children "$1")
   case ${#children[@]} in
     1) printf '%s\n' "${children[0]}" ;;
     0)
@@ -182,7 +242,7 @@ child_running() {
     printf '%s\n' "$want"
     return 1
   }
-  for child in $(children_of "$1"); do
+  for child in $(proc_children "$1"); do
     seen=$(readlink "/proc/$child/exe" 2>/dev/null || :)
     walked+=("$child ${seen:-(unreadable)}")
     [ "$seen" != "$want" ] || hits+=("$child")

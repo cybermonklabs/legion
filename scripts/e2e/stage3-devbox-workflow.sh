@@ -1415,7 +1415,9 @@ docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
 for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"
-[ -z "$(run_processes)" ] || fail "a proof process remains"
+# An unread /proc is no empty run (run_processes exits 2 for it).
+remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
+[ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"
 note "the watcher, the daemon and Dispatch with their port keepers, the listener, bridge, private tmux server and every proof process stopped; both containers removed"
 pass
 

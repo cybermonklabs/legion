@@ -252,14 +252,6 @@ user_turns() {
     | [.message.content[]? | .text? // empty] | join(" ") | select(contains($m))' "$1" | jq -s length
 }
 argv0() { tr '\0' '\n' <"/proc/$1/cmdline" | head -1; }
-# parent_of PID prints its parent's pid, from the stat fields after the comm field's own `) `.
-parent_of() {
-  local stat
-  local -a fields
-  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
-  read -r -a fields <<<"${stat##*) }"
-  printf '%s\n' "${fields[1]}"
-}
 # omp_of PANE_PID: the pane's Oh My Pi, the one process below the pane's own process, the pid the
 # claim's locator recorded, that runs the configured pinned binary $expected_omp by the kernel's
 # record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a
@@ -828,7 +820,7 @@ omp1=$(omp_of "$pane1_pid") || fail "no omp process under pane process $pane1_pi
 chain_pids=$omp1
 p=$omp1
 while [ "$p" != "$pane1_pid" ]; do
-  p=$(parent_of "$p") && [ "$p" -gt 1 ] || fail "omp $omp1 is not below pane process $pane1_pid"
+  p=$(proc_parent "$p") && [ -n "$p" ] && [ "$p" -gt 1 ] || fail "omp $omp1 is not below pane process $pane1_pid"
   chain_pids="$p $chain_pids"
 done
 chain=

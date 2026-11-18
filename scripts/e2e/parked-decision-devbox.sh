@@ -516,26 +516,31 @@ since() { printf '%ss' "$((SECONDS - $1))"; }
 # polling run_processes every half second, and fails naming the pids that still run. It gives up
 # only once both bounds are spent: DEADLINE_SECONDS of wall time (default 600) have passed and
 # MIN_POLLS polls (default 10) have been made. The poll floor exists because one poll's cost belongs
-# to the machine, not to the run: run_processes walks /proc with a readlink, and often a grep, per
-# process. On a devbox at load ≈370 with ≈4,300 processes one walk took about 9 s, so the first walk
-# outran the old 30 s budget, until_true made one attempt and failed the run, and the processes
-# ended four minutes later. A wait that can make a single attempt is not a wait, and a longer
-# deadline alone would only be a new wager on the machine.
+# to the machine, not to the run: run_processes walks every process of the machine's /proc. On a
+# devbox at load ≈370 with ≈4,300 processes one walk took about 9 s, so the first walk outran the
+# old 30 s budget, until_true made one attempt and failed the run, and the processes ended four
+# minutes later. A wait that can make a single attempt is not a wait, and a longer deadline alone
+# would only be a new wager on the machine.
 wait_for_run_processes() {
-  local limit=${1:-600} floor=${2:-10} polls=0 started=$SECONDS beat=$SECONDS left line
+  local limit=${1:-600} floor=${2:-10} polls=0 started=$SECONDS beat=$SECONDS left line survivors status
   note "waiting up to ${limit}s and at least $floor polls for every process of the run to end"
   while :; do
     polls=$((polls + 1))
-    # run_processes's status is that of the last thing its loop ran and means nothing.
-    left=$(run_processes || true)
+    # Status 2 is run_processes's own: it could not read the machine's processes, which is never an
+    # empty run. Any other status means nothing.
+    status=0
+    left=$(run_processes) || status=$?
+    [ "$status" != 2 ] || fail "the run's processes could not be read (run_processes exited 2), so whether every one ended is not known"
     if [ -z "$left" ]; then
       note "every process of the run ended: poll $polls, $(since "$started")"
       return 0
     fi
     if ((SECONDS - started >= limit && polls >= floor)); then
       # Each survivor's line, read before the EXIT trap's sweep kills it, so the failure names what
-      # each process was and whose session it ran in.
-      while IFS= read -r line; do note "$line"; done < <(ps -o pid,ppid,pgid,sid,lstart,args -p "${left//$'\n'/,}" 2>&1 || true)
+      # each process was and whose session it ran in (proc_describe, lib/process-tree.sh: one read
+      # of each survivor's own /proc entry, never a read of every process on the machine).
+      mapfile -t survivors <<<"$left"
+      while IFS= read -r line; do note "$line"; done < <(proc_describe "${survivors[@]}" 2>&1 || true)
       fail "timed out after $(since "$started") ($polls polls) waiting for every process of the run to end; still running: ${left//$'\n'/ }"
     fi
     if ((SECONDS - beat >= 60)); then
@@ -573,7 +578,7 @@ stop_agent_daemons() {
     dirs[$leader]="$dir $real"
   done < <(find "$work" -name broker.pid -type f -print0 2>/dev/null || :)
   ((${#dirs[@]} > 0)) || return 0
-  mapfile -t run < <(run_processes || true)
+  mapfile -t run < <(run_processes)
   for p in /proc/[0-9]*; do
     { read -r stat <"$p/stat"; } 2>/dev/null || continue
     # The fields after the command, which may itself hold spaces or parentheses: state, ppid,
@@ -605,7 +610,7 @@ stop_agent_daemons() {
 
 # ---- checkpoints --------------------------------------------------------------------------------------
 begin prerequisites
-for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck jj; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (--help), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, as Stage 3 does);

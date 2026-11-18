@@ -1150,7 +1150,9 @@ stop_pid "${instructor_pid:-}"; instructor_pid=
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 stop_pid "$nats_pid"; nats_pid=
 for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
-[ -z "$(run_processes)" ] || fail "a proof process remains"
+# An unread /proc is no empty run (run_processes exits 2 for it).
+remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
+[ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"
 pass
 
 begin model-turns-through-the-gateway

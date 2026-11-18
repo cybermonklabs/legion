@@ -106,7 +106,7 @@ started=()
 # Each process a row started goes with everything below it.
 kill_tree() {
   local c
-  for c in $(children_of "$1"); do kill_tree "$c"; done
+  for c in $(proc_children "$1"); do kill_tree "$c"; done
   kill "$1" 2>/dev/null || true
 }
 trap 'for p in \${started[@]+"\${started[@]}"}; do kill_tree "$p"; done' EXIT
