@@ -1176,9 +1176,10 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # env_reason reads every step's block whatever its order, so without this name here every go
-    # command of that job would count as unreduced and go_notices would have to match every Go
-    # file of the repository again. go reads it nowhere.
+    # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
+    # step among them, so without this name here every go command of that script would count as
+    # unreduced and go_notices would have to match every Go file of the repository again. go reads
+    # it nowhere.
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
@@ -1239,15 +1240,26 @@ def job_reason(job: dict) -> str:
     return ""
 
 
-def job_up_to(job: dict, step: dict) -> dict:
-    """The job as `step` sees it: its steps up to and including that one. A step's write of
-    $GITHUB_ENV or $GITHUB_PATH reaches only the steps after it, and its `go env -w` the go
-    commands after it, its own script's included, so a step later in the job moves nothing `step`
-    runs: reading the whole job would refuse a pinned step, or widen a claimed command, for a
-    write that comes after it. The whole job where `step` is none of its steps."""
+def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
+    """The job as `step` sees it: its steps before that one, and with `including` that one too. A
+    step's write of $GITHUB_ENV or $GITHUB_PATH reaches only the steps after it, so a step later in
+    the job moves nothing `step` runs: reading the whole job would refuse a pinned step, or widen a
+    claimed command, for a write that comes after it. `step`'s own script is read with it where
+    that script is no pin: its `go env -w` reaches its later go commands. A pinned step's own
+    script is what its entry pins, so refuse_off_pin reads only the steps before it. The whole job
+    where `step` is none of its steps."""
     steps = job.get("steps") or []
     at = next((i for i, s in enumerate(steps) if s is step), None)
-    return job if at is None else {**job, "steps": steps[:at + 1]}
+    return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
+
+
+def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
+    """Whether a run: step names the repository script `source`: by its path from the repository
+    root, or from the directory the step runs in, as a whole word of its run: text."""
+    run = str(step.get("run", ""))
+    workdir = step_workdir(holder, job, step)
+    paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
+    return any(re.search(rf"(?:^|[\s'\"=]|\./){re.escape(p)}(?![\w.-])", run) for p in paths)
 
 
 def around_reason(document: dict, job: dict, steps: list) -> str:
@@ -1306,12 +1318,23 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str) -> str:
-    """The first thing around a ci.yaml job that can change what a go command it starts compiles,
-    over its own steps and those of a workflow it calls, each read under the env:, defaults and
-    container of the file that holds it; or ''."""
-    for own, _, _, holder, job in units:
-        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
+def around_job(units: list, owner: str, source: str) -> str:
+    """The first thing around a ci.yaml job that can change what a go command its script `source`
+    holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
+    defaults and container of the file that holds it; or ''. Where steps of those jobs name the
+    script (names_script), each such job is read up to and including the last of them, since a
+    step after it runs after the script, and a job naming it nowhere is not read; where none
+    does, every job is read whole, since the script may be started some way this check does not
+    see - by another script, or by a test it compiles."""
+    owned = [(holder, job) for own, _, _, holder, job in units if own == owner]
+    read = []
+    for holder, job in owned:
+        steps = job.get("steps") or []
+        naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
+        if naming:
+            read.append((holder, {**job, "steps": steps[:naming[-1] + 1]}))
+    for holder, job in read or owned:
+        reason = around_reason(holder, job, job.get("steps") or [])
         if reason:
             return reason
     return ""
@@ -1328,8 +1351,8 @@ def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, w
     """Refuse a run: step its Exact entries pin (`entries`, each (the gate's filter, Exact)) where
     the step is not what they pin: a script or a directory other than an entry's, named by the
     first line that differs (pin_difference) or by both directories, and an env, shell, container
-    or step of the job up to this one (around_reason over job_up_to) that can change what its go
-    commands compile or which tests they run.
+    or step of the job before this one (around_reason over job_up_to) that can change what its go
+    commands compile or which tests they run. Its own script's writes are the pin's to hold.
 
     Refused rather than read as reading everything, which a step off its pin once counted as. The
     pin is also the table's word for which tests the step runs - ci_job_reads.py builds the
@@ -1356,7 +1379,8 @@ def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, w
                                         f"that text there again, or change {'the entry' if len(names) == 1 else 'the entries'}, "
                                         f"and any list of ci_job_reads.py its text is built from, with the step"))
     # A step already refused as off its pin is not refused again for a character its script holds.
-    moved = around_reason(holder, job_up_to(job, step), [step]) or ("" if off_pin else script_reason(script))
+    moved = (around_reason(holder, job_up_to(job, step, including=False), [step])
+             or ("" if off_pin else script_reason(script)))
     if moved:
         problems.append(error(path, f"{where} step \"{label}\" is pinned whole by {exact_entries(n for n, _ in entries)}, "
                                     f"but {moved}, and that can change what its go commands compile, or which tests "
@@ -1535,9 +1559,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or any of its steps (the check does not know which starts the script), no container: and
-    # no environment write of the job can move it. A job that calls a workflow runs the script from
-    # that workflow's jobs, so each of them is read the same way. Its variables are the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - its steps
+    # up to the last one naming the script, or all of them where none does (around_job), since the
+    # check does not otherwise know which step starts it. A job that calls a workflow runs the
+    # script from that workflow's jobs, so each of them is read the same way. Its variables are
+    # the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
@@ -1553,7 +1579,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job, r.source) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:

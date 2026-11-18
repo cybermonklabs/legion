@@ -1513,6 +1513,44 @@ check "names the script's command and its line" \
   "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (its line is `go build ./cmd/app ./other`, not the text alone), so it counts as reading every Go file of the repository')"
 check "and the file the module adds" "$(contains "$out" '::error file=mod/other/other.go::')"
 
+# A script's go command is read under the job's steps up to the last one whose run: names the
+# script, since a later step runs after the script; where no step names it, under every step,
+# since it may be started some way this check does not see. script_job <root>: script-line's Run
+# of build.sh, its line the text alone.
+script_job() {
+  printf '#!/bin/sh\ngo build ./cmd/app\n' > "$1/build.sh"
+  replace "$1/.github/scripts/ci_job_reads.py" 'text="go test ./cmd/app ./lib"),' \
+    'text="go test ./cmd/app ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+}
+path_write=$'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n'
+build_step=$'      - name: Build the app\n        run: sh build.sh\n'
+report_step="      - name: Report ci-ok when this job decides a merge-group run"
+
+echo "case: a write after the step that runs a script reaches none of the script's commands"
+root=$(fixture script-write-after)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$report_step"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a write before the step that runs a script widens the script's commands"
+root=$(fixture script-write-before)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$build_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" \
+  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
+echo "case: a write anywhere in a job no step of which names the script widens the script's commands"
+root=$(fixture script-write-unnamed)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" \
+  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
 echo "case: a claimed simple go command whose step runs it in another directory"
 root=$(fixture moved-working-directory)
 mkdir -p "$root/alt/cmd/app" "$root/alt/lib"
@@ -1874,6 +1912,31 @@ replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this 
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "and reads the step as its runs" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+
+# A pinned step's own script is the pin's to hold: a write on its last line reaches only the steps
+# after it, so it refuses none of the step's own commands, while a pinned step after it is
+# refused for it.
+echo "case: a pinned step whose own script ends with an env write is not refused for it"
+root=$(fixture exact-step-own-write)
+exact_step_table "$root"
+replace "$root/.github/scripts/ci_job_reads.py" "\\ndone', [" "\\ndone\\necho \"X=1\" >> \"\$GITHUB_ENV\"', ["
+replace "$root/.github/workflows/ci.yaml" $'            go test -count=1 "$pkg"\n          done' \
+  $'            go test -count=1 "$pkg"\n          done\n          echo "X=1" >> "$GITHUB_ENV"'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES[0] = gate("app", "app", exact=GATES[0].exact + (
+    exact("Test the library again", "mod", 'for pkg in ./lib; do\n  go test "$pkg"\ndone', [
+        run("mod", ["./lib"], at("app", "Test the library again") + " (its pinned script): go test of the library"),
+    ]),
+), reads=GATES[0].reads)
+PY
+replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Test the library again\n        run: |\n          for pkg in ./lib; do\n            go test "$pkg"\n          done\n        working-directory: mod\n      - name: Report ci-ok when this job decides a merge-group run'
+run_check "$root"
+check "but a pinned step after it is refused for it" \
+  "$(contains "$out" 'job app step "Test the library again" is pinned whole by gate app.s exact entry, but step "Test the app" runs `$GITHUB_ENV`, which every later step inherits, ')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
 
 # Both at once: a step off its pin and under an env that moves it fails on each, so neither
 # refusal hides the other - a check that asked about the env first, and compared the text only

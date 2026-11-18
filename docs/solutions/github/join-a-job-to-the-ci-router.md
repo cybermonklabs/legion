@@ -297,8 +297,10 @@ fails the pull request that adds it.
 
 - `GATES`: per filter, the job, its go commands and its other steps' reads. Each go command is a
   `Run` pinned to its text: `step_run` for a `run:` step of the job, `script_run` for a script the
-  job runs, pinned to the script's whole line. The check fails when a job's `run:` step starts a
-  go command (`go test`, `vet`, `build`, `run`, `list`, `install`, `generate`) nothing claims.
+  job runs, pinned to the script's whole line and read under the env, shell and environment writes
+  of the job's steps up to the last one whose `run:` names the script (all of them where none
+  does). The check fails when a job's `run:` step starts a go command (`go test`, `vet`, `build`,
+  `run`, `list`, `install`, `generate`) nothing claims.
   It reduces a claimed command only in its simple form: one line of `go test|vet|build`,
   relative package paths and only `-v`, `-race`, `-count=N`, `-timeout D`, `-buildvcs=false` and
   one `-tags T`, that is its step's whole `run:` script (split at `\n` alone, stripped of spaces
@@ -341,14 +343,14 @@ fails the pull request that adds it.
   skips or also skips, so change the entry with the step. That holds a step whose list
   `ci_job_reads.py` builds from one declaration to it: the text-check job's guard step runs
   exactly `TEXT_CHECK_TESTS`, the names envoy-go's plain step leaves out, so a test dropped from
-  one side fails `ci-filters` rather than running in no job. An env, shell, container or
-  environment write up to and including the step that could move what it compiles or which tests
-  it runs fails the check too, naming it: `GOFLAGS: -skip=...` in the step's env skips a test its
-  `-run` names, and the pinned text would not show it. Put such a setting on the script's own
-  line, where the pin holds it and the entry's run can say it, or, for a name with which go
-  compiles the same files and runs the same tests (`GOMAXPROCS`), add it to `ENV_ALLOWED`.
-  envoy-go's unit-test step, envoy-go-checks' pack step and envoy-smoke's plugin-schema step are
-  exact entries.
+  one side fails `ci-filters` rather than running in no job. An env, shell or container of the
+  step, or an environment write by a step before it, that could move what it compiles or which
+  tests it runs fails the check too, naming it (a write in the step's own script is the pin's to
+  hold): `GOFLAGS: -skip=...` in the step's env skips a test its `-run` names, and the pinned text
+  would not show it. Put such a setting on the script's own line, where the pin holds it and the
+  entry's run can say it, or, for a name with which go compiles the same files and runs the same
+  tests (`GOMAXPROCS`), add it to `ENV_ALLOWED`. envoy-go's unit-test step, envoy-go-checks' pack
+  step and envoy-smoke's plugin-schema step are exact entries.
 
   It fails too when a pinned text or an exact entry's step is gone, and when a job or step is
   gated on a filter neither `GATES` nor `EXCLUDED` lists. A job with no go commands still gets a
