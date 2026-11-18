@@ -91,7 +91,7 @@ func makeCIStateBucket(t *testing.T, natsURL string) {
 	t.Helper()
 	conn := testnats.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
-	if _, err := cistore.Open(conn, logging.New("ci-reconcile-test"), cistore.WithTTL(time.Hour)); err != nil {
+	if _, err := cistore.Open(t.Context(), conn, logging.New("ci-reconcile-test"), cistore.WithTTL(time.Hour)); err != nil {
 		t.Fatalf("make the CI state bucket: %v", err)
 	}
 }

@@ -268,7 +268,7 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 	stopInterestCache(rig.reg)
 
 	// Another listener grants the role: the claim and the lane topic in the bucket's row.
-	other, err := Open(rig.conn, WithReplicas(1), WithClock(rig.clock.Now))
+	other, err := Open(t.Context(), rig.conn, WithReplicas(1), WithClock(rig.clock.Now))
 	if err != nil {
 		t.Fatalf("open the other listener's registry: %v", err)
 	}

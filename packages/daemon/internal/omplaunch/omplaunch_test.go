@@ -2,7 +2,9 @@ package omplaunch
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +20,10 @@ func writeExecutable(t *testing.T, path string) {
 }
 
 // writeMise serves the configured tool's install root. Its test keeps an executable named omp
-// earlier on PATH, so ResolveInvocation must not resolve through ordinary command lookup.
+// earlier on PATH, so ResolveInvocation must not resolve through ordinary command lookup. It runs
+// `x <tool> -- <program> <args…>` as mise runs it under a `_.path` entry of the operator's config:
+// it writes its pid to <path>.pid, puts the directory shims beside it first on PATH, and execs
+// the program.
 func writeMise(t *testing.T, path, tool, install string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -29,6 +34,12 @@ func writeMise(t *testing.T, path, tool, install string) {
 		"  printf '%s\\n' \"" + install + "\"\n" +
 		"  exit 0\n" +
 		"fi\n" +
+		"if [ \"$1\" = x ] && [ \"$2\" = \"" + tool + "\" ] && [ \"$3\" = -- ]; then\n" +
+		"  shift 3\n" +
+		"  echo \"$$\" >\"" + path + ".pid\"\n" +
+		"  PATH=\"" + filepath.Join(filepath.Dir(path), "shims") + ":$PATH\"\n" +
+		"  exec \"$@\"\n" +
+		"fi\n" +
 		"exit 1\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -37,8 +48,9 @@ func writeMise(t *testing.T, path, tool, install string) {
 
 // ResolveInvocation is the shipped resolveOmpInvocation (environment.ts:312-341): an absolute
 // LEGION_OMP_PATH is resolved and used directly; otherwise the configured invocation must be
-// `mise x <tool> -- omp`, kept verbatim with mise pinned to its resolved absolute path, so mise
-// still activates the tool inside the pane.
+// `mise x <tool> -- omp`, run with mise pinned to its resolved absolute path, so mise still
+// activates the tool inside the pane, and with the configured tool's own omp after the shell that
+// puts the launch's first PATH entry back in front (keepPathHead).
 func TestResolveInvocation(t *testing.T) {
 	dir := t.TempDir()
 	realOmp := filepath.Join(dir, "installs", "omp-18", "bin", "omp")
@@ -57,6 +69,7 @@ func TestResolveInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	const pinned = "mise x github:sjawhar/oh-my-pi@18.1.21 -- omp"
+	const pathHeadFirst = `/bin/sh -c 'PATH=$1:$PATH && shift && exec "$@"' sh "${PATH%%:*}" `
 
 	for _, tc := range []struct {
 		name       string
@@ -107,13 +120,13 @@ func TestResolveInvocation(t *testing.T) {
 			name:       "mise resolves the configured tool's binary, not an omp earlier on PATH",
 			invocation: pinned,
 			env:        map[string]string{"LEGION_MISE_PATH": mise, "PATH": filepath.Dir(linkedOmp)},
-			want:       "'" + mise + "' x github:sjawhar/oh-my-pi@18.1.21 -- " + realOmp,
+			want:       "'" + mise + "' x github:sjawhar/oh-my-pi@18.1.21 -- " + pathHeadFirst + realOmp,
 		},
 		{
 			name:       "mise resolves the configured tool's binary through PATH",
 			invocation: pinned,
 			env:        map[string]string{"PATH": filepath.Dir(linkedOmp) + ":" + filepath.Dir(mise)},
-			want:       "'" + mise + "' x github:sjawhar/oh-my-pi@18.1.21 -- " + realOmp,
+			want:       "'" + mise + "' x github:sjawhar/oh-my-pi@18.1.21 -- " + pathHeadFirst + realOmp,
 		},
 		{
 			name:       "any other invocation",
@@ -149,6 +162,52 @@ func TestResolveInvocation(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// The program mise starts from the resolved fragment is OMP itself, which the shell's exec leaves
+// in the process mise ran in, with the first entry of the PATH the launch ran under back in front
+// of the directory mise put first, and the rest of the PATH as mise made it. That entry holds a
+// space and a `$`, and stays the one directory it names.
+func TestResolvedMiseInvocationKeepsTheLaunchsFirstPathEntryFirst(t *testing.T) {
+	dir := t.TempDir()
+	omp := filepath.Join(dir, "installs", "omp-18", "bin", "omp")
+	record := filepath.Join(dir, "record")
+	if err := os.MkdirAll(filepath.Dir(omp), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(omp, []byte("#!/bin/sh\nprintf '%s\\n' \"$$\" \"$PATH\" \"$*\" >\""+record+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mise := filepath.Join(dir, "mise")
+	writeMise(t, mise, "github:sjawhar/oh-my-pi@18.1.21", filepath.Dir(filepath.Dir(omp)))
+	invocation, err := ResolveInvocation("mise x github:sjawhar/oh-my-pi@18.1.21 -- omp", func(name string) string {
+		return map[string]string{"LEGION_MISE_PATH": mise}[name]
+	})
+	if err != nil {
+		t.Fatalf("ResolveInvocation: %v", err)
+	}
+	launcher := filepath.Join(dir, "state $dir", "bin")
+	launch := exec.Command("/bin/sh", "-c", invocation+" --mode rpc --append-system-prompt '/state/a prompt.md'")
+	launch.Env = []string{"PATH=" + launcher + ":/usr/bin:/bin"}
+	if output, err := launch.CombinedOutput(); err != nil {
+		t.Fatalf("%s: %v\n%s", invocation, err, output)
+	}
+	pid, err := os.ReadFile(mise + ".pid")
+	if err != nil {
+		t.Fatalf("mise x never ran: %v", err)
+	}
+	seen, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("OMP never ran: %v", err)
+	}
+	want := strings.Join([]string{
+		strings.TrimSpace(string(pid)),
+		launcher + ":" + filepath.Join(dir, "shims") + ":" + launcher + ":/usr/bin:/bin",
+		"--mode rpc --append-system-prompt /state/a prompt.md",
+	}, "\n") + "\n"
+	if string(seen) != want {
+		t.Errorf("OMP recorded its pid, PATH and arguments as\n%s\nwant (mise's pid, the launch's first PATH entry before mise's PATH, the launch's arguments)\n%s", seen, want)
 	}
 }
 

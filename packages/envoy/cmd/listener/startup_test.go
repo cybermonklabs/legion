@@ -569,7 +569,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}

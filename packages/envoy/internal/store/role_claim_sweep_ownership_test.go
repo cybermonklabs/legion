@@ -51,7 +51,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
