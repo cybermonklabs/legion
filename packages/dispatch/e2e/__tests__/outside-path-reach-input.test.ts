@@ -626,10 +626,9 @@ describe.concurrent("outside-path-reach.sh", () => {
       const cases = locales.flatMap((locale) =>
         Array.from({ length: 256 }, (_, byte) => ({ locale, byte }))
       );
-      // 64 runners at once, each running its share of the cases one after another, so 64 runs at a
-      // time as before: the test process starts 64 children for the 768 runs, where a child of
-      // its own for each run held its event loop 768 times. No run reaches the network: a taken
-      // byte stops at the old curl, a refused one before it.
+      // 64 runners at once, each running its share of the cases one after another: 64 runs at a
+      // time, from 64 children of the test process for the 768 runs. No run reaches the network:
+      // a taken byte stops at the old curl, a refused one before it.
       const runners = 64;
       const shares = Array.from({ length: runners }, (_, runner) =>
         cases
