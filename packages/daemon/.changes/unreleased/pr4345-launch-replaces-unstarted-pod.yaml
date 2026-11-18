@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+    A launch now replaces a pod of its own that a node scheduled but never started, whichever pod
+    the sandbox runtime launches: an issue pod or the project controller's. A node that cannot
+    mount a pod's volumes leaves the pod scheduled with PodReadyToStartContainers=False, and each
+    launch try waited the boot timeout on that same pod and was charged a launch failure, so the
+    claim held its slot until its launch budget ran out. A try that finds its pod still in that
+    state, created longer than the boot timeout ago and scheduled longer than half the boot timeout
+    or a minute ago, whichever is less, now replaces it with a new pod, and logs the pod, its node,
+    how long it has not started and how long its node has had it. The new pod's disk is new only
+    where the pod's volume is ephemeral, as an issue pod's is; the controller's pod comes back on
+    the disk its Sandbox's volume claim keeps. A pod scheduled more recently is kept, so a pod that
+    waited unscheduled for room and has just been placed still starts; a stuck pod placed that late
+    is kept by one more try, which is charged, and the try after it replaces the pod. The try that
+    timed out is still charged, and the new pod can land on the same node.
+time: 2026-11-17T19:49:49Z
+custom:
+    Issue: pr4345

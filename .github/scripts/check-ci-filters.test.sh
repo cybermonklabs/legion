@@ -2269,7 +2269,7 @@ COMPILERS = (
 # (measured: zero claude-envoy files in packages/pi-legion's program), and check-ts-filters.sh
 # cannot hold the filter to it.
 READS = (
-    ("envoy_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
+    ("broker_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
      "packages/broker-client/src/__tests__/wire.test.ts:25-26"),
     ("contracts", "packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json",
      "packages/contracts/src/dispatch-block-ref.test.ts:98-102"),

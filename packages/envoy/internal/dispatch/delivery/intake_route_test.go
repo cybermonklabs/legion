@@ -167,11 +167,11 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 	}
 }
 
-// TestIntakeAcksAnEnvelopeWithNoPayloadSilently: Envoy relays a GitHub event it builds no payload
-// for (normalize.go's githubPayload answers "" for an event it has no case for, an installation
-// event among them), on notifications.github.unknown.unknown.comment when the event names no
-// repository. It carries no kind, so it is no kind intake records: acknowledged with no ERROR
-// line, no GitHub call and no write.
+// TestIntakeAcksAnEnvelopeWithNoPayloadSilently: a GitHub-subject envelope with no payload, which
+// the listener no longer publishes for any webhook (GithubEnvelopes publishes nothing for an event it
+// does not normalize) but a caller of its publish route still can, on
+// notifications.github.unknown.unknown.comment here. It carries no kind, so it is no kind intake
+// records: acknowledged with no ERROR line, no GitHub call and no write.
 func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
