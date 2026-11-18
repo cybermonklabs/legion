@@ -287,23 +287,35 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	elapsed := time.Since(started)
 	serving, _, _, queued := rig.state()
 	triesMu.Lock()
-	defer triesMu.Unlock()
-	total, most := 0, 0
+	total, most, laneCount := 0, 0, len(tries)
 	for _, count := range tries {
 		total += count
 		most = max(most, count)
 	}
+	// Released before the goroutine count is read below: a try takes this lock.
+	triesMu.Unlock()
 	bound := triesWithin(elapsed)
 	t.Logf("%d lanes parked for %v: %d tries (%.1f a second, %.2f a lane a second at the end's 1 per %v), at most %d on one lane (bound %d); %d goroutines serving, %d sends queued",
 		lanes, elapsed.Round(time.Millisecond), total, float64(total)/elapsed.Seconds(),
 		float64(total)/elapsed.Seconds()/lanes, mentionOrderRetryMax, most, bound, serving, queued)
-	if len(tries) != lanes {
-		t.Fatalf("%d lanes were tried, want all %d", len(tries), lanes)
+	if laneCount != lanes {
+		t.Fatalf("%d lanes were tried, want all %d", laneCount, lanes)
 	}
 	if most > bound {
 		t.Fatalf("a lane was tried %d times in %v, want at most %d (mentionOrderRetry)", most, elapsed, bound)
 	}
 	if queued != lanes {
 		t.Fatalf("%d sends are queued, want the %d parked ones still among them", queued, lanes)
+	}
+	// No goroutine serves a parked lane: one serves it only for the moment of a try, so the count
+	// reaches 0 between tries. A park that held its goroutine (slept its wait out on it) keeps one
+	// on every lane it serves, and the count never reaches 0.
+	idle := false
+	for deadline := time.Now().Add(time.Second); !idle && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		serving, _, _, _ = rig.state()
+		idle = serving == 0
+	}
+	if !idle {
+		t.Fatalf("%d goroutines serve the %d parked lanes throughout a second, want none between tries", serving, lanes)
 	}
 }

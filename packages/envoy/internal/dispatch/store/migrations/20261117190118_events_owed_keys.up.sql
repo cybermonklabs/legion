@@ -3,18 +3,21 @@
 -- What an event still owes, as the outbox last recorded it (outbox.recordBatch, owedKeys).
 --
 --   owed_keys   the destination keys of the sends the event still owes once the outbox's last
---               record of it was written: the destination key (outbox's destination.key) of
---               every destination of its list that no batch has reached, a copy that waits on
---               a mention among them, and no copy a comment_fallback_copies row owns.
---               The owner's topic family is spelled model.OwedTopicFamily, a session's own
---               subject and a role with no known holder by their subjects, and an event whose
---               list ends at a recipient read that failed owes model.OwedAnySession beside
---               them. A published event owes nothing (an empty array), and so does one whose
---               row the outbox read but cannot publish: its list holds a null, or its actor or
---               payload does not decode. A row the outbox cannot scan is not recorded at all,
---               and keeps null or what an earlier record wrote. Null is an event no record has
---               written it for yet, which owes at least its owner's topic family, the first
---               destination of every event.
+--               record of it was written: the key of every destination of its list that no
+--               batch has reached, a copy that waits on a mention among them, and no copy a
+--               comment_fallback_copies row owns. The owner's topic family is spelled
+--               model.OwedTopicFamily, a session's own subject is that subject, and a role
+--               route is its role topic whichever holder it resolved to, since the holder can
+--               change before the event's next record; an event whose list ends at a recipient
+--               read that failed owes model.OwedAnySession beside them. An event the record
+--               publishes owes nothing (an empty array), and so does one whose row the outbox
+--               read but cannot publish: its list holds a null, or its actor or payload does not
+--               decode. The record writes the column only while the publisher hold is its own; a
+--               record made without it leaves the column as it was, on an event it publishes
+--               too, which nothing reads: both rules read unpublished events alone. A row the
+--               outbox cannot scan is not recorded at all, and keeps null or what an earlier
+--               record wrote. Null is an event no record has written it for yet, which owes at
+--               least its owner's topic family, the first destination of every event.
 --
 --   owed_seq    the owner's last_seq (issues, artifacts or projects) as the batch that wrote
 --               owed_keys read it, in the same statement as the routing those keys come from,

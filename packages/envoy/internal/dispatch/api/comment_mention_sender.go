@@ -145,7 +145,7 @@ func (m mentionSend) claim() mentionClaim {
 type mentionClaimState struct {
 	// claimed is the claim this sender holds on the attempt, as it last wrote it, so one statement
 	// writes the claims of every attempt it holds again: every send that has not started, and a
-	// send in flight until it ends (next). A try that claims the attempt for itself takes that
+	// send in flight until it ends (claimedDuring). A try that claims the attempt for itself takes that
 	// claim out of the statements' reach, as each matches only the claim recorded here, and park
 	// records the try's; a try that reads the rule alone (sendCommentMention) writes no claim, so
 	// its send's row still carries the one recorded here, and a refresh that writes it meanwhile
@@ -160,7 +160,7 @@ type mentionClaimState struct {
 	// its answer after the read took the row may have written a claim the read never saw.
 	lost uint64
 	// trying is that a try of the attempt is in flight (mentionSender.markTrying), from before the try
-	// until its park records its claim or the send ends (next), which the re-read of the unsure
+	// until its park records its claim or the send ends (claimedDuring), which the re-read of the unsure
 	// claims leaves alone (rereadUnsure).
 	trying bool
 }
@@ -873,7 +873,7 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 // (model.DeliveryClaimSinceSQL) - and a claim is recorded only while its attempt is no try's and
 // its record is the one the read named, so a try's own claim, which a try that started after the
 // read began may have taken, is never recorded here: that try records its own (park), or ends
-// (next). An attempt it answers no row for is no longer this sender's to write, and stays as it
+// (claimedDuring). An attempt it answers no row for is no longer this sender's to write, and stays as it
 // is. A read that fails leaves every one unsure for the next refresh.
 func (m *mentionSender) rereadUnsure(ctx context.Context) {
 	m.mu.Lock()

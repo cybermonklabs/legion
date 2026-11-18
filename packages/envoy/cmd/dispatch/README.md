@@ -2354,8 +2354,9 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
-a published event holds an empty array, and so does one whose row the outbox read but cannot publish (its list holds a null, or its actor or payload does not decode);
+an event the record publishes owes nothing, an empty array, and so does one whose row the outbox read but cannot publish (its list holds a null, or its actor or payload does not decode);
 a row the outbox cannot scan is not recorded at all, so it keeps null or what an earlier record wrote, and an event no record has written it for holds null.
+The record writes the column only while the publisher hold is its own, so a record made after its process lost the hold leaves it as it was, on an event it publishes too, where nothing reads it: both rules read unpublished events alone.
 The same `ALTER` adds `events.owed_seq`, nullable `integer`: the owner's `last_seq` the batch that wrote `owed_keys` read beside the routing they come from, written with them and only with them.
 A copy of a mention - the API's own send and the outbox's fallback row - waits behind every earlier event of its owner that still owes a send its session may take, or whose `owed_seq` is behind the owner's newest event - a write since the record may have made the session a destination of it (`model.MentionCopyHolderSQL`) - and null owes the topic family, so an event written before the migration holds those copies until the outbox records it again or publishes it.
 The newest event is the newest that is no pending subscription command, which makes no session a destination and which no batch reads, so it leaves the record current.

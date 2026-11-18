@@ -30,8 +30,9 @@ name: CI caches
 # its objects. So each family is filled on every architecture one of its readers runs on, one
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
-# each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, envoy-go-checks, the browser lane and the release builds on the second). A leg builds
+# each has a reader on each (typecheck and the envoy lanes but one on the first; daemon-go,
+# plugin-pack, pi-legion, envoy-go-checks, envoy-go-claim-model, the browser lane and the release
+# builds on the second). A leg builds
 # what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
 # arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg. One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
@@ -230,8 +231,8 @@ jobs:
   # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
   # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
   # independent, and each build is gated on its own lookup. One leg per runner: the envoy lanes
-  # that restore them run on ubuntu-24.04-arm, and the browser lane's jobs that restore them on
-  # ubuntu-24.04.
+  # that restore them run on ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were
+  # measured on ubuntu-24.04, and the browser lane's jobs restore them on ubuntu-24.04.
   envoy:
     strategy:
       fail-fast: false

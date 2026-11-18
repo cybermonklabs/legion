@@ -373,26 +373,42 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 // it goes, past the warn threshold, it logs no WARN that it waited behind an earlier event: such a
 // WARN would name session "" and event 0, which does not exist. TestTheMentionSenderClaimModel
 // finds it as a held send whose late WARN names event 0. The control row's read answers at once.
+//
+// A second send of the owner that joins the lane that park made is no held copy either while the
+// lane waits behind no event (queueLocked stamps it only behind one): when both then go, past the
+// threshold, neither logs a WARN. When the head's try then waits behind event 42, that park stamps
+// the send that joined unstamped (park), so each WARN as they go names event 42 and a wait of the
+// milliseconds the test takes, never the age of a send stamped at no time.
 func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		readFail bool
+		// second joins a-second to the lane the failed read parked, before the read answers.
+		second bool
+		// headWaits makes a-first's first try wait behind event 42 for s1.
+		headWaits bool
 	}{
 		{name: "control: the claim read answers"},
 		{name: "the claim read fails once, past the threshold", readFail: true},
+		{name: "a second send joins the lane the failed read parked, and both go past the threshold", readFail: true, second: true},
+		{name: "a second send joins the lane the failed read parked, and the head then waits behind event 42", readFail: true, second: true, headWaits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &storetest.LockedLog{}
 			logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 			lifetime, stop := context.WithCancel(context.Background())
-			tried := make(chan mentionKey, 4)
-			var fails atomic.Int32
+			tried := make(chan mentionKey, 16)
+			var fails, headTries atomic.Int32
 			if tc.readFail {
 				fails.Store(1)
 			}
 			sender := newMentionSender(lifetime, time.Hour,
 				func(_ context.Context, item mentionSend) (mentionSend, bool) {
 					tried <- item.key()
+					if tc.headWaits && item.comment.ID == "a-first" && headTries.Add(1) == 1 {
+						item.heldFor, item.heldBy = "s1", model.MentionCopyHolder{EventID: 42}
+						return item, true
+					}
 					return mentionSend{}, false
 				},
 				func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, errLostAfterCommit },
@@ -429,39 +445,65 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.serving = 0
 			sender.mu.Unlock()
 			sender.unpark(item.lane())
-			select {
-			case <-tried:
-			case fire := <-timers:
-				// The outage lasts past the threshold, then the read answers.
-				time.Sleep(60 * time.Millisecond)
-				fire()
-				select {
-				case <-tried:
-				case <-time.After(5 * time.Second):
-					t.Fatal("the send never went after its park")
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("the send neither went nor parked")
-			}
-			// reportLate runs after the send leaves held, on the goroutine that served it: wait
-			// for the send to go, then join that goroutine before reading the log.
-			waitUntil(t, 2*time.Second, "the sender to let the send go", func() bool {
+			joined := false
+			// Each park's timer is fired once the wait is past the threshold; the run ends when the
+			// sender holds no send.
+			for deadline := time.After(5 * time.Second); ; {
 				sender.mu.Lock()
-				defer sender.mu.Unlock()
-				return len(sender.held) == 0
-			})
+				done := len(sender.held) == 0
+				sender.mu.Unlock()
+				if done {
+					break
+				}
+				select {
+				case fire := <-timers:
+					if tc.second && !joined {
+						// The lane the failed read parked holds a-first and no wait: a-second joins it.
+						joined = true
+						sender.enqueue(context.Background(), mentionSend{
+							comment: model.Comment{ID: "a-second", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+							attempt: 1, claimed: time.Now(),
+						})
+					}
+					// The outage lasts past the threshold, then the read answers.
+					time.Sleep(60 * time.Millisecond)
+					fire()
+				case <-tried:
+				case <-time.After(10 * time.Millisecond):
+				case <-deadline:
+					t.Fatal("the sends neither went nor parked")
+				}
+			}
+			if tc.second && !joined {
+				t.Fatal("the failed read parked no lane for a-second to join")
+			}
+			// reportLate runs after a send leaves held, on the goroutine that served it: join that
+			// goroutine before reading the log.
 			stop()
 			sender.wait()
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-			var line string
+			var lines []string
 			for l := range strings.SplitSeq(logs.String(), "\n") {
 				if strings.Contains(l, marker) {
-					line = l
+					lines = append(lines, l)
 				}
 			}
-			t.Logf("held WARN line: %q", line)
-			if line != "" {
-				t.Fatalf("a send that waited behind no event logged the held WARN as it went: %s", line)
+			t.Logf("held WARN lines: %q", lines)
+			if !tc.headWaits {
+				if len(lines) != 0 {
+					t.Fatalf("a send that waited behind no event logged the held WARN as it went: %s", lines[0])
+				}
+				return
+			}
+			second := false
+			for _, line := range lines {
+				if !strings.Contains(line, "event_id=42 ") || !strings.Contains(line, "held_for=0s") {
+					t.Fatalf("a WARN of a send that waited behind event 42 for milliseconds names another wait: %s", line)
+				}
+				second = second || strings.Contains(line, "comment=a-second ")
+			}
+			if !second {
+				t.Fatalf("a-second, which waited behind event 42 past the threshold, logged no WARN: %q", lines)
 			}
 		})
 	}

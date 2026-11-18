@@ -36,8 +36,8 @@ import (
 // send's try - and on the model's own state, every claim in it named by its order among the claims
 // in play and its age, which is all the code compares (model.DeliveryClaimSinceSQL,
 // model.DeliveryClaimFreeSQL), and each attempt's lost count by whether it moved since a re-read
-// in flight began, which is all the code compares of it. A lane goroutine's lane variable is left
-// out of the key, the sender's lanes and ready list standing for it.
+// in flight began, which is all the code compares of it. A lane goroutine is keyed with the lane
+// it serves and its park's pending timer.
 //
 // What the model holds:
 //   - comments A-1 and A-2 of issue T-1, each mentioning session s1 under attempt 1, which commits

@@ -286,6 +286,24 @@ func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
 			if err := database.Pool.QueryRow(ctx, `select published_at is not null from events where id = $1`, updated.ID).Scan(&published); err != nil || !published {
 				t.Fatalf("issue.updated published %v (%v), want published by the record", published, err)
 			}
+			// What the record wrote of issue.updated's own owed_keys and owed_seq: the record with
+			// the hold writes both (owing nothing, as of T-1's last_seq), and a record without it -
+			// after its process lost the hold, or of the release before this one - writes neither,
+			// the event it publishes among them.
+			var neither, both bool
+			if err := database.Pool.QueryRow(ctx, `
+				select owed_keys is null and owed_seq is null, coalesce(owed_keys = '{}' and owed_seq = $2, false)
+				from events where id = $1
+			`, updated.ID, lastSeq).Scan(&neither, &both); err != nil {
+				t.Fatalf("read issue.updated's owed columns: %v", err)
+			}
+			t.Logf("issue.updated after the record: neither column written %v, both written as of last_seq %d %v", neither, lastSeq, both)
+			if tc.record == "held" && !both {
+				t.Fatalf("the record with the hold left issue.updated's owed_keys and owed_seq unwritten, want '{}' and %d", lastSeq)
+			}
+			if tc.record != "held" && !neither {
+				t.Fatalf("a record without the hold wrote issue.updated's owed_keys or owed_seq, want neither: the record writes them only while the hold is its own")
+			}
 			owed, _, _, _ := eventRecord(t, database, earlier.ID)
 			by, err := copyHolder(ctx, deps, comment.ID, s1, "s1")
 			if err != nil {

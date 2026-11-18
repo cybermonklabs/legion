@@ -1866,8 +1866,8 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the fifteen tests of the Dispatch API's
-# eight static checks - its seven source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
+# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is

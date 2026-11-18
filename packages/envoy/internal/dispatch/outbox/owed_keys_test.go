@@ -107,76 +107,114 @@ func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 // the role's topic. The role then moves to a live session, next, before the event's next record. A
 // later comment of T-1 mentions next. next's copy waits behind the earlier event, on the fallback
 // pass's road (copyHolder) as on the API's (TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow),
-// because the event's next try forwards it to the role's holder now, next - which the run then
-// shows: next's first copy is the earlier event.
+// because the event's next try forwards it to the role's holder now, next.
+//
+// The first row moves the role after a record made as of the comment, while the old holder still
+// resolved, and the move writes no event of T-1 (a role's claim is the session registry's): that
+// record is current, so only what it owes decides, and it owes the role's topic, whoever holds the
+// role now. A record that named the holder it resolved to would owe the old holder alone, and
+// next's copy would wait behind nothing while the earlier event's retry reaches next first. The
+// second row moves the role before the comment, so the record made as of the comment reads next as
+// the holder, and the run shows the retry: next's first copy is the earlier event.
 //
 // Controls in the same run: a copy for a session that does not hold the role waits for nothing,
 // and the outbox's own order holds the comment's forward to next behind the earlier event.
 func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) {
-	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
-	ctx := context.Background()
-	rig := newRoleRig(t)
-	const role, stale, next = "reviewer", "ses_stale_holder", "ses_next_holder"
-	rig.claimRegisteredAt(t, role, stale, session.LiveWindow+time.Minute)
-	recv := rig.receiver(t, next)
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	earlier := rig.routedEvent(t, "T-1", role, alice)
+	for _, tc := range []struct {
+		name string
+		// afterRecord moves the role once the record made as of the comment is written.
+		afterRecord bool
+	}{
+		{name: "the role moves after the record made as of the comment, with no event of the issue", afterRecord: true},
+		{name: "the role moves before the comment", afterRecord: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
+			ctx := context.Background()
+			rig := newRoleRig(t)
+			const role, stale, next = "reviewer", "ses_stale_holder", "ses_next_holder"
+			rig.claimRegisteredAt(t, role, stale, session.LiveWindow+time.Minute)
+			recv := rig.receiver(t, next)
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			earlier := rig.routedEvent(t, "T-1", role, alice)
 
-	holding(t, rig.deps()).scan(ctx, unfenced{})
-	var owed []string
-	var published bool
-	if err := rig.database.Pool.QueryRow(ctx, `
-		select coalesce(owed_keys, array['<null>']), published_at is not null from events where id = $1
-	`, earlier.ID).Scan(&owed, &published); err != nil {
-		t.Fatalf("read the earlier event: %v", err)
-	}
-	t.Logf("after the first scan: event %d published %v, owed_keys %v", earlier.ID, published, owed)
-	if published {
-		t.Fatal("the earlier event was published, want it backed off on the holder that is not answering")
-	}
+			holding(t, rig.deps()).scan(ctx, unfenced{})
+			var owed []string
+			var published bool
+			if err := rig.database.Pool.QueryRow(ctx, `
+				select coalesce(owed_keys, array['<null>']), published_at is not null from events where id = $1
+			`, earlier.ID).Scan(&owed, &published); err != nil {
+				t.Fatalf("read the earlier event: %v", err)
+			}
+			t.Logf("after the first scan: event %d published %v, owed_keys %v", earlier.ID, published, owed)
+			if published {
+				t.Fatal("the earlier event was published, want it backed off on the holder that is not answering")
+			}
 
-	rig.claim(t, role, next, session.SessionEntry{SelfSubscribed: true})
-	body := "@session:" + next + " look"
-	commentID := seedComment(t, rig.database, "T-1", alice, body, nil)
-	comment := appendEvent(t, rig.database, rig.broker, model.Event{
-		IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
-		Payload: model.CommentEventPayload{Comment: model.Comment{
-			ID: commentID, IssueKey: new("T-1"), Body: body,
-			Mentions: []model.Mention{{Target: "session:" + next, Delivery: "steer"}},
-		}},
-	})
-	// The outbox's own order: a scan while the earlier event is not due keys its route on next now,
-	// so the comment's own forward to next waits behind it. The same scan records the earlier event
-	// again (owedAgain) as of the comment, so the rule below reads its role route, not a record
-	// older than the comment (owed_seq behind T-1's last_seq), which would hold every session's copy.
-	holding(t, rig.deps()).scan(ctx, unfenced{})
-	forNext, err := copyHolder(ctx, rig.deps(), comment.ID, contracts.LegacyAgentSubject(next), next)
-	if err != nil {
-		t.Fatalf("read the rule for %s: %v", next, err)
-	}
-	forOther, err := copyHolder(ctx, rig.deps(), comment.ID, contracts.LegacyAgentSubject("ses_other"), "ses_other")
-	if err != nil {
-		t.Fatalf("read the rule for ses_other: %v", err)
-	}
-	t.Logf("the rule: the copy for %s waits behind %s; the copy for ses_other waits behind %s", next, describeHolder(forNext), describeHolder(forOther))
-	if forOther != nil {
-		t.Fatalf("control: the copy for ses_other, which holds no role, waits behind %s, want nothing", describeHolder(forOther))
-	}
-	time.Sleep(time.Second)
-	if got := recv.received(); len(got) != 0 {
-		t.Fatalf("control: %s took %d copies while the earlier event was not due, want none", next, len(got))
-	}
-	dueNow(t, rig.database, earlier.ID)
-	holding(t, rig.deps()).scan(ctx, unfenced{})
-	first := handedNow(t, recv, "the earlier event's retry")
-	t.Logf("%s first took event %s (earlier %d, comment %d)", next, first.SourceEventID, earlier.ID, comment.ID)
-	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
-	if first.SourceEventID != fmt.Sprint(earlier.ID) {
-		t.Fatalf("control: %s first took event %s, want the earlier event %d forwarded on its retry", next, first.SourceEventID, earlier.ID)
-	}
-	if forNext == nil || forNext.EventID != earlier.ID {
-		t.Fatalf("the copy of comment %d for %s waits behind %s, want event %d, whose route reaches %s as the role's holder now",
-			comment.ID, next, describeHolder(forNext), earlier.ID, next)
+			if !tc.afterRecord {
+				rig.claim(t, role, next, session.SessionEntry{SelfSubscribed: true})
+			}
+			body := "@session:" + next + " look"
+			commentID := seedComment(t, rig.database, "T-1", alice, body, nil)
+			comment := appendEvent(t, rig.database, rig.broker, model.Event{
+				IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+				Payload: model.CommentEventPayload{Comment: model.Comment{
+					ID: commentID, IssueKey: new("T-1"), Body: body,
+					Mentions: []model.Mention{{Target: "session:" + next, Delivery: "steer"}},
+				}},
+			})
+			// A scan while the earlier event is not due records it again (owedAgain) as of the
+			// comment, so the rule below reads its role route, not a record older than the comment
+			// (owed_seq behind T-1's last_seq), which would hold every session's copy. Where next
+			// holds the role already, the same scan keys the earlier event's route on next, so the
+			// outbox's own order holds the comment's forward to next behind it.
+			holding(t, rig.deps()).scan(ctx, unfenced{})
+			owed, _, _, _ = eventRecord(t, rig.database, earlier.ID)
+			var lastSeq int
+			if err := rig.database.Pool.QueryRow(ctx, `select last_seq from issues where key = 'T-1'`).Scan(&lastSeq); err != nil {
+				t.Fatalf("read T-1's last_seq: %v", err)
+			}
+			t.Logf("after the record as of the comment: the earlier event owes %v; T-1's last_seq %d", owed, lastSeq)
+			if tc.afterRecord {
+				rig.claim(t, role, next, session.SessionEntry{SelfSubscribed: true})
+				var after int
+				if err := rig.database.Pool.QueryRow(ctx, `select last_seq from issues where key = 'T-1'`).Scan(&after); err != nil || after != lastSeq {
+					t.Fatalf("the role's move wrote an event of T-1 (last_seq %d, was %d; %v), want none", after, lastSeq, err)
+				}
+			}
+			forNext, err := copyHolder(ctx, rig.deps(), comment.ID, contracts.LegacyAgentSubject(next), next)
+			if err != nil {
+				t.Fatalf("read the rule for %s: %v", next, err)
+			}
+			forOther, err := copyHolder(ctx, rig.deps(), comment.ID, contracts.LegacyAgentSubject("ses_other"), "ses_other")
+			if err != nil {
+				t.Fatalf("read the rule for ses_other: %v", err)
+			}
+			t.Logf("the rule: the copy for %s waits behind %s; the copy for ses_other waits behind %s", next, describeHolder(forNext), describeHolder(forOther))
+			if forOther != nil {
+				t.Fatalf("control: the copy for ses_other, which holds no role, waits behind %s, want nothing", describeHolder(forOther))
+			}
+			if forNext == nil || forNext.EventID != earlier.ID {
+				t.Fatalf("the copy of comment %d for %s waits behind %s, want event %d, whose route reaches %s as the role's holder now",
+					comment.ID, next, describeHolder(forNext), earlier.ID, next)
+			}
+			if tc.afterRecord {
+				t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
+				return
+			}
+			time.Sleep(time.Second)
+			if got := recv.received(); len(got) != 0 {
+				t.Fatalf("control: %s took %d copies while the earlier event was not due, want none", next, len(got))
+			}
+			dueNow(t, rig.database, earlier.ID)
+			holding(t, rig.deps()).scan(ctx, unfenced{})
+			first := handedNow(t, recv, "the earlier event's retry")
+			t.Logf("%s first took event %s (earlier %d, comment %d)", next, first.SourceEventID, earlier.ID, comment.ID)
+			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
+			if first.SourceEventID != fmt.Sprint(earlier.ID) {
+				t.Fatalf("control: %s first took event %s, want the earlier event %d forwarded on its retry", next, first.SourceEventID, earlier.ID)
+			}
+		})
 	}
 }
 

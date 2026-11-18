@@ -523,7 +523,10 @@ func (m *moModel) process(p int) string {
 	return name
 }
 
-// record is process p's record of its pending batch (recordBatch).
+// record is process p's record of its pending batch (recordBatch). It restates no owed_keys or
+// owed_seq for an event the record publishes, under either hold, because no reader reads a
+// published row: model.MentionCopyHolderSQL and model.MentionCopyRolesSQL filter published_at is
+// null, and recordBatch writes only rows still unpublished.
 func (m *moModel) record(s moState, p int) (moStep, moState, bool) {
 	pend := s.pend[p]
 	if !pend.active {

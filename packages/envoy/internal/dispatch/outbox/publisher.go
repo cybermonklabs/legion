@@ -943,14 +943,8 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					when o.state = 'owed_again' then e.next_attempt_at
 					else null
 				end,
-				owed_keys = case
-					when o.owed_known and (h.mine or o.state = 'published') then coalesce(w.keys, '{}')
-					else e.owed_keys
-				end,
-				owed_seq = case
-					when o.owed_known and (h.mine or o.state = 'published') then o.owed_seq
-					else e.owed_seq
-				end
+				owed_keys = case when o.owed_known and h.mine then coalesce(w.keys, '{}') else e.owed_keys end,
+				owed_seq = case when o.owed_known and h.mine then o.owed_seq else e.owed_seq end
 			from outcome o
 			cross join hold h
 			left join reached r on r.id = o.id

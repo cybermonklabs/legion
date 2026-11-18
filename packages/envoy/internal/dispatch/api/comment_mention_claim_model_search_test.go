@@ -123,8 +123,8 @@ func (r *cmRun) key() string {
 	}
 	// A goroutine as it can still act: the refresh by the slot it started in, which holds time
 	// back; a lane goroutine by its lane and its park's pending timer, and at next by the send it
-	// has finished, if any - the one next releases - and elsewhere by the send it carries, which a
-	// lane goroutine at next no longer reads.
+	// last finished, if any (claimedDuring released it), and elsewhere by the send it carries,
+	// which a lane goroutine at next no longer reads.
 	for i, g := range r.gs {
 		at := "statement"
 		if g.lock != nil {
