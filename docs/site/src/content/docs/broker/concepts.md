@@ -699,7 +699,12 @@ The broker evaluates every name
   same session while one is pending (the same names and the same lifetime, or none) joins it
   rather than asking twice, and any other request naming one of its secrets, with or without
   `--ttl`, is refused `REQUEST_PENDING`, naming the pending request. The session waits for that
-  request to be decided, or cancels it (`agent-secrets cancel`) and asks again. The broker's answer
+  request to be decided, or cancels it (`agent-secrets cancel`) and asks again. The one exception
+  is a pending request whose record is signed for another broker address, another
+  `BROKER_PUBLIC_URL`, such as a broker the session's box asked before it moved to this one: no
+  person and no judge here can decide it, so when its session asks this broker again for one of
+  its names, the broker ends it, cancelled by the broker with a detail that says the broker moved,
+  and the rule then applies to what is left. The broker's answer
   names the approver the record names and the request's page on the broker (`approve_url`), and
   `agent-secrets` prints both, so the agent can tell that person where to approve it. The record
   fixes its approver when the request is made, and the request stays in that
@@ -1066,7 +1071,11 @@ spec document, with the broker's own projected ServiceAccount token, read again 
 the copy it holds is 30 seconds old. The broker writes nothing there — no ask, no comment, no
 status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
-name. Those settings are all-or-none, and the
+name, or, where `BROKER_JUDGE_MODEL_ACCOUNT` names a Google service account, that account's
+identity token for the same audience, which the broker mints at IAM Service Account Credentials
+with the pod's own credential. A mint that fails leaves the request to its person, and the broker
+never presents its own token in that account's place. The judge's other settings are
+all-or-none, and the
 [configuration reference](/legion/broker/reference/config/) gives each one.
 
 ## The audit record
