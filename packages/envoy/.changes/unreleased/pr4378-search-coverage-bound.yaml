@@ -3,8 +3,8 @@ custom:
   Issue: pr4378
 body: |-
   `GET /api/v1/search/coverage` took 10 to 30 s in production; its statement now takes 1.1 to 1.6 s
-  on a synthetic corpus of production's size where the old one took 11.5 to 15.4 s, in every state
-  that corpus was measured in. It reads the window kinds through two partial indexes
+  on a synthetic corpus of production's size where the old one took 11.1 to 17.3 s, in every state
+  two builds Jobs measured that corpus in. It reads the window kinds through two partial indexes
   (`embeddings_window_embedded`, `embeddings_window_unembedded`) by one bitmap scan of both and by
   no other index or plan, never by a sequential scan that tests every window's text, whatever the
   visibility map holds, whatever the statistics read and whatever share of the windows is
