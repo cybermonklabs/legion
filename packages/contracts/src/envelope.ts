@@ -99,8 +99,10 @@ const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
  * key minted once per message (`MINTED_DEDUPE_KEY_PATTERN`). Any other key is not a dedupe key at
  * all, because its producer can give two distinct events one: the MCP bridge's content hash
  * (LEGION-423), the Go daemon's outbox row id, which restarts with each new store (LEGION-426).
- * The stream decides its MsgId by the same rule (`contracts.DedupeKeyNamesTheUpstreamEvent`), and
- * every host decides its own dedupe by this one.
+ * Every host decides its own dedupe by this rule. The stream stores every envelope that has an
+ * `event_id` under a MsgId, and this rule decides only which form that MsgId takes, in Go
+ * (`contracts.DedupeKeyNamesTheUpstreamEvent`, `bus.envelopeMsgID`): the dedupe key and topic for a
+ * key that names its event, and the envelope's own `event_id` and topic for any other.
  */
 export function dedupeKeyNamesItsEvent(envelope: {
   readonly source?: string | undefined;

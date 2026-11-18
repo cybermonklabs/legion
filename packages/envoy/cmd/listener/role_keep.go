@@ -510,13 +510,20 @@ func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contra
 // as many links as it takes: every listener makes the same chain, because each link is named by
 // the sequence the stream gave. A clustered stream's refusal of an id still in process under
 // another publish (bus.ErrDuplicateInProcess) is published again roleKeepInProcessPause later,
-// since the next answer names the copy that publish stored. Every other failure, of a publish or
-// of a read, and a chain that runs out of ctx, is a keep that failed.
+// since the next answer names the copy that publish stored. A publish whose answer the
+// connection's loss took (bus.ErrConnectionLost) may have stored the copy, and the bus sends it
+// once (PublishStoredAck): it is published again under the same id once the connection is back,
+// within ctx (bus.Reconnected), and the stream's answer is read as any is, so a copy the first
+// send stored comes back a duplicate naming it and is judged by heldKeptRoleCopy as the keep's
+// own. Every other failure, of a publish or of a read, and a chain that runs out of ctx, is a keep
+// that failed.
 //
-// The copy a duplicate names is a repeat only when no send of this keep under the same id may
-// have stored it: a duplicate that answers the bus's resend after a closed connection
-// (bus.StoredAck.Resent), and one that follows an in-process refusal of such a resend
-// (bus.ErrUnacknowledged), may name the copy this keep's own first send stored.
+// The copy a duplicate names is a repeat unless a send of this keep under the same id may have
+// stored it and it is this keep's own envelope: a send whose answer the stream may hold
+// (bus.ErrUnacknowledged) - one whose answer the connection's loss took (bus.Reconnected), or one
+// that went out unanswered before an in-process refusal - may have stored the copy a later answer
+// names, and a copy carrying the keep's own event id is then the one it stored. A copy of another
+// event id was stored by another send, the keep's own having been dropped as its duplicate.
 //
 // A new copy's hour counts from its store time, read back at its acknowledged sequence, which is
 // what the walk measures its age against. A read that fails counts it from the listener's clock
@@ -526,17 +533,21 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	subject := bus.KeptRoleSubject(role)
 	first := bus.KeptMsgID(item.DedupeKey, role)
 	msgID := first
-	// ownSend is whether a send of this keep under msgID went out unanswered before the stream
-	// refused a later one as in process.
+	// ownSend is whether a send of this keep under msgID may have stored the copy a later answer
+	// names: one the stream may hold though nothing answered it (bus.ErrUnacknowledged), whether
+	// the connection's loss took its answer or the stream then refused a later send as in process.
 	ownSend := false
 	for {
 		published := cfg.now()
 		ack, err := publish(ctx, subject, item, msgID)
+		ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
-			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
 			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
 				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
 			}
+			continue
+		}
+		if bus.Reconnected(ctx, err) {
 			continue
 		}
 		if err != nil {
@@ -550,7 +561,7 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
 		}
 		if inside {
-			held.repeat = !ack.Resent && !ownSend
+			held.repeat = !ownSend || held.item.EventID != item.EventID
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
@@ -834,12 +845,18 @@ type keptRoleHandover struct {
 // once, for the holder the next pass resolves.
 //
 // A walk that failed is not one that made no progress: it is waited out on a widening cadence
-// (roleKeepDrainBackoff) and its error is carried out of the handover. A walk whose read of the
-// role's claim record did not answer is one (roleKeepDrainHolds), so the pass after its pause
-// resolves the holder again rather than forwarding on a claim no read answered. A read that did
-// not answer - the lane head's, on whichever pass it was made, or the holder's resolution behind
-// one - says nothing about the holder, so the role's claim record decides whether the handover
-// reads again (retry, readRoleClaimHolder): a record naming a session, live or lapsed, is a lane
+// (roleKeepDrainBackoff) and its error is carried out of the handover. A walk or a read the
+// server refused under the listener's grant (bus.ErrPublishDenied) is the exception: the server
+// refuses it again however often it is sent, so the handover ends with the walk or the read that
+// met the refusal, carrying it out, rather than holding the role's guard until its window ends,
+// and the lane is left to the role's next claim and to the sweep. A refused cursor write is named
+// only when its publish's own wait ends (sendStored), so that walk still costs that wait. A walk
+// whose read of the role's claim record did not answer is a walk that failed (roleKeepDrainHolds),
+// so the pass after its pause resolves the holder again rather than forwarding on a claim no read
+// answered. A read that did not answer - the lane head's, on whichever pass it was made, or the
+// holder's resolution behind one - says nothing about the holder, so the role's claim record
+// decides whether the handover reads again (retry, readRoleClaimHolder): a record naming a
+// session, live or lapsed, is a lane
 // whose copies have a holder waiting, so the read is waited out the same way, on any pass
 // including the first, and its failure is carried out too, which lifts a handover that ends still
 // failing above debug; a role no record names - and a record that could not be read either, which
@@ -897,6 +914,10 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		cfg.logger.LogEvent(slog.LevelDebug, line,
 			slog.String("role", role),
 			slog.String("error", cause.Error()))
+		if errors.Is(cause, bus.ErrPublishDenied) {
+			readErr = cause
+			return false
+		}
 		if shutDown() {
 			return false
 		}
@@ -959,6 +980,12 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		// next walk forwards or sends again.
 		if err != nil && !result.unconfirmed && shutDown() {
 			return outcome, nil
+		}
+		// A walk the grant refused ends the handover whatever else this pass found, a holder
+		// resolution that did not answer included: the grant refuses the walk again however often
+		// the lane is walked.
+		if errors.Is(err, bus.ErrPublishDenied) {
+			return ended()
 		}
 		progressed := result.forwarded > 0 || result.ended > 0
 		if progressed {

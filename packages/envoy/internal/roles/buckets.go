@@ -86,15 +86,23 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 }
 
 // within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what.
+// read that did not answer in time is named by what. A read whose connection was lost
+// (bus.ErrConnectionLost) - the bucket open that bucket makes under b.mu, or the key read - is
+// read again once the connection is back, inside the same bound (bus.Reconnected); the failed
+// read has released b.mu by then, since bus.KeyValue and the bucket open answer the loss at once.
 func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
-	if !answered {
-		return value, fmt.Errorf("%s: %w", what, err)
+	for {
+		value, answered, err := bus.Bounded(ctx, read)
+		if !answered {
+			return value, fmt.Errorf("%s: %w", what, err)
+		}
+		if bus.Reconnected(ctx, err) {
+			continue
+		}
+		return value, err
 	}
-	return value, err
 }
 
 // RoleClaim reads role's claim from the role bucket within ctx, decoded as store.Registry decodes

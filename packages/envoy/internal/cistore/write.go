@@ -263,19 +263,23 @@ func (s *Store) nextRewatch() <-chan struct{} {
 // kvErrorLasts reports whether a KV error will outlast a retry within a write's budget. A
 // compare-and-swap conflict never does: both kinds are JetStream 400s (ErrKeyExists, wrong last
 // sequence), so it is answered first, and a caller need not ask bus.IsCASConflict before it. Lasting:
-// the connection is closed, draining or invalid; the connection is not allowed the request
-// (authorization, an expired credential, a permissions violation); the bucket is not there when
-// the handle is taken; JetStream is not enabled for the server or the account, which JetStream
-// reports as a 503 but which is configuration no retry within the budget changes, unlike the 503
-// of a server restarting; JetStream refuses the request itself (any other 4xx, a record over the
-// payload limit); or the handle refuses the key (bus.ErrRefused, bus.EnsureKeyValue: one whose
-// subject NATS would refuse, or one outside nats.go's key alphabet). Anything else is transient,
-// and what the retry actually rescues is a NATS reconnect (ErrReconnectBufExceeded, a request
-// refused while the connection reconnects, and errKVRewatched, a request given up on at the
-// rewatch that follows it), a JetStream 503 while a server restarts, and no responders, which a
-// request gets whenever no server answers for the stream it names. A timeout is transient too,
-// though one at the JetStream MaxWait never comes: the caller's wait (update, two budgets) ends
-// first, and the call is given up on then (errKVUnanswered, which write fails on first).
+// the connection is closed, draining or invalid, which a handle answers only once its client has
+// stopped or on a connection the client has replaced (a running client answers the close of its
+// own connection bus.ErrConnectionLost, transient as a reconnect is: each attempt takes the store's
+// handle afresh, which the rewatch moves onto the connection that replaces the closed one); the
+// connection is not allowed the request (authorization, an expired credential, a permissions
+// violation); the bucket is not there when the handle is taken; JetStream is not enabled for the
+// server or the account, which JetStream reports as a 503 but which is configuration no retry
+// within the budget changes, unlike the 503 of a server restarting; JetStream refuses the request
+// itself (any other 4xx, a record over the payload limit); or the handle refuses the key
+// (bus.ErrRefused, bus.EnsureKeyValue: one whose subject NATS would refuse, or one outside
+// nats.go's key alphabet). Anything else is transient, and what the retry actually rescues is a
+// NATS reconnect (ErrReconnectBufExceeded, a request refused while the connection reconnects,
+// bus.ErrConnectionLost, and errKVRewatched, a request given up on at the rewatch that follows
+// it), a JetStream 503 while a server restarts, and no responders, which a request gets whenever
+// no server answers for the stream it names. A timeout is transient too, though one at the
+// JetStream MaxWait never comes: the caller's wait (update, two budgets) ends first, and the call
+// is given up on then (errKVUnanswered, which write fails on first).
 //
 // No responders is transient because it cannot be told apart from a restart: a restarting server
 // answers it for as long as it is away, and a batch that should have been retried failed instead.

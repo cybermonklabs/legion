@@ -349,16 +349,17 @@ func WithTTL(d time.Duration) Option {
 // Open connects (or creates) the CI-state KV bucket and starts the WatchAll
 // cache. Mirrors store.Open: the cache is populated asynchronously by watch()
 // so Open never blocks on per-key Gets. The store and its cache watcher log through logger.
-func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
+// ctx bounds the bucket's open (bus.EnsureKeyValue).
+func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
 	o := openOpts{replicas: 1, ttl: 7 * 24 * time.Hour}
 	for _, f := range opts {
 		f(&o)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(nc, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(nc, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(ctx, nc, js, &nats.KeyValueConfig{
 		Bucket:   bus.CIStateBucket,
 		Replicas: o.replicas,
 		Storage:  nats.FileStorage,

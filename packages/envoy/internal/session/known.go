@@ -262,8 +262,8 @@ func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
 // background until one succeeds (repairUntilStopped), at once after each connection event
 // (Rewatch). The error is the JetStream context's alone, which leaves no store to open anything
 // with; the caller then runs on a nil *KnownSessions, which answers as this store does and never
-// opens.
-func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
+// opens. ctx bounds the first attempt, the one the start waits on (openKnownBucket).
+func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
 	opts := knownSessionsOpts{
 		replicas:   1,
 		now:        time.Now,
@@ -280,7 +280,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(context.Background(), conn, opts.replicas)
+	kv, err := openKnownBucket(ctx, conn, opts.replicas)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -295,7 +295,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 // knownJetStream is the JetStream context one attempt to open the bucket asks through: its
 // requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
 func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
-	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
+	return bus.JetStream(conn, nats.MaxWait(knownBucketOpenWait))
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
@@ -303,10 +303,13 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 //
 // The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
 // bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
-// sends a lookup the server leaves unanswered up to three times (its sentAgain) and reads a
-// refusal only on a connection a bus.Client owns, so a user whose grant does not carry the bucket
-// would cost an attempt three waits, or more, rather than one; the one request costs a denied
-// attempt what it costs, the wait, and a granted one an answer.
+// sends a lookup the server leaves unanswered again until ctx ends or the start's hang guard
+// passes (its sentAgain), and reads a refusal only on a connection a bus.Client owns, so a user
+// whose grant does not carry the bucket would cost an attempt that whole wait rather than one
+// send; the one request costs a denied attempt what it costs, the wait, and a granted one an
+// answer. A create the server answers only at the bucket's first leader election is waited for
+// the same way, so an election slower than a few of these 2 s sends opens the bucket on this
+// attempt rather than leaving the store to write nothing until a retry does.
 //
 // The handle it returns is opened on a context with the wait every other store of the listener
 // gives its bucket calls, since the store's writes and its cache watcher go through that handle
@@ -319,7 +322,7 @@ func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.Ke
 		return bus.KeyValue{}, err
 	}
 	if _, err := opening.KeyValue(bus.KnownSessionBucket); errors.Is(err, nats.ErrBucketNotFound) {
-		if _, err := bus.EnsureKeyValue(conn, opening, &nats.KeyValueConfig{
+		if _, err := bus.EnsureKeyValue(ctx, conn, opening, &nats.KeyValueConfig{
 			Bucket:   bus.KnownSessionBucket,
 			TTL:      KnownSessionRetention,
 			Replicas: replicas,
@@ -330,7 +333,7 @@ func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.Ke
 	} else if err != nil {
 		return bus.KeyValue{}, err
 	}
-	serving, err := conn.JetStream(nats.MaxWait(knownBucketServeWait))
+	serving, err := bus.JetStream(conn, nats.MaxWait(knownBucketServeWait))
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
@@ -449,11 +452,14 @@ func (s *KnownSessions) repairUntilStopped() {
 // retryRepair is the background retry's attempt (attemptRepair), which retires the retry when it
 // found nothing left to repair. The retirement is made in the same hold as that reading, so no
 // second retry is armed between this goroutine's last attempt and its end, and no attempt of
-// another caller's lands between them either.
+// another caller's lands between them either. The attempt runs until the store stops
+// (untilStopped), so a stop ends an open that waits on the cluster (bus.EnsureKeyValue).
 func (s *KnownSessions) retryRepair() (repairResult, error) {
 	s.repairMu.Lock()
 	defer s.repairMu.Unlock()
-	result, err := s.attemptRepair(context.Background())
+	ctx, cancel := s.untilStopped()
+	defer cancel()
+	result, err := s.attemptRepair(ctx)
 	if err == nil && result == repairNothing {
 		s.repairing = false
 	}

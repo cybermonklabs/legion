@@ -77,7 +77,9 @@ func (e leaderEntry) Operation() nats.KeyValueOp { return nats.KeyValuePut }
 //
 // ctx bounds the whole read, the one request it sends included. A ctx carrying no deadline is
 // bounded by RequestTimeout, the bound every other read of a bucket's stream through this handle
-// takes (ReadStreamState), so no caller waits on this read for good.
+// takes (ReadStreamState), so no caller waits on this read for good. The read is bound to the life
+// of the handle's connection too (Request): one the connection's loss cut off is ErrConnectionLost,
+// so the delete that reads it under the session's lock gives that lock up at the loss.
 func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
 	if err := kv.RefusesRead(key); err != nil {
 		return nil, err
@@ -98,7 +100,13 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	if err != nil {
 		return nil, named(err)
 	}
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	// A read the grant refuses draws no answer; the record names the refusal after the read's own
+	// wait (refusedAfter), which costs a read the leader answers nothing.
+	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
+		return Request(ctx, kv.owner, func(ctx context.Context) (*nats.RawStreamMsg, error) {
+			return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+		})
+	})
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound
 	}

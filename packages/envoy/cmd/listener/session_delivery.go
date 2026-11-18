@@ -336,13 +336,49 @@ func (m *sessionDelivery) close() {
 // consumer, and it holds the start of a create as it does for the delete's repair; a consumer the
 // stream holds keeps its own position whatever start the call names, so what a repair of it
 // changes is the filter.
-func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
+//
+// unlock is the release of the session's lock the registration holds. A repair whose read or call
+// lost its connection (bus.ErrConnectionLost) is made again once the connection is back, inside
+// this repair's budget, with that lock released while it waits and taken again after it
+// (relockAfterReconnect); unlock is left holding whatever release the caller makes on its way out.
+func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, unlock *func()) {
 	if m == nil || m.consumers == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+	for {
+		lost := m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+		if !m.relockAfterReconnect(ctx, sessionID, unlock, lost) {
+			return
+		}
+	}
+}
+
+// relockAfterReconnect is the one retry of a call this listener makes under a session's lock
+// whose connection was lost (bus.ErrConnectionLost): it releases the lock *unlock holds, waits for
+// that connection within ctx (bus.Reconnected), takes the lock again into *unlock within ctx once
+// it is back (sessionLocks.lockWithin), and reports whether the caller makes its call again. For
+// any other err, or nil, it does nothing and reports false. The whole of it stays inside ctx: a
+// registration or a repair of the session can take the lock while this waits for the connection,
+// and one that holds it past ctx's end leaves this reporting false at that end rather than waiting
+// for it. A lock it released and did not take again leaves noUnlock in *unlock, so the caller's
+// own release on its way out releases nothing twice.
+func (m *sessionDelivery) relockAfterReconnect(ctx context.Context, sessionID string, unlock *func(), err error) bool {
+	if !errors.Is(err, bus.ErrConnectionLost) {
+		return false
+	}
+	(*unlock)()
+	*unlock = noUnlock
+	if !bus.Reconnected(ctx, err) {
+		return false
+	}
+	relocked, ok := m.locks.lockWithin(ctx, sessionID)
+	if !ok {
+		return false
+	}
+	*unlock = relocked
+	return true
 }
 
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
@@ -373,16 +409,20 @@ const (
 // answers filterWriteSessionGone and the fence reports the one case that leaves something
 // behind - a pass of this repair that wrote a filter before that delete - in a line of its own.
 //
-// A failure is logged, not returned: the caller's answer does not change, the record is deleted
-// or not whatever this call did, and the session's next registration repairs the consumer again.
+// A failure is logged, and the caller's answer does not change: the record is deleted or not
+// whatever this call did, and the session's next registration repairs the consumer again. A read
+// or a call whose connection was lost (bus.ErrConnectionLost) ends the repair at the loss, and
+// its error comes back, nil for every other end, so the caller makes the repair again on the new
+// connection with the session's lock released while it waits (relockAfterReconnect): each pass
+// reads the bucket's newest record and row, so the repair made again is the one the lost pass was.
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
-func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome) {
+func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) error {
+	return fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
-		want, found := m.registeredTarget(ctx, d, sessionID, ackFloor)
+		want, found, err := m.registeredTarget(ctx, d, sessionID, ackFloor)
 		// Only registeredTargetBuilt goes on to the write below; each of the three findings
 		// that build no target leaves the fence something different (registeredFinding).
 		switch found {
@@ -390,17 +430,17 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// The session is gone: the bucket holds no record of it, so no heartbeat of it
 			// registers again and nothing sets a filter this repair leaves. Whether a pass of
 			// it left one is the fence's own to know and to report (filterWriteSessionGone).
-			return 0, filterWriteSessionGone
+			return 0, filterWriteSessionGone, nil
 		case registeredNoConsumerDelivery:
 			// The record asks for no consumer of this session - a record an earlier build
 			// left, which nothing delivers to (session.DeliveryConsumer) - so this repair has
 			// nothing to write and the fence nothing to judge: it leaves no delivery a filter
 			// is a window in.
-			return 0, filterWriteSettled
+			return 0, filterWriteSettled, nil
 		case registeredReadFailed:
 			// What the bucket holds went unread, so this pass plans nothing and puts no filter
 			// anywhere; what stands is what the pass before it left (registeredTarget).
-			return 0, filterWriteNotMade
+			return 0, filterWriteNotMade, err
 		}
 		if m.afterRepairPlan != nil {
 			m.afterRepairPlan()
@@ -415,8 +455,9 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// hold; a call whose answer did not come back may have set this row's filter, and
 			// the loop judges it as it judges a write that answered (consumerCallAnswered).
 			if consumerCallAnswered(err) {
-				return 0, filterWriteNotMade
+				return 0, filterWriteNotMade, nil
 			}
+			return want.revision, filterWriteLanded, lostConnection(err)
 		case start.Created:
 			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
@@ -429,9 +470,9 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// no filter of an older row stands and the fence ends here, on whatever pass. This
 			// is every repair of a session nothing raced, and it costs one bucket read fewer
 			// than one that wrote.
-			return 0, filterWriteSettled
+			return 0, filterWriteSettled, nil
 		}
-		return want.revision, filterWriteLanded
+		return want.revision, filterWriteLanded, nil
 	})
 }
 
@@ -523,34 +564,36 @@ const (
 // sequence, so a start an earlier build or a restored stream left on the session's entry past
 // the stream's end creates no consumer past it.
 //
-// A read that failed is logged rather than returned: the caller's answer does not change, and
-// the session's next registration confirms the consumer again. The line names the session, which
-// is what an operator reading a pause in its delivery has to go on. A record the bucket does not
-// hold and one that records no consumer delivery are the bucket's answers and no failure, so
-// neither is logged here.
-func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding) {
+// A read that failed is logged rather than returned as a finding: the caller's answer does not
+// change, and the session's next registration confirms the consumer again. Its error comes back
+// beside the finding when its connection was lost (bus.ErrConnectionLost), for the caller that
+// makes the repair again on the new connection (repairRegistered), and nil otherwise. The line
+// names the session, which is what an operator reading a pause in its delivery has to go on. A
+// record the bucket does not hold and one that records no consumer delivery are the bucket's
+// answers and no failure, so neither is logged here.
+func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding, error) {
 	entry, err := d.sessions.Refresh(ctx, sessionID)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
-		return registeredConsumer{}, registeredRecordGone
+		return registeredConsumer{}, registeredRecordGone, nil
 	case err != nil:
 		m.logger.Warn("listener could not read the record of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return registeredConsumer{}, registeredReadFailed
+		return registeredConsumer{}, registeredReadFailed, lostConnection(err)
 	case entry.Delivery != session.DeliveryConsumer:
-		return registeredConsumer{}, registeredNoConsumerDelivery
+		return registeredConsumer{}, registeredNoConsumerDelivery, nil
 	}
 	topics, revision, err := storedTopics(ctx, d.registry, sessionID)
 	if err != nil {
 		m.logger.Warn("listener could not read the topics of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return registeredConsumer{}, registeredReadFailed
+		return registeredConsumer{}, registeredReadFailed, lostConnection(err)
 	}
 	start := entry.ConsumerStart
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt, nil
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -701,6 +744,13 @@ func versionPart(version string, i int) (int, bool) {
 // It returns the session's lock held over that filter, which the caller releases (register); a
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
 // was sent says the filter may be on the consumer (deliveryRefusal.filtered).
+//
+// A read of the stream or a consumer call whose connection was lost (bus.ErrConnectionLost) is
+// made again once the connection is back, inside the calls' own budget (sessionConsumerCallTimeout),
+// and the session's lock is released while it waits (bus.Reconnected): a relay restart or a
+// registration of the session waiting for that lock would otherwise wait the outage out behind
+// this one. The consumer call is a create or an update to this registration's filter, so making it
+// again after one whose answer the loss took is the call the registration would make anyway.
 func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
 	if body.Delivery == nil || !body.Delivery.Consumer {
 		// A registration with no delivery field asks for nothing this listener delivers, so it is
@@ -735,6 +785,9 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
+	for bus.Reconnected(ctx, err) {
+		streamID, err = m.consumers.StreamID(ctx)
+	}
 	if err != nil {
 		return sessionDeliveryOutcome{}, m.refused(body.SessionID, err), noUnlock
 	}
@@ -744,7 +797,11 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(body.SessionID, topics), startSeq)
+	filter := m.sessionConsumerFilter(body.SessionID, topics)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, filter, startSeq)
+	for m.relockAfterReconnect(ctx, body.SessionID, &unlock, err) {
+		start, err = m.consumers.Ensure(ctx, body.SessionID, filter, startSeq)
+	}
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -959,27 +1016,36 @@ type sessionLocks struct {
 }
 
 type sessionLock struct {
-	sync.Mutex
+	// token holds one value while somebody holds the lock: taking it is a send and releasing it a
+	// receive, so a wait for it can end with a context as well (lockWithin), which a sync.Mutex
+	// cannot.
+	token chan struct{}
 	// users counts the callers holding or waiting for the lock, under sessionLocks.mu.
 	users int
 }
 
-// lock takes sessionID's lock and returns the func that releases it.
+// lock takes sessionID's lock, waiting as long as it takes, and returns the func that releases it.
 func (l *sessionLocks) lock(sessionID string) (unlock func()) {
+	unlock, _ = l.lockWithin(context.Background(), sessionID)
+	return unlock
+}
+
+// lockWithin takes sessionID's lock, waiting no longer than ctx, and returns the func that
+// releases it and true; or noUnlock and false when ctx ended first. A ctx that has ended takes no
+// lock, a free one included, so a caller told true holds the lock with ctx still running.
+func (l *sessionLocks) lockWithin(ctx context.Context, sessionID string) (func(), bool) {
 	l.mu.Lock()
 	if l.locks == nil {
 		l.locks = map[string]*sessionLock{}
 	}
 	held := l.locks[sessionID]
 	if held == nil {
-		held = &sessionLock{}
+		held = &sessionLock{token: make(chan struct{}, 1)}
 		l.locks[sessionID] = held
 	}
 	held.users++
 	l.mu.Unlock()
-	held.Lock()
-	return func() {
-		held.Unlock()
+	leave := func() {
 		l.mu.Lock()
 		held.users--
 		if held.users == 0 {
@@ -987,6 +1053,25 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 		}
 		l.mu.Unlock()
 	}
+	if ctx.Err() != nil {
+		leave()
+		return noUnlock, false
+	}
+	select {
+	case held.token <- struct{}{}:
+	case <-ctx.Done():
+		leave()
+		return noUnlock, false
+	}
+	if ctx.Err() != nil {
+		<-held.token
+		leave()
+		return noUnlock, false
+	}
+	return func() {
+		<-held.token
+		leave()
+	}, true
 }
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and

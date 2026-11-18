@@ -352,7 +352,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 		time.Sleep(20 * time.Millisecond)
 	}
 	log := cr.logBuf.String()
-	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
+	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
 	why := `why="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"`
 	if !strings.Contains(log, refused) || !strings.Contains(log, why) {
 		t.Fatalf("log:\n%s\nwant %s, and the session's error naming %s", log, refused, why)
@@ -417,7 +417,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 		t.Fatalf("revoke the machine login = %d: %s", status, body)
 	}
 
-	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
+	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
 	deadline := time.Now().Add(15 * time.Second)
 	for !strings.Contains(cr.logBuf.String(), refused) {
 		if time.Now().After(deadline) {

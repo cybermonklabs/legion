@@ -158,6 +158,11 @@ const (
 	// relayPaused: the session answered no frame within relayReceiptWait; the relay restarts at the
 	// ack floor after the pause backoff, or at the session's next registration, whichever is first.
 	relayPaused
+	// relayLost: a request of the restart or the pull lost its connection (bus.ErrConnectionLost,
+	// in relayRun.lost); the restart released the session's lock and its turn, and the relay
+	// restarts at the ack floor once that connection is back (bus.Reconnected), with no backoff:
+	// the consumer did nothing wrong.
+	relayLost
 )
 
 // sessionRelays relays the session consumers this listener owns (sessionRelays.wanted): one relay
@@ -369,6 +374,9 @@ type relayRun struct {
 	// loop for that run. A registration heard while the run was returning is never lost.
 	exitMu  sync.Mutex
 	exiting bool
+	// lost is the error of the request whose connection the run lost (relayLost), which the
+	// relay's wait for that connection reads (bus.Reconnected). Only the run's goroutine touches it.
+	lost error
 }
 
 // wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
@@ -701,11 +709,17 @@ func (m *sessionRelays) wanted(sessionID string) (bool, relayCancelReason) {
 // for the relays that gaining the durable binding starts together, so a relay whose consumer a
 // restart would keep unchanged starts pulling with no call of its own (sessionRelays.restart). It
 // returns nil when the list fails, and each relay then reads its own consumer; a list the NATS
-// user may not make is logged once.
+// user may not make is logged once. A list whose connection was lost (bus.ErrConnectionLost) is
+// made again once the connection is back, inside the list's budget (bus.Reconnected): it holds
+// nothing while it waits, and the session consumers' client answers a list made while its
+// connection is down with that error at once.
 func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 	ctx, cancel := context.WithTimeout(m.ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	listed, err := m.delivery.consumers.ListSessionConsumers(ctx)
+	for bus.Reconnected(ctx, err) {
+		listed, err = m.delivery.consumers.ListSessionConsumers(ctx)
+	}
 	switch {
 	case err == nil:
 		return listed
@@ -745,7 +759,9 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
 // call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax, and after a pause
 // (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
-// session's next registration. Both only while the session is still this listener's.
+// session's next registration. Both only while the session is still this listener's. A restart or
+// pull whose connection was lost (relayLost) waits for that connection instead, holding nothing,
+// and restarts the moment it is back, with the retry backoff left where it was.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
@@ -772,6 +788,19 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 				return
 			}
 			pause = min(pause*2, m.pauseMax)
+		case relayLost:
+			lost := run.lost
+			run.lost = nil
+			if !bus.Reconnected(ctx, lost) {
+				if ctx.Err() != nil {
+					return
+				}
+				// The client stopped: the listener is shutting down, and the next restart says so.
+				if !run.waitRetry(ctx, retry) {
+					return
+				}
+				retry = min(retry*2, relayRetryMax)
+			}
 		default:
 			if !run.waitRetry(ctx, retry) {
 				return
@@ -787,7 +816,10 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 // restart restarts the session's consumer at its ack floor with its current filter and starts
 // pulling it. A pull of nil comes with the outcome to return: relayEnded when the relay was stopped
 // or pauses (the session has no consumer, which its next registration creates, or the grant does
-// not carry session consumers), relayRetry otherwise.
+// not carry session consumers), relayLost when a request of it lost its connection, and relayRetry
+// otherwise. Every one of them returns with the session's lock and the restart's turn released, so
+// a restart whose request a disconnect cut off holds neither while the relay waits for the
+// connection to come back (relay), and a registration for the session takes the lock at once.
 //
 // A restart that read the floor and then failed, its delete or its create, leaves the consumer's
 // start pending (bus.SessionConsumers.RestartAtFloor): the retry creates a consumer it finds
@@ -816,10 +848,10 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		unlock := m.delivery.locks.lock(sessionID)
 		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
-		filter, _, ok := m.storedFilter(callCtx, sessionID)
-		if !ok {
+		filter, _, err := m.storedFilter(callCtx, sessionID)
+		if err != nil {
 			unlock()
-			return bus.SessionConsumerStart{}, nil, relayRetry
+			return m.storedFilterFailed(run, err)
 		}
 		// A keep sends no call at all (bus.SessionConsumers.KeepListed): nothing of this filter
 		// lands on the server, so there is nothing for a fence to hold. A restart the row moved
@@ -834,7 +866,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 			}
 		}
 		if err != nil {
-			return m.restartFailed(ctx, sessionID, err)
+			return m.restartFailed(ctx, run, err)
 		}
 	}
 	// The restart takes a turn (relayRestartLimit) first and its session's lock second, and only
@@ -851,19 +883,28 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	filter, revision, ok := m.storedFilter(callCtx, sessionID)
-	if !ok {
+	filter, revision, err := m.storedFilter(callCtx, sessionID)
+	if err != nil {
 		unlock()
-		return bus.SessionConsumerStart{}, nil, relayRetry
+		return m.storedFilterFailed(run, err)
 	}
 	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
 	// A restart the server answered with a refusal left no filter of this row on the consumer; a
 	// restart whose answer did not come back may have created it on that filter, so it is settled
 	// against the bucket's newest row like one that answered (consumerCallAnswered).
+	var settleLost error
 	if err == nil || !consumerCallAnswered(err) {
-		m.settleFilter(callCtx, sessionID, revision)
+		settleLost = m.settleFilter(callCtx, sessionID, revision)
 	}
 	unlock()
+	// A landed restart whose settle lost its connection waits for that connection in the relay's
+	// loop (relayLost) and restarts from the bucket's newest row once it is back, which settles
+	// the filter again. It does not wait here: the restart's turn (m.restarts) is held until this
+	// call returns, and a wait for the connection made with it held would keep the restarts queued
+	// behind it waiting through the outage (bus.Reconnected's rule: release what is held first).
+	if err == nil && errors.Is(settleLost, bus.ErrConnectionLost) {
+		return bus.SessionConsumerStart{}, nil, m.connectionLost(run, "settle the session's filter", settleLost)
+	}
 	if err == nil {
 		run.restartedAt.Store(at)
 		var pull *bus.SessionPull
@@ -871,28 +912,47 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 			return start, pull, relayRetry
 		}
 	}
-	return m.restartFailed(ctx, sessionID, err)
+	return m.restartFailed(ctx, run, err)
 }
 
 // storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV
 // revision of the interest row it was built from, read within ctx under the session's lock, which
-// the caller holds; false, logged, when they cannot be read.
+// the caller holds, or the read's error.
 //
 // The row is read from the bucket and not from the watched cache (storedTopics): a registration
 // on another listener may have added a topic this listener's watch has not delivered
 // yet, and a restart filtering on the cached row would drop a topic that registration was
 // answered 200 for while keeping the consumer's position, at the cost fenceFilterWrite's doc
 // states. The revision is what the write of this filter is fenced on (settleFilter).
-func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, bool) {
+func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, error) {
 	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
 	if err != nil {
-		m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return nil, 0, false
+		return nil, 0, err
 	}
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, true
+	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, nil
+}
+
+// storedFilterFailed is the outcome of a restart whose read of the session's interests failed with
+// err, once it has released the session's lock: relayLost when the read's connection was lost, and
+// otherwise relayRetry, logged.
+func (m *sessionRelays) storedFilterFailed(run *relayRun, err error) (bus.SessionConsumerStart, *bus.SessionPull, relayOutcome) {
+	if errors.Is(err, bus.ErrConnectionLost) {
+		return bus.SessionConsumerStart{}, nil, m.connectionLost(run, "read the session's interests", err)
+	}
+	m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", run.sessionID), slog.String("error", err.Error()))
+	return bus.SessionConsumerStart{}, nil, relayRetry
+}
+
+// connectionLost records err, a request of run that lost its connection while doing what doing
+// names, for the relay's wait for that connection (relayLost), and logs it.
+func (m *sessionRelays) connectionLost(run *relayRun, doing string, err error) relayOutcome {
+	m.logger.Info("session relay lost its NATS connection to "+doing+"; it restarts at the ack floor once the connection is back",
+		slog.String("session_id", run.sessionID), slog.String("error", err.Error()))
+	run.lost = err
+	return relayLost
 }
 
 // settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
@@ -908,15 +968,19 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // by the time a correction is sent is left to the session's next registration, as the restart
 // itself leaves it. A restart whose answer did not come back is settled here too, since it may
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
-func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
+//
+// It returns the error of a pass that lost its connection (bus.ErrConnectionLost), and nil for
+// every other end: the restart then returns relayLost, and the relay restarts once the connection
+// is back, holding no turn and no lock while it waits, which settles the filter again.
+func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) error {
 	// The restart's own write is this fence's first pass: it is made, or may have been made,
 	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
 	// sends nothing, and the passes after it correct it from the bucket's newest row.
 	restart := true
-	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome) {
+	return fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome, error) {
 		if restart {
 			restart = false
-			return wrote, filterWriteLanded
+			return wrote, filterWriteLanded, nil
 		}
 		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
 	})
@@ -924,10 +988,13 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 
 // restartFailed is the outcome of a restart (sessionRelays.restart) whose call or pull failed
 // with err.
-func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err error) (bus.SessionConsumerStart, *bus.SessionPull, relayOutcome) {
+func (m *sessionRelays) restartFailed(ctx context.Context, run *relayRun, err error) (bus.SessionConsumerStart, *bus.SessionPull, relayOutcome) {
+	sessionID := run.sessionID
 	switch {
 	case ctx.Err() != nil:
 		return bus.SessionConsumerStart{}, nil, relayEnded
+	case errors.Is(err, bus.ErrConnectionLost):
+		return bus.SessionConsumerStart{}, nil, m.connectionLost(run, "restart the session's consumer", err)
 	case errors.Is(err, bus.ErrSessionConsumerNotFound) || errors.Is(err, bus.ErrNoSessionConsumerName):
 		m.logger.Info("session relay paused: the session has no consumer; its next registration creates one", slog.String("session_id", sessionID))
 		return bus.SessionConsumerStart{}, nil, relayEnded
@@ -1034,6 +1101,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				continue
+			}
+			if errors.Is(err, bus.ErrConnectionLost) {
+				return m.connectionLost(run, "pull the session's consumer", err)
 			}
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry

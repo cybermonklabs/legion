@@ -36,11 +36,12 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 // in the stream, and its error says so (bus.ErrUnacknowledged) beside the error it wraps; one that
 // sent nothing, or that the server refused, does not. The listener's sender limit charges a
 // sender for the first and not for the others (cmd/listener), so a message the stream may hold is
-// never free and one it cannot hold never costs. A publish whose connection closed under it is sent
-// again, and its acknowledgement says so (StoredAck.Resent), since the copy the stream names may
-// be the first send's. Each case reads the stream to show what the error claims: the stream stores
-// what an unacknowledged publish sent once the server answers again, and holds nothing of a
-// publish that waited for a reconnect.
+// never free and one it cannot hold never costs. A publish whose caller reads the duplicate verdict
+// and whose connection closed under it is not sent again, since a second send would answer the
+// first send's copy as a duplicate, and its error says the stream may hold it, so the listener
+// charges it. Each case reads the stream to show what the error claims: the stream stores what an
+// unacknowledged publish sent once the server answers again, and holds nothing of a publish that
+// waited for a reconnect.
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -99,49 +100,46 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			func() bool { return storedOn(t, topic) == 1 })
 	})
 
-	t.Run("a publish whose connection closed under it is sent again and its acknowledgement says so", func(t *testing.T) {
-		topic := contracts.LegacyAgentSubject("ses_unacknowledged_resent")
+	t.Run("a publish whose connection closed under it is sent once and is ErrUnacknowledged", func(t *testing.T) {
+		topic := contracts.LegacyAgentSubject("ses_unacknowledged_closed")
 		thaw := server.Freeze(t)
 		t.Cleanup(thaw)
 		closing := client.Connection()
 		before := closing.Stats().OutMsgs
-		type answer struct {
-			ack bus.StoredAck
-			err error
-		}
-		answered := make(chan answer, 1)
+		answered := make(chan error, 1)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
-			answered <- answer{ack, err}
+			_, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
+			answered <- err
 		}()
 		// The send is out on the frozen connection, its request waiting for an answer, when the
-		// connection closes: the request fails with nats.ErrConnectionClosed and the bus sends it
-		// again on the connection it dials in its place once the server answers again.
+		// connection closes: the request answers bus.ErrConnectionLost, since the client is still
+		// running, whichever of nats.go's answer and the end of the connection's life comes first
+		// (closedUnder), and the bus sends it no second time, since the caller reads the duplicate
+		// verdict a second send would answer for the first send's copy.
 		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the publish to go out on the frozen connection",
 			func() bool { return closing.Stats().OutMsgs > before })
 		closing.Close()
 		thaw()
-		var got answer
+		var err error
 		select {
-		case got = <-answered:
+		case err = <-answered:
 		case <-time.After(15 * time.Second):
 			t.Fatal("the publish whose connection closed under it did not return")
 		}
-		if got.err != nil {
-			t.Fatalf("a publish sent again after its connection closed = %v, want it acknowledged", got.err)
+		// An error, and no acknowledgement, is what shows the publish was not sent again: a second
+		// send would have been acknowledged, a duplicate of the first send's copy where the frozen
+		// server read that send before the close. The frozen server may or may not have read it, so
+		// the stream may hold its copy, and the error says so.
+		if !errors.Is(err, bus.ErrUnacknowledged) || !errors.Is(err, bus.ErrConnectionLost) {
+			t.Errorf("a publish whose connection closed under it = %v, want ErrUnacknowledged around ErrConnectionLost", err)
 		}
-		if !got.ack.Resent {
-			t.Fatalf("a publish sent again after its connection closed answered %+v, want Resent", got.ack)
-		}
-		// The first send reached the stream after the thaw too, or the stream stored the second
-		// alone; under one Nats-Msg-Id it holds one copy either way, and the second's verdict says
-		// which (Duplicate).
-		t.Logf("the resend's acknowledgement: %+v", got.ack)
-		if stored := storedOn(t, topic); stored != 1 {
-			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", stored, topic)
-		}
+		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client to answer again after the close",
+			func() bool {
+				_, err := client.JS().StreamInfo(bus.Stream)
+				return client.Connected() && err == nil
+			})
 	})
 
 	t.Run("a publish that waits out its deadline for a reconnect sends nothing and is no ErrUnacknowledged", func(t *testing.T) {

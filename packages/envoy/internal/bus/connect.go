@@ -1,7 +1,6 @@
 package bus
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -374,8 +373,10 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // attempts ran out, the credential was refused, or ctx ended first (a publish's own deadline). A
 // dial error comes back with the proxy's address but not the setting, and a refused dial as
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
-// it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
-// or a DNS name.
+// its text, with ErrNoServers kept in the error's chain: a running client reads a dial that found
+// no server the same through the proxy as without one, as the loss of its closed connection
+// (lostIfClosed). The address carries no credentials: CheckSOCKS5Proxy admits only an IP address
+// with no zone or a DNS name.
 func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
@@ -449,7 +450,9 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 		}
 	}
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {
-		lastErr = cmp.Or(dialer.LastError(), lastErr)
+		if dialErr := dialer.LastError(); dialErr != nil {
+			lastErr = fmt.Errorf("%w (%w)", dialErr, nats.ErrNoServers)
+		}
 	}
 	return nil, lastErr
 }

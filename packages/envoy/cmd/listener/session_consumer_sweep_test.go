@@ -39,12 +39,22 @@ func newSweepRig(t *testing.T) *sweepRig { return newSweepRigKeeping(t, sweepRec
 func newSweepRigKeeping(t *testing.T, ttl time.Duration) *sweepRig {
 	t.Helper()
 	now := &stateClock{}
-	rig := newSessionConsumerRig(t,
+	return sweepOver(newSessionConsumerRig(t, sweepSessionOptions(ttl, now)...), now)
+}
+
+// sweepSessionOptions are the session registry's options of a sweep rig whose bucket keeps a
+// record for ttl, on the clock now.
+func sweepSessionOptions(ttl time.Duration, now *stateClock) []session.SessionRegistryOption {
+	return []session.SessionRegistryOption{
 		session.WithSessionTTL(ttl),
 		session.WithSessionClock(now.Now),
 		session.WithSessionLiveWindow(sweepSessionWindow),
 		session.WithSessionGoneHorizon(sweepSessionWindow),
-	)
+	}
+}
+
+// sweepOver is the sweep over rig, on the clock now that rig's registry was opened with.
+func sweepOver(rig *sessionConsumerRig, now *stateClock) *sweepRig {
 	// A pass runs only on the task holding its machine's durable binding (sessionRelays.owned).
 	// The rig starts no relay - nothing here pulls a consumer - so the binding is held on a relay
 	// set of its own, which the pass reads and nothing else touches.

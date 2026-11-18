@@ -154,12 +154,11 @@ type window struct {
 	reconnects uint64
 }
 
+// PublishAsync sends item on its own topic under envelopeMsgID's Nats-Msg-Id, the one a publish of
+// it through the client carries, so the stream keeps one copy of it however often the window's
+// caller sends it again.
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
-	msgID := ""
-	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
-	}
-	return outcomeOf(w.send(item.Topic, item, msgID))
+	return outcomeOf(w.send(item.Topic, item, envelopeMsgID(item)))
 }
 
 func (w *window) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
@@ -270,12 +269,15 @@ func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error
 	if msgID != "" {
 		options = append(options, nats.MsgId(msgID))
 	}
+	// The refusal signal is taken before the message goes out, so a violation of this send closes
+	// it whenever it is recorded (acknowledged).
+	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	future, err := w.js.PublishMsgAsync(&nats.Msg{Subject: subject, Data: data}, options...)
 	if err != nil {
 		return nil, w.unsent(err, len(data))
 	}
-	return func() error { return w.acknowledged(future, subject, sentAt) }, nil
+	return func() error { return w.acknowledged(future, subject, sentAt, signal) }, nil
 }
 
 // requestReplies is how many replies to one Request wait to be read: it expects the stream's
@@ -355,7 +357,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)
 	// Read right before the send, so the request takes only a violation the server reported of
-	// its own message and never one an earlier send of the subject earned (deniedPublish).
+	// its own message and never one an earlier send of the subject earned (deniedPublish); the
+	// refusal signal is taken first, so a violation of this send closes it whenever it is
+	// recorded.
+	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
 		_ = inboxSub.Unsubscribe()
@@ -448,8 +453,17 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		}
 		timer := time.NewTimer(time.Until(deadline))
 		defer timer.Stop()
+		// The record answers the request as soon as the violation is recorded too
+		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
+		// signal was taken before the message went out, so a violation recorded since closes it,
+		// and it is taken again on each wake before the record is read.
 		for {
 			select {
+			case <-signal:
+				signal = w.client.refusalSignal()
+				if denial := denied(); denial != nil {
+					return denial
+				}
 			case err := <-flushed:
 				if settled := settleFlush(err); settled != nil {
 					return settled
@@ -540,27 +554,41 @@ func (w *window) Probe(timeout time.Duration) error {
 // the connection failed or nats.go reported the disconnect, ErrNotAcknowledged when the
 // acknowledgement ran out of time or the server answered with no responders on a connection that
 // stayed current, or the server's refusal, a full stream's as ErrStreamFull.
-func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time) error {
-	select {
-	case <-future.Ok():
-		return nil
-	case err := <-future.Err():
-		// A denied publish is acknowledged by nothing, so the violation the connection reported
-		// (deniedPublish) is the only evidence of it, read under this send's own subject and its
-		// own send time. A window sends every destination of one event on one connection, so a
-		// grant that denies several of them has the server report a violation of each: the record
-		// answers each send with its own, where the connection's one last error held only the one
-		// that landed last and left every other denied send to report this arm's ErrUnavailable.
-		if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
-			return denied
+//
+// A denied publish is acknowledged by nothing, so the violation the connection reported
+// (deniedPublish) is the only evidence of it, read under this send's own subject and its own send
+// time, and it answers the publish as soon as it is recorded rather than at the end of the
+// acknowledgement's own wait: signal is the refusal signal sendJetStream took before it put the
+// message on the wire (refusalSignal), so any violation recorded since closes it, and the record is
+// read only then and on the error arm. A publish the stream acknowledges reads no record, as at
+// main.
+func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time, signal <-chan struct{}) error {
+	for {
+		select {
+		case <-future.Ok():
+			return nil
+		case err := <-future.Err():
+			// A window sends every destination of one event on one connection, so a grant that
+			// denies several of them has the server report a violation of each: the record
+			// answers each send with its own, where the connection's one last error held only the
+			// one that landed last and left every other denied send to report the ErrUnavailable
+			// below.
+			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+				return denied
+			}
+			if !w.current() || errors.Is(err, nats.ErrDisconnected) {
+				return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+			}
+			if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
+				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
+			}
+			return streamFull(err)
+		case <-signal:
+			signal = w.client.refusalSignal()
+			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+				return denied
+			}
 		}
-		if !w.current() || errors.Is(err, nats.ErrDisconnected) {
-			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
-		}
-		if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
-			return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
-		}
-		return streamFull(err)
 	}
 }
 

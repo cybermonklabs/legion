@@ -21,8 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -63,19 +61,16 @@ type ownCopyAnswer struct {
 
 // A duplicate verdict on the request's own copy answers that copy with no duplicate, and one on
 // another request's copy answers it with duplicate: publishHeld tells the two apart by the copy's
-// event_id. The first two rows stand in for the stream's answer to a resend (bus.StoredAck.Resent)
-// after the copy the verdict names was really stored, one carrying this request's envelope and one
-// another request's, so each reaches the rule whichever order the server would have taken. The
-// resend's own copy costs its sender one, as any copy the request stored does (senderCharge).
+// event_id. The first two rows stand in for the stream's answer to a resend after the copy the
+// verdict names was really stored, one carrying this request's envelope and one another
+// request's, so each reaches the rule whichever order the server would have taken. Only a topic
+// publish no sender limit counts is sent again (bus.Client.PublishResendingAckWithin): a counted
+// publish and a send are sent once and answer a lost connection as a 503.
 //
-// The last two rows are the real resend, on the topic publish and on a send to an unresponsive
-// session: the listener's own server stops answering, the publish goes out on the frozen
-// connection, the connection is closed under it, and the bus sends it again on the connection it
-// dials in its place. The stream holds one copy, which carries this request's own event_id, and
-// the 200 names it with no duplicate; the publish costs one and the send is counted as stored for
-// an unresponsive session. Whether the first send or the resend stored that copy is the server's
-// order, so these rows show the routes end to end, and the first row is the one that fails, every
-// run, for a rule that marks every duplicate verdict or forgives a resend's.
+// The last row is the real resend of such a publish: the listener's own server stops answering,
+// the publish goes out on the frozen connection, the connection is closed under it, and the bus
+// sends it again on the connection it dials in its place. The stream holds one copy, which
+// carries this request's own event_id, and the 200 names it with no duplicate.
 func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
@@ -90,24 +85,20 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 			if err != nil {
 				return bus.StoredAck{}, err
 			}
-			return bus.StoredAck{Sequence: ack.Sequence, Duplicate: true, Resent: true}, nil
+			return bus.StoredAck{Sequence: ack.Sequence, Duplicate: true}, nil
 		}
 	}
 	envelope := func() contracts.Envelope {
 		return contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_own_copy", Text: "sent twice"}, topic, key)
 	}
 
-	t.Run("case: the verdict names this request's own copy, answered with no duplicate, and costs one", func(t *testing.T) {
+	t.Run("case: the verdict names this request's own copy, answered with no duplicate", func(t *testing.T) {
 		item := envelope()
 		own := item
-		charge := &senderCharge{sender: "ses_own_copy", giveBack: func() {}}
-		duplicate, err := publishHeld(ctx, client, storedThen(own), charge, requestSender{source: item.Source, session: item.SourceSession}, &item)
+		duplicate, err := publishHeld(ctx, client, storedThen(own), nil, requestSender{source: item.Source, session: item.SourceSession}, &item)
 		if err != nil || duplicate || item.EventID != own.EventID {
 			t.Fatalf("a resend's verdict on the request's own copy answered duplicate %t, event %s (%v); want no duplicate and its own event %s",
 				duplicate, item.EventID, err, own.EventID)
-		}
-		if got := charge.counted(); got != "ses_own_copy" {
-			t.Fatalf("a resend's own copy cost the sender %q, want ses_own_copy: the request stored it", got)
 		}
 	})
 
@@ -123,13 +114,10 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		}
 	})
 
-	t.Run("case: a publish sent again after its connection closed under it answers its own copy with no duplicate, and costs one", func(t *testing.T) {
+	t.Run("case: a publish no sender limit counts, sent again after its connection closed under it, answers its own copy with no duplicate", func(t *testing.T) {
 		rig, server := newSenderLimitRigOnServer(t)
-		rig.limit(60, 5)
-		const sender = "ses_resent_publish_sender"
 		subject := "notifications.team.resent-" + id.New()
-		body := fmt.Sprintf(`{"topic":%q,"source":"agent","source_session":%q,"message":"sent once, maybe twice","idempotency_key":%q}`, subject, sender, uuid.NewString())
-		logged := len(rig.harness.logs.String())
+		body := fmt.Sprintf(`{"topic":%q,"source":"agent","message":"sent once, maybe twice","idempotency_key":%q}`, subject, uuid.NewString())
 		recorder := resendUnderClose(t, server, rig.harness.client.Connection(), func(recorder *httptest.ResponseRecorder) {
 			rig.mux.ServeHTTP(recorder, postJSON("/v1/messages/publish", body))
 		})
@@ -141,39 +129,6 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		if answer.Duplicate || answer.EventID != stored.EventID {
 			t.Fatalf("the resent publish answered duplicate %t and event %s; want no duplicate and the one stored copy's event %s",
 				answer.Duplicate, answer.EventID, stored.EventID)
-		}
-		// The copy is this request's own, which the stream stored for it: it costs one.
-		lines := linesIn(rig.harness.logs.String()[logged:], "listener publish", nil)
-		if len(lines) != 1 || lines[0]["sender"] != sender {
-			t.Fatalf("the resent publish wrote record lines %v, want one naming the sender %s it cost one", lines, sender)
-		}
-	})
-
-	t.Run("case: a send to an unresponsive session sent again after its connection closed under it is counted as stored", func(t *testing.T) {
-		server, uri := testnats.Start(t)
-		d, now := stalledSessionsRigOn(t, uri)
-		const target = "ses_resent_unresponsive"
-		register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
-		now.advance(90 * time.Second)
-		met := metrics.New()
-		d.sendsToUnresponsive = met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
-		body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"sent once, maybe twice","idempotency_key":%q}`, target, uuid.NewString())
-		recorder := resendUnderClose(t, server, d.client.Connection(), func(recorder *httptest.ResponseRecorder) {
-			sendHandler(d, logging.New("test")).ServeHTTP(recorder, postJSON("/v1/messages/send", body))
-		})
-		var answer ownCopyAnswer
-		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || recorder.Code != http.StatusOK {
-			t.Fatalf("the resent send answered %d %s (%v), want 200", recorder.Code, recorder.Body.String(), err)
-		}
-		stored := heldCopy(t, d.client, contracts.LegacyAgentSubject(target))
-		if answer.Duplicate || answer.EventID != stored.EventID {
-			t.Fatalf("the resent send answered duplicate %t and event %s; want no duplicate and the one stored copy's event %s",
-				answer.Duplicate, answer.EventID, stored.EventID)
-		}
-		scrape := httptest.NewRecorder()
-		met.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-		if !strings.Contains(scrape.Body.String(), "\nenvoy_sends_unresponsive_total 1\n") {
-			t.Fatalf("envoy_sends_unresponsive_total after the resent send stored for an unresponsive session is not 1:\n%s", scrape.Body.String())
 		}
 	})
 }

@@ -262,19 +262,20 @@ a wake for it, whatever it answers (`senderCharge`). So a send to a target with 
 one once the route reports its wake. A role send's `504` costs one whether or not a forward went
 out, also when the window ended before the first forward (`roleSend.timedOut`). The listener does
 not tell a `504` that forwarded nothing from one whose forward the stream may hold. A `503` after
-the listener sent the message to the stream and the write's acknowledgement did not arrive in time
-costs one too (`bus.ErrUnacknowledged`, `senderCharge.published`), since the stream may hold it.
-A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before the
-listener sent anything, one while it waits for NATS to reconnect among them, costs nothing. A
-repeat the listener recognises costs nothing too: the stream's `duplicate` answer to a send or a
-topic publish, and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) or of a forward in
-the route's own 10-minute record. So does an echo, a role message from the session that holds the
-role. A `duplicate` that answers the bus's own resend after the connection closed under its first
-send (`bus.StoredAck.Resent`) is no such repeat, since that first send may have stored the copy it
-names, so it costs one. A role send's echo, repeat or `403` costs nothing only while the send has
-made no forward. After an earlier forward of the same send it costs one, as any answer then does,
-since that forward may have stored the message. A repeat that finds the count at 0 is refused as a
-new message is, because the check comes first.
+the listener sent the message to the stream and the write's acknowledgement did not arrive in time,
+or a lost connection took it, costs one too (`bus.ErrUnacknowledged`, `senderCharge.published`),
+since the stream may hold it. A refusal before any store or wake report, such as a `400`, `403`,
+`413` or a `503` before the listener sent anything, one while it waits for NATS to reconnect among
+them, costs nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate`
+answer to a send or a topic publish, and a role send's repeat of a kept copy
+(`keptRoleCopy.repeat`) or of a forward in the route's own 10-minute record. So does an echo, a
+role message from the session that holds the role. The bus sends such a publish once, so its
+`duplicate` never names the copy an earlier send of the same publish stored, and a kept copy is no
+repeat when the keep's own send whose answer a lost connection took may have stored it. A role
+send's echo, repeat or `403` costs nothing only while the send has made no forward. After an
+earlier forward of the same send it costs one, as any answer then does, since that forward may have
+stored the message. A repeat that finds the count at 0 is refused as a new message is, because the
+check comes first.
 
 A role-holder read that did not answer, within its cap or the 3.5 s budget, is the bus-unavailable
 503 above with `Retry-After: 1`, naming the call, on the publish route and on

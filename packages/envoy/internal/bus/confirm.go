@@ -43,6 +43,14 @@ var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted"
 // publish stays for a window that runs out during publish itself; that publish is not known to
 // have left this process, the same ambiguity a flush that runs out of the window has, and is
 // answered the same way. A cancel that lands after the check goes unseen: the publish is made.
+//
+// A publish nats.go refused for the close of conn, which it refuses before writing anything
+// (nats.go v1.53.1 nats.go:4575-4580), and a flush it answered with that close, a drop while the
+// flush's PONG was due among them (processOpErr, nats.go:3577), answer ErrConnectionLost on a
+// client still running, the first unsent (lostIfClosed): conn is the client's connection the
+// publish was made on. A caller inside Request (requestConfirmed, RequestCore,
+// StartRequestStoredTo) gets the same answer it gets from its binding, and PublishCoreContext's
+// caller the one it gets from nowhere else.
 func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nats.Msg, publish func(*nats.Msg) error) error {
 	deadline, _ := ctx.Deadline()
 	err := ctx.Err()
@@ -54,9 +62,9 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 	}
 	before := observe(conn)
 	if err := publish(msg); err != nil {
-		return c.refused(err, len(msg.Data))
+		return c.lostIfClosed(c.refused(err, len(msg.Data)), conn, true)
 	}
-	return confirmFlushed(conn, msg.Subject, before, deadline)
+	return c.lostIfClosed(confirmFlushed(conn, msg.Subject, before, deadline), conn, false)
 }
 
 // confirmFlushed flushes conn within deadline and confirms that the server accepted the core

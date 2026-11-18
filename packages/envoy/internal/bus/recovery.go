@@ -12,10 +12,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// onClosed is wired as the ClosedCB callback. It reports the connection event (ConnectionChanged)
-// and launches recovery in a background goroutine so the NATS library callback returns
-// immediately.
+// onClosed is wired as the ClosedCB callback. It ends the life requests on the connection are bound
+// to (endLifeIfDown), reports the connection event (ConnectionChanged) and launches recovery in a
+// background goroutine so the NATS library callback returns immediately.
 func (c *Client) onClosed() {
+	c.endLifeIfDown()
 	c.connectionChanged()
 	go c.recover()
 }
@@ -188,10 +189,12 @@ func (c *Client) AddDisconnectHook(hook func()) {
 	c.reconnectHooksMu.Unlock()
 }
 
-// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it reports the
-// connection event (ConnectionChanged), so that a publish waiting for the connection reads it
-// again, and then runs the disconnect hooks.
+// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it ends the life
+// requests on the connection are bound to (endLifeIfDown) where nats.go's status report has not
+// already, reports the connection event (ConnectionChanged), so that a publish waiting for the
+// connection reads it again, and then runs the disconnect hooks.
 func (c *Client) onDisconnect() {
+	c.endLifeIfDown()
 	c.connectionChanged()
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.disconnectHooks)
@@ -223,15 +226,12 @@ func (c *Client) AddDrainHook(hook func(ctx context.Context)) {
 	c.reconnectHooksMu.Unlock()
 }
 
-// ErrConnectionLost is the cause of a drain hook's context (context.Cause) when the connection
-// was lost while the hooks ran. nats.go then refuses a request with the reconnect buffer off
-// ("outbound buffer limit exceeded"), and a request already sent gets no answer, so what a hook
+// runDrainHooks runs the drain hooks one after another on conn, each bounded by deadline and by
+// conn staying connected: ErrConnectionLost is the cause of their context (context.Cause) when the
+// connection was lost while the hooks ran. nats.go then refuses a request with the reconnect buffer
+// off ("outbound buffer limit exceeded"), and a request already sent gets no answer, so what a hook
 // had still to ask the server is left to the server: an ordered consumer whose interest is gone is
 // deleted by its inactive threshold.
-var ErrConnectionLost = errors.New("bus: the connection was lost during the drain")
-
-// runDrainHooks runs the drain hooks one after another on conn, each bounded by deadline and by
-// conn staying connected.
 func (c *Client) runDrainHooks(conn *nats.Conn, deadline time.Time) {
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.drainHooks)

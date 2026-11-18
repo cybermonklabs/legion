@@ -135,7 +135,11 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 					require.Equal(t, []string{"Publish", removed}, v[1:], "the server refused something else too: %s", v[0])
 				}
 				t.Logf("server violation (%d alike): %s", len(logged), logged[0][0])
-				require.Contains(t, process.Output.String(), "subscribe failed, retrying")
+				// No retry gets past the grant, so the start ends at the refusal with the line the
+				// durable-refused alarm pages on, naming the subject, rather than polling the bind.
+				require.Contains(t, process.Output.String(), "subscribe refused, shutting down")
+				require.Contains(t, process.Output.String(), `bus: NATS denied the publish to \"`+removed)
+				require.NotContains(t, process.Output.String(), "subscribe failed, retrying")
 			})
 		})
 	}

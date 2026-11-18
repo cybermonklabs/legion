@@ -302,7 +302,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	}
 
 	counter := &legacyKinds{}
-	counting, err := store.Open(rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	counting, err := store.Open(t.Context(), rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	}
 	deps := *rig.deps
 	deps.registry = counting
-	if _, finding := rig.deps.consumers.registeredTarget(context.Background(), &deps, sessionID, 0); finding != registeredTargetBuilt {
+	if _, finding, _ := rig.deps.consumers.registeredTarget(context.Background(), &deps, sessionID, 0); finding != registeredTargetBuilt {
 		t.Fatalf("the repair's target = %v, want it built", finding)
 	}
 	if got := counter.counted(); !slices.Equal(got, []string{"interest", "interest"}) {

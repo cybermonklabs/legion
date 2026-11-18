@@ -1,0 +1,34 @@
+kind: Fixed
+body: |-
+  A NATS request whose reply a dropped connection lost no longer waits for its whole timeout: it
+  fails within the moment nats.go reports the loss, with `bus.ErrConnectionLost`, where it waited
+  5 s to 10 s. Every request of the listener and its relays but the few AGENTS.md names goes
+  through one helper bound to the connection's life (`bus.Request`): the stream read the session
+  consumers share, every session consumer call and pull, the connection probe, forwards, KV reads
+  and writes, and the JetStream calls of every context the listener opens. A registration, a relay
+  restart, a consumer delete, a filter write and a consumer repair that lose a request release the
+  session's lock while they wait for the connection, take it again within their own budget, and
+  make the request again once it is back. So a session registration sent after a reconnect is
+  answered 200 rather than 503: the shared stream read and the relay restart that held the
+  session's lock no longer wait out a reply the drop took. A stored write that a second send would
+  find refused or answered as a duplicate of itself, a kept-lane cursor write or a publish whose
+  caller reads the duplicate verdict, is sent once and answers the loss, so the kept lane reads its
+  cursor back instead of taking its own landed write for another listener's. A call the bus makes
+  directly on a running client's connection - the dial that replaces a closed one and finds no
+  server, a core publish and its flush, a subscribe and the end of one, a KV watch's create, and a
+  pull's request, detach and acknowledgements - answers that connection's close with
+  `bus.ErrConnectionLost` too, rather than nats.go's `connection closed`, which its callers read as
+  lasting; a call on a connection the client has replaced keeps nats.go's error. A request on a
+  client that was stopped answers `nats.ErrConnectionClosed`, as before. An envelope whose dedupe
+  key names no event, which had no `Nats-Msg-Id`, is now stored under its own `event_id` and topic,
+  through the client and a publish window alike, so a second send of it after a lost answer is
+  stored once rather than twice; two envelopes under one such key are still two messages. A stored
+  write with no `Nats-Msg-Id` at all, an envelope with no `event_id` among them, is sent once and
+  answers the loss. The session resume record now carries a `Nats-Msg-Id` drawn for each write, so
+  one whose connection closed under it is sent again on the new connection when that is already
+  up, and stored once; while the new connection is still reconnecting, and when the connection was
+  lost, it answers the loss at once rather than waiting with the session's lock held, the consumer
+  delete deletes nothing, and the delete's retry or the sweep's next pass writes it.
+time: 2026-11-17T05:19:00Z
+custom:
+    Issue: pr4278

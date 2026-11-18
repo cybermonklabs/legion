@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"time"
@@ -124,16 +125,18 @@ func wakeReportEnvelope(logger *logging.Logger, report wakeReport, eventID, dedu
 }
 
 // publishWakeReport publishes one report on bus.LegionWakeTopic, retrying until the stream
-// acknowledges it, the whole report's budget runs out, or ctx ends with the listener. Nothing
-// waits for it: the 404 or the 202 kept answer it was raised beside is answered whatever the bus
-// does, and is answered without waiting for it (reportRoleWake).
+// acknowledges it, the server refuses it under the listener's grant (bus.ErrPublishDenied, which
+// the server gives again however often it is sent, so a retry would only hold one of
+// wakeReportsInFlight's slots until the budget ran out), the whole report's budget runs out, or ctx
+// ends with the listener. Nothing waits for it: the 404 or the 202 kept answer it was raised beside
+// is answered whatever the bus does, and is answered without waiting for it (reportRoleWake).
 //
 // Every attempt publishes the one envelope built below (wakeReportEnvelope), under the one event
-// id and dedupe key, as the stream keeps no duplicate window for these: an attempt the stream
-// stored and failed to acknowledge is reported twice, and a wake the daemon has taken already is
-// taken no second time (its mark's key is the report's event id, which every attempt of one report
-// carries, and the role and agent reports of one message carry the same name whichever attempt the
-// daemon reads).
+// id and dedupe key. The stream stores the report under its event id and topic
+// (bus.envelopeMsgID), so it keeps one copy however many attempts reach it within its duplicate
+// window. A wake the daemon has taken already is taken no second time (its mark's key is the
+// report's event id, which every attempt of one report carries, and the role and agent reports of
+// one message carry the same name whichever attempt the daemon reads).
 func publishWakeReport(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport) {
 	if client == nil {
 		return
@@ -151,7 +154,7 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 			logger.Info("legion wake report published", slog.String("kind", report.Kind),
 				slog.String("role", report.Role), slog.String("session", report.Session), slog.Int("attempts", attempt))
 			return
-		} else if ctx.Err() != nil {
+		} else if ctx.Err() != nil || errors.Is(err, bus.ErrPublishDenied) {
 			logger.Warn("legion wake report not published", slog.String("kind", report.Kind),
 				slog.String("role", report.Role), slog.String("session", report.Session),
 				slog.Int("attempts", attempt), slog.String("error", err.Error()))
