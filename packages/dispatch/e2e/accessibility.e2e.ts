@@ -9,6 +9,7 @@
 import AxeBuilder from "@axe-core/playwright";
 
 import { type AccessibilityExclusion, accessibilityExclusions } from "./accessibility-exclusions";
+import { expectTimeout } from "./expect-timeout";
 import { scannedRoutes, waitForRouteSettled } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { expect, test } from "./test";
@@ -63,7 +64,8 @@ for (const route of scannedRoutes) {
   test(`${route.name} has no serious or critical accessibility violation in light or dark`, async ({
     browser,
   }, testInfo) => {
-    const seed = await seedReviewRoutes();
+    // The seed's waits give up at the bound this row's own assertions use, inside the row's clock.
+    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
     await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));
       // `styles.css` eases `color`, `background-color` and `border-color` over 150ms on every

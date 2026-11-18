@@ -112,6 +112,34 @@ Each item below names a task and where its code is, then notes on it.
   A server's refusal of a create or raise stops the listener's start naming the setting and its value, while Dispatch's server, which reconciles in the background, keeps serving with the refusal logged;
   a bucket raise's refusal also names the bucket (`refusedSettings`, `raiseReplicas`)
 
+- **Sender limit**:
+  `cmd/listener/sender_limit.go`, `cmd/listener/request_record.go` (`refuseSenderRateLimited`), `internal/bus/settings.go` (`MaxSenderMessagesPerMinute`), `internal/ratelimit/ratelimit.go` (`Keyed.WaitAt`)
+
+  `ENVOY_SENDER_MESSAGES_PER_MINUTE` is how many messages one agent session may send through this listener in a minute, `/v1/messages/send` and `/v1/messages/publish` together:
+  a whole number from 0 to 60000, and unset, blank or 0 sets no limit.
+  `ENVOY_SENDER_MESSAGE_BURST` is how many it may send at once, a whole number of 1 or more, and unset it equals the rate.
+  A burst with no rate or with a rate of 0, and any other value, refuses startup naming the variable and the value (`parseSenderLimit`).
+  The start logs one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this process` or `listener sender limit: none`.
+  The listener keeps one count for each sending session (`ratelimit.Keyed`), which starts at the burst and gains one message every 60 seconds divided by the rate, up to the burst.
+  The counts are this process's own: each listener, and each replica of one, keeps its own, and a restart fills each count again.
+  The sender is the session a secrets-broker token proves, else the request's `source_session`.
+  Only a message whose `source` is `agent` or absent and that has a sender is counted:
+  a message of Dispatch (`dispatch`) or of Envoy itself (`envoy`) is not, and neither is the Legion daemon's notice, which names no sender (`packages/daemon/internal/notify`).
+  Both routes take from the count after their own checks, the publish route's `ReachesNoSession` 400 included, and before they read a session, resolve a role, report a wake or store anything.
+  A message that finds its count at 0 is the `429` of `refuseSenderRateLimited`, recorded `outcome=sender_rate_limited`, and nothing is stored, kept for a later holder or reported for a wake.
+  `Retry-After` and the body's `retry_after_seconds` give the same whole seconds, rounded up and at least 1, until the count holds one message again.
+  The JSON body also holds `reason: "sender_rate_limited"`, `messages_per_minute`, `burst` and an `error` that is the sentence `Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.`, its nouns singular where a value is 1 (`1 message a minute`, `after 1 second`).
+  The request line of a refused message, and of each message that cost one, carries the field `sender`, and no other line of the listener carries it.
+  A counted message costs one where the route stores it, may have stored it (any answer of a role send after a forward, or a `503` after an unacknowledged publish, `bus.ErrUnacknowledged`) or reports a wake for it, whatever it answers (`senderCharge.stored`, `senderCharge.woke`).
+  Every role send `504` costs one, also one that forwarded nothing (`roleSend.timedOut`).
+  A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before anything was sent (a wait for NATS to reconnect), costs nothing: the deferred `settle` returns the take.
+  A repeat the listener recognises costs nothing too (`senderCharge.forgive`): the stream's `duplicate` answer to a send or a topic publish, unless it answers the bus's resend (`bus.StoredAck.Resent`), and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) before its first forward.
+  A role send's echo, and a repeat in the route's 10-minute record, cost nothing before any forward.
+  A repeat that finds the count at 0 is refused as a new message is, because the take comes first.
+  This 429 is not the broker token check's (`apiauth.go`), whose log reason is `rate_limited`.
+  No client sends a refused message again by itself (`packages/envoy-client/src/transport.ts` retries nothing below 500), except the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times (`packages/pi-legion/src/stall-evidence.ts`).
+  `envoy-infra` takes the two settings as inputs `senderMessagesPerMinute` and `senderMessageBurst`.
+
 - **Stream consumer cap**:
   `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
 
@@ -4669,6 +4697,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
+  Before it reads the target, a message of an agent session whose count under the operator's sender limit is empty is answered `429` and recorded `outcome=sender_rate_limited`, with nothing read, reported or stored ("Sender limit" above).
 
 - A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
   the entry's last registration, or for a target with no entry its known-session record's last write.
@@ -4785,7 +4814,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed` or `stream_full`.
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `sender_rate_limited` (the `429` of "Sender limit" above).
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
 
 - `/v1/roles/<role>` (GET)

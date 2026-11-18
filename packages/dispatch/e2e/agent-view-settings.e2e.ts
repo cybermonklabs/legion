@@ -14,7 +14,8 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
-import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
+import { settledState } from "./settled";
+import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -140,12 +141,34 @@ function livePath(sessionID: string): string {
   return `/agents/${sessionID}/live`;
 }
 
+/** The two pieces of the row under the message box, each by the selectors of the two forms it is
+ *  drawn in: a picker, or a pill where the session does not switch it from Dispatch. */
+const SETTINGS_FORMS: Readonly<Record<string, readonly string[]>> = {
+  "the session's model": [
+    '[data-testid="agent-model-picker"]',
+    'span[data-testid="agent-session-model"]',
+  ],
+  "the session's thinking level": [
+    '[data-testid="agent-thinking-picker"]',
+    'span[data-testid="agent-session-thinking"]',
+  ],
+};
+
 /** On a phone, the session's settings never push the page sideways: the document is no wider
  *  than the 390 px screen, and every piece of them is whole on that screen once the reader has
  *  it in view. The row under the message box scrolls sideways itself (INFRA-812, R6), so a
  *  picker can start beyond the right edge until that row is scrolled to it; what must never
- *  happen is the page scrolling, or a piece that cannot be brought onto the screen at all. */
-async function expectNoSidewaysScroll(page: Page, project: string): Promise<void> {
+ *  happen is the page scrolling, or a piece that cannot be brought onto the screen at all.
+ *
+ *  The model and the thinking level are each measured in the form the header settled on. The
+ *  switch's status line under the row comes and goes with the session's answers and has no
+ *  other form to settle on, so it is measured only where the row passes it as `status`, having
+ *  just read it on the page. */
+async function expectNoSidewaysScroll(
+  page: Page,
+  project: string,
+  status?: Locator
+): Promise<void> {
   if (!PHONE_PROJECTS.includes(project)) return;
   const pageWidths = async () =>
     page.evaluate(() => ({
@@ -155,21 +178,22 @@ async function expectNoSidewaysScroll(page: Page, project: string): Promise<void
   const widths = await pageWidths();
   expect(widths.clientWidth).toBe(390);
   expect(widths.scrollWidth).toBe(widths.clientWidth);
-  for (const selector of [
-    '[data-testid="agent-model-picker"]',
-    '[data-testid="agent-thinking-picker"]',
-    'span[data-testid="agent-session-model"]',
-    'span[data-testid="agent-session-thinking"]',
-    '[data-testid="agent-switch-status"]',
-    '[data-testid="agent-settings-notice"]',
-  ]) {
-    const element = page.locator(selector);
-    if ((await element.count()) === 0) continue;
+  const pieces: (readonly [string, Locator])[] = [];
+  for (const [piece, forms] of Object.entries(SETTINGS_FORMS)) {
+    const form = await settledState(
+      piece,
+      forms.map((selector) => [selector, page.locator(selector)] as const)
+    );
+    pieces.push([form, page.locator(form)]);
+  }
+  if (status !== undefined) pieces.push(["the switch's status line", status]);
+  for (const [name, element] of pieces) {
+    await expect(element, name).toBeVisible();
     await element.scrollIntoViewIfNeeded();
     const box = await element.boundingBox();
-    expect(box, selector).not.toBeNull();
-    expect(box?.x ?? -1, selector).toBeGreaterThanOrEqual(0);
-    expect((box?.x ?? 0) + (box?.width ?? 0), selector).toBeLessThanOrEqual(widths.clientWidth);
+    expect(box, name).not.toBeNull();
+    expect(box?.x ?? -1, name).toBeGreaterThanOrEqual(0);
+    expect((box?.x ?? 0) + (box?.width ?? 0), name).toBeLessThanOrEqual(widths.clientWidth);
   }
   // Bringing each piece into view scrolled the row it sits in, never the page.
   expect(await pageWidths()).toEqual(widths);
@@ -737,7 +761,7 @@ test("a switch the session never answers says so after 30 seconds and keeps the 
     await expect(model).toBeEnabled();
     await expect(thinking).toBeEnabled();
     await expect(send).toBeEnabled();
-    await expectNoSidewaysScroll(page, testInfo.project.name);
+    await expectNoSidewaysScroll(page, testInfo.project.name, status);
 
     await answer(id, stored, "Model set to anthropic/model-b.");
     await expect(status).toHaveText("The session answered: Model set to anthropic/model-b.");
@@ -754,7 +778,7 @@ test("a switch the session never answers says so after 30 seconds and keeps the 
     await expect(model).toBeEnabled();
     await expect(send).toBeEnabled();
     await expectPicked(page, "anthropic/model-a", "auto");
-    await expectNoSidewaysScroll(page, testInfo.project.name);
+    await expectNoSidewaysScroll(page, testInfo.project.name, status);
   } finally {
     await context.close();
   }
@@ -791,7 +815,7 @@ test("a switch to a session that is not running is refused rather than stored fo
     // other send leaves `connected_only` out and is queued for a stopped session.
     const sends = await getSentMessages();
     expect(sends.map((send) => [send.target_session, send.connected_only])).toEqual([[id, true]]);
-    await expectNoSidewaysScroll(page, testInfo.project.name);
+    await expectNoSidewaysScroll(page, testInfo.project.name, status);
   } finally {
     await context.close();
   }

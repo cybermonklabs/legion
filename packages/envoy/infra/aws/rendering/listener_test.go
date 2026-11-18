@@ -32,6 +32,7 @@ func withoutGitHub(e *rendering.ListenerEnv) { e.ReviewerAppId, e.MentionTrigger
 // refusals are core's; one row here shows that Check runs it.
 func TestListenerEnvCheck(t *testing.T) {
 	appID := func(v string) *string { return &v }
+	intRef := func(v int) *int { return &v }
 	for _, row := range []struct {
 		name   string
 		mutate func(*rendering.ListenerEnv)
@@ -123,6 +124,16 @@ func TestListenerEnvCheck(t *testing.T) {
 		{
 			name:   "five NATS replicas",
 			mutate: func(e *rendering.ListenerEnv) { e.NatsReplicas = 5 },
+		},
+		// The sender limit, core.CheckSenderLimit's rule, whose own refusals are core's.
+		{
+			name:   "a sender limit",
+			mutate: func(e *rendering.ListenerEnv) { e.SenderMessagesPerMinute, e.SenderMessageBurst = intRef(4), intRef(8) },
+		},
+		{
+			name:   "a sender burst with no rate, refused by core.CheckSenderLimit",
+			mutate: func(e *rendering.ListenerEnv) { e.SenderMessageBurst = intRef(8) },
+			input:  "senderMessageBurst", err: "senderMessageBurst is given without senderMessagesPerMinute",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

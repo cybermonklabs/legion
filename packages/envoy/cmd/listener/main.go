@@ -91,6 +91,10 @@ type listenerDeps struct {
 	// share of its traffic is going to sessions that have stopped answering, before any of them
 	// reaches the gone horizon.
 	sendsToUnresponsive *metrics.Counter
+	// senderLimit is the operator's limit on the messages each agent session sends through this
+	// listener (sender_limit.go). nil is no limit, which is what every test that builds
+	// listenerDeps itself runs with.
+	senderLimit *senderLimit
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1052,6 +1056,14 @@ func main() {
 	}
 	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
 	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
+	// The operator's limit on the messages each agent session sends, read beside the API auth
+	// settings so a value it refuses stops the start before the listener connects to NATS, and
+	// stated in one line either way (sender_limit.go).
+	senderMessageLimit, err := parseSenderLimit(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logger.Info(describeSenderLimit(senderMessageLimit))
 
 	// Load webhook config (fast — env var reads only).
 	webhookCfg, err := webhook.LoadWebhookConfig()
@@ -1586,6 +1598,7 @@ func main() {
 		confirmed:    dedupe.New(10 * time.Minute),
 
 		sendsToUnresponsive: sendsToUnresponsive,
+		senderLimit:         senderMessageLimit,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 

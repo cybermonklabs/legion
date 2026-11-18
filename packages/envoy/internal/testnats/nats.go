@@ -602,6 +602,13 @@ func (s *Server) launch(t testing.TB) {
 		srv.WaitForShutdown()
 		t.Fatalf("NATS did not accept connections within %s: %s", connectTimeout, s.log.String())
 	}
+	// Before s.srv is set the relay refuses every connection, so no client request reaches the
+	// server before its system account's response timers are set past any test (responseThreshold).
+	if err := outliveResponseTimers(srv); err != nil {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+		t.Fatalf("keep the NATS server's response timers from firing during the test: %v", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.srv = srv
