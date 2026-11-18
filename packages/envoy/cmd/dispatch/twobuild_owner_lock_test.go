@@ -23,17 +23,131 @@ import (
 
 // ───── one owner's writers across the two builds ───────────────────────────
 
-// The previous build serialises an owner's writers on the owner's row: each takes the row `for no
-// key update` first and holds it to its commit. This tree serialises them on the owner's advisory
-// lock, which the previous build never takes, and takes the row too while a process of a build
-// before the lock protocol is live (store.LockOwner, server_processes.owner_lock_protocol 0). This
-// row runs a process of each build on one database and puts one write of each on one issue at
-// once, the previous build's first: the test holds the issue's row on its own connection, sends
-// the previous build's write, which queues on that row, then this build's, and lets the row go.
-// The previous build's write then commits first, and this build's must decide on what it wrote.
-// Each direction is one way a write of this build that read the issue before that commit goes
-// wrong: this build's write accepted where the previous build's made it a refusal, and the
-// previous build's write lost under this build's.
+// A build before the owner lock (server_processes.owner_lock_protocol 0) serialises an owner's
+// writers on the owner's row: each takes the row `for no key update` first and holds it to its
+// commit. This tree (store.OwnerLockProtocol) serialises them on the owner's advisory lock, which
+// such a build never takes, and takes the row too while a process of such a build is live
+// (store.LockOwner). The previous build is either kind: dispatch-two-builds pairs this tree with
+// the newest release, a build before the owner lock until a release carries it, and
+// dispatch-two-builds-same pairs this tree with its own build. Each row below reads which kind from
+// the protocol the previous build registers (ownerLockPairingOf), never from a job's name, a
+// variable or the build's commit, and runs the case it states for that pairing.
+//
+// The first row runs a process of each build on one database and puts one write of each on one
+// issue at once, the previous build's first: the test holds, on its own connection, the lock the
+// previous build's writers take first (the issue's row beside a build before the owner lock, the
+// issue's owner lock beside a build at this tree's protocol), sends the previous build's write,
+// which queues on that lock, then this build's, and lets the lock go. The previous build's write
+// then commits first, and this build's must decide on what it wrote. Each direction is one way a
+// write of this build that read the issue before that commit goes wrong: this build's write
+// accepted where the previous build's made it a refusal, and the previous build's write lost under
+// this build's. The two rows after it test the owner lock gate, which only a build before the
+// owner lock takes, as it arrives: they run beside such a build and skip beside a build at this
+// tree's protocol (gateRowSkip).
+
+// ownerLockPairing is the case the owner lock rows run, by the owner lock protocol the previous
+// build registers (ownerLockPairingOf).
+type ownerLockPairing int
+
+const (
+	// earlierBuildPairing is a previous build before the owner lock, at protocol 0: its writers take
+	// the owner's row first and never the owner lock, its arrival takes the owner lock gate, and
+	// this build's writes take the owner's row too while it is live.
+	earlierBuildPairing ownerLockPairing = iota + 1
+	// sameProtocolPairing is a previous build at this tree's protocol (store.OwnerLockProtocol): its
+	// writers take the owner lock first, as this build's do, and it is no earlier build to this one,
+	// so neither build takes the owner's row before its write phase.
+	sameProtocolPairing
+)
+
+func (p ownerLockPairing) String() string {
+	switch p {
+	case earlierBuildPairing:
+		return "a build before the owner lock"
+	case sameProtocolPairing:
+		return "a build at this tree's owner lock protocol"
+	}
+	return fmt.Sprintf("ownerLockPairing(%d)", int(p))
+}
+
+// ownerLockPairingOf is the pairing of a previous build that registers owner lock protocol
+// protocol: 0 is a build before the owner lock (earlierBuildPairing), store.OwnerLockProtocol a
+// build at this tree's (sameProtocolPairing). No row states a case for any other protocol, so for
+// one it answers an error, which fails the row rather than skipping it.
+func ownerLockPairingOf(protocol int) (ownerLockPairing, error) {
+	switch protocol {
+	case 0:
+		return earlierBuildPairing, nil
+	case store.OwnerLockProtocol:
+		return sameProtocolPairing, nil
+	}
+	return 0, fmt.Errorf("the previous build registers owner lock protocol %d, and the owner lock rows state a case only for 0, a build before the owner lock, and %d, this tree's (store.OwnerLockProtocol)",
+		protocol, store.OwnerLockProtocol)
+}
+
+// gateRowSkip answers whether a row of the owner lock gate skips in pairing, and the reason it
+// skips with. Only an earlier build's arrival takes the gate (migration
+// 20261115200014_owner_lock_legacy_gate), so the gate rows run beside a build before the owner lock
+// and skip beside a build at this tree's protocol.
+func gateRowSkip(pairing ownerLockPairing) (reason string, skip bool) {
+	if pairing != sameProtocolPairing {
+		return "", false
+	}
+	return fmt.Sprintf("The previous build registers owner lock protocol %d, this tree's (store.OwnerLockProtocol). It takes the owner lock as this build does, so its arrival never takes the owner lock gate this row tests. TestTwoBuildsSerialiseOneOwnersWritersBothWays is the row that covers this pairing.",
+		store.OwnerLockProtocol), true
+}
+
+// skipGateRowBeside skips a row of the owner lock gate when gateRowSkip skips it beside build, by
+// the protocol build registers when it boots alone (previousBuildOwnerLockProtocol), and fails the
+// row when no row states a case for that protocol (ownerLockPairingOf).
+func skipGateRowBeside(t *testing.T, build previousBuild) {
+	t.Helper()
+	pairing, err := ownerLockPairingOf(previousBuildOwnerLockProtocol(t, build))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason, skip := gateRowSkip(pairing); skip {
+		t.Skip(reason)
+	}
+}
+
+// The owner lock rows decide their case from the protocol the previous build reports as it
+// registers, and from nothing else: a report of 0 is a build before the owner lock, and the gate
+// rows run; a report of this tree's protocol is a build at it, and the gate rows skip, naming the
+// row that covers that pairing; any other report fails the row that read it. A decision that
+// skipped the gate rows at 0 would leave dispatch-two-builds, the job that pairs this tree with a
+// build before the owner lock, passing with the gate untested. The row runs the decision alone,
+// with no build and no database.
+func TestTheOwnerLockRowsDecideTheirCaseByThePreviousBuildsProtocol(t *testing.T) {
+	for _, report := range []struct {
+		protocol int
+		pairing  ownerLockPairing
+		skip     bool
+	}{
+		{protocol: 0, pairing: earlierBuildPairing, skip: false},
+		{protocol: store.OwnerLockProtocol, pairing: sameProtocolPairing, skip: true},
+	} {
+		pairing, err := ownerLockPairingOf(report.protocol)
+		if err != nil {
+			t.Errorf("a previous build at owner lock protocol %d fails its row: %v; want %s", report.protocol, err, report.pairing)
+			continue
+		}
+		if pairing != report.pairing {
+			t.Errorf("a previous build at owner lock protocol %d is %s, want %s", report.protocol, pairing, report.pairing)
+		}
+		switch reason, skip := gateRowSkip(pairing); {
+		case skip && !report.skip:
+			t.Errorf("the gate rows skip beside a previous build at owner lock protocol %d, whose arrival takes the gate; want them run. They skip saying: %s", report.protocol, reason)
+		case !skip && report.skip:
+			t.Errorf("the gate rows run beside a previous build at owner lock protocol %d, whose arrival never takes the gate; want them skipped", report.protocol)
+		case skip && !strings.Contains(reason, "TestTwoBuildsSerialiseOneOwnersWritersBothWays"):
+			t.Errorf("the gate rows skip beside a previous build at owner lock protocol %d saying %q, which names no row that covers the pairing", report.protocol, reason)
+		}
+	}
+	if pairing, err := ownerLockPairingOf(store.OwnerLockProtocol + 1); err == nil {
+		t.Errorf("a previous build at owner lock protocol %d, for which no row states a case, is %s; want an error that fails the row", store.OwnerLockProtocol+1, pairing)
+	}
+}
 
 // The application_name each build's connections carry, so the test tells their backends apart in
 // pg_stat_activity.
@@ -50,6 +164,15 @@ const previousRowLock = `select parent_key from issues where key = $1 for no key
 // beside the advisory lock in the read phase, the advisory lock itself, or a write phase's row lock
 // or update.
 var currentIssueStatement = regexp.MustCompile(`issues|owner_lock`)
+
+// ownerLockStatement matches a statement of a build at this tree's protocol that takes an owner
+// lock: a read phase's call of public.owner_lock, or a write phase's pg_advisory_xact_lock (store's
+// ownersLock and ownerLock).
+var ownerLockStatement = regexp.MustCompile(`pg_advisory_xact_lock|public\.owner_lock\(`)
+
+// rowModeLine is what a process of this tree logs once its owner locks take the owner's row too,
+// beside an earlier build in the fleet (store's noteOwnerLockMode).
+const rowModeLine = "owner locks now take the owner's row too"
 
 // startNamed starts a process of the previous build (previous) or of this tree, its connections
 // named application, and returns once it answers /healthz.
@@ -102,7 +225,7 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no backend of %s running a statement matching %s queued behind the issue's row within %s; its backends waiting on a lock: %+v",
+			t.Fatalf("no backend of %s running a statement matching %s queued behind the lock the test holds within %s; its backends waiting on a lock: %+v",
 				application, statement, within, backends)
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -116,7 +239,8 @@ type crossBuildWrite struct {
 	body         string
 }
 
-// send sends w on another goroutine and delivers its answer.
+// send sends w on another goroutine and delivers its answer. Nothing bounds the request
+// (trySend), so a row receives the answer with answerWithin.
 func (w crossBuildWrite) send() <-chan httpAnswer {
 	answered := make(chan httpAnswer, 1)
 	go func() {
@@ -129,11 +253,45 @@ func (w crossBuildWrite) send() <-chan httpAnswer {
 	return answered
 }
 
-// raceAcrossBuilds holds issue's row on the test's own connection, sends first (the previous
-// build's write) and waits for it to queue on that row in its first statement, sends second (this
-// build's) and waits for it to queue behind the row too, then lets the row go, and answers both
-// answers and the statement this build's write waited in.
-func raceAcrossBuilds(t *testing.T, builds *twoBuilds, issue string, first, second crossBuildWrite) (httpAnswer, httpAnswer, string) {
+// answerBound is how long a row waits for a write's answer: far longer than any write takes once
+// nothing the test holds keeps it waiting, and far shorter than the suite's -timeout of 30
+// minutes, so a write that never answers fails its row rather than hanging the test binary.
+const answerBound = 60 * time.Second
+
+// answerWithin waits up to within for the answer on answered, and fails the test naming what, the
+// write that never answered, when within passes first. The failure ends the test, so its deferred
+// rollbacks let go of what the test holds and its cleanups stop each process.
+func answerWithin(t *testing.T, answered <-chan httpAnswer, within time.Duration, what string) httpAnswer {
+	t.Helper()
+	select {
+	case answer := <-answered:
+		return answer
+	case <-time.After(within):
+		t.Fatalf("%s never answered within %s", what, within)
+		return httpAnswer{}
+	}
+}
+
+// awaitedLockType is the type of the lock the backend pid waits on (pg_locks.locktype): advisory
+// for an owner lock, tuple or transactionid for a row another transaction holds.
+func awaitedLockType(t *testing.T, database *store.Store, pid uint32) string {
+	t.Helper()
+	var lockType string
+	if err := database.Pool.QueryRow(context.Background(), `select locktype from pg_locks where pid = $1 and not granted`, pid).Scan(&lockType); err != nil {
+		t.Fatalf("read the lock backend %d waits on: %v", pid, err)
+	}
+	return lockType
+}
+
+// raceAcrossBuilds holds, on the test's own connection, the lock on issue that the previous
+// build's writers take first in pairing: the issue's row beside a build before the owner lock, the
+// issue's owner lock beside a build at this tree's protocol. It sends first (the previous build's
+// write) and waits for it to queue on that lock in its first statement, sends second (this
+// build's) and waits for it to queue behind the lock too, then lets the lock go, and answers both
+// answers and the statement this build's write waited in. Beside a build at this tree's protocol
+// it fails the test when either write waits on a lock other than an advisory one: with no earlier
+// build in the fleet, neither build takes the issue's row before its write phase.
+func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing, issue string, first, second crossBuildWrite) (httpAnswer, httpAnswer, string) {
 	t.Helper()
 	ctx := context.Background()
 	holder, err := builds.database.Pool.Begin(ctx)
@@ -141,40 +299,65 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, issue string, first, seco
 		t.Fatal(err)
 	}
 	defer holder.Rollback(ctx)
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue); err != nil {
+	firstStatement, secondStatement := regexp.MustCompile(`^`+regexp.QuoteMeta(previousRowLock)+`$`), currentIssueStatement
+	if pairing == sameProtocolPairing {
+		if err := store.LockOwner(ctx, holder, store.IssueOwner(issue)); err != nil {
+			t.Fatalf("hold the issue's owner lock: %v", err)
+		}
+		firstStatement, secondStatement = ownerLockStatement, ownerLockStatement
+	} else if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue); err != nil {
 		t.Fatalf("hold the issue's row: %v", err)
 	}
 	firstAnswered := first.send()
-	queuedBackend(t, builds.database, holder, previousApplication, regexp.MustCompile(`^`+regexp.QuoteMeta(previousRowLock)+`$`), 20*time.Second)
+	firstPID, _ := queuedBackend(t, builds.database, holder, previousApplication, firstStatement, 20*time.Second)
 	secondAnswered := second.send()
-	_, waitingOn := queuedBackend(t, builds.database, holder, currentApplication, currentIssueStatement, 20*time.Second)
+	secondPID, waitingOn := queuedBackend(t, builds.database, holder, currentApplication, secondStatement, 20*time.Second)
+	if pairing == sameProtocolPairing {
+		for _, queued := range []struct {
+			pid  uint32
+			name string
+		}{{firstPID, builds.previousName()}, {secondPID, builds.currentName()}} {
+			if lockType := awaitedLockType(t, builds.database, queued.pid); lockType != "advisory" {
+				t.Errorf("the %s's write waits on a %s lock behind the issue's owner lock the test holds, want an advisory lock: beside a build at this tree's protocol no earlier build is in the fleet, and neither build takes the issue's row before its write phase",
+					queued.name, lockType)
+			}
+		}
+	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var answers [2]httpAnswer
-	for index, answered := range []<-chan httpAnswer{firstAnswered, secondAnswered} {
-		select {
-		case answers[index] = <-answered:
-		case <-time.After(60 * time.Second):
-			t.Fatalf("a write of the race never answered within 60s of the issue's row being let go")
-		}
-	}
-	return answers[0], answers[1], waitingOn
+	return answerWithin(t, firstAnswered, answerBound, "the "+builds.previousName()+"'s write of the race, once the lock on the issue was let go,"),
+		answerWithin(t, secondAnswered, answerBound, "this build's write of the race, once the lock on the issue was let go,"),
+		waitingOn
 }
 
 // A write of each build on one issue at once, the previous build's committing first, decides as if
 // the two had run one after the other: this build's PATCH conditional on the issue's sequence
 // (expected_sequence) is refused 409 ISSUE_CHANGED once the previous build's PATCH has moved that
-// sequence, and the previous build's label survives this build's labels_add. This build's process
-// takes the issue's row in its read phase while the previous build's process is live, and logs
-// that its owner locks now do. (A close would be the plainer refusal, but the previous build's
-// close settles the issue's documents first, on the issue's row, before its own transaction, so
-// the row the test holds would queue that settlement rather than the close.)
+// sequence, and the previous build's label survives this build's labels_add. (A close would be
+// the plainer refusal, but the previous build's close settles the issue's documents first, on the
+// issue's row, before its own transaction, so the row the test holds would queue that settlement
+// rather than the close.)
+//
+// The row runs in both pairings, and reads which one from the protocol the previous build's process
+// registers once it serves, before this build's process starts, while its row is the registry's
+// only one. Beside a build before the owner lock, which dispatch-two-builds runs until a release
+// carries the owner lock, the test holds the issue's row, which that build's PATCH takes first;
+// this build's process takes the row in its read phase while that build's process is live, and
+// logs that its owner locks now do. Beside a build at this tree's protocol, which
+// dispatch-two-builds-same runs, both builds' PATCHes take the issue's owner lock first, so the
+// test holds that lock instead: each PATCH waits on it, an advisory lock, and neither on a row
+// lock, and neither process logs that its owner locks take the row, since no earlier build is in
+// the fleet.
 func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 	builds := newTwoBuilds(t)
-	builds.startNamed(t, true, previousApplication)
+	previous := builds.startNamed(t, true, previousApplication)
+	pairing, err := ownerLockPairingOf(registeredOwnerLockProtocol(t, builds.database, previous, builds.previousName(), 30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("the %s is %s", builds.previousName(), pairing)
 	current := builds.startNamed(t, false, currentApplication)
-	previous := builds.previous()
 	project := uniqueProjectKey(t, "OWN")
 	current.createProject(t, project, "Owner locks")
 
@@ -185,7 +368,7 @@ func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 			t.Fatal(err)
 		}
 		const previousTitle, currentTitle = "Retitled by the previous build", "Retitled by this build"
-		first, second, waitingOn := raceAcrossBuilds(t, builds, issue,
+		first, second, waitingOn := raceAcrossBuilds(t, builds, pairing, issue,
 			crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue, body: `{"title":"` + previousTitle + `"}`},
 			crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 				body: fmt.Sprintf(`{"title":%q,"expected_sequence":%d}`, currentTitle, sequence)})
@@ -209,7 +392,7 @@ func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 
 	t.Run("the previous build's label beside this build's labels_add", func(t *testing.T) {
 		issue, _ := current.createIssueIn(t, project, "Labelled by both builds", "A spec.\n")
-		first, second, waitingOn := raceAcrossBuilds(t, builds, issue,
+		first, second, waitingOn := raceAcrossBuilds(t, builds, pairing, issue,
 			crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue, body: `{"labels_add":["previous-build"]}`},
 			crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue, body: `{"labels_add":["current-build"]}`})
 		t.Logf("this build's labels_add waited in %q", waitingOn)
@@ -226,7 +409,16 @@ func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 		}
 	})
 
-	current.WaitForOutput(t, "owner locks now take the owner's row too")
+	if pairing == earlierBuildPairing {
+		current.WaitForOutput(t, rowModeLine)
+		return
+	}
+	for _, process := range []*dispatchProcess{previous, current} {
+		if output := process.Output.String(); strings.Contains(output, rowModeLine) {
+			t.Errorf("the %s logged that its %s beside %s, which takes the owner lock as this build does and is no earlier build:\n%s",
+				builds.buildName(process), rowModeLine, pairing, output)
+		}
+	}
 }
 
 // ───── the previous build's boot beside a write of this build in flight ─────
@@ -304,8 +496,18 @@ var currentLabelWrite = regexp.MustCompile(`update issues set labels`)
 // PATCH commits; once it serves, a label it adds lands after the PATCH's and both are kept.
 // Without the gate the previous build boots at once, its label is written while the PATCH waits,
 // and the PATCH then writes the labels it read over it.
+//
+// The row runs beside a build before the owner lock alone, which dispatch-two-builds pairs this
+// tree with until a release carries the owner lock. It reads the pairing before the previous build
+// boots on the row's database, from a boot of that build alone on a database of its own
+// (previousBuildOwnerLockProtocol), since a boot on the row's database would be the arrival the row
+// tests. Beside a build at this tree's protocol, which dispatch-two-builds-same pairs this tree
+// with, it skips (gateRowSkip): that build takes the owner lock as this build does, so its arrival
+// never takes the gate, and TestTwoBuildsSerialiseOneOwnersWritersBothWays covers that pairing.
 func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing.T) {
-	builds := newTwoBuilds(t)
+	build := openPreviousBuild(t)
+	skipGateRowBeside(t, build)
+	builds := newTwoBuildsOf(t, build)
 	current := builds.startNamed(t, false, currentApplication)
 	project := uniqueProjectKey(t, "GATE")
 	current.createProject(t, project, "Owner lock gate")
@@ -342,7 +544,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	if booted {
 		t.Errorf("the %s served %s after it started while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want its boot to wait at its dashboard publish for that PATCH (the owner lock gate)",
 			builds.previousName(), time.Since(started).Round(time.Millisecond))
-		if answer := <-labelPrevious.send(); answer.status != http.StatusOK {
+		if answer := answerWithin(t, labelPrevious.send(), answerBound, "the "+builds.previousName()+"'s PATCH, sent while this build's PATCH was still paused,"); answer.status != http.StatusOK {
 			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 		}
 		if err := pause.Rollback(ctx); err != nil {
@@ -368,17 +570,12 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		previous.waitHealthy(t)
 		t.Logf("the %s served %s after this build's PATCH was let go, %s after it started", builds.previousName(),
 			time.Since(released).Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
-		if answer := <-labelPrevious.send(); answer.status != http.StatusOK {
+		if answer := answerWithin(t, labelPrevious.send(), answerBound, "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
 			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 		}
 	}
-	select {
-	case answer := <-patched:
-		if answer.status != http.StatusOK {
-			t.Fatalf("this build's PATCH answered %s", answer)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("this build's PATCH never answered within 60s of its update of the labels being let go")
+	if answer := answerWithin(t, patched, answerBound, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
+		t.Fatalf("this build's PATCH answered %s", answer)
 	}
 	var labels []string
 	if err := builds.database.Pool.QueryRow(ctx, `select labels from issues where key = $1`, issue).Scan(&labels); err != nil {
@@ -388,11 +585,11 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both: the label the %s added once it served was lost under this build's PATCH, which read the labels before it",
 			labels, builds.previousName(), builds.previousName())
 	}
-	if answer := <-(crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build-again"]}`}.send()); answer.status != http.StatusOK {
+	if answer := answerWithin(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send(), answerBound, "this build's second PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("this build's second PATCH answered %s", answer)
 	}
-	current.WaitForOutput(t, "owner locks now take the owner's row too")
+	current.WaitForOutput(t, rowModeLine)
 }
 
 // ───── the previous build's registration beside a write of this build held past its bound ─────
@@ -426,7 +623,8 @@ func (w heartbeatWatch) gaps() []time.Duration {
 }
 
 // watchHeartbeat reads the server_processes row of instance every 100 ms until the stop it returns
-// is called, which answers what it saw, or the test ends.
+// is called, which answers what it saw, or the test ends. The stop fails the test when the watch's
+// read in flight has not returned within answerBound.
 func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop func() heartbeatWatch) {
 	done := make(chan struct{})
 	seen := make(chan heartbeatWatch, 1)
@@ -462,7 +660,13 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 	t.Cleanup(end)
 	return func() heartbeatWatch {
 		end()
-		return <-seen
+		select {
+		case watch := <-seen:
+			return watch
+		case <-time.After(answerBound):
+			t.Fatalf("the watch of server process %s's heartbeat had not stopped %s after it was told to", instance, answerBound)
+			return heartbeatWatch{}
+		}
 	}
 }
 
@@ -477,8 +681,15 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 // with its label, the previous build, started again as its supervisor would, registers and
 // serves, and the label it adds is kept beside this build's. Without the bound the registration
 // waits for the write for as long as it is held, with every heartbeat of this build behind it.
+//
+// The row runs beside a build before the owner lock alone, reads the pairing as the boot row above
+// does (previousBuildOwnerLockProtocol), and skips beside a build at this tree's protocol for that
+// row's reason (gateRowSkip): such a build registers without taking the gate, and
+// TestTwoBuildsSerialiseOneOwnersWritersBothWays covers that pairing.
 func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
-	builds := newTwoBuilds(t)
+	build := openPreviousBuild(t)
+	skipGateRowBeside(t, build)
+	builds := newTwoBuildsOf(t, build)
 	current := builds.startNamed(t, false, currentApplication)
 	project := uniqueProjectKey(t, "BND")
 	current.createProject(t, project, "Registration bound")
@@ -550,13 +761,8 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if err := pause.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case answer := <-patched:
-		if answer.status != http.StatusOK {
-			t.Fatalf("this build's PATCH answered %s", answer)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("this build's PATCH never answered within 60s of its update of the labels being let go")
+	if answer := answerWithin(t, patched, answerBound, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
+		t.Fatalf("this build's PATCH answered %s", answer)
 	}
 	watch := stopWatch()
 	t.Logf("this build's heartbeats from the PATCH's hold to its commit, %s after the %s's registration began to wait: %d read, gaps %v, the row at its oldest %s",
@@ -579,8 +785,8 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 		previous = startPrevious()
 	}
 	previous.waitHealthy(t)
-	if answer := <-(crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["previous-build"]}`}.send()); answer.status != http.StatusOK {
+	if answer := answerWithin(t, crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["previous-build"]}`}.send(), answerBound, "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 	}
 	var labels []string
@@ -590,9 +796,9 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if !slices.Contains(labels, "previous-build") || !slices.Contains(labels, "current-build") {
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both", labels, builds.previousName())
 	}
-	if answer := <-(crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build-again"]}`}.send()); answer.status != http.StatusOK {
+	if answer := answerWithin(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send(), answerBound, "this build's second PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("this build's second PATCH answered %s", answer)
 	}
-	current.WaitForOutput(t, "owner locks now take the owner's row too")
+	current.WaitForOutput(t, rowModeLine)
 }

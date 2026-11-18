@@ -224,11 +224,13 @@ jobs:
   #
   # It runs the whole suite unchanged. Each row that depends on the two builds' numbers decides
   # from what the live fleet registers, not from which commit the previous build is, so a
-  # same-build pairing is a case the suite already states. The one row that needs an older build
-  # reads DISPATCH_FIRST_ROLLOUT_BUILD, which this job leaves unset, so that row skips here and
-  # runs in the job above. A row that fails only in this job holds a version assumption it never
-  # stated: that is a finding for the row's owning tree, which fixes the row, and no ground for a
-  # skip.
+  # same-build pairing is a case the suite already states. The one row that needs the first-rollout
+  # build reads DISPATCH_FIRST_ROLLOUT_BUILD, which this job leaves unset, so that row skips here and
+  # runs in the job above. The two owner lock gate rows (twobuild_owner_lock_test.go) skip here too,
+  # by the owner lock protocol the previous build registers: a build at this tree's protocol never
+  # takes the gate they test, and TestTwoBuildsSerialiseOneOwnersWritersBothWays covers this pairing.
+  # A row that fails only in this job holds a version assumption it never stated: that is a finding
+  # for the row's owning tree, which fixes the row, and no ground for a skip.
   #
   # A merge-group run alone runs it, and as a job of its own beside the one above, so the group
   # fails before the merge, its wall time does not grow, and a pull request's run (`full-ci`) or
