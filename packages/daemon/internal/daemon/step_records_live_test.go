@@ -11,7 +11,7 @@
 // and port for the outage. The daemon is the whole daemon (run, the function `legion start` calls,
 // through startDaemonWithin) with dispatch_url at that server, so every step record it writes goes
 // through its outbox and its Dispatch client to the real route. The issue walks as the package's
-// whole-daemon tests walk it (stepRecordsRig, step_records_test.go): each role over the worker
+// whole-daemon tests walk it (stepRecordsRig, step_records_rig_test.go): each role over the worker
 // stream and the daemon's own routes, its handoff record written to Dispatch under its own
 // session, a person's review and the merge as GitHub's envelopes on the broker, and the
 // architect's sign-off through its own route. The reader is the real `dispatch` CLI
