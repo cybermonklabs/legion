@@ -44,6 +44,9 @@ const (
 	codeTargetLost = "CONNECT_TARGET_LOST"
 	// serveBound: a bound connection on which no name of the grant binds the host any more.
 	codeNoBoundName = "NO_NAME_BOUND"
+	// serveBound: a CONNECT, or an upgrade to h2c, on a connection the proxy decrypted - a request
+	// for a protocol whose bytes after the answer are no request the proxy reads.
+	codeProtocolSwitch = "PROTOCOL_SWITCH_REFUSED"
 	// serveBound: a name or slot the broker released no value for.
 	codeNoValue = "NO_VALUE_RELEASED"
 	// serveBound: an azure access slot whose token this pod neither holds nor could exchange for
@@ -55,10 +58,16 @@ const (
 	codeAWSSignature = "AWS_SIGNATURE_REFUSED"
 	// serveBound: a request the swap refused although the decision allowed it.
 	codeSwapRefused = "SWAP_REFUSED"
+	// serveBound: a request that is no token request and carries an azure name's federated
+	// token's placeholder, which the header swap would hand the host the request goes to.
+	codeFederatedSwap = "FEDERATED_TOKEN_SWAP_REFUSED"
 	// exchangeToken: a token request whose form cannot be read.
 	codeTokenRequest = "TOKEN_REQUEST_INVALID"
 	// exchangeToken: a token request whose client_assertion is not this grant's placeholder.
 	codeTokenAssertion = "TOKEN_ASSERTION_REFUSED"
+	// exchangeToken: a token request to a host that is not the token authority's, or made as
+	// another application or in another tenant than the name's own document names (azureBound).
+	codeTokenApplication = "TOKEN_APPLICATION_REFUSED"
 	// exchangeToken: an exchange the token endpoint did not answer, or answered with nothing the
 	// proxy can hand on.
 	codeExchangeFailed = "TOKEN_EXCHANGE_FAILED"

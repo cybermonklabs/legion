@@ -130,7 +130,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 		t.Fatalf("the copy forwarded to the session whose own mention it repeats carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 			handed[0].key)
 	}
-	if want := bus.ForwardMsgID(secondKey, contracts.AgentSubject(second)); handed[0].msgID != want {
+	if want := bus.ForwardMsgID(secondKey, contracts.LegacyAgentSubject(second)); handed[0].msgID != want {
 		t.Fatalf("the forward was made under %q, want %q, so that the outbox's own handover of this copy and the drain's name one message",
 			handed[0].msgID, want)
 	}

@@ -57,7 +57,7 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 		t.Fatal("the editor's connection was still open 5s after Shutdown returned")
 	}
 	if number, markdown, authors := latestDocumentVersion(t, database, artifactID); number != 2 || markdown != "after\n" ||
-		len(authors) != 1 || authors[0] != (model.Actor{Kind: "user", ID: "alice"}) {
+		len(authors) != 1 || authors[0] != (model.Actor{Kind: "user", ID: "alice", Proven: true}) {
 		t.Fatalf("the document's latest version is %d holding %q by %v, want version 2 holding the editor's edit, %q, credited to alice",
 			number, markdown, authors, "after\n")
 	}

@@ -4,12 +4,13 @@
 // signed credential-request object POST /v1/requests embeds (the broker puts
 // authorization_details and reason inside
 // that signed object, not plain top-level fields). An agent box or pod has its own key on tmpfs
-// under AGENT_SECRETS_KEY_DIR and signs both directly for its own enrollment id (fileSigner); a
-// machine session has no key of its own and asks
-// agent-secrets-helper, over AGENT_SECRETS_HELPER_SOCK, which signs only for processes that
+// under AGENT_SECRETS_KEY_DIR and signs both directly for its own enrollment id (fileSigner), as
+// do a person's sign-in and a machine's own session; a machine session has no key of its own and
+// asks agent-secrets-helper, over AGENT_SECRETS_HELPER_SOCK, which signs only for processes that
 // descend from a registered session root (helperSigner) — the session's key never leaves the
 // helper process, so building the request object is also the helper's job in that mode.
-// buildSigner (main.go) is the one place that chooses between them. The operator's own machine and
+// signerChain (chain.go) is the one place that chooses between them, and it builds a helperSigner
+// only after probeHelper said the caller is in a session. The operator's own machine and
 // grant commands sign as this machine's login instead, through the helper's sign-launcher op
 // (launcherSigner, built by machineContext).
 package main
@@ -19,8 +20,10 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -34,52 +37,53 @@ type proofSigner interface {
 
 // Signer is a session's proofSigner, which also builds and signs a credential-request object
 // naming the secrets the session is asking for, and the lifetime its grant lasts: lifetimeSeconds,
-// or nil when it lasts until the session ends.
+// or nil when it lasts until the session ends. audience is the broker the object is for.
 type Signer interface {
 	proofSigner
-	SignRequestObject(audience string, names []string, reason string, lifetimeSeconds *int) (string, error)
+	SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error)
 }
 
 // fileSigner signs with the key and enrollment id an agent box or pod keeps under
 // AGENT_SECRETS_KEY_DIR.
 //
-// register is how this session is made again when the broker says the enrollment is not live,
-// and it answers the fresh enrollment id. It is set for the two sessions this command registers
-// itself — a person's sign-in on this box, and a machine that proves an identity of its own —
-// and nil for every other, a box or pod its launcher enrolled above all: that enrollment is the
-// launcher's to make again, and registering one here would leave the launcher's own key dir
-// naming a session the launcher never made.
+// register is how this session is made again when the broker says the enrollment stale is not
+// live, and it answers the key and the enrollment id to sign with from then on. It is set for the
+// two sessions this command registers itself — a person's sign-in on this box, which registers
+// its box key again, and a machine that proves an identity of its own, which registers a key of
+// its own each time (machineReregister) — and nil for every other, a box or pod its launcher
+// enrolled above all: that enrollment is the launcher's to make again, and registering one here
+// would leave the launcher's own key dir naming a session the launcher never made.
 type fileSigner struct {
 	key          *ecdsa.PrivateKey
 	enrollmentID string
-	register     func(ctx context.Context) (string, error)
+	register     func(ctx context.Context, stale string) (*ecdsa.PrivateKey, string, error)
 }
 
 func (f *fileSigner) Sign(method, url string) (string, error) {
 	return proof.Sign(f.key, f.enrollmentID, method, url, time.Now())
 }
 
-// Reenroll registers this session again and signs with the enrollment it gets from here on
-// (client.reenroller). A signer with no register answers an error, so the broker's own refusal
+// Reenroll registers this session again and signs with the key and enrollment it gets from here
+// on (client.reenroller). A signer with no register answers an error, so the broker's own refusal
 // is what the caller reports.
 func (f *fileSigner) Reenroll(ctx context.Context) error {
 	if f.register == nil {
 		return errors.New("nothing here can register this session again: its enrollment is its launcher's to make")
 	}
-	id, err := f.register(ctx)
+	key, id, err := f.register(ctx, f.enrollmentID)
 	if err != nil {
 		return err
 	}
-	f.enrollmentID = id
+	f.key, f.enrollmentID = key, id
 	return nil
 }
 
-func (f *fileSigner) SignRequestObject(audience string, names []string, reason string, lifetimeSeconds *int) (string, error) {
+func (f *fileSigner) SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
 	details := make([]record.AuthorizationDetail, len(names))
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	return record.Sign(f.key, audience, details, reason, "", lifetimeSeconds, time.Now())
+	return record.Sign(f.key, audience.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 }
 
 // helperSigner asks agent-secrets-helper, over its unix socket, to sign for this process's
@@ -97,6 +101,33 @@ type helperSigner struct {
 // (NO_CREDENTIAL): never logged in, or its login lapsed or was refused, until the operator logs the machine in, the helper enrolls no one, so the session has no broker identity. identity prints it, and
 // reportError prints it the same way for every command that meets it.
 var errNoCredential = errors.New("this machine is not logged in to the secrets broker; not an agent session (run: agent-secrets machine login)")
+
+// helperAnswer is what the helper said to the identity probe: sock is the socket asked, there
+// whether its file exists, err a socket that is there and did not answer within
+// identityDeadline, and resp the answer otherwise.
+type helperAnswer struct {
+	sock  string
+	there bool
+	resp  helper.Response
+	err   error
+}
+
+// answered reports whether the helper answered the probe at all, whatever it said.
+func (a helperAnswer) answered() bool { return a.there && a.err == nil }
+
+// probeHelper asks the helper's sign op for a throwaway proof (identityProbeURL), which says
+// whether the caller is inside a session the helper registered and changes nothing: OK
+// (enrolled), NOT_ENROLLED (registered and still enrolling), NOT_A_SESSION, or NO_CREDENTIAL. The
+// socket is AGENT_SECRETS_HELPER_SOCK, else the helper's default, and a socket file that is not
+// there is asked nothing.
+func probeHelper() helperAnswer {
+	sock, _ := helperSocket()
+	if !exists(sock) {
+		return helperAnswer{sock: sock}
+	}
+	resp, err := helper.Call(sock, helper.Request{Op: "sign", Method: http.MethodGet, URL: identityProbeURL}, identityDeadline)
+	return helperAnswer{sock: sock, there: true, resp: resp, err: err}
+}
 
 // helperRefusal is the error for a helper answer that is not OK.
 func helperRefusal(resp helper.Response) error {
@@ -145,7 +176,7 @@ func (h *helperSigner) Sign(method, url string) (string, error) {
 // SignRequestObject asks the helper's sign-request op. A helper from before lifetime_seconds
 // ignores the field and signs no lifetime; the broker's answer then names none, and the caller
 // that asked for one refuses it (grantedLifetime).
-func (h *helperSigner) SignRequestObject(audience string, names []string, reason string, lifetimeSeconds *int) (string, error) {
+func (h *helperSigner) SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
 	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds}, 5*time.Second)
 	if err != nil {
 		return "", helperFailure(h.sock, err, false)
@@ -192,10 +223,10 @@ func (l *launcherSigner) Sign(method, url string) (string, error) {
 
 // machineContext answers the broker URL and a launcher signer. Machine and grant commands run
 // where the helper does (the devbox); a machine with no helper has no machine login to act as.
-func machineContext() (base string, signer *launcherSigner, err error) {
+func machineContext() (base brokeraddr.Address, signer *launcherSigner, err error) {
 	base = brokerBaseURL()
-	if base == "" {
-		return "", nil, fmt.Errorf("%s is required: it names the secrets broker this machine's login, and the grants it lists or ends, are at", brokerURLVar)
+	if base.Empty() {
+		return brokeraddr.Address{}, nil, fmt.Errorf("%s is required: it names the secrets broker this machine's login, and the grants it lists or ends, are at", brokerURLVar)
 	}
 	sock, named := helperSocket()
 	if !exists(sock) {
@@ -203,7 +234,7 @@ func machineContext() (base string, signer *launcherSigner, err error) {
 		if named {
 			where = "AGENT_SECRETS_HELPER_SOCK"
 		}
-		return "", nil, fmt.Errorf("no agent-secrets-helper at %s (%s): machine and grant commands act under this machine's login, which its helper holds", sock, where)
+		return brokeraddr.Address{}, nil, fmt.Errorf("no agent-secrets-helper at %s (%s): machine and grant commands act under this machine's login, which its helper holds", sock, where)
 	}
 	return base, &launcherSigner{sock: sock}, nil
 }

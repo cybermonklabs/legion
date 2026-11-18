@@ -15,12 +15,16 @@
 // # What these numbers are, and what they are not
 //
 // They are one box: this pod's Postgres, which carries every other suite running beside it. The
-// ratios are the part that survives a busy box, since each pair is measured in the same run,
-// interleaved run by run, so a machine that slows moves both. The time of record is the
-// server's own — the clock covers one handler.ServeHTTP, or one statement through the scan the
-// handler uses, with everything else off it — and the median of five runs is reported, after a
-// warm-up run that is not counted: the first run of a statement on a pooled connection prepares
-// it, and a measurement of a read is not a measurement of a plan being made.
+// time of record is the server's own — the clock covers one handler.ServeHTTP, or one statement
+// through the scan the handler uses, with everything else off it — and the least of speedRuns
+// runs is reported, after a warm-up run that is not counted: the first run of a statement on a
+// pooled connection prepares it, and a measurement of a read is not a measurement of a plan being
+// made. A busy box only ever adds to a run's time, so each operation's least is the run the box
+// reached least, and the runs interleave the operations, so every operation is read over the
+// same stretch of the run's load. A median of each against the other's median did not survive
+// that: on a loaded 288-CPU machine (2026-11-16) the relation read's runs were 15.5 to 33.3 ms
+// and the page without it 9.6 to 14.7 ms, and the medians stood 2.16 times apart where the least
+// of each stood 1.61 times apart.
 package api
 
 import (
@@ -38,8 +42,12 @@ import (
 )
 
 // speedRuns is how many times each operation is run and timed, beside the warm-up run that is
-// not counted. Five readings is what the median below is drawn from.
-const speedRuns = 5
+// not counted: how many runs a load that slows one operation and spares another has to reach
+// before the least of the first reads it as cost. Five runs of 61 passes each, at a load of 191
+// to 266 on a 288-CPU machine (2026-11-16), read the relation at 1.47 to 1.64 times the page
+// without it, least against least; groups of 5 passes drawn from them put that ratio over 2 in 31
+// of 100,000, and groups of 11 or more in none of 100,000.
+const speedRuns = 21
 
 // The bounds the two tests hold their readings to, from the issue's own checks: the relation
 // read at no more than twice the same page without it; the whole priorities body under two
@@ -59,12 +67,10 @@ type speedTiming struct {
 	runs []time.Duration
 }
 
-// median is the reading of record: the middle of the sorted runs, which is a run that happened
-// rather than an average of a slow one and a fast one.
-func (s speedTiming) median() time.Duration {
-	sorted := slices.Clone(s.runs)
-	slices.Sort(sorted)
-	return sorted[len(sorted)/2]
+// least is the reading of record: the quickest of the runs, the one the box's load added least
+// to, which noise can only raise.
+func (s speedTiming) least() time.Duration {
+	return slices.Min(s.runs)
 }
 
 func (s speedTiming) String() string {
@@ -72,7 +78,7 @@ func (s speedTiming) String() string {
 	for _, run := range s.runs {
 		readings = append(readings, fmt.Sprintf("%.1f", msOf(run)))
 	}
-	return fmt.Sprintf("%s: %.1f ms (median of %v ms)", s.name, msOf(s.median()), readings)
+	return fmt.Sprintf("%s: %.1f ms (least of %v ms)", s.name, msOf(s.least()), readings)
 }
 
 // speedReadings is every reading the two tests report, taken over the one corpus.
@@ -114,12 +120,12 @@ func TestAdvancesListingSpeed(t *testing.T) {
 	readings := speedCorpusReadings(t)
 	t.Log(readings.advancesRead.String())
 	t.Log(readings.advancesUnread.String())
-	read, unread := readings.advancesRead.median(), readings.advancesUnread.median()
+	read, unread := readings.advancesRead.least(), readings.advancesUnread.least()
 	ratio := float64(read) / float64(unread)
 	t.Logf("the relation read costs %.2fx the same page without it, at most %.2fx", ratio, speedAdvancesRatio)
 	if ratio > speedAdvancesRatio {
-		t.Fatalf("a page of %d issues reads its advances relations in %.1f ms against %.1f ms without them (%.2fx), want at most %.2fx",
-			speedCorpusPage, msOf(read), msOf(unread), ratio, speedAdvancesRatio)
+		t.Fatalf("a page of %d issues reads its advances relations in %.1f ms against %.1f ms without them, the least of %d runs each (%.2fx), want at most %.2fx",
+			speedCorpusPage, msOf(read), msOf(unread), speedRuns, ratio, speedAdvancesRatio)
 	}
 }
 
@@ -132,25 +138,26 @@ func TestPrioritiesReadSpeed(t *testing.T) {
 	t.Log(readings.pagedIssues.String())
 	t.Log(readings.prioritiesFull.String())
 	t.Log(readings.prioritiesLite.String())
-	paged, full, summary := readings.pagedIssues.median(), readings.prioritiesFull.median(), readings.prioritiesLite.median()
+	paged, full, summary := readings.pagedIssues.least(), readings.prioritiesFull.least(), readings.prioritiesLite.least()
 	ratio := float64(full) / float64(paged)
 	t.Logf("%s costs %.2fx the paged listing of every open issue, at most %.2fx", speedPriorityFullName, ratio, speedPrioritiesRatio)
 	if full > speedPrioritiesBound {
-		t.Fatalf("%s took %.1f ms over %d issues and %d priorities, want under %v",
-			speedPriorityFullName, msOf(full), speedCorpusIssues, speedCorpusPriorities, speedPrioritiesBound)
+		t.Fatalf("%s took %.1f ms over %d issues and %d priorities at the least of %d runs, want under %v",
+			speedPriorityFullName, msOf(full), speedCorpusIssues, speedCorpusPriorities, speedRuns, speedPrioritiesBound)
 	}
 	if ratio > speedPrioritiesRatio {
-		t.Fatalf("%s took %.1f ms against the paged listing's %.1f ms (%.2fx), want at most %.2fx",
-			speedPriorityFullName, msOf(full), msOf(paged), ratio, speedPrioritiesRatio)
+		t.Fatalf("%s took %.1f ms against the paged listing's %.1f ms, the least of %d runs each (%.2fx), want at most %.2fx",
+			speedPriorityFullName, msOf(full), msOf(paged), speedRuns, ratio, speedPrioritiesRatio)
 	}
 	if summary > speedPrioritySummary {
-		t.Fatalf("the priorities summary took %.1f ms, want under %v", msOf(summary), speedPrioritySummary)
+		t.Fatalf("the priorities summary took %.1f ms at the least of %d runs, want under %v", msOf(summary), speedRuns, speedPrioritySummary)
 	}
 }
 
 // measureSpeedCorpus builds the corpus, holds the two reads to what they answer over it, and
 // takes every reading: one warm-up pass over the five operations, then speedRuns passes,
-// interleaved so a box that slows in the middle of the run slows each of them alike.
+// interleaved so a box that slows in the middle of the run slows each of them alike, every other
+// pass in the reverse order, so no operation always runs on what the one before it warmed.
 func measureSpeedCorpus(t *testing.T) speedReadings {
 	t.Helper()
 	corpus := seedSpeedCorpus(t)
@@ -184,8 +191,12 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 	for _, operation := range operations {
 		operation.run()
 	}
-	for range speedRuns {
-		for _, operation := range operations {
+	for pass := range speedRuns {
+		order := slices.Clone(operations)
+		if pass%2 == 1 {
+			slices.Reverse(order)
+		}
+		for _, operation := range order {
 			started := time.Now()
 			operation.run()
 			operation.into.runs = append(operation.into.runs, time.Since(started))

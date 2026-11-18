@@ -56,6 +56,253 @@ a {
     border-color 150ms ease;
 }
 
+/* The new issue page's typeface: Inter, the face every width of that page's spec and pictures
+   is measured in (dispatch://INFRA-1196 R36), shipped in the bundle so that no reader of it is
+   drawn in whatever face their machine happens to hold. It is declared under a family name of
+   its own, `Dispatch Inter`, which only that page's stack names (the rule after the palette,
+   below): every other page keeps the root's stack, whose `Inter` can only be a face the reader's
+   machine holds, and requests no font file. `fonts/inter/subset.sh` cuts the file from
+   rsms/inter's release 4.1 to the weights 400 to 700 and to the characters `unicode-range`
+   lists, and the two lists are one list: change both, and record the new file's SHA-256 in the
+   script, which holds what it writes to it. `fonts/inter/package.json`, beside the release's
+   LICENSE.txt, is what lists it under the SIL Open Font License 1.1 in the build's
+   THIRD_PARTY_NOTICES.txt.
+
+   `font-display: swap` draws the text at once in the fallback below and redraws it in Inter
+   when the file arrives, so a reader on a slow network reads straight away and still ends on the
+   page the pictures show. `block` would hide the text for up to 3 s, and `optional` would keep a
+   first visit in the fallback for as long as that page stays open. The swap changes neither a
+   family's name nor a box's width, so what measures words in script and not in layout measures
+   them again on the document's `loadingdone`. */
+@font-face {
+  font-family: "Dispatch Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/inter/InterVariable-subset.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2190-21FF, U+2212, U+2215, U+2248, U+2298, U+2318, U+2325,
+    U+25B2, U+25BC, U+25C6, U+25CB, U+25CF, U+26A0, U+2713, U+2717, U+FEFF, U+FFFD;
+}
+
+/* What the issue page is drawn in while Inter has not loaded, or when it never does: a face the
+   reader's machine holds, scaled to Inter's widths and given Inter's ascent and descent, so the
+   header keeps its lines and the page its reflow (R36) and the swap to Inter moves almost
+   nothing. The values are next/font's and Fontaine's, computed from the fonts' own tables:
+   `size-adjust` is Inter's average character width over the local face's, each weighted by
+   Capsize's English character frequencies, and each override is Inter's ascent, descent or line
+   gap (1984, 494 and 0 of 2048 units per em) over that scaled em. Inter's widths are read at
+   each weight the app draws, at the optical size of its 14 px text, against the local regular
+   face for 400 and 500 and its bold face for 600 and 700, so no weight is synthesized. "Inter
+   fallback" is Arial, or Liberation Sans or Arimo, which are drawn to Arial's widths (its values
+   were read from Liberation Sans 2.1.5); "Inter fallback DejaVu" is DejaVu Sans 2.37, which the
+   browser suite's machines answer for `sans-serif` and which, unscaled, drew the issue page's
+   strings up to a quarter wider than Inter. A machine that holds none of them draws the next
+   family of the stack. */
+@font-face {
+  font-family: "Inter fallback";
+  font-weight: 400;
+  src:
+    local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans"),
+    local("Arimo"), local("Arimo-Regular");
+  size-adjust: 107.12%;
+  ascent-override: 90.44%;
+  descent-override: 22.52%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback";
+  font-weight: 500;
+  src:
+    local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans"),
+    local("Arimo"), local("Arimo-Regular");
+  size-adjust: 108.21%;
+  ascent-override: 89.52%;
+  descent-override: 22.29%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback";
+  font-weight: 600;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold"), local("Arimo Bold"), local("Arimo-Bold");
+  size-adjust: 101.53%;
+  ascent-override: 95.42%;
+  descent-override: 23.76%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback";
+  font-weight: 700;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
+    local("LiberationSans-Bold"), local("Arimo Bold"), local("Arimo-Bold");
+  size-adjust: 102.54%;
+  ascent-override: 94.47%;
+  descent-override: 23.52%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback DejaVu";
+  font-weight: 400;
+  src: local("DejaVu Sans"), local("DejaVuSans");
+  size-adjust: 93.95%;
+  ascent-override: 103.12%;
+  descent-override: 25.67%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback DejaVu";
+  font-weight: 500;
+  src: local("DejaVu Sans"), local("DejaVuSans");
+  size-adjust: 94.91%;
+  ascent-override: 102.07%;
+  descent-override: 25.42%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback DejaVu";
+  font-weight: 600;
+  src: local("DejaVu Sans Bold"), local("DejaVuSans-Bold");
+  size-adjust: 84.86%;
+  ascent-override: 114.15%;
+  descent-override: 28.42%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Inter fallback DejaVu";
+  font-weight: 700;
+  src: local("DejaVu Sans Bold"), local("DejaVuSans-Bold");
+  size-adjust: 85.71%;
+  ascent-override: 113.02%;
+  descent-override: 28.14%;
+  line-gap-override: 0%;
+}
+
+@theme {
+  /* The issue page's palette (dispatch://INFRA-1196), the approved prototype's own colours
+     (`theme/palette.ts`'s `PAGE_*` and `ICON_RAIL*`), each named for what it is on that page:
+     the paper, the ink and its two lighter greys, the rules, the left pane and its marked row,
+     and for each kind of node the colour of its bullet and tag and the tint behind it. Each
+     makes the utilities its name says (`bg-page-paper`, `text-page-question`), which
+     `theme/classes.ts` composes; the dark scheme below swaps the value behind each name, so no
+     component writes a `dark:` of its own for them. */
+  --color-page-paper: #ffffff; /* page-paper */
+  --color-page-ink: #1c1917; /* page-ink */
+  --color-page-words: #292524; /* page-words */
+  --color-page-muted: #57534e; /* page-muted */
+  --color-page-quiet: #78716c; /* page-quiet */
+  --color-page-line: #eceae7; /* page-line */
+  --color-page-hair: #ddd8cf; /* page-hair */
+  --color-page-pane: #fafaf9; /* page-pane */
+  --color-page-mark: #efedea; /* page-mark */
+  --color-page-guide: #e7e5e4; /* page-guide */
+  --color-page-bullet: #a8a29e; /* page-bullet */
+  --color-page-question: #2563eb; /* page-question */
+  --color-page-question-tint: #eff6ff; /* page-question-tint */
+  --color-page-person: #1c1917; /* page-ink */
+  --color-page-person-tint: #f6eedf; /* page-person-tint */
+  --color-page-decision: #7c3aed; /* page-decision */
+  --color-page-decision-tint: #f5f3ff; /* page-decision-tint */
+  --color-page-statement: #0f766e; /* page-statement */
+  --color-page-statement-tint: #f0fdfa; /* page-statement-tint */
+  --color-page-check: #4338ca; /* page-check */
+  --color-page-check-tint: #eef2ff; /* page-check-tint */
+  --color-page-step: #b45309; /* page-step */
+  --color-page-step-tint: #fffbeb; /* page-step-tint */
+  --color-page-child: #db2777; /* page-child */
+  --color-page-child-text: #c6005c; /* pink-700 */
+  --color-page-child-tint: #fdf2f8; /* page-child-tint */
+  --color-page-lens: #a21caf; /* page-lens */
+  --color-page-lens-tint: #fdf4ff; /* page-lens-tint */
+  --color-page-agent: #64748b; /* page-agent */
+  --color-page-issue: #44403c; /* page-issue */
+  --color-page-waiting: #ea580c; /* page-waiting */
+  --color-page-waiting-tint: #fff7ed; /* page-waiting-tint */
+  --color-page-waiting-text: #c2410c; /* page-waiting-text */
+  --color-page-passed: #15803d; /* page-passed */
+  --color-page-failed: #b91c1c; /* page-failed */
+  --color-page-not-run: #6b7280; /* page-not-run */
+  --color-page-in-progress: #1d4ed8; /* page-in-progress */
+
+  /* The icon rail the issue page draws in place of the navigation column, dark in both
+     schemes as the shell's own rail is. */
+  --color-icon-rail: #0b1324; /* icon-rail */
+  --color-icon-rail-text: #cbd5e1; /* icon-rail-text */
+  --color-icon-rail-accent: #38bdf8; /* icon-rail-accent */
+  --color-icon-rail-active: #1f2636; /* icon-rail-active */
+}
+
+/* The issue page's palette in the dark scheme: the app's own dark greys for the paper, the ink
+   and the rules, and for each kind a Tailwind shade of the same hue, light on the dark paper, its
+   tint the deepest shade of that hue. Each pairing clears the contrast `theme/classes.ts`
+   registers for it in both schemes (`palette.test.ts`). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-page-paper: #020618; /* slate-950 */
+    --color-page-ink: #f1f5f9; /* slate-100 */
+    --color-page-words: #e2e8f0; /* slate-200 */
+    --color-page-muted: #cad5e2; /* slate-300 */
+    --color-page-quiet: #90a1b9; /* slate-400 */
+    --color-page-line: #1d293d; /* slate-800 */
+    --color-page-hair: #314158; /* slate-700 */
+    --color-page-pane: #0f172b; /* slate-900 */
+    --color-page-mark: #1d293d; /* slate-800 */
+    --color-page-guide: #1d293d; /* slate-800 */
+    --color-page-bullet: #62748e; /* slate-500 */
+    --color-page-question: #51a2ff; /* blue-400 */
+    --color-page-question-tint: #162456; /* blue-950 */
+    --color-page-person: #f1f5f9; /* slate-100 */
+    --color-page-person-tint: #292524; /* stone-800 */
+    --color-page-decision: #a684ff; /* violet-400 */
+    --color-page-decision-tint: #2f0d68; /* violet-950 */
+    --color-page-statement: #00d5be; /* teal-400 */
+    --color-page-statement-tint: #022f2e; /* teal-950 */
+    --color-page-check: #7c86ff; /* indigo-400 */
+    --color-page-check-tint: #1e1a4d; /* indigo-950 */
+    --color-page-step: #ffb900; /* amber-400 */
+    --color-page-step-tint: #461901; /* amber-950 */
+    --color-page-child: #fb64b6; /* pink-400 */
+    --color-page-child-text: #fb64b6; /* pink-400 */
+    --color-page-child-tint: #510424; /* pink-950 */
+    --color-page-lens: #ed6aff; /* fuchsia-400 */
+    --color-page-lens-tint: #4b004f; /* fuchsia-950 */
+    --color-page-agent: #90a1b9; /* slate-400 */
+    --color-page-issue: #d6d3d1; /* stone-300 */
+    --color-page-waiting: #ff8904; /* orange-400 */
+    --color-page-waiting-tint: #441306; /* orange-950 */
+    --color-page-waiting-text: #ffb86a; /* orange-300 */
+    --color-page-passed: #05df72; /* green-400 */
+    --color-page-failed: #ff6467; /* red-400 */
+    --color-page-not-run: #99a1af; /* gray-400 */
+    --color-page-in-progress: #51a2ff; /* blue-400 */
+  }
+}
+
+/* The new issue page's one stack. `[data-issue-page]` is the attribute that page's outermost
+   element carries, so the rule matches only while the page is in the document, and the whole
+   document then draws in the stack: the selector is on `html` and not on that element, because a
+   menu or a dialog attached to `body` is outside it, and so that the shell's words beside the
+   page share its typeface. It sets `--font-sans` too, which Tailwind's `font-sans` reads. Its
+   specificity, (0,1,1), outranks the (0,1,0) of the root's rule above. No other page matches,
+   so none names `Dispatch Inter` and none requests its file: the root's font and the
+   `font-sans` Tailwind ships stay what they are there. */
+html:has([data-issue-page]) {
+  --font-sans:
+    "Dispatch Inter", "Inter fallback", "Inter fallback DejaVu", ui-sans-serif, system-ui,
+    sans-serif;
+  font-family: var(--font-sans);
+}
+
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. */
 @media (max-width: 1279px) {

@@ -7,12 +7,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -68,15 +71,21 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("stderr %q, want one line starting %q and naming the unknown key bogus", got.stderr, prefix)
 		}
 	})
-	t.Run("a missing path exits 2", func(t *testing.T) {
+	t.Run("a missing path exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "missing")
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": does not exist\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": does not exist, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
-	t.Run("an empty directory exits 2", func(t *testing.T) {
+	t.Run("an empty directory exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": holds no note\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": holds no note, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
 	t.Run("a file given as the directory exits 2", func(t *testing.T) {
 		t.Parallel()
@@ -84,26 +93,25 @@ func TestTheBuiltBinary(t *testing.T) {
 		path := filepath.Join(parent, "api\n::error::forged.md")
 		writeFile(t, path, []byte("A note.\n"))
 		got := runBinary(t, binary, "", path)
-		if prefix := "architecture-check: " + parent + `/api\n::error::forged.md: cannot be read: `; got.code != 2 || got.stdout != "" ||
-			!strings.HasPrefix(got.stderr, prefix) || strings.Count(got.stderr, "\n") != 1 {
-			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and one line starting %q", got.code, got.stdout, got.stderr, prefix)
-		}
+		escaped := parent + `/api\n::error::forged.md`
+		expect(t, got, result{code: 2, stderr: "architecture-check: " + escaped + ": cannot be read: open " + escaped + ": not a directory\n"})
 		expectNoCommand(t, "stderr", got.stderr)
 	})
+	usageText := "usage: architecture-check [--allow-empty] <directory>\n" +
+		"  -allow-empty\n" +
+		"    \tread a directory that does not exist or holds no note as the empty set, which is valid\n"
 	for _, row := range []struct {
-		name string
-		args []string
+		name  string
+		args  []string
+		first string
 	}{
-		{name: "no argument exits 2"},
-		{name: "two arguments exit 2", args: []string{filepath.Join(testdata, "valid"), filepath.Join(testdata, "mixed")}},
-		{name: "an unknown flag exits 2", args: []string{"--bogus", filepath.Join(testdata, "valid")}},
+		{name: "no argument exits 2", first: "want one directory argument, got 0"},
+		{name: "two arguments exit 2", args: []string{filepath.Join(testdata, "valid"), filepath.Join(testdata, "mixed")}, first: "want one directory argument, got 2"},
+		{name: "an unknown flag exits 2", args: []string{"--bogus", filepath.Join(testdata, "valid")}, first: "flag provided but not defined: -bogus"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			got := runBinary(t, binary, "", row.args...)
-			if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, "usage: architecture-check [--allow-empty] <directory>\n") {
-				t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and the usage line", got.code, got.stdout, got.stderr)
-			}
+			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "architecture-check: " + row.first + "\n" + usageText})
 		})
 	}
 	t.Run("--allow-empty over an empty directory exits 0", func(t *testing.T) {
@@ -203,6 +211,24 @@ func TestTheBuiltBinary(t *testing.T) {
 	})
 }
 
+// An entry that is no file, no directory and no symbolic link is not a note, though its name is a
+// note's: the built binary warns of the named pipe queue.md once, as an other entry, and the valid
+// note beside it keeps the exit status at 0.
+func TestANamedPipeIsAWarningThatKeepsTheExitStatus(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "architecture-check")
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "api.md"), []byte("---\ntitle: API\n---\nThe one note.\n"))
+	pipe := filepath.Join(dir, "queue.md")
+	if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+		t.Fatalf("make the named pipe %s: %v", pipe, err)
+	}
+	expect(t, runBinary(t, binary, "", dir), result{
+		stdout: "architecture-check: " + dir + ": 1 note, the set is valid\n",
+		stderr: "architecture-check: warning: " + pipe + ": not a note (other entry); the importer passes over it\n",
+	})
+}
+
 // result is one run of the command: its exit status and what it wrote to each stream.
 type result struct {
 	code   int
@@ -210,15 +236,26 @@ type result struct {
 	stderr string
 }
 
+// binaryLimit bounds one run of the built binary, which answers in milliseconds. A run that blocks,
+// as one that opens a named pipe nothing writes to does, is killed at the limit and fails its test
+// then, rather than holding it until go test's own deadline and outliving it.
+const binaryLimit = 20 * time.Second
+
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output.
+// empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
+// test.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(binary, args...)
+	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("architecture-check %q did not finish within %s and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
+	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
 		t.Fatalf("run architecture-check %q: %v", args, err)

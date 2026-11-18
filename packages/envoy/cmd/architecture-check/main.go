@@ -19,7 +19,9 @@
 //     refused".
 //   - Exit 2, the directory does not exist, cannot be read or holds no note, or the arguments are
 //     not one directory: standard error holds one line naming the directory and which case it is,
-//     or the usage line, and no count line is printed.
+//     or the usage line, and no count line is printed. The line for a directory that does not
+//     exist or holds no note also names the way out: it ends ", and architecture-check reads it
+//     as the empty set only with --allow-empty".
 //
 // Each entry of the directory that is not a note is a warning on standard error, since the
 // importer passes over it in silence and its author expects it to count; a warning changes no
@@ -110,11 +112,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case errors.Is(err, notes.ErrNoDirectory) && *allowEmpty:
 		// Git keeps no empty directory, so a repository with no note yet has no directory at all,
 		// and the server reads a missing directory as the empty model.
+	case errors.Is(err, notes.ErrNoDirectory):
+		runnerlog.Say(stderr, prefix, "%s: %s, and architecture-check reads it as the empty set only with --allow-empty", dir, err)
+		return 2
 	case err != nil:
 		runnerlog.Say(stderr, prefix, "%s: %s", dir, err)
 		return 2
 	case len(set.Files) == 0 && !*allowEmpty:
-		runnerlog.Say(stderr, prefix, "%s: holds no note", dir)
+		runnerlog.Say(stderr, prefix, "%s: holds no note, and architecture-check reads it as the empty set only with --allow-empty", dir)
 		return 2
 	}
 	if _, err := notes.Parse(set.Files); err != nil {

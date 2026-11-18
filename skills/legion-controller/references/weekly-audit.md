@@ -73,11 +73,15 @@ sent to one asks its architect to fold work that is already finished.
 
 - a tree with at least one open descendant, and more than 8 descendants in all or more than 2
   levels below its root;
-- a tree with at least one open descendant that filed a child no red-team verdict names. The
-  verdict is a comment on the root whose first line reads `Red-team verdict for <root key>:`
-  (`skill://legion-architect/references/decomposition.md`). Read the root's comments with
-  `dispatch read --issue <ROOT> --all-events` and the replies under each verdict comment; a child
-  named in none of them was filed without the check.
+- a tree with at least one open descendant that filed a child no red-team verdict names. Each
+  architect posts its verdict on its own issue, the issue it files its children under: a comment
+  whose first line reads `Red-team verdict for <issue key>:`, with that issue's key
+  (`skill://legion-architect/references/decomposition.md`). The root's architect posts on the
+  root, and a child's own architect posts on that child. So read the verdicts on every
+  architect's issue of the tree, not only the root's: the root and each issue of the tree that has
+  children. Read each one's comments with `dispatch read --issue <KEY> --all-events` and the
+  replies under each verdict comment. A child named in none of the tree's verdicts was filed
+  without the check.
 
   Count no child created before that first line existed. The architects write it from the Legion
   release that carries this file, so every child filed before then has no verdict comment to

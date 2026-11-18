@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1375,7 +1376,21 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	s.stopSettleTimer(state.settle)
 	timerID := s.nextSettleTimer.Add(1)
 	s.registerSettleTimer(timerID)
+	// The callback holds the service and the room's state weakly. Stopping a timer does not free
+	// its callback: the runtime keeps a stopped timer in the heap of the P that armed it until that
+	// P next clears its stopped timers or the timer's time comes, and when an idle P next runs
+	// depends on the scheduler and the machine's load. Held strongly - the state reaches the
+	// service through its settle field - the callback of a timer Shutdown stopped kept the service
+	// and its rooms reachable that long, an hour under a test's settle delay, which the package's
+	// leak check reports (service_leak_test.go). While the timer is armed both resolve: the
+	// service's owner holds the service, and the service keeps an armed room's state
+	// (unusedLocked).
+	owner, record := weak.Make(s), weak.Make(state)
 	timer := time.AfterFunc(delay, func() {
+		s := owner.Value()
+		if s == nil {
+			return
+		}
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
 		// has left the register.
@@ -1383,7 +1398,8 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 			s.unregisterSettleTimer(timerID)
 			s.releaseIfUnused(room)
 		}()
-		if current, _ := s.rooms.Load(room); current != state {
+		state := record.Value()
+		if current, _ := s.rooms.Load(room); state == nil || current != state {
 			s.scheduleSettle(room)
 			return
 		}
@@ -1633,8 +1649,8 @@ func stampBlockIDs(doc *crdt.Doc, origin any) (*pmdoc.Node, int, []stampedAsk, e
 // (settlementAuthors): that editor's text is in an earlier version, so the version itself names
 // SettlementActor (versionActor), while on an open issue the ask events that text causes, and the
 // move of an approval request from a version before the closed issue's versions, still name them.
-// state is the room the capture was taken from (consumeAskAuthors). askSources, copied once the
-// settlement holds the tree it reconciles, names who introduced each new ask block in it.
+// state is the room the capture was taken from (consumeAskAuthorsLocked). askSources, copied once
+// the settlement holds the tree it reconciles, names who introduced each new ask block in it.
 type settlementVersionCredit struct {
 	capture    authorCapture
 	state      *roomState
@@ -1768,19 +1784,15 @@ func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded *
 	return credit
 }
 
-// consumeAskAuthors forgets the room's recorded author of each block a committed settlement indexed
-// or found indexed: its ask row names the author from then on. The settlement's transaction
-// deleted the durable record of the same authors (deleteSettledAskAuthors).
-func (credit settlementVersionCredit) consumeAskAuthors(blockIDs []string) {
-	if len(blockIDs) == 0 {
-		return
-	}
-	state := credit.state
-	state.mu.Lock()
+// consumeAskAuthorsLocked forgets the room's recorded author of each block a committed settlement
+// indexed or found indexed: its ask row names the author from then on. The settlement's transaction
+// deleted the durable record of the same authors (deleteSettledAskAuthors). The caller holds
+// credit.state.mu across the transaction's commit (commitConsuming), so the room never owes the
+// author of a block whose ask row a reader can already find.
+func (credit settlementVersionCredit) consumeAskAuthorsLocked(blockIDs []string) {
 	for _, blockID := range blockIDs {
-		delete(state.askAuthors, blockID)
+		delete(credit.state.askAuthors, blockID)
 	}
-	state.mu.Unlock()
 }
 
 // settleNext names what follows a settlement once settleRoomWithin has returned. The timer's
@@ -1790,9 +1802,9 @@ type settleNext int
 
 const (
 	// settleEnded is a settlement nothing follows: it committed, found nothing to do, was
-	// superseded by a write that arms the settlement again, or ended on a path it logged itself (a
-	// shutdown's skip, a document outside the Proof schema) or that its room's close or failure
-	// accounts for.
+	// superseded by a write that arms the settlement again, found its document removed, or ended
+	// on a path it logged itself (a shutdown's skip, a document outside the Proof schema) or that
+	// its room's close or failure accounts for.
 	settleEnded settleNext = iota
 	// settleRetry is a settlement that stopped short having written nothing into its room. A
 	// timer's is run again a settle delay later and counted toward maxSettleFailures (retrySettle).

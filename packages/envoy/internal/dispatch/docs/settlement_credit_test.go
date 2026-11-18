@@ -564,7 +564,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 
-	dave := model.Actor{Kind: "user", ID: "dave"}
+	dave := model.Actor{Kind: "user", ID: "dave", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 	delta := model.Actor{Kind: "session", ID: "delta-session"}
 
@@ -637,7 +637,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	carol := model.Actor{Kind: "user", ID: "carol"}
+	carol := model.Actor{Kind: "user", ID: "carol", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, carol.ID)
@@ -674,7 +674,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, bob.ID)
@@ -732,7 +732,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	tx, err := service.store.Pool.Begin(ctx)
@@ -849,7 +849,7 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 	// Several versioned writes before the reload, each taking its own author out of what the
 	// document owes.
@@ -905,7 +905,7 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 		login := fmt.Sprintf("round%d-browser", round)
 		browser := connectBrowser(t, httpServer.URL, artifactID, login)
 		agent := model.Actor{Kind: "session", ID: fmt.Sprintf("round%d-agent", round)}
-		authors = append(authors, model.Actor{Kind: "user", ID: login}, agent)
+		authors = append(authors, model.Actor{Kind: "user", ID: login, Proven: true}, agent)
 
 		var wg sync.WaitGroup
 		wg.Add(2)

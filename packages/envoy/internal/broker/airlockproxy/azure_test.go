@@ -23,13 +23,16 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // The azure-login secret behind the airlock: the federated token the broker holds, the
-// placeholder the command holds in its place, and what the exchange asks for.
+// placeholder the command holds in its place, the application and tenant its document names,
+// and what the exchange asks for.
 const (
 	azureName          = "AZURE_ADMIN"
-	azureTokenPath     = "/the-tenant-id/oauth2/v2.0/token"
+	azureTenantID      = "the-tenant-id"
+	azureTokenPath     = "/" + azureTenantID + "/oauth2/v2.0/token"
 	azureScope         = "https://management.example.com/.default"
 	azureClientID      = "11111111-2222-3333-4444-555555555555"
 	azureRealFederated = "the.real.federated-token"
@@ -54,21 +57,32 @@ func azureRules() airlock.Rules {
 // answers an exchange that carries the real federated token and records each form it was sent.
 // It answers token requests alone, so the same service plays the API these rows then call with
 // the access token: that is the shape of the design, since the proxy reads one of them and
-// streams the other.
+// streams the other. The bound host is the token authority, unless the row names another, and
+// the rules are azureRules unless the row writes its own.
 func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 	t.Helper()
-	o.Rules = azureRules()
+	if o.Rules.Secrets == nil {
+		o.Rules = azureRules()
+	}
+	if o.AzureAuthority == "" {
+		o.AzureAuthority = boundHost
+	}
 	r := newRig(t, o)
 	r.grants.connections[azureFederatedPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			azureName: {Kind: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
+			azureName: {Type: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
 		},
 	}
 	// No expiry on the federated token itself: what these rows are about is the life of the
-	// access token the proxy exchanges it for, which is the endpoint's own expires_in.
+	// access token the proxy exchanges it for, which is the endpoint's own expires_in. The
+	// application and tenant are the document's, which every exchange is held to.
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		azureName: {Kind: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated}},
+		azureName: {
+			Type:  "azure-login",
+			Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated},
+			Azure: secrets.AzureLoginValue{TenantID: azureTenantID, ClientID: azureClientID},
+		},
 	})
 	// One token for every exchange, as a real endpoint answers one identity's calls: a row
 	// about a second token says so itself. The endpoint takes the real federated token as its
@@ -88,14 +102,26 @@ func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 // send, with the client_assertion the caller names.
 func tokenRequest(t *testing.T, r *rig, client *http.Client, assertion string) (*http.Response, string) {
 	t.Helper()
-	form := url.Values{
+	return tokenRequestAt(t, r, client, azureTokenPath, tokenForm(assertion))
+}
+
+// tokenForm is the form az and the azure-identity library send, as the document's application
+// and for azureScope, with the client_assertion the caller names. A row about another field
+// writes that field over it.
+func tokenForm(assertion string) url.Values {
+	return url.Values{
 		"grant_type":            {"client_credentials"},
 		"client_id":             {azureClientID},
 		"scope":                 {azureScope},
 		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
 		"client_assertion":      {assertion},
 	}
-	return r.do(client, http.MethodPost, "https://"+boundHost+azureTokenPath, form.Encode(),
+}
+
+// tokenRequestAt is one token request with the form given, to the token endpoint path given.
+func tokenRequestAt(t *testing.T, r *rig, client *http.Client, path string, form url.Values) (*http.Response, string) {
+	t.Helper()
+	return r.do(client, http.MethodPost, "https://"+boundHost+path, form.Encode(),
 		"Content-Type", "application/x-www-form-urlencoded")
 }
 
@@ -212,14 +238,15 @@ func TestASecondPodExchangesTheSlotForItself(t *testing.T) {
 func secondPod(t *testing.T, r *rig) string {
 	t.Helper()
 	second := New(Options{
-		Rules:         azureRules(),
-		Grants:        r.grants,
-		CA:            r.authority,
-		Log:           slog.New(r.logs),
-		Dial:          r.dial,
-		Now:           r.proxy.now,
-		Resolve:       r.resolve,
-		UpstreamRoots: r.service.Authority().Pool(),
+		Rules:          azureRules(),
+		Grants:         r.grants,
+		CA:             r.authority,
+		Log:            slog.New(r.logs),
+		Dial:           r.dial,
+		Now:            r.proxy.now,
+		Resolve:        r.resolve,
+		UpstreamRoots:  r.service.Authority().Pool(),
+		AzureAuthority: r.proxy.azureAuthority,
 	})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

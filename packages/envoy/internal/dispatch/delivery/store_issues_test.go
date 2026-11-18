@@ -21,9 +21,8 @@ type issueSeed struct {
 }
 
 // seedIssues replaces project's issues with issues, in order, each parent written before its child.
-// deliveryTestPool's database is shared by the package's tests, so a test owns only the projects it
-// names. One delete statement clears them, so a parent chain or a cycle a failed run left is
-// removed whole.
+// A test may seed one project twice. One delete statement clears its issues, so a parent chain or
+// a cycle the earlier seed wrote is removed whole.
 func seedIssues(t *testing.T, ctx context.Context, pool *store.Pool, project string, issues []issueSeed) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `delete from issues where project_key = $1`, project); err != nil {

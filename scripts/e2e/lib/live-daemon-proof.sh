@@ -42,9 +42,10 @@
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
-# The nats-server the run installs when the caller names none: the 2.10 line the daemon's own NATS
-# tests pin (packages/daemon/internal/testnats/nats.go).
-nats_version=v2.10.22
+# The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
+# packages/envoy/go.mod pins. The daemon refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0
+# (packages/envoy/natsversion).
+nats_version=v2.15.1
 
 # The run's state, global rather than live_daemon_proof's own because cleanup reads it from the
 # EXIT trap, after live_daemon_proof has returned.

@@ -553,10 +553,36 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 	if len(removed) == 0 {
 		return removed, nil
 	}
+	// Removing a topic removes every form of it the record holds (Remove), so the answer names
+	// those too: a client that followed both forms reads that the one it did not name is gone,
+	// rather than finding it missing later. They are read from the row as it stands before the
+	// removal, which is the row the removal starts from unless another writer races it.
+	others := r.otherFormsHeld(ctx, sessionID, removed)
 	if err := r.removeInterestTopics(ctx, sessionID, removed); err != nil {
 		return nil, err
 	}
-	return removed, nil
+	return slices.Concat(removed, others), nil
+}
+
+// otherFormsHeld is each topic sessionID's record holds that is another form of one of topics
+// (oneInterest) and not itself among them, in the record's order; none when the record cannot be
+// read.
+func (r *Registry) otherFormsHeld(ctx context.Context, sessionID string, topics []string) []string {
+	record, _, err := r.getWithRevision(ctx, sessionID, false)
+	if err != nil {
+		return nil
+	}
+	interests := make(map[string]bool, len(topics))
+	for _, topic := range topics {
+		interests[oneInterest(topic)] = true
+	}
+	var others []string
+	for _, topic := range record.Topics {
+		if interests[oneInterest(topic)] && !slices.Contains(topics, topic) {
+			others = append(others, topic)
+		}
+	}
+	return others
 }
 
 // topicsExcept is topics less the ones in kept, which releaseRoleClaims left standing. It

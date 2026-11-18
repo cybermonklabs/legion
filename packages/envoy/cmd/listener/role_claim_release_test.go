@@ -123,8 +123,8 @@ func (r *roleClaimReleaseRig) assertNoRecord(t *testing.T) {
 }
 
 // assertRemoved fails unless the answer's removed list is exactly want. It reads the raw body
-// before decoding it, because a null decodes into the same empty slice an empty list does, and
-// null is what the route must never write.
+// before decoding it, because slices.Equal holds the nil slice a null decodes into equal to an
+// empty one, and null is what the route must never write.
 func (r *roleClaimReleaseRig) assertRemoved(t *testing.T, recorder *httptest.ResponseRecorder, want ...string) {
 	t.Helper()
 	body := recorder.Body.String()

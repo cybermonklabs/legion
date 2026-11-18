@@ -22,7 +22,7 @@ import (
 const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
 
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
-// $1 since $2, $3 being the session's own topic (contracts.AgentSubject). Its three sources:
+// $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
 //
 //   - S1 (reached): events a person wrote of a type that carries a person's words to a session -
 //     ask.answered, comment.created, message.created, message.answered (a reply to a message) and
@@ -192,7 +192,7 @@ const query = `
 // ask's answer, and the word that nobody will answer it, reach its asker and its followers, and
 // the session route reaches the session an issue is routed to.
 func List(ctx context.Context, pool *store.Pool, session string, since time.Time) ([]model.SessionAnswer, error) {
-	rows, err := pool.Query(ctx, query, session, since, contracts.AgentSubject(session))
+	rows, err := pool.Query(ctx, query, session, since, contracts.LegacyAgentSubject(session))
 	if err != nil {
 		return nil, fmt.Errorf("read session %q answers: %w", session, err)
 	}

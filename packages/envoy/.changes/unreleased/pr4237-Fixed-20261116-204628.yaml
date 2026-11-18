@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    The airlock proxy no longer forwards a command's hop-by-hop headers: a `Connection` header and every header it names, a `Forwarded` or `X-Forwarded-*` header among them, reached the service, and a service that speaks HTTP/2 failed the call with a 502.
+    A gRPC error status a service answers with no body (Trailers-Only) reaches the client as that status, where it sometimes arrived as `Internal: server closed the stream without sending trailers`.
+    A WebSocket the proxy joined to a github-app host is closed once the broker no longer releases the token of the installation it was opened for, as a new call for that installation is refused; it ran on with that token before.
+time: 2026-11-16T20:46:28.113698134Z
+custom:
+    Issue: pr4237

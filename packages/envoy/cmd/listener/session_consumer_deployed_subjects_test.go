@@ -56,7 +56,7 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 	if !slices.Contains(answer.Topics, captured) || slices.Contains(answer.Topics, uncaptured) {
 		t.Fatalf("answered topics = %v, want %s among them and %s not", answer.Topics, captured, uncaptured)
 	}
-	want := []string{contracts.AgentSubject(sessionID), captured}
+	want := []string{"notifications.agent.*." + sessionID, contracts.LegacyAgentSubject(sessionID), captured}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter must carry the topic the registration stored, and leave out the one it did not", got, want)
 	}

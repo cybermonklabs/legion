@@ -209,9 +209,17 @@ Dispatch closed it or the probe replaced it as silent; the one it holds when the
 or not, is let go and closed with no close line. A close line carries `wait_ms`: the wait in
 milliseconds the probe computed before it would open again, or `null` where it answers that close
 with no timer, which is the rotation close it answers at once, the silent socket it replaces at
-once, and a first connection Dispatch refused. When the time is up,
-`--compare` reads the GET routes for the last window it applied and writes, for each, whether the
-pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
+once, and a first connection Dispatch refused. `--minutes` counts from the
+moment its socket first opens. Before that, the first connection has `--open-within <seconds>` to
+open; without that flag it has the page's silence rule, `LIVE_SOCKET_SILENT_MS` (45 s). If that
+first connection does not open by then, or is refused, the probe ends with exit 1; a later
+connection that is refused or does not open is dialled again, as the page does. When `--minutes`
+is up, the probe writes an `end` line, `{ at, type: "end" }`; a signal, a refusal or a failure
+writes none. When the time is up, `--compare` reads the GET routes for the last window it applied
+and writes, for each, whether the pull request ids, run ids and every measure equal what it holds;
+it exits 1 when one does not, when no snapshot arrived to compare, or when a read receives nothing
+for `--read-within <seconds>`, a time that starts over as each piece of the answer arrives; without
+that flag a read has the page's own request deadline, `REQUEST_DEADLINE_MS` (30 s).
 `--body-file <file>` writes the body it holds.
 `--reconnect-spread-ms <n>` sets the window the probe's first reconnect attempt's wait is drawn
 from, uniformly in [0, n), in place of the page's own `RECONNECT_SPREAD_MS` of two seconds; a
@@ -227,8 +235,9 @@ A negative value is refused, and so is one that is not a number, and a blank or 
 which `Number` would otherwise read as a spread of zero. Each of these is a usage error: the
 probe writes `--reconnect-spread-ms is a number of milliseconds from 0 to 2147483647, not`
 followed by the value it was given, then the usage line, and exits 2 without connecting to
-Dispatch. Of what this section says, these rest on a reading of the probe's code alone, because no
-row of its test drives or reads them: that a frame's line carries `at`; what it says of the silent
+Dispatch. Of what this section says of the probe's lines and of `--reconnect-spread-ms`, these
+rest on a reading of the probe's code alone, because no row of its test drives or reads them:
+that a frame's line carries `at`; what it says of the silent
 socket; that an `open` line comes only for a connection the probe still holds; that the connection
 held when the watch ends writes no close line when it had not yet opened; that a negative value
 and one that is not a number are refused; and the usage error's text after

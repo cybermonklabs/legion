@@ -2022,7 +2022,7 @@ func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
 		}
 		sessionRevision = revision(sessionRows)
 	}
-	if want := []string{contracts.AgentSubject("ses_steady"), "notifications.team.steady"}; !reflect.DeepEqual(first.Topics, want) || first.MachineID != "test-machine" || first.Dir != "/work/steady" {
+	if want := []string{contracts.LegacyAgentSubject("ses_steady"), "notifications.team.steady"}; !reflect.DeepEqual(first.Topics, want) || first.MachineID != "test-machine" || first.Dir != "/work/steady" {
 		t.Fatalf("stored interest = %+v, want topics %v on test-machine in /work/steady", first, want)
 	}
 }
@@ -2577,7 +2577,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			}
 			if _, err := writer.Upsert(store.Interest{
 				SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
-			}, []string{contracts.AgentSubject(sender)}); err != nil {
+			}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
 				t.Fatalf("write %s's interest record: %v", sender, err)
 			}
 			listed, err := registry.List()
@@ -2780,7 +2780,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			name:       "a send writing the literal false",
 			path:       "/v1/messages/send",
 			body:       `{"target_session":"ses_target","message":"hello","expects_reply":false,"idempotency_key":"dialect-send-false"}`,
-			subject:    contracts.AgentSubject("ses_target"),
+			subject:    contracts.LegacyAgentSubject("ses_target"),
 			wantAnswer: `false`,
 			wantBus:    `false`,
 		},
@@ -2788,7 +2788,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			name:       "a send writing the old none",
 			path:       "/v1/messages/send",
 			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"none","idempotency_key":"dialect-send-none"}`,
-			subject:    contracts.AgentSubject("ses_target"),
+			subject:    contracts.LegacyAgentSubject("ses_target"),
 			wantAnswer: `"none"`,
 			wantBus:    `false`,
 		},
@@ -2796,7 +2796,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			name:       "a send writing required",
 			path:       "/v1/messages/send",
 			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"required","idempotency_key":"dialect-send-required"}`,
-			subject:    contracts.AgentSubject("ses_target"),
+			subject:    contracts.LegacyAgentSubject("ses_target"),
 			wantAnswer: `"required"`,
 			wantBus:    `"required"`,
 		},
@@ -3600,7 +3600,7 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 			if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 				t.Fatalf("decode the answer: %v", err)
 			}
-			want := []string{contracts.AgentSubject(sessionID), "notifications.team.kept"}
+			want := []string{contracts.LegacyAgentSubject(sessionID), "notifications.team.kept"}
 			if !slices.Equal(answer.Topics, want) {
 				t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
 			}
@@ -3628,7 +3628,7 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read the stored interest: %v", err)
 	}
-	want := []string{contracts.AgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept", "team.bridge.>"}
+	want := []string{contracts.LegacyAgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept", "team.bridge.>"}
 	if !slices.Equal(stored.Topics, want) {
 		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
 	}
@@ -3646,7 +3646,7 @@ func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T)
 	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 	private := func(topic, sessionID string) string {
 		return fmt.Sprintf("%s was not registered: it reaches a private stream subject (another session's inbox, a failed-delivery lane, or a Legion controller notice lane), and of those a session registers only its own agent subject, %s, and the notice lane of a project whose controller role it holds",
-			topic, contracts.AgentSubject(sessionID))
+			topic, contracts.LegacyAgentSubject(sessionID))
 	}
 	for index, tc := range []struct {
 		topic string
@@ -3745,19 +3745,25 @@ func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) intere
 // subject with the rest of what it follows.
 func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t *testing.T) {
 	rig := newInterestRig(t)
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	refused := []string{"notifications.agent.>", "notifications.agent.*", other, "notifications.>"}
 	answer := subscribeInterest(t, rig.mux, append([]string{own, interestIssueTopic}, refused...))
 	if want := []string{own, interestIssueTopic}; !slices.Equal(answer.Topics, want) {
 		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
 	}
-	if len(answer.Warnings) != len(refused) {
-		t.Fatalf("warnings = %q, want one naming each of %v", answer.Warnings, refused)
+	// One warning names each refused topic, in order; the last names the issue topic the caller
+	// gave in the old form with its new form (store.Registry.LegacyTopicWarnings), which this
+	// registration stored as written.
+	if len(answer.Warnings) != len(refused)+1 {
+		t.Fatalf("warnings = %q, want one naming each of %v and one naming %s's new form", answer.Warnings, refused, interestIssueTopic)
 	}
 	for index, topic := range refused {
 		if !strings.HasPrefix(answer.Warnings[index], topic+" was not registered") {
 			t.Fatalf("warning %d = %q, want it to name %s as not registered", index, answer.Warnings[index], topic)
 		}
+	}
+	if last := answer.Warnings[len(refused)]; !strings.HasPrefix(last, interestIssueTopic+" is the old form of notifications.dispatch.issue.KEY.KEY-1.>") {
+		t.Fatalf("warning %d = %q, want it to name %s's new form", len(refused), last, interestIssueTopic)
 	}
 	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
 	if err != nil {
@@ -3776,7 +3782,7 @@ func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t 
 // own agent subject are stored, and the answer stays 200.
 func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
+	own := contracts.LegacyAgentSubject(interestSession)
 	githubTopic, teamTopic := "notifications.github.acme.widgets.pr.7.>", "notifications.team.x.>"
 	refused := []string{
 		bus.ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
@@ -3819,7 +3825,7 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 // refusal would leave it with no session consumer at all, at every heartbeat.
 func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
 	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
+	own := contracts.LegacyAgentSubject(interestSession)
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
 
 	answer := subscribeInterest(t, rig.mux, []string{stale, team})
@@ -3845,7 +3851,7 @@ func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
 // consumer is created and its entry written, and the warning tells it what was left out.
 func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t *testing.T) {
 	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
+	own := contracts.LegacyAgentSubject(interestSession)
 	const stale = "notifications.team"
 
 	answer := subscribeInterest(t, rig.mux, []string{stale})
@@ -3873,7 +3879,7 @@ func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t 
 // the topics the listener does store are stored.
 func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *testing.T) {
 	rig := newInterestRig(t)
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
 
 	answer := subscribeInterest(t, rig.mux, []string{stale, other, team})
@@ -3907,7 +3913,7 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 // fan-out (Registry.Match), with the issue topic the session also follows.
 func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *testing.T) {
 	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
+	own := contracts.LegacyAgentSubject(interestSession)
 	const (
 		role = "legion-ACME-controller"
 		lane = "notifications.legion.ACME.controller"
@@ -3944,7 +3950,7 @@ func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *tes
 // notices or another session's messages.
 func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *testing.T) {
 	rig := newInterestRig(t)
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const (
 		role = "legion-ACME-controller"
 		lane = "notifications.legion.ACME.controller"
@@ -3996,7 +4002,7 @@ func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *t
 // failed-delivery lane and the Legion controller's notices.
 func TestInterestSubscribeCleansAStoredRowOfTopicsReachingPrivateStreamSubjects(t *testing.T) {
 	const githubTopic = "notifications.github.acme.widgets.pr.7.>"
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	lane := bus.ExceptionTopicPrefix + other
 	controller := "notifications.legion.ACME.controller"
 	rig := newInterestRig(t, bus.ExceptionTopicPrefix+">", controller, other, interestIssueTopic)
@@ -4579,5 +4585,245 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 	}
 	if got := counted(); got != "1" {
 		t.Fatalf("envoy_sends_unresponsive_total = %s after a send the bus never took, want 1", got)
+	}
+}
+
+// noInterestRecordFixture is packages/contracts/fixtures/envoy-session-no-interests.json: the row
+// a live session with no interest record, no role claim and no capability has in GET /v1/sessions,
+// before and after the change that made that row's topics the empty list. Each row is kept as raw
+// JSON, key by key, because the spec's comparison rule reads the JSON itself: the same keys, no key
+// more and no key less, and the same JSON type for each key, so a null and an empty list differ.
+type noInterestRecordFixture struct {
+	AfterThisChange  map[string]json.RawMessage `json:"after_this_change"`
+	BeforeThisChange map[string]json.RawMessage `json:"before_this_change"`
+}
+
+// readNoInterestRecordFixture reads that fixture from the contracts package, the path every other
+// fixture in this file is read by.
+func readNoInterestRecordFixture(t *testing.T) noInterestRecordFixture {
+	t.Helper()
+	raw, err := os.ReadFile("../../../contracts/fixtures/envoy-session-no-interests.json")
+	if err != nil {
+		t.Fatalf("read the no-interest-record fixture: %v", err)
+	}
+	var fixture noInterestRecordFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the no-interest-record fixture: %v", err)
+	}
+	if len(fixture.AfterThisChange) == 0 || len(fixture.BeforeThisChange) == 0 {
+		t.Fatalf("the fixture carries no rows to compare: %+v", fixture)
+	}
+	return fixture
+}
+
+// rowSessionID is the session_id a row names.
+func rowSessionID(t *testing.T, row map[string]json.RawMessage) string {
+	t.Helper()
+	var sessionID string
+	if err := json.Unmarshal(row["session_id"], &sessionID); err != nil {
+		t.Fatalf("read a row's session_id: %v", err)
+	}
+	return sessionID
+}
+
+// seedNoInterestRecordSession registers the session the fixture's after row describes, and writes
+// no interest record for it: a session with no record is the state under test, so the entry is
+// written here rather than through setupSessionsTest's live list, which would give it that
+// helper's own machine id and directory instead of the fixture's. Every field of the entry is
+// seeded from the row, but not its state: the listener judges it when it answers, from the
+// registration time Put stamps (session.StateOf), so a session written here is live.
+func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry, row map[string]json.RawMessage) string {
+	t.Helper()
+	var listed session.ListEntry
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("re-encode the fixture row: %v", err)
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("read the fixture row's session entry fields: %v", err)
+	}
+	if err := sessions.Put(listed.SessionID, listed.SessionEntry); err != nil {
+		t.Fatalf("register %s: %v", listed.SessionID, err)
+	}
+	return listed.SessionID
+}
+
+// noInterestRecordClockKeys are the two values the listener takes from the clock, so the fixture
+// cannot state them: they are checked as integers equal to each other, never against the row.
+var noInterestRecordClockKeys = map[string]bool{"updated_at": true, "last_seen": true}
+
+// sameNoInterestRecordRowValues holds got to want key by key: the same keys, no key more and no
+// key less, and for each key outside skip the same JSON bytes, so a null and an empty list are
+// different answers. A skipped key must still be present on both sides; its value is the
+// caller's to check. gotName and wantName name the two sides in every failure it reports.
+func sameNoInterestRecordRowValues(t *testing.T, gotName, wantName string, got, want map[string]json.RawMessage, skip map[string]bool) {
+	t.Helper()
+	for key := range got {
+		if _, ok := want[key]; !ok {
+			t.Errorf("%s carries %q = %s, which %s does not state", gotName, key, got[key], wantName)
+		}
+	}
+	for key, wantValue := range want {
+		gotValue, ok := got[key]
+		if !ok {
+			t.Errorf("%s carries no %q; %s states %s", gotName, key, wantName, wantValue)
+			continue
+		}
+		if skip[key] {
+			continue
+		}
+		if gotCompact, wantCompact := compactNoInterestRecordJSON(t, gotValue), compactNoInterestRecordJSON(t, wantValue); gotCompact != wantCompact {
+			t.Errorf("%s: %q = %s, want %s", gotName, key, gotCompact, wantCompact)
+		}
+	}
+}
+
+// compareNoInterestRecordRow holds got, the listener's row decoded key by key, to want, the
+// fixture's row, by sameNoInterestRecordRowValues; the two clock keys are only required to be
+// integers equal to each other.
+func compareNoInterestRecordRow(t *testing.T, what string, got, want map[string]json.RawMessage) {
+	t.Helper()
+	sameNoInterestRecordRowValues(t, what+": the answer", "the fixture row", got, want, noInterestRecordClockKeys)
+	var updatedAt, lastSeen int64
+	if err := json.Unmarshal(got["updated_at"], &updatedAt); err != nil {
+		t.Errorf("%s: updated_at = %s, want an integer: %v", what, got["updated_at"], err)
+	}
+	if err := json.Unmarshal(got["last_seen"], &lastSeen); err != nil {
+		t.Errorf("%s: last_seen = %s, want an integer: %v", what, got["last_seen"], err)
+	}
+	if updatedAt != lastSeen {
+		t.Errorf("%s: updated_at = %d and last_seen = %d, want the one moment the session was registered",
+			what, updatedAt, lastSeen)
+	}
+}
+
+// compactNoInterestRecordJSON is one value's bytes with its formatting removed, so two values are
+// compared as JSON and not as whitespace.
+func compactNoInterestRecordJSON(t *testing.T, value json.RawMessage) string {
+	t.Helper()
+	var buffer bytes.Buffer
+	if err := json.Compact(&buffer, value); err != nil {
+		t.Fatalf("compact %s: %v", value, err)
+	}
+	return buffer.String()
+}
+
+// A session that registered and subscribed to nothing has no interest record, and its row in GET
+// /v1/sessions carries topics as the empty list, never null: a client that reads the row's topics
+// as a list iterates it without a null check. The row is read key by key, never into a sessionInfo,
+// which would drop a key sessionInfo does not name, so the row could not be held to the fixture's
+// keys.
+func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
+	fixture := readNoInterestRecordFixture(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
+
+	list := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(list.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode the session list: %v; body = %s", err, list.Body.String())
+	}
+	var row map[string]json.RawMessage
+	for _, candidate := range rows {
+		if rowSessionID(t, candidate) == sessionID {
+			row = candidate
+		}
+	}
+	if row == nil {
+		t.Fatalf("the list carries no row for %s; body = %s", sessionID, list.Body.String())
+	}
+	compareNoInterestRecordRow(t, "GET /v1/sessions", row, fixture.AfterThisChange)
+}
+
+// The per-session route and the list answer one shape built one way, so a caller holding a session
+// id reads the same row for a session with no interest record, its topics the empty list included.
+func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
+	fixture := readNoInterestRecordFixture(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
+
+	answer := sessionEntryRoute(t, &listenerDeps{registry: registry, sessions: sessions}, sessionID)
+	if answer.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/%s: status %d %s, want 200", sessionID, answer.Code, answer.Body.String())
+	}
+	var row map[string]json.RawMessage
+	if err := json.Unmarshal(answer.Body.Bytes(), &row); err != nil {
+		t.Fatalf("GET /v1/registry/%s: decode the answer as a JSON object: %v; body = %s",
+			sessionID, err, answer.Body.String())
+	}
+	compareNoInterestRecordRow(t, "GET /v1/registry/"+sessionID, row, fixture.AfterThisChange)
+}
+
+// The fixture states a whole row, so it can only stay whole while it names every key sessionInfo
+// always writes, and while the keys a fixture row may lack are the ones sessionInfo leaves out
+// when they are empty. The fixture's session sits in no tmux pane, and its registration named no
+// plugin, no plugin build and no client instance, so its row lacks exactly those keys. The keys
+// are read from sessionInfo's own fields and json tags, never from a value of it: a field added
+// to sessionInfo later fails this test, omitempty or not, as does a field that gains or loses
+// omitempty, so neither the fixture nor the list of keys a fixture row may lack can fall behind
+// the struct unnoticed. A value with every field set cannot hold that, since a field added after
+// the value was written is left empty in it, and an omitempty one is then absent from its keys.
+func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *testing.T) {
+	fixture := readNoInterestRecordFixture(t)
+	alwaysWritten, leftOutWhenEmpty := map[string]bool{}, map[string]bool{}
+	infoType := reflect.TypeOf(sessionInfo{})
+	for i := range infoType.NumField() {
+		field := infoType.Field(i)
+		tag := field.Tag.Get("json")
+		if !field.IsExported() || tag == "-" {
+			continue
+		}
+		// An exported field with no name in its tag is written under its Go name, as encoding/json
+		// writes it, so a field added without a tag is still a key this test sees.
+		name, options, _ := strings.Cut(tag, ",")
+		if name == "" {
+			name = field.Name
+		}
+		if slices.Contains(strings.Split(options, ","), "omitempty") {
+			leftOutWhenEmpty[name] = true
+		} else {
+			alwaysWritten[name] = true
+		}
+	}
+	for key := range alwaysWritten {
+		if _, ok := fixture.AfterThisChange[key]; !ok {
+			t.Errorf("sessionInfo always writes %q, which the fixture row does not state; capture the fixture again", key)
+		}
+	}
+	for key := range fixture.AfterThisChange {
+		if !alwaysWritten[key] {
+			t.Errorf("the fixture row states %q, which sessionInfo does not always write", key)
+		}
+	}
+	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true}
+	for key := range leftOutWhenEmpty {
+		if !mayLack[key] {
+			t.Errorf("sessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)
+		}
+	}
+	for key := range mayLack {
+		if !leftOutWhenEmpty[key] {
+			t.Errorf("a fixture row may lack %q, which sessionInfo does not leave out when it is empty", key)
+		}
+	}
+}
+
+// The fixture's before row is what the listener used to write for this session. The after row is
+// pinned to the listener itself by the two route tests above; no Go test pins the before row to a
+// listener, so this test holds it to the after row's values and to the one difference, topics,
+// which was null and is now the empty list.
+func TestFixtureBeforeRowForASessionWithNoInterestRecordDiffersOnlyInTopics(t *testing.T) {
+	fixture := readNoInterestRecordFixture(t)
+	before, after := fixture.BeforeThisChange, fixture.AfterThisChange
+	sameNoInterestRecordRowValues(t, "the before row", "the after row", before, after, map[string]bool{"topics": true})
+	if got := compactNoInterestRecordJSON(t, before["topics"]); got != "null" {
+		t.Errorf("the before row's topics = %s, want null, the value the listener used to write", got)
+	}
+	if got := compactNoInterestRecordJSON(t, after["topics"]); got != "[]" {
+		t.Errorf("the after row's topics = %s, want [], the value the listener writes now", got)
 	}
 }

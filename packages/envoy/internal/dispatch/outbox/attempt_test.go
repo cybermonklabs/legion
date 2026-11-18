@@ -224,7 +224,7 @@ func TestEveryDenialNamesItsDestination(t *testing.T) {
 	})
 	failTopics := map[string]error{roleTopic: denial(roleTopic)}
 	for _, session := range []string{"writer", "asker", "follower", "claimant"} {
-		failTopics[contracts.AgentSubject(session)] = denial(contracts.AgentSubject(session))
+		failTopics[contracts.LegacyAgentSubject(session)] = denial(contracts.LegacyAgentSubject(session))
 	}
 	publisher := &countingPublisher{failTopics: failTopics}
 

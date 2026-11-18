@@ -382,7 +382,7 @@ func (r *hourRig) copyOf(role, eventID string) laneCopy {
 func (r *hourRig) deadLetters(sender, eventID string) []contracts.Envelope {
 	r.t.Helper()
 	var found []contracts.Envelope
-	for _, item := range r.envelopesOn(contracts.AgentSubject(sender)) {
+	for _, item := range r.envelopesOn(contracts.LegacyAgentSubject(sender)) {
 		if item.Source == "envoy" && item.SourceEventID == eventID {
 			found = append(found, item)
 		}
@@ -480,17 +480,17 @@ func (r *hourRig) lines(name string, where map[string]any) []map[string]any {
 func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envelope) {
 	r.t.Helper()
 	letSweepsRun()
-	if held := r.envelopesOn(contracts.AgentSubject(holder)); len(held) != 0 {
+	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 0 {
 		r.t.Fatalf("%s's agent subject holds %d messages while it is not live, want none", holder, len(held))
 	}
 	if err := r.listeners[1].harness.sessions.Put(holder, liveRoleActEntry); err != nil {
 		r.t.Fatalf("register %s again: %v", holder, err)
 	}
 	waitFor(r.t, 20*time.Second, "the kept copy reaching "+holder, func() bool {
-		return len(r.envelopesOn(contracts.AgentSubject(holder))) > 0
+		return len(r.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 	})
 	letSweepsRun()
-	if held := r.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != eventID {
+	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != eventID {
 		r.t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, eventID)
 	}
 	if got := expectFrames(r.t, frames, 1, 100*time.Millisecond); got[0].EventID != eventID {
@@ -505,8 +505,8 @@ func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envel
 // droppedBy - and each of says.
 func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, held laneCopy, droppedAfter, droppedBy time.Time, says ...string) {
 	t.Helper()
-	if letter.Source != "envoy" || letter.SourceSession != "" || letter.Topic != contracts.AgentSubject(held.item.SourceSession) || letter.SourceEventID != held.item.EventID {
-		t.Fatalf("the dead letter is %+v, want one from envoy on %s naming event %s", letter, contracts.AgentSubject(held.item.SourceSession), held.item.EventID)
+	if letter.Source != "envoy" || letter.SourceSession != "" || letter.Topic != contracts.LegacyAgentSubject(held.item.SourceSession) || letter.SourceEventID != held.item.EventID {
+		t.Fatalf("the dead letter is %+v, want one from envoy on %s naming event %s", letter, contracts.LegacyAgentSubject(held.item.SourceSession), held.item.EventID)
 	}
 	if !strings.HasPrefix(letter.PayloadSummary, "Envoy dropped your message to role "+role+": ") {
 		t.Fatalf("the dead letter's summary is %q, want it to name role %s", letter.PayloadSummary, role)
@@ -669,7 +669,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if got.KeptAt == nil || *got.KeptAt != held.stored.UnixMilli() {
 			t.Fatalf("the forwarded copy carries kept_at %v, want %d, when the stream stored it", got.KeptAt, held.stored.UnixMilli())
 		}
-		if stored := rig.envelopesOn(contracts.AgentSubject(holder)); len(stored) != 1 {
+		if stored := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(stored) != 1 {
 			t.Fatalf("the claimant's agent subject holds %d copies, want one", len(stored))
 		}
 		forwards := rig.lines(hourForwardLine, map[string]any{"role": role})
@@ -706,7 +706,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(drops) != 1 || drops[0]["event_id"] != held.item.EventID || drops[0]["source_session"] != sender {
 			t.Fatalf("the drop lines are %v, want one naming role %s, event %s and the sender's session %s", drops, role, held.item.EventID, sender)
 		}
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want its one dead letter: %+v", len(letters), letters)
 		}
@@ -738,7 +738,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitPassed(role, held[1].sequence)
 		letSweepsRun()
 		for i, sender := range senders {
-			letters := rig.envelopesOn(contracts.AgentSubject(sender))
+			letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 			if len(letters) != 1 {
 				t.Fatalf("%s's agent subject holds %d messages, want one dead letter: %+v", sender, len(letters), letters)
 			}
@@ -805,7 +805,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
 
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want its one dead letter: %+v", len(letters), letters)
 		}
@@ -819,7 +819,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if strings.Contains(letters[0].Payload, hourExpiryExplained) {
 			t.Fatalf("the dead letter says no session held the role, while %s held it live:\n%s", holder, letters[0].Payload)
 		}
-		if stored := rig.envelopesOn(contracts.AgentSubject(holder)); len(stored) != 0 {
+		if stored := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(stored) != 0 {
 			t.Fatalf("the claimant's agent subject holds %+v, want nothing: a copy past its hour is not forwarded", stored)
 		}
 		select {
@@ -851,7 +851,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 
 		for _, each := range held {
 			event, sender := each.item.EventID, each.item.SourceSession
-			if letters := rig.envelopesOn(contracts.AgentSubject(sender)); len(letters) != 1 || letters[0].SourceEventID != event {
+			if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 || letters[0].SourceEventID != event {
 				t.Fatalf("%s's agent subject holds %+v, want one dead letter of event %s", sender, letters, event)
 			}
 			if drops := rig.lines(hourDropLine, map[string]any{"role": role, "event_id": event}); len(drops) != 1 {
@@ -896,7 +896,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		letSweepsRun()
 
 		seam.assertTakenOver(t, held)
-		if letters := rig.envelopesOn(contracts.AgentSubject(sender)); len(letters) != 1 {
+		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
 		if dropped := rig.count(hourExpired); dropped != 1 {
@@ -944,7 +944,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if letters := rig.envoyLetters(); len(letters) != 0 {
 			t.Fatalf("the stream holds dead letters %+v, want none", letters)
 		}
-		if stored := rig.envelopesOn(contracts.AgentSubject(holder)); len(stored) != 1 || stored[0].EventID != later.item.EventID {
+		if stored := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(stored) != 1 || stored[0].EventID != later.item.EventID {
 			t.Fatalf("the holder's agent subject holds %+v, want the later copy once", stored)
 		}
 	})
@@ -967,7 +967,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitPassed(role, held.sequence)
 		letSweepsRun()
 
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -976,7 +976,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if stored := rig.lines(hourDeadLetterLine, map[string]any{"role": role}); len(stored) != 1 || stored[0]["reason"] != "delivery_mode" {
 			t.Fatalf("the dead letter lines are %v, want one with reason delivery_mode", stored)
 		}
-		if stored := rig.envelopesOn(contracts.AgentSubject(holder)); len(stored) != 0 {
+		if stored := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(stored) != 0 {
 			t.Fatalf("the holder's agent subject holds %+v, want nothing", stored)
 		}
 	})
@@ -1000,7 +1000,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if len(drops) != 1 || drops[0]["event_id"] != held.item.EventID || drops[0]["stale"] != true {
 			t.Fatalf("the drop lines are %v, want one naming event %s with stale true", drops, held.item.EventID)
 		}
-		if letters := rig.envelopesOn(contracts.AgentSubject(sender)); len(letters) != 0 {
+		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 0 {
 			t.Fatalf("the sender's agent subject holds %+v, want no dead letter", letters)
 		}
 		if lines := rig.lines(hourDeadLetterLine, map[string]any{"role": role}); len(lines) != 0 || rig.count(hourLettersStored) != 0 {
@@ -1032,7 +1032,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		letSweepsRun()
 
 		seam.assertTakenOver(t, held)
-		if letters := rig.envelopesOn(contracts.AgentSubject(sender)); len(letters) != 1 {
+		if letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender)); len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
 		if fresh, stale := rig.count(hourExpired), rig.count(hourExpiredStale); fresh != 1 || stale != 0 {
@@ -1070,7 +1070,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitDeadLetter(held)
 		rig.waitPassed(role, held.sequence)
 		letSweepsRun()
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -1171,7 +1171,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if delivered := rig.count(deliveredSeries("delivered")); delivered != copies {
 			t.Fatalf("envoy_messages_delivered_total counts %d delivered, want %d", delivered, copies)
 		}
-		if stored := rig.envelopesOn(contracts.AgentSubject(holder)); len(stored) != copies {
+		if stored := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(stored) != copies {
 			t.Fatalf("the holder's agent subject holds %d copies, want %d", len(stored), copies)
 		}
 	})
@@ -1203,7 +1203,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitPassed(role, held.sequence)
 		letSweepsRun()
 
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -1254,7 +1254,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if calls := seam.made(); len(calls) < 2 {
 			t.Fatalf("the dead letter was published %d times, want the failed one and the one sent again: %+v", len(calls), calls)
 		}
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -1318,7 +1318,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.waitPassed(role, held.sequence)
 		letSweepsRun()
 
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 1 {
 			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
 		}
@@ -1572,7 +1572,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 		if got := expectFrames(t, endedFrames, 1, 2500*time.Millisecond); got[0].EventID != answers[2].EventID {
 			t.Fatalf("the holder of the second lane received event %s, want the third copy %s", got[0].EventID, answers[2].EventID)
 		}
-		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
 		if len(letters) != 2 || letters[0].SourceEventID != answers[0].EventID || letters[1].SourceEventID != answers[1].EventID || letters[0].EventID == letters[1].EventID {
 			t.Fatalf("the sender's agent subject holds %+v, want one dead letter of its own for each of the two ended copies %s and %s",
 				letters, answers[0].EventID, answers[1].EventID)
@@ -1626,16 +1626,16 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		frames := startStandIn(t, rig.uri, successor)
 		rig.claim(rig.listeners[1], successor, role, liveRoleActEntry)
 		waitFor(t, 20*time.Second, "the kept copy reaching "+successor, func() bool {
-			return len(rig.envelopesOn(contracts.AgentSubject(successor))) > 0
+			return len(rig.envelopesOn(contracts.LegacyAgentSubject(successor))) > 0
 		})
 		letSweepsRun()
-		if held := rig.envelopesOn(contracts.AgentSubject(successor)); len(held) != 1 || held[0].EventID != answer.EventID {
+		if held := rig.envelopesOn(contracts.LegacyAgentSubject(successor)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", successor, held, answer.EventID)
 		}
 		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
 			t.Fatalf("%s received event %s, want the kept %s", successor, got[0].EventID, answer.EventID)
 		}
-		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 0 {
+		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 0 {
 			t.Fatalf("the gone holder's agent subject holds %+v, want nothing", held)
 		}
 	})
@@ -1723,9 +1723,9 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 
 		rig.register(rig.listeners[0], holder, "")
 		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its registration", func() bool {
-			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
+			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
-		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
+		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
 		}
 		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
@@ -1773,9 +1773,9 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		// A new process resumes the session under the same id and registers, stating itself.
 		rig.register(first, holder, resumed)
 		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its resumed process's registration", func() bool {
-			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
+			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
-		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
+		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
 		}
 		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
@@ -1846,9 +1846,9 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 			t.Fatalf("the claim route's lines are %s, want one refusal of process %s naming process %s as the holder", logs.String(), resumed, stalled)
 		}
 		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" after its resumed process's refused claim", func() bool {
-			return len(rig.envelopesOn(contracts.AgentSubject(holder))) > 0
+			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
-		if held := rig.envelopesOn(contracts.AgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
+		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
 		}
 		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
@@ -2008,7 +2008,7 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 				// lane holds nothing more that waits for one.
 				claimRoleWith(t, first.harness, taker, taken, liveRoleActEntry)
 				waitFor(t, 20*time.Second, "the copy reaching "+taker, func() bool {
-					return len(rig.envelopesOn(contracts.AgentSubject(taker))) == 1
+					return len(rig.envelopesOn(contracts.LegacyAgentSubject(taker))) == 1
 				})
 				rig.waitPassed(taken, stored[taken].sequence)
 				if err := first.harness.sessions.Delete(context.Background(), taker); err != nil {

@@ -463,6 +463,11 @@ type keptRoleCopy struct {
 	until int64
 	// sequence is the copy's stream sequence on the role's kept subject.
 	sequence uint64
+	// repeat is whether the keep stored nothing new because the lane already held this
+	// message's copy inside its hour (storeKeptRoleCopy), which the publish route's sender limit
+	// charges nothing for (roleSend.kept). A copy the keep's own earlier send may have stored is
+	// no repeat.
+	repeat bool
 }
 
 // keptRolePublish is the stored publish a keep makes (storeKeptRoleCopy):
@@ -508,6 +513,11 @@ func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contra
 // since the next answer names the copy that publish stored. Every other failure, of a publish or
 // of a read, and a chain that runs out of ctx, is a keep that failed.
 //
+// The copy a duplicate names is a repeat only when no send of this keep under the same id may
+// have stored it: a duplicate that answers the bus's resend after a closed connection
+// (bus.StoredAck.Resent), and one that follows an in-process refusal of such a resend
+// (bus.ErrUnacknowledged), may name the copy this keep's own first send stored.
+//
 // A new copy's hour counts from its store time, read back at its acknowledged sequence, which is
 // what the walk measures its age against. A read that fails counts it from the listener's clock
 // just before the publish, logged at debug: the store time is no earlier than that, so the answer
@@ -516,10 +526,14 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	subject := bus.KeptRoleSubject(role)
 	first := bus.KeptMsgID(item.DedupeKey, role)
 	msgID := first
+	// ownSend is whether a send of this keep under msgID went out unanswered before the stream
+	// refused a later one as in process.
+	ownSend := false
 	for {
 		published := cfg.now()
 		ack, err := publish(ctx, subject, item, msgID)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
+			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
 			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
 				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
 			}
@@ -536,9 +550,11 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
 		}
 		if inside {
+			held.repeat = !ack.Resent && !ownSend
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
+		ownSend = false
 	}
 }
 
@@ -1044,12 +1060,13 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 //
 // A copy still inside roleKeepWindow that beforeForward allows is forwarded to the holder's agent
 // subject exactly as a live role send forwards it (roleForwardDedupePrefix,
-// contracts.AgentSubject). A copy whose hour ended is dropped, and so is one whose delivery mode
-// the holder does not take; either is sent to its sender as a dead letter where it is owed one. A
-// copy no read can decode, and one beforeForward refuses as an echo or a repeat, is passed over. A
-// walk with no holder forwards nothing: it ends what needs no holder to end and stops at the first
-// copy it cannot end, which is inside its hour and waits for the role's next live holder
-// (roleKeepCopyWaits). No walk forwards a copy whose hour ended.
+// contracts.LegacyAgentSubject, the old form every producer writes until slice C4). A copy whose
+// hour ended is dropped, and so is one whose delivery mode the holder does not take; either is sent
+// to its sender as a dead letter where it is owed one. A copy no read can decode, and one
+// beforeForward refuses as an echo or a repeat, is passed over. A walk with no holder forwards
+// nothing: it ends what needs no holder to end and stops at the first copy it cannot end, which is
+// inside its hour and waits for the role's next live holder (roleKeepCopyWaits). No walk forwards a
+// copy whose hour ended.
 //
 // It bounds itself at roleKeepDrainWindow, taken when the walk starts rather than when the
 // handover around it was: the handover holds the role's guard, so no part of a walk's window is
@@ -1143,7 +1160,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 
 	keptSubject := bus.KeptRoleSubject(role)
 	lane := &roleKeepLaneCursor{cfg: cfg, role: role, holder: holder, subject: bus.KeptRoleCursorSubject(role), seq: head.cursorSeq}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	// The record the role lane judges a forward against, read the same way here: what the holder
 	// already took, and what is already on its way to it. A walk with no holder judges nothing
 	// against it.
@@ -1678,7 +1695,7 @@ func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.En
 		EventID:        keyedEventID(key),
 		Source:         "envoy",
 		SourceEventID:  item.EventID,
-		Topic:          contracts.AgentSubject(item.SourceSession),
+		Topic:          contracts.LegacyAgentSubject(item.SourceSession),
 		DedupeKey:      key,
 		IssuedAt:       dropped.UnixMilli(),
 		PayloadSummary: "Envoy dropped your message to role " + role + ": " + drop.summary() + ".",

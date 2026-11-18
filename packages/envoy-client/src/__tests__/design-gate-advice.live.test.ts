@@ -31,7 +31,7 @@ const SECOND_TREE = "GATEB";
 /** The second sentence of a superseded-approval line for a person's approval of any document but
  *  a plan, printed whether a gate records the document or not. */
 const NEXT_STEP =
-  "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
 
 /** The second sentence for a plan, whoever approved it: Dispatch refuses a request for a person's
  *  approval of any plan, so it names the command that records a plan review's approval of the

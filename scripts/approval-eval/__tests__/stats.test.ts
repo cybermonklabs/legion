@@ -7,7 +7,9 @@ import {
   clopperPearsonInterval,
   clopperPearsonUpper,
   decidedAt,
+  effectiveSizeInterval,
   type Judgement,
+  kishEffectiveSize,
   MINIMUM_DECIDED,
   mcnemarExact,
   type PairedCase,
@@ -150,6 +152,38 @@ describe("clopperPearsonInterval", () => {
   test("no success and every success run to the ends", () => {
     expect(clopperPearsonInterval(0, 30, CONFIDENCE).lower).toBe(0);
     expect(clopperPearsonInterval(30, 30, CONFIDENCE).upper).toBe(1);
+  });
+});
+
+describe("kishEffectiveSize and effectiveSizeInterval", () => {
+  test("groups of one are worth their count, and unequal groups less", () => {
+    expect(kishEffectiveSize([1, 1, 1, 1])).toBe(4);
+    expect(kishEffectiveSize([3, 1])).toBeCloseTo(1.6, 12);
+    expect(kishEffectiveSize([2, 2, 2])).toBe(3);
+  });
+
+  test("at the whole count it is the exact interval", () => {
+    const exact = clopperPearsonInterval(45, 50, CONFIDENCE);
+    const atCount = effectiveSizeInterval(45, 50, 50, CONFIDENCE);
+    expect(atCount.lower).toBeCloseTo(exact.lower, 10);
+    expect(atCount.upper).toBeCloseTo(exact.upper, 10);
+  });
+
+  test("at a smaller size it is wider, and runs to the ends at no and every success", () => {
+    const exact = clopperPearsonInterval(45, 50, CONFIDENCE);
+    const atTen = effectiveSizeInterval(45, 50, 10, CONFIDENCE);
+    expect(atTen.lower).toBeLessThan(exact.lower);
+    expect(atTen.upper).toBeGreaterThan(exact.upper);
+    expect(effectiveSizeInterval(0, 50, 10, CONFIDENCE).lower).toBe(0);
+    expect(effectiveSizeInterval(50, 50, 10, CONFIDENCE).upper).toBe(1);
+  });
+
+  test("refuses sizes and counts that read nothing", () => {
+    expect(() => kishEffectiveSize([])).toThrow(RangeError);
+    expect(() => kishEffectiveSize([2, 0])).toThrow(RangeError);
+    expect(() => effectiveSizeInterval(3, 4, 5, CONFIDENCE)).toThrow(RangeError);
+    expect(() => effectiveSizeInterval(3, 4, 0, CONFIDENCE)).toThrow(RangeError);
+    expect(() => effectiveSizeInterval(5, 4, 2, CONFIDENCE)).toThrow(RangeError);
   });
 });
 

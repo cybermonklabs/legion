@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -31,6 +31,13 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 func TestMain(m *testing.M) {
+	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
+	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
+	// cleared before anything else, so the snapshot below records NATS_NKEY_SEED_FILE as absent
+	// (environment_test.go).
+	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
+		os.Unsetenv(name)
+	}
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
@@ -41,8 +48,8 @@ func TestMain(m *testing.M) {
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the
-	// snapshot is taken here, ahead of MustGuard, the first thing that changes this binary's own
-	// environment.
+	// snapshot is taken here, ahead of MustGuard, the first thing after the clearing above that
+	// changes this binary's own environment.
 	snapshotStartupEnvironment()
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
@@ -1094,7 +1101,7 @@ func rewrite(t *testing.T, path, old, replacement string) {
 // naming the seed's public key and never the seed.
 func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 	legionState(t)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	const seedKey, envoyKey = "nats_nkey_seed_file", "envoy_token_file"
 	for _, tc := range []struct {
 		name     string
@@ -1162,8 +1169,8 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 // words, or an OK line naming both users by public key, never either seed.
 func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 	legionState(t)
-	paneSeed, paneUser := testnats.User(t)
-	daemonSeed, daemonUser := testnats.User(t)
+	paneSeed, paneUser := testnkeys.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
 	for _, tc := range []struct {
 		name     string
 		contents string
@@ -2484,7 +2491,8 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 
 // An operator reading plain `legion state` is told each served repository Dispatch's GitHub App is
 // not known to be installed on, one line each with why, as the daemon serves the state; with none
-// the one line says so.
+// the one line says so. The body is the one contract 152 serves: a served repository carries each
+// role App's installation (`apps`) beside its `default`.
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
@@ -2501,7 +2509,7 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 		{name: "none", gaps: `[]`, want: "webhook App missing: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
+			served := "{" + daemon + `,"repositories":{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],"refused":[],"withoutWebhookApp":` + tc.gaps + `,"caches":[]}}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))

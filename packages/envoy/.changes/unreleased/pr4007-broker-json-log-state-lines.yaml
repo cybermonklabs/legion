@@ -10,6 +10,6 @@ body: |-
   becomes servable or leaves the listing; the five-minute reload, each of the request sweeper's
   seven sweeps and the hourly sign-in client check each write one line when they start to fail
   and one when they succeed again.
-  `agent-secrets secret retag` reads the stored value when it changes the kind or the shape tag,
+  `agent-secrets secret retag` reads the stored value when it changes the type tag,
   and refuses a value the decoder refuses. When the store refuses that read for a missing
   permission, it writes the tags and says on stderr that the value was not checked.

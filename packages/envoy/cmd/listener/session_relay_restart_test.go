@@ -74,7 +74,7 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	t.Helper()
 	rig := newRelayRig(t)
 	sessionID := prefix + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	var holdNext atomic.Bool
 	standIn := startSessionStandIn(t, rig.url, sessionID, func(frame relayedFrame) []string {
 		if holdNext.CompareAndSwap(true, false) {
@@ -90,6 +90,9 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	held, _ := rig.storeEvent(t, agent)
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
+	// Every caller's next step restarts the relay at the ack floor, which deletes the consumer
+	// holding that message and creates it again.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	return rig, sessionID, standIn, held, floor
 }
 
@@ -100,7 +103,7 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 // consumer and paused the relay until the next heartbeat, whose create started at the stream's end.
 func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t *testing.T) {
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_create_failed_")
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// The relay's first create and its first retry's (1 s on) fail; its second retry, 3 s on,
 	// creates.
@@ -130,7 +133,7 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 // point), so the session receives the held message and the messages stored meanwhile.
 func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFloor(t *testing.T) {
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_registered_in_gap_")
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	failed := failCreates(t, rig, sessionID, 1)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
@@ -305,7 +308,7 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	want := map[string][]string{}
 	for i := range perSession {
 		for _, sessionID := range sessionIDs {
-			item := newEnvelope("agent", contracts.AgentSubject(sessionID), fmt.Sprintf("while the listener was down %d", i))
+			item := newEnvelope("agent", contracts.LegacyAgentSubject(sessionID), fmt.Sprintf("while the listener was down %d", i))
 			if err := publisher.Publish(item); err != nil {
 				t.Fatalf("publish to %s: %v", sessionID, err)
 			}

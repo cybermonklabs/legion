@@ -14,6 +14,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -46,17 +47,22 @@ const (
 	sitePlainBound       = "proxy.go servePlain: plain http to a bound host (403)"
 	sitePlainAddress     = "proxy.go servePlain: an address the proxy never dials (403)"
 	siteBoundConnection  = "bound.go serveBound: a grant that ended on an open connection"
+	siteProtocolSwitch   = "bound.go serveBound: a CONNECT on a connection the proxy decrypted"
 	siteBoundValues      = "bound.go serveBound: a grant the release checks refuse"
 	siteBoundDecision    = "bound.go serveBound: a request the decision refuses"
 	siteAWSSignature     = "bound.go serveBound: an AWS call the airlock will not sign"
+	siteBoundCut         = "bound.go serveBound: a call whose grant ended before its service answered"
+	siteFederatedSwap    = "bound.go serveBound: the federated token outside an exchange"
 	siteAzureAssertion   = "azure.go exchangeToken: a token request that is not this grant's"
+	siteAzureBound       = "azure.go exchangeToken: a token request as an application the document does not name"
 )
 
 // refusalSites is every site above, in the order the table names them.
 var refusalSites = []string{
 	siteNotAProxyRequest, siteCredential, siteGrantRefused, siteConnectTarget, siteConnectAddress,
-	sitePlainBound, sitePlainAddress, siteBoundConnection, siteBoundValues, siteBoundDecision,
-	siteAWSSignature, siteAzureAssertion,
+	sitePlainBound, sitePlainAddress, siteBoundConnection, siteProtocolSwitch, siteBoundValues,
+	siteBoundDecision, siteAWSSignature, siteBoundCut, siteFederatedSwap, siteAzureAssertion,
+	siteAzureBound,
 }
 
 // answerIDPattern is an answer id: 16 random bytes, in hex (answer.NewID).
@@ -252,6 +258,25 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, host: boundHost, path: "/v1/things",
 		},
 		{
+			site: siteProtocolSwitch, name: "a CONNECT written inside the decrypted connection", rig: plain,
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				_, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+				decrypted := tls.Client(conn, &tls.Config{RootCAs: r.trust, ServerName: boundHost})
+				t.Cleanup(func() { decrypted.Close() })
+				if _, err := decrypted.Write([]byte("CONNECT " + boundHost + ":443 HTTP/1.1\r\nHost: " + boundHost + ":443\r\n\r\n")); err != nil {
+					t.Fatalf("write the CONNECT: %v", err)
+				}
+				response, err := http.ReadResponse(bufio.NewReader(decrypted), &http.Request{Method: http.MethodConnect})
+				if err != nil {
+					t.Fatalf("read the answer to the CONNECT: %v", err)
+				}
+				return answeredBy(response, bodyOf(t, response))
+			},
+			status: http.StatusForbidden, code: codeProtocolSwitch,
+			reason: "refusing a CONNECT inside a connection the proxy decrypted: it would open a tunnel to the service whose bytes the proxy does not read",
+			caller: boundCaller, host: boundHost, path: "",
+		},
+		{
 			site: siteBoundValues, name: "a grant whose approval chain no longer verifies", rig: plain,
 			drive: func(t *testing.T, r *rig) proxyAnswer {
 				r.grants.refuseValues(chain)
@@ -290,6 +315,41 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, secrets: []string{awsName}, host: boundHost, path: "/v1/things",
 		},
 		{
+			site: siteBoundCut, name: "a long poll whose grant ended while its service had not answered",
+			rig: func(t *testing.T) *rig { return newRig(t, Options{Answers: answers, Watch: watchFast}) },
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ airlocktest.Request) bool {
+					<-request.Context().Done()
+					return true
+				})
+				// The grant ends once the call has reached the service, which is when the
+				// call is waiting on its answer.
+				go func() {
+					deadline := time.Now().Add(cutWait)
+					for len(r.requests()) == 0 && time.Now().Before(deadline) {
+						time.Sleep(time.Millisecond)
+					}
+					r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+				}()
+				return answeredBy(r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/poll", "Authorization", "Bearer "+workerPlaceholder))
+			},
+			status: http.StatusProxyAuthRequired, code: codeGrantNotLive, reason: requests.ErrGrantNotLive.Error(),
+			caller: boundCaller, secrets: []string{workerName}, host: boundHost, path: "/v1/poll",
+		},
+		{
+			site: siteFederatedSwap, name: "a GET carrying the federated token's placeholder",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				return answeredBy(r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+azureFederatedPlaceholder))
+			},
+			status: http.StatusForbidden, code: codeFederatedSwap,
+			reason: "refusing to swap " + azureName + "'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: "/v1/subscriptions",
+		},
+		{
 			site: siteAzureAssertion, name: "a token request carrying an assertion of its own",
 			rig: func(t *testing.T) *rig {
 				r, _ := newAzureRig(t, Options{Answers: answers})
@@ -300,6 +360,21 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			},
 			status: http.StatusForbidden, code: codeTokenAssertion,
 			reason: "refusing a token request whose client_assertion is not this grant's placeholder",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
+		},
+		{
+			site: siteAzureBound, name: "a token request naming another client_id",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				form := tokenForm(azureFederatedPlaceholder)
+				form.Set("client_id", azureOtherClientID)
+				return answeredBy(tokenRequestAt(t, r, r.client(azureFederatedPlaceholder), azureTokenPath, form))
+			},
+			status: http.StatusForbidden, code: codeTokenApplication,
+			reason: "refusing an exchange of " + azureName + "'s federated token whose client_id is not the application " + azureName + "'s secret names",
 			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
 		},
 	} {
@@ -444,11 +519,11 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 }
 
 // TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote: a refusal's line, a call's line, a joined
-// connection's line, an upstream failure's line and net/http's own line on the proxy port each fit
-// one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because each text field the
-// caller wrote is cut to its first 256 bytes where it enters the line (answer.ClipFields;
-// ca-refusal-record, Verification v19). Each row sends, through one field the caller chose, text
-// that writes that line at about 300 KB uncut, on the real proxy of the rig:
+// connection's line, a cut call's line, an upstream failure's line and net/http's own line on the
+// proxy port each fit one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because
+// each text field the caller wrote is cut to its first 256 bytes where it enters the line
+// (answer.ClipFields; ca-refusal-record, Verification v19). Each row sends, through one field the
+// caller chose, text that writes that line at about 300 KB uncut, on the real proxy of the rig:
 //
 //   - of a refusal's line, the method, the host, the path and the X-Correlation-Id of a request
 //     that is no proxy request, and the reason in both its forms that quote the host - a CONNECT
@@ -456,9 +531,12 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //     (checkedAddresses' error), on a CONNECT and on a plain proxy request;
 //   - of a call's line (callFields), the method of a call whose grant read did not happen and the
 //     path of a call the proxy carried;
-//   - of a joined connection's line (watchJoined, through callFields), the method of an upgrade
+//   - of a joined connection's line (watchCarried, through callFields), the method of an upgrade
 //     whose entry allows any method (Allow nil) and the path of one under the allowed prefix,
 //     each joined and then closed by a grant that stopped carrying it;
+//   - of a cut call's line (watchCarried, through callFields), the method and the path of a call
+//     whose answer streams, under the same two entries, each cut by a grant that stopped
+//     carrying it;
 //   - of the upstream failure's line (badGateway), the path and the host of a plain proxy request
 //     whose service cannot be reached, and the error of one whose name answers the check and
 //     nothing to the transport's own lookup, which quotes that host;
@@ -530,6 +608,31 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			return upgraded
 		}
 	}
+	// cut streams the service's answer to a call at that method and path, and then ends the grant
+	// behind it, which is what makes the watcher write the cut's own line
+	// (TestACarriedStreamEndsWhenItsGrantStopsCarryingIt drives the same cut).
+	cut := func(method, path string) func(t *testing.T, r *rig) *http.Response {
+		return func(t *testing.T, r *rig) *http.Response {
+			streamStandIn(r)
+			request, err := http.NewRequest(method, "https://"+boundHost+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
+			response, err := r.client(workerPlaceholder).Do(request)
+			if err != nil {
+				t.Fatalf("the streamed call through the proxy: %v", err)
+			}
+			defer response.Body.Close()
+			reader := bufio.NewReader(response.Body)
+			if _, err := reader.ReadString('\n'); err != nil {
+				t.Fatalf("the stream's first line: %v", err)
+			}
+			r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+			_, _ = io.Copy(io.Discard, reader)
+			return response
+		}
+	}
 	// anyMethod is the rules file of the join's method row: an entry with no allow list, which
 	// the airlock reads as any method and path (airlock.SecretRule.Allow), so the upgrade the row
 	// sends is carried rather than refused and its method reaches the join's line.
@@ -557,6 +660,7 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		answer.RefusalMessage: {"method", "host", "path", "correlation_id", "reason"},
 		callMessage:           {"method", "path"},
 		joinMessage:           {"method", "path"},
+		cutMessage:            {"method", "path"},
 		upstreamMessage:       {"path", "host", "error"},
 		netHTTPMessage:        {"error"},
 	}
@@ -617,6 +721,10 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			options: Options{Watch: watchFast, Rules: anyMethod}, send: join(sent, upgradePath)},
 		{name: "a joined connection's path", message: joinMessage, field: "path", held: "/v1/" + sent, status: http.StatusSwitchingProtocols,
 			options: Options{Watch: watchFast}, send: join(http.MethodGet, "/v1/"+sent)},
+		{name: "a cut call's method", message: cutMessage, field: "method", held: sent, status: http.StatusOK,
+			options: Options{Watch: watchFast, Rules: anyMethod}, send: cut(sent, "/v1/stream")},
+		{name: "a cut call's path", message: cutMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
+			options: Options{Watch: watchFast}, send: cut(http.MethodGet, "/v1/"+sent)},
 		{name: "an upstream failure's path: a plain proxy request whose service cannot be reached", message: upstreamMessage, field: "path",
 			held: "/" + sent, status: http.StatusBadGateway,
 			send: func(_ *testing.T, r *rig) *http.Response {
@@ -748,8 +856,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 		}
 	}
-	if driven != 16 || len(missing) != 0 {
-		t.Fatalf("the table drove %d rows, want 16; it never drove %v", driven, missing)
+	if driven != 18 || len(missing) != 0 {
+		t.Fatalf("the table drove %d rows, want 18; it never drove %v", driven, missing)
 	}
 }
 

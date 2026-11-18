@@ -14,6 +14,7 @@ import {
   runChecks,
 } from "../meaning-search-check.ts";
 import { HttpStatusError, UsageError } from "../production-check-runtime.ts";
+import { holdDeadlines } from "./held-deadlines.ts";
 
 const TITLE = "Quarterly vendor ledger reconciliation";
 const QUERY = "money owed to suppliers stopped adding up";
@@ -727,5 +728,17 @@ describe("parseArguments", () => {
     expect(parseArguments(["--pair", "ACME-7=a=b"]).pairs).toEqual([
       { key: "ACME-7", query: "a=b" },
     ]);
+  });
+});
+
+describe("liveDispatch", () => {
+  test("meaning-search-check's coverage read hands its credential the request's deadline", async () => {
+    const held = holdDeadlines(() => Response.json({}));
+    try {
+      await liveDispatch({ url: "http://dispatch.test", credential: held.credential }).coverage();
+      held.expectEachRequestBoundByItsDeadline("meaning-search-check's coverage read");
+    } finally {
+      held.restore();
+    }
   });
 });

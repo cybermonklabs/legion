@@ -842,8 +842,8 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 		write.credits = make(map[string]model.Actor)
 		write.creditedBy = make(map[string]persistence.Version)
 	}
+	mergeAuthor(write.credits, actor)
 	key := actorKey(actor)
-	write.credits[key] = actor
 	write.creditedBy[key] = write.versions[len(write.versions)-1]
 	write.actor = new(actor)
 	if write.state != nil {

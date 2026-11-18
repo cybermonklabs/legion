@@ -31,13 +31,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const (
@@ -59,6 +62,9 @@ const (
 	// broker answers again.
 	defaultRetryWait = 15 * time.Second
 	maxRetryWait     = 5 * time.Minute
+	// unregisteredLogEvery is how often the renewal loop says again that the broker has no
+	// registration for this pod's session yet, after saying so at the first such refusal.
+	unregisteredLogEvery = 30 * time.Minute
 	// tradeTimeout bounds one trade, the token endpoint being one request.
 	tradeTimeout = 30 * time.Second
 )
@@ -84,8 +90,8 @@ type Token struct {
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
 // one is a refusal no retry can cure — an identity no entry lists, a sign-in a person revoked,
 // a token of the wrong audience — and the renewal loop stops on those rather than asking again
-// every quarter minute. The exceptions are the broker's 429 and its two DPoP refusals
-// (Permanent).
+// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, and a pod
+// session it holds no registration for yet (Permanent).
 type RefusedError struct {
 	// Status is the HTTP status of the refusal.
 	Status int
@@ -127,7 +133,7 @@ func (e *RefusedError) Error() string {
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
-// three.
+// four.
 //
 // The broker's 429: its token endpoint spends a bucket per source address, and a bucket
 // refills. A client that stopped trading on a 429 would stop for good over a burst — its own,
@@ -142,20 +148,33 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // `use_dpop_nonce`, which the transport already retries once with the nonce the answer carried
 // (dpop.go). One that reaches here is an answer that carried no nonce, or a nonce the broker
 // then refused in turn — a server state the next trade can find changed.
+//
+// A pod session the broker holds no registration for yet (PodSessionUnregistered): a pod's
+// trade can reach the broker before its daemon's or its session watch's registration does, and
+// a registrar can be down for minutes, so the trade that follows the registration succeeds.
 func (e *RefusedError) Permanent() bool {
 	switch {
-	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce":
+	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered():
 		return false
 	}
 	return true
+}
+
+// PodSessionUnregistered reports whether this is the broker's refusal of a pod whose session no
+// registration names yet: invalid_grant, its description beginning
+// oauthwire.PodSessionNotRegistered and a colon. The same words under another code, or anywhere
+// but at the start, are some other refusal.
+func (e *RefusedError) PodSessionUnregistered() bool {
+	return e.Code == "invalid_grant" && strings.HasPrefix(e.Description, oauthwire.PodSessionNotRegistered+":")
 }
 
 // Config is one client: the broker it trades at, the identity it trades, and the key it proves.
 type Config struct {
 	// BrokerURL is the broker's base URL, with or without the slashes it ends in: New drops
 	// every one of them (WithoutTrailingSlashes), and an address that is nothing but slashes
-	// counts as no broker URL at all.
-	BrokerURL string
+	// counts as no broker URL at all. It is a brokeraddr.Address so that no log line or error of
+	// this client can print the credential such an address may carry.
+	BrokerURL brokeraddr.Address
 	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
 	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
 	// made at start.
@@ -202,7 +221,7 @@ type Config struct {
 
 // Client trades Config's identity for the broker's access tokens and keeps one live.
 type Client struct {
-	brokerURL string
+	brokerURL brokeraddr.Address
 	key       *ecdsa.PrivateKey
 	subject   Source
 	actor     Source
@@ -237,9 +256,9 @@ func WithoutTrailingSlashes(raw string) string { return strings.TrimRight(raw, "
 // New is the client Config describes. It refuses a configuration that could never trade — no
 // broker, no key, no identity — rather than failing at the first call.
 func New(cfg Config) (*Client, error) {
-	brokerURL := WithoutTrailingSlashes(strings.TrimSpace(cfg.BrokerURL))
+	brokerURL := brokeraddr.New(WithoutTrailingSlashes(strings.TrimSpace(cfg.BrokerURL.Raw())))
 	switch {
-	case brokerURL == "":
+	case brokerURL.Empty():
 		return nil, errors.New("brokerclient: no broker URL")
 	case cfg.Key == nil:
 		return nil, errors.New("brokerclient: no DPoP key: a trade is judged on a proof of the caller's own key")
@@ -284,11 +303,13 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
 // Token is a live access token: the held one while it is good for longer than RenewBefore, and
-// otherwise a fresh trade. A trade the broker did not answer, or answered 429, while the held
-// token is still live answers that token, since a client that already holds an identity need
-// not stop for a broker that is merely down or busy; a refusal no retry can cure
+// otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
+// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet), while the
+// held token is still live answers that token, since a client that already holds an identity
+// need not stop for a broker that is merely down or busy; a refusal no retry can cure
 // (RefusedError.Permanent), and a failure with nothing live left, answer the error, so no
-// caller writes with no identity.
+// caller writes with no identity. Token trades once; a caller that waits for a registration to
+// land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -316,13 +337,19 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 //
 // It stops with a plain error when the broker refuses the identity in a way no retry can cure
 // (RefusedError.Permanent), and when onToken fails. A broker that does not answer, or answers
-// 429 or either of its DPoP refusals, is retried, from defaultRetryWait doubling to
-// maxRetryWait, for as long as ctx lives: an outage past the token's own life is the same event
-// as a short one, since this grant has no rotation window to miss, and a host whose clock NTP
-// corrects after boot trades again on the next pass rather than holding no credential until
-// somebody restarts it. A cancelled ctx is no error.
+// 429, either of its DPoP refusals, or that it holds no registration for this pod's session yet,
+// is retried, from defaultRetryWait doubling to maxRetryWait, for as long as ctx lives: an outage
+// past the token's own life is the same event as a short one, since this grant has no rotation
+// window to miss, a host whose clock NTP corrects after boot trades again on the next pass rather
+// than holding no credential until somebody restarts it, and a pod whose trade reached the broker
+// before its registration did trades once that registration lands, however long it takes. A
+// missing registration is logged once, naming the session, and again every unregisteredLogEvery
+// while it lasts, rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
+	// since is when the broker first refused this pod's session as unregistered, and logged when
+	// the loop last said so; both are zero until such a refusal, and again once a trade lands.
+	var since, logged time.Time
 	for {
 		c.mu.Lock()
 		token, err := c.trade(ctx)
@@ -333,6 +360,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		switch {
 		case err == nil:
 			wait = defaultRetryWait
+			since, logged = time.Time{}, time.Time{}
 			if err := onToken(ctx, token); err != nil {
 				return err
 			}
@@ -344,10 +372,23 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 			return nil
 		}
 		var refused *RefusedError
-		if errors.As(err, &refused) && refused.Permanent() {
+		isRefusal := errors.As(err, &refused)
+		switch {
+		case isRefusal && refused.Permanent():
 			return err
+		case isRefusal && refused.PodSessionUnregistered():
+			now := c.now()
+			if since.IsZero() {
+				since = now
+			}
+			if logged.IsZero() || now.Sub(logged) >= unregisteredLogEvery {
+				c.logf(ctx, "the secrets broker has no registration for this pod's session yet; trading again until it lands",
+					"session", c.session, "waited", now.Sub(since), "error", err.Error(), "in", wait.String())
+				logged = now
+			}
+		default:
+			c.logf(ctx, "the secrets broker did not answer a trade; asking again", "error", err.Error(), "in", wait.String())
 		}
-		c.logf(ctx, "the secrets broker did not answer a trade; asking again", "error", err.Error(), "in", wait.String())
 		if !c.sleep(ctx, wait) {
 			return nil
 		}
@@ -474,57 +515,83 @@ type tokenAnswer struct {
 // post sends one trade and reads the answer. A refusal the broker answered with an OAuth error
 // is a RefusedError; everything else — a broker that did not answer, a 5xx, an answer that is
 // not this grant's — is an error a renewal may ask about again.
+//
+// The endpoint is built from the address's Raw, since the request must reach the broker as
+// configured; every error names it as shown, brokeraddr's Call of it, and wraps a failure of the
+// request itself through the address's Error, so no error of a trade carries a user name,
+// password, query or fragment the configured address holds.
 func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
 	defer cancel()
-	endpoint := c.brokerURL + TokenPath
+	endpoint := c.brokerURL.Raw() + TokenPath
+	shown := c.brokerURL.Call(endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, c.brokerURL.Error(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	base := c.http.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	proofed := &http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout}
+	// The form carries the subject token, and the actor token on a person's trade, so a
+	// redirect is refused (redirects.Refused): a broker answering 3xx, or anyone answering for
+	// it, gets the 3xx back as the non-2xx it is, and its Location is sent nothing.
+	proofed := redirects.Refused(&http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout})
 	resp, err := proofed.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), endpoint, err)
+		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("read the broker's answer from %s: %w", endpoint, err)
+		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
 	}
 	var answer tokenAnswer
 	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
-		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %w", endpoint, err)
+		// The decoder's error quotes the value it could not read, which is the answer's own
+		// text, so it prints as the address lets that text print (brokeraddr.Address.Words).
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
 	}
 	if resp.StatusCode/100 != 2 {
+		// The broker's own words are its answer's text, and a caller prints what it is
+		// handed: `legion controller start` with %w, `agent-secrets self` on stderr, and
+		// this client's own log. So they are redacted here, where the configured address
+		// is known, rather than at each of those. On a clean address the redactor prints
+		// the refusal whole - it is an answered OAuth error with a code and no error_uri
+		// (RefusedError.Unwrap) - and on one that is not clean it prints the status alone,
+		// since a broker, or anyone answering for it, can repeat the credential the address
+		// carries in the words it answers with; any other answer prints its words as the
+		// address lets them (brokeraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription)
+			return nil, c.brokerURL.Error(newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
-		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", endpoint, resp.StatusCode, answer.Error)
+		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
-	return c.read(endpoint, answer)
+	return c.read(shown, answer)
 }
 
 // read is the answer as a Token, refusing one that is not this grant's: no access token, a token
 // type that is not DPoP, no expiry, or a refresh token — the exchange issues none, and a client
-// that kept one would hold a credential this contract says is never minted.
-func (c *Client) read(endpoint string, answer tokenAnswer) (*Token, error) {
+// that kept one would hold a credential this contract says is never minted. shown is the token
+// endpoint as a message may print it (brokeraddr.Address.Call), never the endpoint as built.
+//
+// The three values these messages quote are the broker's own answer, so they print as the
+// address lets them (brokeraddr.Address.Words): beside an address that is not clean, whoever
+// answers for the broker could put the credential the address carries in them.
+func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
+	quoted := func(value string) string { return c.brokerURL.Words(strconv.Quote(value)) }
 	switch {
 	case answer.AccessToken == "":
-		return nil, fmt.Errorf("the broker at %s answered no access token", endpoint)
+		return nil, fmt.Errorf("the broker at %s answered no access token", shown)
 	case !strings.EqualFold(answer.TokenType, "DPoP"):
-		return nil, fmt.Errorf("the broker at %s answered token_type %q, and this grant mints DPoP-bound tokens alone", endpoint, answer.TokenType)
+		return nil, fmt.Errorf("the broker at %s answered token_type %s, and this grant mints DPoP-bound tokens alone", shown, quoted(answer.TokenType))
 	case answer.RefreshToken != "":
-		return nil, fmt.Errorf("the broker at %s answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead", endpoint)
+		return nil, fmt.Errorf("the broker at %s answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead", shown)
 	}
 	seconds, err := answer.ExpiresIn.Int64()
 	if err != nil || seconds <= 0 {
-		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%q)", endpoint, answer.ExpiresIn.String())
+		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, quoted(answer.ExpiresIn.String()))
 	}
 	token := &Token{
 		AccessToken:  answer.AccessToken,
@@ -535,7 +602,7 @@ func (c *Client) read(endpoint string, answer tokenAnswer) (*Token, error) {
 	if answer.CredentialExpiresAt != "" {
 		expires, err := time.Parse(time.RFC3339, answer.CredentialExpiresAt)
 		if err != nil {
-			return nil, fmt.Errorf("the broker at %s answered a %s that is no RFC 3339 time (%q)", endpoint, oauthwire.ExtraCredentialExpiresAt, answer.CredentialExpiresAt)
+			return nil, fmt.Errorf("the broker at %s answered a %s that is no RFC 3339 time (%s)", shown, oauthwire.ExtraCredentialExpiresAt, quoted(answer.CredentialExpiresAt))
 		}
 		token.CredentialExpiresAt = expires.UTC()
 	}

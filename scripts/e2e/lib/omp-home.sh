@@ -62,3 +62,32 @@ make_omp_home() {
   # through the first link), and a real directory there fails the call instead of taking a link.
   ln -sfT "$natives" "$1/.omp/natives"
 }
+
+# omp_setup_wizard_off FILE: appends to FILE, the agent/config.yml of a profile the run writes under
+# its own home, the setting that keeps Oh My Pi's first-run setup wizard shut. An interactive Oh My
+# Pi in a terminal (`legion controller start` in a tmux pane, a person's session) opens the wizard
+# ("Setup step 1 of 5", "Sign in to your providers") while the profile's setupVersion is below the
+# build's CURRENT_SETUP_VERSION, so on a fresh profile the wizard blocks the session's first
+# command and normal editor interaction (runInteractiveMode in packages/coding-agent/src/main.ts
+# and selectSetupScenes in packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard:
+# false` shuts it whatever setup version the build counts to; `--mode rpc` never opens it. A named
+# profile's own settings file is its agent/config.yml, and it inherits no other config.yml of the
+# home (getProfileConfigRoot in @oh-my-pi/pi-utils dirs.ts). Only the working directory's project
+# settings and PI_CONFIG_FILES overlays merge over it, so each profile the run writes carries the
+# line.
+omp_setup_wizard_off() {
+  printf 'startup:\n  setupWizard: false\n' >>"$1"
+}
+
+# omp_session_unsets is env's -u options for the variables of the operator's own Oh My Pi session
+# that no Oh My Pi a rig starts from that session may inherit: OMP_SESSION_ID, that session's id;
+# OMPCODE, the mark Oh My Pi puts on the shells its bash tool spawns (buildSpawnEnv in
+# @oh-my-pi/pi-utils procmgr.ts); PI_CONFIG_FILES, that session's settings overlays, which Oh My Pi
+# lays over the profile it opens; ENVOY_NATS_URL, the NATS that session's Envoy plugin dials; and
+# LEGION_OMP_PATH, the Oh My Pi binary that `legion controller start` and the daemon run in place
+# of omp_invocation (ResolveInvocation, packages/daemon/internal/omplaunch). `legion controller
+# start` hands Oh My Pi its caller's environment, so every rig that runs it, or an interactive omp,
+# from the operator's shell drops these first: `env "${omp_session_unsets[@]}" …` in an argv, and
+# `env ${omp_session_unsets[*]} …` in a pane's shell command, which no name here needs quoted in.
+# shellcheck disable=SC2034 # the scripts that source this file read it
+omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH)

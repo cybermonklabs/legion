@@ -878,6 +878,9 @@ func contentType(path string) string {
 		return "image/png"
 	case ".json":
 		return "application/json; charset=utf-8"
+	case ".woff2":
+		// The typeface the dashboard ships (packages/dispatch/web/src/fonts/inter).
+		return "font/woff2"
 	default:
 		return "application/octet-stream"
 	}

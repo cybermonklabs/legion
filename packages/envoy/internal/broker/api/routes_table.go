@@ -227,7 +227,8 @@ func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.Ser
 // sign-in, a decision answers a page linking the record it names. Every route of the class spends
 // its source address's bucket first, the one the account class spends (authenticate), so no
 // caller drives a record read, a token request to the sign-in provider or a session write
-// unmetered. Mounted only when the broker builds its approval page, which every broker does.
+// unmetered. Mounted only when the broker builds its approval page, which every broker does but
+// one with BROKER_SIGNIN=off.
 func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, approval.Session)) routeHandler {
 	return routeHandler{auth: authSignIn, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s.deps.Approval, w, r, who.signIn)
