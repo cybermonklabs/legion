@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  A pod's trade that reaches the secrets broker before its registration does is retried, not
+  refused for good. The exchange still answers `invalid_grant`, and its `error_description` now
+  begins `pod_session_not_registered:` in place of the stock `invalid_grant` text. The Go
+  client's `RefusedError.Permanent` is false for that refusal alone (`PodSessionUnregistered`),
+  so `Client.Run` trades again, 15 s doubling to 5 minutes, for as long as its context lives, and
+  logs it once, naming the session, and again every 30 minutes. The TypeScript client's
+  `token()` waits it out the same way while nothing live is in hand, until a trade lands or the
+  caller's signal aborts, and logs through `console.warn` unless the caller passes `log`;
+  `isFinalRefusal` is false for it. Every other refusal is as final as before. The public
+  `github.com/sjawhar/envoy/brokerclient` package forwards `NewDPoPTransport`.
+time: 2026-11-16T04:15:13Z
+custom:
+    Issue: INFRA-840

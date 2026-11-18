@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/routing"
@@ -60,11 +62,15 @@ func documentSubscriberBase(project, slug string) string {
 // (routing.Match): a bare subject alone (no ".>") never matches, since NATS
 // only delivers a typed event like "<base>.issue.created" to a subscriber of
 // "<base>.>" or a broader wildcard, never to a subscriber of "<base>" alone.
+// A topic is read in every form a reader takes it in (contracts.TopicForms):
+// the listener filters a session's consumer on both forms of each topic, so a
+// session following an issue in the form naming its project receives that
+// issue's events and is its subscriber, as one following the old form is.
 func matchingTopics(topics []string, base string) []string {
 	candidate := base + ".marker"
 	matched := make([]string, 0, len(topics))
 	for _, topic := range topics {
-		if routing.Match(topic, candidate) {
+		if slices.ContainsFunc(contracts.TopicForms(topic), func(form string) bool { return routing.Match(form, candidate) }) {
 			matched = append(matched, topic)
 		}
 	}
@@ -72,14 +78,16 @@ func matchingTopics(topics []string, base string) []string {
 }
 
 // exactTopics returns the subset of topics scoped exactly to base (base
-// itself, or base+".>") — the only forms safe to remove without silently
-// unsubscribing the session from every other issue or document a broader
-// wildcard among its topics also happens to cover.
+// itself, or base+".>"), in either form of the name (contracts.TopicForms) —
+// the only forms safe to remove without silently unsubscribing the session
+// from every other issue or document a broader wildcard among its topics also
+// happens to cover. Each is returned as the session wrote it, which is how the
+// listener's unsubscribe finds it.
 func exactTopics(topics []string, base string) []string {
 	wildcard := base + ".>"
 	exact := make([]string, 0, len(topics))
 	for _, topic := range topics {
-		if topic == base || topic == wildcard {
+		if slices.ContainsFunc(contracts.TopicForms(topic), func(form string) bool { return form == base || form == wildcard }) {
 			exact = append(exact, topic)
 		}
 	}

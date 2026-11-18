@@ -279,7 +279,7 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
-	s, err := openSession(context.Background(), "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,16 +299,17 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 }
 
 // TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid: the command a create prints for telling
-// whether a failed CreateSecret made the secret carries the --profile the create ran under, so it
-// reads the store as the identity that wrote to it.
+// whether a failed CreateSecret made the secret carries the AWS_PROFILE prefix the create ran
+// under, so it reads the store as the identity that wrote to it.
 func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
+	t.Setenv("AWS_PROFILE", "work")
 	useStdin(t, "shh")
-	_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent", "--profile", "work")
-	if code != 1 || !strings.Contains(stderr, "`agent-secrets secret show NEW_TEST --profile work`") {
-		t.Fatalf("exit %d, stderr %q; want 1 naming `agent-secrets secret show NEW_TEST --profile work`", code, stderr)
+	_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "`AWS_PROFILE=work agent-secrets secret show NEW_TEST`") {
+		t.Fatalf("exit %d, stderr %q; want 1 naming `AWS_PROFILE=work agent-secrets secret show NEW_TEST`", code, stderr)
 	}
 }
 

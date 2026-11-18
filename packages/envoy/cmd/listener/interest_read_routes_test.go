@@ -76,7 +76,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		}
 	}
 	if _, err := registry.Upsert(store.Interest{SessionID: cached, MachineID: "test-machine", Dir: "/test/" + cached},
-		[]string{contracts.AgentSubject(cached), topic}); err != nil {
+		[]string{contracts.LegacyAgentSubject(cached), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", cached, err)
 	}
 	cachedIDs := func() []string {
@@ -117,7 +117,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 			t.Fatalf("%s's topics = %v, want %v", info.SessionID, info.Topics, want)
 		}
 	}
-	cachedTopics := []string{contracts.AgentSubject(cached), topic}
+	cachedTopics := []string{contracts.LegacyAgentSubject(cached), topic}
 
 	// The control: with the bus answering, every request is served.
 	recorder, _ := list()

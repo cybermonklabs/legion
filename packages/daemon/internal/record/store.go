@@ -1064,10 +1064,14 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 	return nil
 }
 
-// TellChildrenFirst records that issue's architect has been told, for the run generation of tree,
-// that the issue waits for its own Dispatch children, and reports whether this call is the
-// telling: a second call for the same tree and generation changes nothing and answers false, so
-// the one row decides who tells. The tree is part of the key because the generation is the root's
+// TellChildrenFirst records that the architect that owns issue has been told, for the run
+// generation of tree, that the issue waits for its own Dispatch children, and reports whether
+// this call is the telling: a second call for the same tree and generation changes nothing and
+// answers false, so the one row decides who tells. That architect is the root's own for a root.
+// For a child it is the architect above it, since the child's own starts only with that first
+// phase, unless a person set the child back to todo while it ran or was held: that re-entry starts
+// and stops nothing (workflow's ReenterChild), so a child's own architect that held its role still
+// holds it and is the one told. The tree is part of the key because the generation is the root's
 // and only names a run within one tree: an issue handed over as a root of its own waits in a tree
 // of its own, at a generation of its own numbering (admit's readmit), and is told there again. at
 // is the moment the pass ran, kept for a reader of the table alone.
@@ -2330,6 +2334,59 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 	return nil
 }
 
+// liveClaimStates are the claim states in which a claim's session holds its role: the states
+// supervise.HoldsCapability answers true for, a registered agent with a running process. A
+// suspended, a failed and a retired claim hold none, and neither does one still launching.
+var liveClaimStates = []string{
+	string(supervise.StateRegistered), string(supervise.StateReady), string(supervise.StateWorking), string(supervise.StateIdle),
+}
+
+// RoleHolder is one live role of an issue and the session that holds it.
+type RoleHolder struct {
+	Role    claim.Role
+	Session string
+}
+
+// LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
+// liveClaimStates that records a session. It is what a role-holder publication sends.
+func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
+	rows, err := tx.Query(ctx, `select role, session from claims
+		where issue = $1 and session <> '' and state = any($2)
+		order by role`, issue, liveClaimStates)
+	if err != nil {
+		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+	}
+	holders, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (RoleHolder, error) {
+		var holder RoleHolder
+		err := row.Scan(&holder.Role, &holder.Session)
+		return holder, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+	}
+	return holders, nil
+}
+
+// RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
+// that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
+// claim write sets), in key order. The boot publishes each of them, for what a release that
+// published nothing left: the live ones because a daemon that starts over running sessions has
+// published nothing for them yet, and the recent ones because that release ended claims and
+// published none of those ends.
+func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `select distinct issue from claims
+		where starts_with(issue, $1 || '-') and (updated_at >= $2 or state = any($3))
+		order by issue`, dispatchProject, since, liveClaimStates)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
+	}
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
+	}
+	return issues, nil
+}
+
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
@@ -2371,11 +2428,12 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
 // since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
-// The issue's other supervise starts name no phase or carry no task — the tree architect's
-// (admit's promotion), the roles brought back beside a member's phase worker (admit's
-// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled
-// idle release — and each of them is a start of its own that must still run. None of them is
-// ever taken out here.
+// The issue's other supervise starts name no phase or carry no task — a root's architect's
+// (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
+// reviveArchitect), the roles brought back beside a member's phase worker (admit's
+// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
+// release — and each of them is a start of its own that must still run. None of them is ever
+// taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
 
@@ -2735,6 +2793,20 @@ func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds [
 		return time.Time{}, false, nil
 	}
 	return *next, true, nil
+}
+
+// BranchQueued says whether the outbox still holds an issue_branch row of issue — due, running or
+// backing off — so the branch that row creates may not exist on GitHub yet. The ordering rule
+// (outboxInOrder) holds a start behind an older branch row of its issue; this is the read for a
+// start older than the branch row it must wait for (the outbox's first start of a child's own
+// architect, which can outlast a re-admission that queues the child's branch row again).
+func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
+		issue, string(OutboxKindIssueBranch)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether %s's branch row is still queued: %w", issue, err)
+	}
+	return queued, nil
 }
 
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,

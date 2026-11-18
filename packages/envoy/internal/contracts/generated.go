@@ -133,6 +133,15 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
 
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = "notifications.dispatch.issue."
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = "_"
+
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
@@ -491,8 +500,36 @@ func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return "notifications.dispatch.issue." + project + "." + issueKey + "." + typ
+}
+
+func AgentSubject(project, session string) string {
+	return "notifications.agent." + project + "." + session
+}
+
+func LegacyAgentSubject(session string) string {
+	return "notifications.agent." + session
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return "notifications.dispatch.issue." + issueKey + "." + typ
+}
+
+func RoleSubject(project, role string) string {
+	return "notifications.role." + project + "." + role
+}
+
+func LegionWakeSubject(token string) string {
+	return "notifications.legion." + token + ".wake"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

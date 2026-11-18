@@ -45,29 +45,33 @@ row reads **Ends with its machine login** instead:
 rather than that one row.
 
 ```console
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
 {"state":"revoked"}
 ```
 
 (That is the call Dispatch's server makes as its own ServiceAccount, the caller the broker lists
 in `BROKER_API_ACCOUNTS`; on the [local stack](/legion/broker/guides/run-locally/) you can make it
-yourself with the token in `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`. The broker takes the revoking
-person the body names on its caller's word, as it does for a machine login's decision: a revoke
-only takes power away, so unlike approving a secret request it needs no sign-in to the broker.)
+yourself with the token in `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`; `curl -H @-` reads the header from
+standard input, so the token is in no command line. The broker takes the revoking person the body
+names on its caller's word, as it does for a machine login's decision: a revoke only takes power
+away, so unlike approving a secret request it needs no sign-in to the broker.)
 
 ## Revoke a grant from your shell
 
 From your own shell on a machine that is logged in (not from inside an agent session),
 `agent-secrets grant list` lists the same grants as **Live grants**, and `agent-secrets grant revoke`
 ends one as **Revoke** does, withholding included. Both call the broker under the machine's login:
-the helper signs each call with the machine's credential, and refuses a process inside a registered
-session's process tree (`IN_SESSION`), so an agent's own commands cannot act as you. The check
-covers that process tree only. A process a session sends out of it, with `( cmd & )`, `setsid -f`
-or a tmux server the session started, passes it, and any process running as your user can stop the
-helper anyway. Through these commands such a process can list and revoke your own machine logins,
-never a service's machine login, and your grants, which include every grant whose approver is
-you, on any session, a service's pod among them — those you approved, and those the model judge
-approved in your stead — and every grant the judge approved in anyone's stead.
+the helper signs each call with the machine's credential. It refuses that to a process inside a
+registered session's process tree (`IN_SESSION`), so an agent's own commands cannot act as you:
+`grant list` is refused there, and `grant revoke` run there is the session's own revoke instead,
+as `agent-secrets revoke` is, which ends only a grant given to the broker identity (enrollment)
+the session signs as. The check covers that process tree only. A process a session sends out of
+it, with `( cmd & )`, `setsid -f` or a tmux server the session started, passes it, and any
+process running as your user can stop the helper anyway. Through these commands such a process
+can list and revoke your own machine logins, never a service's machine login, and your grants,
+which include every grant whose approver is you, on any session, a service's pod among them —
+those you approved, and those the model judge approved in your stead — and every grant the judge
+approved in anyone's stead.
 `agent-secrets enroll --helper` is open to any process of your user, so such a process can also
 enroll a box and read your agent secrets.
 
@@ -267,9 +271,9 @@ daemon's token login is listed the same way with `approved_by` empty and `subjec
 ServiceAccount:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
 {"credentials":[{"credential_id":"d4187389-953c-4156-90c1-1dd937e9bf0b","host":"example-host-devbox","service":null,"subject":null,"approved_by":"ada@example.com","issued_at":"2026-10-10T14:56:01.121955Z","expires_at":"2026-10-17T14:56:01.122701Z","expired":false},{"credential_id":"8f4c8ae4-b73e-4a60-a591-725667480f1a","host":"example-host-cluster","service":"legion-daemon","subject":null,"approved_by":"bob@example.com","issued_at":"2026-10-10T14:55:59.906427Z","expires_at":"2026-10-17T14:55:59.9071Z","expired":false}]}
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
 {"state":"revoked"}
 ```
 

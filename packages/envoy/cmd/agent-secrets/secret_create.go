@@ -219,6 +219,7 @@ const (
 type pendingCreate struct {
 	s              *secretSession
 	form, name     string
+	secretType     string // the type tag the create writes, "" for none, which its reread is held to (rereadValue)
 	owner, tier    string // the owner and tier tags the created line names
 	stdout, stderr io.Writer
 	created        newSecret
@@ -236,11 +237,11 @@ type pendingCreate struct {
 // (readValue, handed the deadline its read ends at: valueReadWindow after the store is asked to
 // make the secret, where begin makes one that waits for its value, and the zero time, no bound,
 // where it makes nothing), store, and abandon after any failure. It ends the stretch before it
-// reports anything, the failure, or the value stored and the broker's reread, so a signal that
-// comes as it reports finds no cleanup to run, and one that came before keeps the stretch from
-// ending: interrupted reports instead. It answers the form's exit code, and is a function rather
-// than a method of pendingCreate because broker-refgen reads every exit code this package returns,
-// and it follows a plain call, never a method's.
+// reports anything, the failure, or the value stored and the broker's reread, held to the type the
+// create wrote (rereadValue), so a signal that comes as it reports finds no cleanup to run, and one
+// that came before keeps the stretch from ending: interrupted reports instead. It answers the
+// form's exit code, and is a function rather than a method of pendingCreate because broker-refgen
+// reads every exit code this package returns, and it follows a plain call, never a method's.
 func runCreate(p *pendingCreate, readValue func(deadline time.Time) (string, error)) int {
 	end := p.watch()
 	defer end()
@@ -269,7 +270,7 @@ func runCreate(p *pendingCreate, readValue func(deadline time.Time) (string, err
 	}
 	p.sayStored()
 	noteEdgeSpaces(p.stderr, p.form, p.name, value)
-	return rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+	return rereadValue(p.s, p.stdout, p.stderr, p.form, p.name, p.secretType)
 }
 
 // sayStored prints the line that says the create stored the secret with its value.

@@ -8,10 +8,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -40,7 +45,7 @@ func tableRows(t *testing.T, stdout string) (header []string, rows [][]string) {
 // returns its helper.Broker and the launcher credential its approval minted.
 func loggedInElsewhere(t *testing.T, rig *brokertest.Rig, host string) (*helper.Broker, string) {
 	t.Helper()
-	b := &helper.Broker{URL: rig.URL, OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
+	b := &helper.Broker{URL: brokeraddr.New(rig.URL), OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
 	t.Cleanup(b.Close)
 	code, err := b.Login(context.Background(), host)
 	if err != nil {
@@ -101,7 +106,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 
 	// Every line names the broker it acted at, so no answer of this CLI's reads as another
 	// secrets CLI's (source.go).
-	at := " at " + brokerSource(rig.URL).String() + "\n"
+	at := " at " + brokerSource(brokeraddr.New(rig.URL)).String() + "\n"
 	if stdout, stderr, exit := machine("revoke", laptopID); exit != 0 || stdout != "revoked "+laptopID+at || stderr != "" {
 		t.Fatalf("machine revoke the laptop: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
@@ -124,7 +129,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, stderr, exit := machine("revoke", strings.ToUpper(own)); exit != 0 || stdout != "revoked "+strings.ToUpper(own)+at || stderr != ownWarning {
 		t.Fatalf("machine revoke this machine's own login in upper case: exit %d, stdout %q, stderr %q; want %q", exit, stdout, stderr, ownWarning)
 	}
-	refused := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's login to " + brokerSource(rig.URL).String() + " is expired or revoked (run: agent-secrets machine login)\n"
+	refused := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's login to " + brokerSource(brokeraddr.New(rig.URL)).String() + " is expired or revoked (run: agent-secrets machine login)\n"
 	if stdout, stderr, exit := machine("list"); exit != 1 || stdout != "" || stderr != refused {
 		t.Fatalf("machine list after revoking this machine's own login: exit %d, stdout %q, stderr %q; want 1, %q", exit, stdout, stderr, refused)
 	}
@@ -183,10 +188,10 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 		t.Fatalf("grant list --json: exit %d, stdout %q, stderr %q; want the Live grants page's body %q", exit, stdout, stderr, page)
 	}
 
-	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(rig.URL).String()+"\n" || stderr != "" {
+	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(brokeraddr.New(rig.URL)).String()+"\n" || stderr != "" {
 		t.Fatalf("grant revoke: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
-	if _, err := newClient(rig.URL).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, nil, releaseCall{}); err == nil {
+	if _, err := newClient(brokeraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, nil, releaseCall{}); err == nil {
 		t.Fatal("the box read the revoked grant's values")
 	}
 	if stdout, _, _ := grant("list"); strings.Contains(stdout, grantID) {
@@ -201,12 +206,13 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 }
 
 // TestMachineAndGrantCommandsRefusedInsideASession: a process inside a registered session's
-// process tree gets no launcher proof from the helper, so every machine and grant command run
-// from inside one says so and exits 1.
+// process tree gets no launcher proof from the helper, so `machine list`, `machine revoke` and
+// `grant list` run from inside one say so and exit 1. `grant revoke` is no longer here: a session
+// ends a grant it was given from inside the session (TestGrantRevokeInsideASessionEndsItsOwnGrant).
 func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
-	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}, {"grant", "revoke", uuid.NewString()}} {
+	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}} {
 		code, stdout, stderr := runInSession(t, binary, sock, args...)
 		prefix := "agent-secrets " + args[0] + " " + args[1] + ": IN_SESSION: pid "
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, prefix) || !strings.HasSuffix(stderr, "is inside a registered machine session, which acts on itself alone; run machine and grant commands from your own shell\n") {
@@ -226,5 +232,208 @@ func TestMachineAndGrantCommandsOnAMachineNotLoggedIn(t *testing.T) {
 		if exit != 1 || stdout != "" || stderr != want {
 			t.Fatalf("%v with no machine login: exit %d, stdout %q, stderr %q; want 1, %q", args, exit, stdout, stderr, want)
 		}
+	}
+}
+
+// grantSessionResult is what the in-session helper reports for one command it ran.
+type grantSessionResult struct {
+	Code   int    `json:"code"`
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
+}
+
+// TestGrantSessionHelper is the session root the tests below run commands inside: register --exec
+// replaces it, so it and its children are one registered machine session, and every CLI command
+// it runs as its own child resolves to that session (the real case a session ending its own grant
+// is). It reads one JSON array of arguments per line from stdin, runs the built CLI with them,
+// and appends one JSON grantSessionResult line per command to the results file, so the parent can
+// read each command's outcome without racing the test binary's own stdout.
+func TestGrantSessionHelper(t *testing.T) {
+	if os.Getenv("AGENT_SECRETS_GRANT_HELPER") == "" {
+		t.Skip("subprocess helper")
+	}
+	binary := os.Getenv("AGENT_SECRETS_GRANT_BINARY")
+	resultsPath := os.Getenv("AGENT_SECRETS_GRANT_RESULTS")
+	in := bufio.NewScanner(os.Stdin)
+	for in.Scan() {
+		var args []string
+		if json.Unmarshal(in.Bytes(), &args) != nil {
+			continue
+		}
+		cmd := exec.Command(binary, args...)
+		var so, se strings.Builder
+		cmd.Stdout, cmd.Stderr = &so, &se
+		_ = cmd.Run()
+		line, _ := json.Marshal(grantSessionResult{Code: cmd.ProcessState.ExitCode(), Stdout: so.String(), Stderr: se.String()})
+		f, err := os.OpenFile(resultsPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+		if err == nil {
+			_, _ = f.Write(append(line, '\n'))
+			_ = f.Close()
+		}
+	}
+}
+
+// grantSession is a live registered machine session a test runs CLI commands inside, one at a
+// time, reading each command's outcome.
+type grantSession struct {
+	t           *testing.T
+	stdin       io.WriteCloser
+	resultsPath string
+	seen        int
+}
+
+// startGrantSession launches `register --exec -- <this test binary> -test.run TestGrantSessionHelper`
+// against the helper at sock and the broker at url, waiting for the session to enrol, so the
+// helper's sign op answers OK for every command the session runs (the in-session identity R4's
+// chain signs with).
+func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	results := filepath.Join(home, "results")
+	if err := os.WriteFile(results, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "register", "--exec", "--wait", "5", "--", self, "-test.run", "^TestGrantSessionHelper$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_SECRETS_GRANT_HELPER=1",
+		"AGENT_SECRETS_GRANT_BINARY="+binary,
+		"AGENT_SECRETS_GRANT_RESULTS="+results,
+		"AGENT_SECRETS_HELPER_SOCK="+sock,
+		"AGENT_SECRETS_URL="+url,
+		"AGENT_SECRETS_KEY_DIR=",
+		"XDG_RUNTIME_DIR="+t.TempDir(),
+		"HOME="+home)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(waited) }()
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		select {
+		case <-waited:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+		}
+		<-waited
+	})
+	return &grantSession{t: t, stdin: stdin, resultsPath: results}
+}
+
+// run runs one CLI command inside the session and returns its outcome, waiting for the helper to
+// append the result line for it.
+func (s *grantSession) run(args ...string) grantSessionResult {
+	s.t.Helper()
+	line, err := json.Marshal(args)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if _, err := s.stdin.Write(append(line, '\n')); err != nil {
+		s.t.Fatalf("sending %v to the session: %v", args, err)
+	}
+	s.seen++
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		data, _ := os.ReadFile(s.resultsPath)
+		if len(data) > 0 {
+			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+			if len(lines) >= s.seen {
+				var res grantSessionResult
+				if err := json.Unmarshal([]byte(lines[s.seen-1]), &res); err != nil {
+					s.t.Fatalf("the session's result for %v was %q: %v", args, lines[s.seen-1], err)
+				}
+				return res
+			}
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("the session never reported a result for %v", args)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// requestAutoSecret asks for TEST_AUTO_SECRET from inside the session and returns the id of the
+// grant it is given at once (the rig grants the operator's own agent-tier secret with no
+// approval), the grant this session may then end.
+func (s *grantSession) requestAutoSecret() string {
+	s.t.Helper()
+	res := s.run("request", "TEST_AUTO_SECRET", "--json")
+	var granted RequestResult
+	if err := json.Unmarshal([]byte(res.Stdout), &granted); res.Code != 0 || err != nil || granted.State != "granted" || granted.GrantID == nil {
+		s.t.Fatalf("request TEST_AUTO_SECRET inside the session: exit %d, stdout %q, stderr %q; want it granted at once", res.Code, res.Stdout, res.Stderr)
+	}
+	return *granted.GrantID
+}
+
+// TestGrantRevokeInsideASessionEndsItsOwnGrant is this change's case: a session ends a
+// grant it was given, with `grant revoke`, from inside the session — where before it answered
+// IN_SESSION and the grant lived to its expiry.
+func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
+	rig := brokertest.NewRig(t)
+	binary := buildAgentSecrets(t)
+	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
+	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
+		t.Fatalf("machine login (code %s): exit %d, stderr %q", code, exit, stderr)
+	}
+	grantOutside := func(args ...string) (string, string, int) {
+		t.Helper()
+		return runAgentSecrets(t, binary, rig.URL, t.TempDir(), []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, append([]string{"grant"}, args...)...)
+	}
+
+	session := startGrantSession(t, binary, sock, rig.URL)
+	grantID := session.requestAutoSecret()
+	if stdout, _, exit := grantOutside("list"); exit != 0 || !strings.Contains(stdout, grantID) {
+		t.Fatalf("grant list outside the session before the revoke: exit %d, stdout %q; want it to list %s", exit, stdout, grantID)
+	}
+
+	res := session.run("grant", "revoke", grantID)
+	want := "revoked " + grantID + " at " + brokerSource(brokeraddr.New(rig.URL)).String() + "\n"
+	if res.Code != 0 || res.Stdout != want || res.Stderr != "" {
+		t.Fatalf("grant revoke inside the session: exit %d, stdout %q, stderr %q; want 0 and %q", res.Code, res.Stdout, res.Stderr, want)
+	}
+	if stdout, _, exit := grantOutside("list"); exit != 0 || strings.Contains(stdout, grantID) {
+		t.Fatalf("grant list after the revoke: exit %d, stdout %q; want %s gone", exit, stdout, grantID)
+	}
+}
+
+// TestGrantRevokeInsideASessionRefusesAnotherEnrollmentsGrant: the broker ends only a grant of the
+// enrollment that signs, and two sessions the helper registered are two enrollments. So a second
+// session's `grant revoke` of the first one's grant is refused NOT_YOURS: it prints that one line
+// and nothing more, exits 1, and the grant stays live. Inside a registered session the helper
+// refuses every launcher proof, so the grant would stay live even had the command fallen through
+// to the operator route; the whole of stderr being that one line is what shows no other route
+// printed a failure here. TestGrantRevokeTriesNoOtherRouteAfterNotYours holds the case where the
+// helper would sign the operator's route.
+func TestGrantRevokeInsideASessionRefusesAnotherEnrollmentsGrant(t *testing.T) {
+	rig := brokertest.NewRig(t)
+	binary := buildAgentSecrets(t)
+	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
+	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
+		t.Fatalf("machine login (code %s): exit %d, stderr %q", code, exit, stderr)
+	}
+	grantOutside := func(args ...string) (string, string, int) {
+		t.Helper()
+		return runAgentSecrets(t, binary, rig.URL, t.TempDir(), []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, append([]string{"grant"}, args...)...)
+	}
+
+	holder := startGrantSession(t, binary, sock, rig.URL)
+	grantID := holder.requestAutoSecret()
+
+	other := startGrantSession(t, binary, sock, rig.URL)
+	res := other.run("grant", "revoke", grantID)
+	if want := notYoursStderr(grantID); res.Code != 1 || res.Stdout != "" || res.Stderr != want {
+		t.Fatalf("another session's grant revoke: exit %d, stdout %q, stderr %q; want 1 and exactly %q", res.Code, res.Stdout, res.Stderr, want)
+	}
+	if stdout, _, exit := grantOutside("list"); exit != 0 || !strings.Contains(stdout, grantID) {
+		t.Fatalf("grant list after the refused revoke: exit %d, stdout %q; want %s still live", exit, stdout, grantID)
 	}
 }

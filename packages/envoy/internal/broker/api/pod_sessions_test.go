@@ -1,7 +1,9 @@
 package api_test
 
 import (
+	"log/slog"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // registerPodSession posts a registration to POST /v1/oauth/exchange/pod-sessions with bearer as
@@ -163,8 +166,214 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 
 // wirePodSession is POST /v1/oauth/exchange/pod-sessions's answer as a registrar reads it.
 type wirePodSession struct {
-	PodUID  string `json:"pod_uid"`
-	Session string `json:"session"`
+	PodUID     string `json:"pod_uid"`
+	Session    string `json:"session"`
+	Thumbprint string `json:"thumbprint"`
+	Generation *int64 `json:"generation"`
+}
+
+// TestTheRegistrationRouteAnswersTheStoredGeneration: the route answers the registration as
+// stored, its generation included. A write of generation 2 with kB is answered generation 2; a
+// later write of generation 1 with kA, an old incarnation's committed late, changes nothing and
+// is answered the stored row, kB at generation 2; a write that sends no generation is answered no
+// generation field, as before generations existed (R9;
+// TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore holds the whole answer); and a
+// negative generation is 400 GENERATION_INVALID and writes nothing.
+func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
+	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
+	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
+	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	register := func(fields map[string]any) (int, []byte) {
+		fields["pod_token"] = podToken
+		return ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions",
+			map[string]string{"Authorization": "Bearer " + registrar}, fields)
+	}
+	answered := func(what string, status int, body []byte, thumbprint string, generation int64) {
+		t.Helper()
+		got := decode[wirePodSession](t, body)
+		if status != http.StatusOK || got.Thumbprint != thumbprint || got.Generation == nil || *got.Generation != generation {
+			t.Fatalf("%s = %d %s, want 200 answering the stored row: thumbprint %s at generation %d", what, status, body, thumbprint, generation)
+		}
+	}
+
+	status, body := register(map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})
+	answered("a write of generation 2 with kB", status, body, kB, 2)
+	status, body = register(map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
+	answered("a late write of generation 1 with kA after generation 2", status, body, kB, 2)
+	status, body = register(map[string]any{"session": "watched-session"})
+	if got := decode[wirePodSession](t, body); status != http.StatusOK || got.Thumbprint != "" || got.Generation != nil {
+		t.Fatalf("a write that sends no generation = %d %s, want 200 answering no thumbprint and no generation", status, body)
+	}
+
+	status, body = register(map[string]any{"session": "refused-session", "thumbprint": kA, "generation": -1})
+	if code := decode[wireError](t, body).Code; status != http.StatusBadRequest || code != "GENERATION_INVALID" {
+		t.Fatalf("a write of generation -1 = %d %s, want 400 GENERATION_INVALID", status, body)
+	}
+	if rows := ts.column(t, `select session from oauth_pod_sessions where session = 'refused-session'`); len(rows) != 0 {
+		t.Fatalf("the refused write of generation -1 wrote %v", rows)
+	}
+}
+
+// TestTheRegistrationRouteHoldsTheThumbprintsShape: a registration's thumbprint is an RFC 7638
+// SHA-256 thumbprint, 43 base64url characters, or the route refuses it 400 THUMBPRINT_INVALID
+// and writes nothing; one of that shape is stored and answered back.
+func TestTheRegistrationRouteHoldsTheThumbprintsShape(t *testing.T) {
+	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
+	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
+	register := func(thumbprint string) (int, []byte) {
+		return ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions",
+			map[string]string{"Authorization": "Bearer " + registrar},
+			map[string]any{"pod_token": podToken, "session": "implementer-g1", "thumbprint": thumbprint})
+	}
+	for _, malformed := range []string{
+		strings.Repeat("A", 42),
+		strings.Repeat("A", 44),
+		strings.Repeat("A", 42) + "=",
+		strings.Repeat("A", 42) + "+",
+		strings.Repeat("A", 42) + "/",
+		" " + strings.Repeat("A", 42),
+	} {
+		status, body := register(malformed)
+		if code := decode[wireError](t, body).Code; status != http.StatusBadRequest || code != "THUMBPRINT_INVALID" {
+			t.Fatalf("a registration naming the thumbprint %q = %d %s, want 400 THUMBPRINT_INVALID", malformed, status, body)
+		}
+	}
+	if rows := ts.column(t, `select pod_uid from oauth_pod_sessions`); len(rows) != 0 {
+		t.Fatalf("the refused registrations wrote %v", rows)
+	}
+	const good = "0123456789abcdefghijklmnopqrstuvwxyzABCDE_-"
+	status, body := register(good)
+	if registration := decode[wirePodSession](t, body); status != http.StatusOK || registration.Thumbprint != good {
+		t.Fatalf("a registration naming the thumbprint %s = %d %s, want 200 answering it back", good, status, body)
+	}
+}
+
+// The route's two log messages: a write it applied, and a write the generation rule refused.
+const (
+	registeredMessage = "broker: registered a pod to write under a session name"
+	notAppliedMessage = "broker: a pod's session registration was not written: the registration holds a later generation"
+)
+
+// registrationRig is a test server whose exchange lists the daemon's account and the worker's,
+// the daemon's own login as the registrar, and the token of the worker's pod pod, with the
+// default logger captured for the test.
+type registrationRig struct {
+	ts                  *testServer
+	capture             *logtest.Recorder
+	registrar, podToken string
+	pod                 string
+	// seen is how many of capture's records an earlier call of logged answered or passed over.
+	seen int
+}
+
+func newRegistrationRig(t *testing.T, pod string) *registrationRig {
+	t.Helper()
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	return &registrationRig{
+		ts: ts, capture: capture, pod: pod,
+		registrar: ts.accountToken(t, daemonAccount, "", time.Hour),
+		podToken:  ts.accountToken(t, workerAccount, pod, time.Hour),
+	}
+}
+
+// register writes the pod's registration with fields beside its token, and fails the test unless
+// the route answers 200.
+func (r *registrationRig) register(t *testing.T, fields map[string]any) {
+	t.Helper()
+	fields["pod_token"] = r.podToken
+	status, body := r.ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions",
+		map[string]string{"Authorization": "Bearer " + r.registrar}, fields)
+	if status != http.StatusOK {
+		t.Fatalf("a registration of %s with %v = %d %s, want 200", r.pod, fields, status, body)
+	}
+}
+
+// logged is every record the broker has logged naming the rig's pod since the last call, each as
+// its level, its message and its attributes by key, in the order they were written.
+func (r *registrationRig) logged(t *testing.T) []map[string]any {
+	t.Helper()
+	records := r.capture.Records()
+	var found []map[string]any
+	for _, record := range records[r.seen:] {
+		fields := map[string]any{"level": record.Level, "msg": record.Message}
+		record.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+		if fields["pod"] == r.pod {
+			found = append(found, fields)
+		}
+	}
+	r.seen = len(records)
+	return found
+}
+
+// loggedOnly fails the test unless the broker logged exactly want naming the rig's pod since the
+// last call: the one record of what the write did, which what names.
+func (r *registrationRig) loggedOnly(t *testing.T, what string, want map[string]any) {
+	t.Helper()
+	want["service"], want["account"], want["pod"] = "legion-daemon", workerAccount, r.pod
+	if got := r.logged(t); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("%s logged %v, want exactly %v", what, got, want)
+	}
+}
+
+// TestAFreshRegistrationLogsWhatWasSentAndStored: a registration's first write is logged at Info
+// as registered, naming the thumbprint and generation the registrar sent beside those stored, and
+// no key replaced, since there was none to replace.
+func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
+	const kA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	rig := newRegistrationRig(t, "pod-uid-fresh")
+	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
+	rig.loggedOnly(t, "the first write of implementer-g1 with kA at generation 1", map[string]any{
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"sent_thumbprint": kA, "sent_generation": int64(1), "thumbprint": kA, "generation": int64(1),
+	})
+}
+
+// TestARegistrationReplacingAKeyLogsTheKeyItReplaced: a write that binds the registration to
+// another key is logged as registered with the thumbprint it replaced beside what was sent and
+// stored. A renewal naming the key the row holds, and a write naming no key, which keeps it,
+// replace nothing and name nothing replaced.
+func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
+	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	rig := newRegistrationRig(t, "pod-uid-relaunched")
+	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
+	rig.logged(t)
+
+	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
+	rig.loggedOnly(t, "a renewal of implementer-g1 with the key it holds, kA at generation 1", map[string]any{
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"sent_thumbprint": kA, "sent_generation": int64(1), "thumbprint": kA, "generation": int64(1),
+	})
+	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})
+	rig.loggedOnly(t, "a write of implementer-g1 replacing kA with kB at generation 2", map[string]any{
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"sent_thumbprint": kB, "sent_generation": int64(2), "thumbprint": kB, "generation": int64(2),
+		"replaced_thumbprint": kA,
+	})
+	rig.register(t, map[string]any{"session": "implementer-g1", "generation": 2})
+	rig.loggedOnly(t, "a write of implementer-g1 naming no key at generation 2", map[string]any{
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"sent_thumbprint": "", "sent_generation": int64(2), "thumbprint": kB, "generation": int64(2),
+	})
+}
+
+// TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn: a write of a lower generation
+// than the row's changes nothing, so it is not logged as registered: it logs a WARN line of its
+// own naming the thumbprint and generation it sent beside the row's, which it left as it was.
+func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
+	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	rig := newRegistrationRig(t, "pod-uid-late")
+	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})
+	rig.logged(t)
+
+	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
+	rig.loggedOnly(t, "a late write of implementer-g1 with kA at generation 1 after kB at generation 2", map[string]any{
+		"level": slog.LevelWarn, "msg": notAppliedMessage, "session": "implementer-g1",
+		"sent_thumbprint": kA, "sent_generation": int64(1), "thumbprint": kB, "generation": int64(2),
+	})
 }
 
 // TestARegistrarRegistersAnyPodButTheOneItRunsIn: the route writes a registration for any pod but

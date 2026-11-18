@@ -238,6 +238,7 @@ fi
 echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} read-exchange=${BROKER_EXCHANGE_READ_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} fake-secrets=${BROKER_FAKE_SECRETS_FILE:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
 exec sleep 999999
@@ -417,6 +418,13 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s points its broker at its own database\n' "$label"
+  # With no DEV_BROKER_GCP_* the store is the AWS-shaped fake one, as before those settings.
+  if ! grep -qF "fake broker: store= prefix=example/agent-secrets/ key-arn=arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab key-name= " "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker is not started on the AWS-shaped fake store" >&2
+    exit 1
+  fi
+  printf 'PASS: %s starts its broker on the AWS-shaped fake store\n' "$label"
   # Its broker trusts the issuer this instance started, lists the dev account as the caller
   # "dispatch" and the listener account as the caller "listener" (introspection alone), the
   # worker account at the exchange and the reader account as the exchange's read entry, and the
@@ -506,7 +514,7 @@ assert_instance_isolated() {
   printf 'PASS: %s registers %s under both halves, tells a reader how to take the secret it owns, and exports that pod uid and service name\n' "$label" "$service"
   # The stand-in GitHub and the three github-app secrets it mints: the stands are started for the
   # three installations the case pair needs, the broker is pointed at that stand's own address,
-  # and the fake store holds all three with the kind, the tier, the owner and the github-owners
+  # and the fake store holds all three with the type, the tier, the owner and the github-owners
   # tag each one's release rests on - the two the registered service owns, which a pod session of
   # it gets without asking, and the approver's own human-tier one, whose release a person
   # decides. The App key is the file the stands reported, so a report that named another file
@@ -522,8 +530,8 @@ assert_instance_isolated() {
   fi
   local tags want_tags
   tags="$(jq -r '
-    [.secrets[] | select(.tags.kind == "github-app")
-     | "\(.name) \(.tags.kind) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
+    [.secrets[] | select(.tags.type == "github-app")
+     | "\(.name) \(.tags.type) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
     ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
   want_tags="example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456"
   want_tags="${want_tags}; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456"
@@ -549,10 +557,11 @@ assert_instance_isolated() {
   # The example that takes a github-app secret runs its curl in a shell of its own, so that
   # shell expands the name the grant put in the child's environment. An example that printed
   # the name with a backslash before it, outside any shell, would have curl send those
-  # characters, and the stand would answer 401 to a token it never minted. grep -F reads a
-  # newline as another pattern, so the one line that carries the shell is the pattern here.
+  # characters, and the stand would answer 401 to a token it never minted. The header reaches
+  # curl on standard input, so the token is in no command line. grep -F reads a newline as
+  # another pattern, so the one line that carries the shell is the pattern here.
   local github_example
-  github_example=$'sh -c \'curl -fsS -H "Authorization: Bearer $DEMO_GITHUB_APP" http://'
+  github_example=$'sh -c \'printf "Authorization: Bearer %s" "$DEMO_GITHUB_APP" | curl -fsS -H @- http://'
   if ! grep -qF -- "$github_example" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's banner does not run its --github-token example's curl in a shell that expands DEMO_GITHUB_APP" >&2
@@ -683,3 +692,42 @@ if [[ "$stale_status" -eq 0 ]] || ! grep -qF "dev-postgres: dispatch-pg runs pos
   exit 1
 fi
 printf 'PASS: a dispatch-pg on another image than the pinned one is refused through dev-postgres.sh, before any database or broker\n'
+
+# --- DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME give the broker Google Cloud Secret
+# Manager as its store under that prefix and key, with no AWS key and an empty fake secrets file,
+# and the banner says so; either one alone is refused before anything is created. ---
+gcp_prefix="projects/100000000001/secrets/agent-secrets-"
+gcp_key="projects/acme-agent-infra/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+DEV_BROKER_GCP_PREFIX="$gcp_prefix" DEV_BROKER_GCP_KMS_KEY_NAME="$gcp_key" \
+  run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
+if ! wait_for_ready "$log1"; then
+  cat "$log1" >&2
+  echo "FAIL: a DEV_BROKER_GCP_* run never reached ready" >&2
+  exit 1
+fi
+gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
+if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-arn= key-name=${gcp_key} fake-secrets=${gcp_workdir}/fake-secrets.json" "$log1" \
+  || [[ "$(jq -c . "${gcp_workdir}/fake-secrets.json" 2>/dev/null || true)" != '{"secrets":[]}' ]] \
+  || ! grep -qF "  secret store:        gcp-secret-manager under ${gcp_prefix}, key ${gcp_key}" "$log1"; then
+  cat "$log1" >&2
+  echo "FAIL: a DEV_BROKER_GCP_* run does not start its broker on Secret Manager under that prefix and key, with an empty fake secrets file, and say so" >&2
+  exit 1
+fi
+kill -TERM "${instance_pid[1]}"
+wait "${instance_pid[1]}" 2>/dev/null || true
+instance_pid[1]=""
+printf 'PASS: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME start the broker on Secret Manager under them, with an empty fake secrets file\n'
+
+for half in DEV_BROKER_GCP_PREFIX DEV_BROKER_GCP_KMS_KEY_NAME; do
+  : >"$docker_calls1"
+  half_status=0
+  env "${half}=set-alone" PATH="${fake_bin_dir}:${PATH}" \
+    DEV_BROKER_TEST_DOCKER_CALL_FILE="$docker_calls1" DEV_BROKER_TEST_CURL_CALL_FILE="$curl_calls1" \
+    bash "$driver" >"$log1" 2>&1 || half_status=$?
+  if [[ "$half_status" -ne 2 ]] || ! grep -qF "dev-broker: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME are set together or not at all" "$log1" || [[ -s "$docker_calls1" ]]; then
+    cat "$log1" >&2
+    echo "FAIL: ${half} alone exited ${half_status}; want 2 with the refusal and nothing created" >&2
+    exit 1
+  fi
+done
+printf 'PASS: either DEV_BROKER_GCP_* setting alone is refused with exit 2 before anything is created\n'

@@ -53,22 +53,33 @@ export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
  *
  *  `scopes` is the set that credential held at the act, recorded with it and never read back
  *  from the token: a person who narrows a token afterwards narrows what it may do next, and
- *  does not un-approve what it approved while it held `approve`. */
+ *  does not un-approve what it approved while it held `approve`.
+ *
+ *  `session_proven` is `true` only when the credential itself proved `session` (a broker-issued
+ *  token's own session); a session a personal token's request named is recorded without it. */
 export const ActorActSchema = z
   .strictObject({
     session: z.string().optional(),
+    session_proven: z.literal(true).optional(),
     token_id: z.string().optional(),
     token_name: z.string().optional(),
     scopes: z.array(z.enum(DISPATCH_SCOPES)).optional(),
   })
   .readonly();
 
+/** `proven` is `true` only when the write's credential itself proved the actor's `id`: a
+ *  browser's person, a person a credential acts for, or a broker-issued token's session. The
+ *  server sets it and never reads it from a body; an actor whose `id` the request only named (the
+ *  shared agent token, a personal token or a service token naming a session) and every row
+ *  written before the mark carry none, so a reader that trusts only proven writers trusts no
+ *  claimed one. */
 export const ActorSchema = z.union([
   z
     .strictObject({
       kind: z.literal("user"),
       id: z.string(),
       act: ActorActSchema.optional(),
+      proven: z.literal(true).optional(),
     })
     .readonly(),
   z
@@ -86,6 +97,7 @@ export const ActorSchema = z.union([
        *  none, a browser cookie, a personal token and a broker token scoped to its person
        *  included. */
       project: z.string().optional(),
+      proven: z.literal(true).optional(),
     })
     .readonly(),
   /** A server-owned writer, such as the architecture importer

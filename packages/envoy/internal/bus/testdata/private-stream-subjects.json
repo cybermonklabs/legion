@@ -26,6 +26,56 @@
   },
   {
     "sessionID": "ses_a",
+    "topic": "notifications.agent.*.ses_a",
+    "want": false
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent.INFRA.ses_a",
+    "want": false
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent._.ses_a",
+    "want": false
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent.INFRA.ses_b",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent.*.ses_b",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent.*.*",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent.INFRA.>",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.agent.infra.ses_a",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
+    "topic": "notifications.envoy.exceptions.notifications.agent.*.ses_a",
+    "want": true
+  },
+  {
+    "sessionID": "*",
+    "topic": "notifications.agent.INFRA.*",
+    "want": true
+  },
+  {
+    "sessionID": "ses_a",
     "topic": "notifications.>",
     "want": true
   },

@@ -668,7 +668,7 @@ func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
 	theAnswer := answeredEventID(t, database, source.Key)
 
 	since := url.Values{"from": {askRef}, "since": {strconv.FormatInt(beforeTheAnswer, 10)}}
-	awaitSinceRead(t, "?from= the ask since the log's head before the answer, wanting the answer part's mention stamped with event "+strconv.FormatInt(theAnswer, 10),
+	awaitSinceRead(t, database, "?from= the ask since the log's head before the answer, wanting the answer part's mention stamped with event "+strconv.FormatInt(theAnswer, 10),
 		func() model.GraphReferences { return readGraph(t, handler, since) },
 		func(read model.GraphReferences) bool {
 			if len(read.Edges) != 1 {

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -42,7 +43,9 @@ func standInEventLog(ctx *AppContext, head int64) {
 // a Lifetime, so it mounts GET /ws/live as production does. Its people are the database's own
 // table, as main's are: a header names a person by recording them there, and a project create
 // names its default from that same table (allowedLogin), so an in-memory store here would leave
-// the person the header names unknown to the create.
+// the person the header names unknown to the create. Its event horizon warns of a stall at
+// horizontest.StallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
+// (waitEventsStart) hears that the horizon is held inside its own patience.
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
@@ -50,13 +53,15 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	ctx, err := BuildAppContext(AppContextOptions{
-		SigningKey: testSigningKey,
-		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-		Store:      database,
-		Docs:       documents,
-		Events:     broker,
-		Lifetime:   t.Context(),
+		SigningKey:        testSigningKey,
+		People:            people,
+		Identity:          identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store:             database,
+		Docs:              documents,
+		Events:            broker,
+		Lifetime:          t.Context(),
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -165,7 +170,6 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 	}); err != nil {
 		t.Fatalf("subscribe to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	next := func(what string) (string, []byte) {
 		t.Helper()
 		for {
@@ -185,12 +189,15 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		}
 	}
 
-	kind, data := next("the events_start")
+	data := waitEventsStart(t, conn, database)
 	var start api.LiveEventsStart
-	if err := json.Unmarshal(data, &start); err != nil || kind != "events_start" || start.Sub != "events" || start.Since != head {
+	if err := json.Unmarshal(data, &start); err != nil || start.Type != "events_start" || start.Sub != "events" || start.Since != head {
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
 	}
-	kind, data = next("the change committed while the page loaded")
+	// The replay follows the events_start out of what the subscription read before sending it,
+	// with no wait on the horizon between them (feedEvents), so a deadline the test owns bounds it.
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	kind, data := next("the change committed while the page loaded")
 	var frame api.LiveEventFrame
 	if err := json.Unmarshal(data, &frame); err != nil || kind != "event" {
 		t.Fatalf("second frame = %s (%v), want an event", data, err)
@@ -593,19 +600,7 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	newest := newestEventID(t, database)
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := before.Safe(ctx); err != nil {
-			t.Fatalf("observe the horizon: %v", err)
-		}
-		if persisted, err := before.Persisted(ctx); err != nil {
-			t.Fatalf("read the persisted horizon: %v", err)
-		} else if persisted >= newest {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no horizon of %d persisted within 30s", newest)
-		}
-	}
+	horizontest.AwaitPersisted(t, before, newest, database)
 
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

@@ -62,8 +62,9 @@ func TestSmoke(t *testing.T) {
 	}
 	t.Cleanup(func() { net.Remove(ctx) })
 
-	// Start NATS using the same module the rest of the project uses.
-	natsC, err := tcnats.Run(ctx, testnats.Image,
+	// Start NATS using the same module the rest of the project uses, on the server the hub runs:
+	// the listener refuses to start on nats:2.10 (natsversion.Refusal).
+	natsC, err := tcnats.Run(ctx, testnats.HubImage,
 		network.WithNetwork([]string{"nats"}, net),
 		capped(1, 512),
 	)

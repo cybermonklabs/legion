@@ -702,7 +702,9 @@ test("live: the Reconnecting pill never covers the phone margin sheet toggle @ph
   const pill = page.getByTestId("connection-pill");
   await expect(pill).toBeVisible();
 
+  // The waits above drew the toggle and the pill, and a drawn element has a box, so it is there.
   const toggleBox = await toggle.boundingBox();
+  // The pill was waited for above as well, so its box is there as the toggle's is.
   const pillBox = await pill.boundingBox();
   expect(toggleBox).not.toBeNull();
   expect(pillBox).not.toBeNull();

@@ -44,10 +44,15 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	}
 	// The message sent while it was there is relayed and answered now, so the one collected
 	// after the resume below can only be the message stored while it was stopped.
-	if frames := first.collect(t, 1, 10*time.Second); frames[0].item.EventID != connected.EventID {
+	frames := first.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID != connected.EventID {
 		t.Fatalf("the connected session took %s, want the message just sent, %s",
 			frames[0].item.EventID, connected.EventID)
 	}
+	// The stop below deletes the consumer, which the registration after it creates again, so the
+	// ack the session's done makes is in the consumer's state file first.
+	awaitAcked(t, rig.consumers, sessionID, frames[0].seq)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 
 	// The session shuts down cleanly: its plugin deregisters and its process, and with it the
 	// connection holding its relay subject, goes away.

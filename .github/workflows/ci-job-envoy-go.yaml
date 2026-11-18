@@ -38,9 +38,13 @@ jobs:
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
     # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
     # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, and the integration
-    # step's 5 is less.
-    timeout-minutes: 60
+    # exceed that, the store-form count's own 5 is 43 (two packages, which go test starts at once
+    # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
+    # database skip count's own timeout-minutes of 25 is 64
+    # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
+    # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10
+    # and the bus matrix's own 5 are 60, and the integration step's 5 is less.
+    timeout-minutes: 70
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -88,9 +92,10 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
-      # Every image the tests here start: testnats.Image and testnats.HubImage, which the
-      # natslive step below runs the two-image matrix on, and tests3.Image, pulled first for the
-      # reason the action gives.
+      # Every image the tests here start: testnats.HubImage, which the natslive step below runs
+      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
+      # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
+      # gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -132,7 +137,10 @@ jobs:
       # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
       # in .github/scripts/ci_job_reads.py from the same list those
       # jobs' own steps are built from, so what this step leaves out and what the other jobs run
-      # cannot drift apart. What is left is the rest of the module, the two longest packages of
+      # cannot drift apart. The broker's packages, internal/broker and everything under it, are
+      # left out too: the database-skips step below runs them with -json and fails on a failed
+      # test as on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_TREE
+      # in ci_job_reads.py). What is left is the rest of the module, the two longest packages of
       # it (the API's and the documents service's) now among the ones the lane runs, so its 20
       # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
@@ -142,25 +150,59 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
+      # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
+      # backend's rows run that backend's own code: the store forms against the GCP fake and the
+      # in-process AWS store (onEachStore) and the use chain against a broker whose settings name
+      # each store, each row that runs the command reading the injection line that names its
+      # store's kind (source.withSettings), all in ./cmd/agent-secrets/; and GET /v1/settings
+      # answering each store's own key field beside the Google exchange audience, in
+      # ./internal/broker/api/. This step runs only those tests in only those two packages (-run,
+      # under backend-count.sh's own 5-minute -timeout, which the budget above counts) and counts
+      # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
+      # neither package, reads aws=0 and fails, as the verification's check c8 requires.
+      - name: Count the store-form rows on each backend
+        run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+      # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
+      # none skips. go test reports a skip as a pass, so this step is where the broker's packages
+      # run: it runs ./internal/broker/... with -json, which the unit step above leaves out, fails
+      # on a failed test, and fails on any skipped test there, FuzzAirlock and
+      # TestModelAgreesOnHostShapes apart (each needs a built Lean model of the airlock, and the
+      # airlock-lean job runs both). A report it cannot read prints database_skips=UNKNOWN and fails
+      # too. database-skips.sh's -timeout of 15 minutes bounds each package's test binary, and the
+      # packages run several at a time, so one that starts late ends up to 15 minutes after its own
+      # start: the step's own limit of 25 minutes leaves a package that starts within the first 10
+      # its whole -timeout, and so its dump. Measured on a loaded dev box on 2026-11-16: 331 s for
+      # the whole step, the slowest package, internal/broker/helper, 329 s.
+      - name: Count the database broker suites' skips
+        timeout-minutes: 25
+        run: packages/envoy/scripts/database-skips.sh
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
         run: go vet -tags modellive ./agentloop/
         working-directory: packages/envoy
+      # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
+      # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
+      - name: Vet agent-secrets' moto run (no moto)
+        run: go vet -tags moto ./cmd/agent-secrets/
+        working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
-      # no container. The two-image matrix, which proves a rendered authorization on nats:2.10 and
-      # on the image the hub runs, is the one thing an in-process server cannot reproduce: it sits
-      # behind the natslive tag, and this step is where it runs (INFRA-250). internal/bus has one
-      # test of its own on that matrix: the module links nats-server v2.15.1 in process, which
-      # caps a stream that sets no cap at a default of its own and takes a change of MaxConsumers
-      # on a stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the
-      # consumer cap this binary compiles and the keeper's restore of a cap an operator lowered or
-      # unset are proved in process. What is left for a real image is the pair of 2.10 cases - the
-      # stream with no cap the binary must leave alone, and the refusal of the raise of a lower
-      # cap, naming the field, the cap and the first server taking the change - and the hub's own
-      # reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each
+      # no container. The real-server tests, a rendered authorization on the image the hub runs
+      # among them, are the one thing an in-process server cannot reproduce: they sit behind the
+      # natslive tag, and this step is where they run (INFRA-250). internal/bus has tests of its own
+      # there. One is the consumer cap: the module links nats-server v2.15.1 in process, which caps
+      # a stream that sets no cap at a default of its own and takes a change of MaxConsumers on a
+      # stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the consumer
+      # cap this binary compiles and the keeper's restore of a cap an operator lowered or unset are
+      # proved in process. What is left for a real image is the pair of 2.10 cases - the stream with
+      # no cap the binary must leave alone, and the refusal of the raise of a lower cap, naming the
+      # field, the cap and the first server taking the change - and the hub's own reconcile on the
+      # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
+      # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
+      # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
+      # consumer loses its old-form message. Each
       # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
       # package's untagged tests, which already run elsewhere - internal/testnats in the unit step
       # above, and internal/bus in envoy-go-race, which the unit step's grep -Ev leaves out - so

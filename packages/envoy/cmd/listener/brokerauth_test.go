@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The origin this file's listener is reached at: a loopback name, so the Host fence an open
@@ -68,20 +69,20 @@ func (spentProofsUnanswered) CheckAndSetDPoPProofUsed(context.Context, string, s
 // a listener whose spent-proof bucket is open holds it.
 func listenerBrokerTokens(t *testing.T, broker *brokertokentest.StubBroker) *brokerTokens {
 	t.Helper()
-	return listenerBrokerTokensOver(t, broker, &spentProofsInMemory{})
+	return listenerBrokerTokensOver(t, broker.Server.URL, &spentProofsInMemory{})
 }
 
-// listenerBrokerTokensOver is listenerBrokerTokens over the spent-proof store named, which is
-// how the outcomes of that store reach apiAuth.
-func listenerBrokerTokensOver(t *testing.T, broker *brokertokentest.StubBroker, replay rfc9449.DPoPReplayStorage) *brokerTokens {
+// listenerBrokerTokensOver is the same credential over the broker at brokerURL and the spent-proof
+// store named, which is how the outcomes of that store reach apiAuth.
+func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
-		BrokerURL:        broker.Server.URL,
+		BrokerURL:        brokerURL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
 	verifier, err := brokertoken.New(brokertoken.Options{
-		BrokerURL: broker.Server.URL,
+		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    replay,
@@ -409,14 +410,11 @@ func TestAPIAuthRefusesAReplayedProof(t *testing.T) {
 
 // A broker that answers nothing is not a refusal of the caller's token: the token was never
 // judged, so the caller is asked to come back rather than told to discard a token that may be
-// perfectly live.
+// perfectly live. The broker is at a port the test holds and nothing listens on.
 func TestAPIAuthAnswers503WhenTheBrokerCannotBeReached(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
 	caller := brokertokentest.NewCaller(t)
 	const token = "access-token-nobody-answers-about"
-	broker.Says(token, sessionAnswer("ses_unreachable", "ada@example.com", caller.JKT()))
-	tokens := listenerBrokerTokens(t, broker)
-	broker.Server.Close()
+	tokens := listenerBrokerTokensOver(t, "http://"+testport.Refused(t), &spentProofsInMemory{})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
 	recorder := httptest.NewRecorder()
@@ -443,7 +441,7 @@ func TestAPIAuthAnswers503WhenTheSpentProofStoreCannotAnswer(t *testing.T) {
 	caller := brokertokentest.NewCaller(t)
 	const token = "access-token-whose-proof-could-not-be-recorded"
 	broker.Says(token, sessionAnswer("ses_unrecorded", "ada@example.com", caller.JKT()))
-	tokens := listenerBrokerTokensOver(t, broker, spentProofsUnanswered{})
+	tokens := listenerBrokerTokensOver(t, broker.Server.URL, spentProofsUnanswered{})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
 	recorder := httptest.NewRecorder()

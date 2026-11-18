@@ -259,8 +259,9 @@ type removedEvent struct {
 // keeps its own record of it, because an issue document's events are the issue's and carry no
 // artifact id. A document that holds anything, or that anything names, is refused in words that
 // say which test it failed and is still there after the refusal; a project's document is not
-// removed at all; and the removal closes the document's editor room once its transaction has
-// committed.
+// removed at all; the removal closes the document's editor room once its transaction has
+// committed; and a settlement of the document that queued behind the removal for the issue's row
+// reads on only after the commit, finds the document gone and ends saying nothing of it.
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
@@ -665,6 +666,77 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 				document.ID, documents.ResidentRooms(), logs.Lines(document.ID))
 		}
 		assertNoRowNamesTheDocument(t, roomDatabase, document.ID)
+	})
+
+	t.Run("a settlement queued behind the removal finds the document gone and says nothing", func(t *testing.T) {
+		// A server of its own, whose settlement runs only when the case starts it (SettleNow),
+		// so the one settlement queued below is the case's, and whose rooms Quiesce closes.
+		queueHandler, queueDatabase, queueDeps := newTestServer(t, testServerOptions{settle: time.Hour})
+		documents, ok := queueDeps.Docs.(*docs.Service)
+		if !ok {
+			t.Fatalf("the test server's document service is %T, which holds no rooms to settle", queueDeps.Docs)
+		}
+		issue := createInteractionIssue(t, queueHandler, "QUEUE", "A document settled as it goes", "# Spec\n")
+		document := emptyDocument(t, queueHandler, issue.Key, "Queued notes")
+		if text, err := documents.Text(ctx, document.ID); err != nil || text != "" {
+			t.Fatalf("read the live document = %q, %v; want the empty document it was made as", text, err)
+		}
+
+		// The issue's row is held, so the two writers queue for it in this order: the removal
+		// first, then a settlement that has read the document's row and waits for its owner's
+		// (lockArtifactOwner). The settlement is under way before the removal deletes anything,
+		// and it reads on only after the removal has committed.
+		holder, err := queueDatabase.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the transaction holding the issue's row: %v", err)
+		}
+		defer holder.Rollback(context.Background())
+		if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
+			t.Fatalf("hold the issue's row: %v", err)
+		}
+		// The log is taken from before the removal: the settlement reads on as soon as the
+		// removal commits, which can be before the removal's request has returned.
+		logs := captureLogs(t)
+		removal := startRequest(func() *httptest.ResponseRecorder { return removeDocument(t, queueHandler, document.ID) })
+		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's row", func(waiting func(string) int) bool {
+			return waiting("%select status, closed_at is null from issues where key = $1 for no key update%") == 1
+		})
+		documents.SettleNow(document.ID)
+		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's row behind the removal", func(waiting func(string) int) bool {
+			return waiting("%select closed_at is null from issues where key = $1 for no key update%") == 1
+		})
+		if err := holder.Rollback(ctx); err != nil {
+			t.Fatalf("let the issue's row go: %v", err)
+		}
+		<-removal.done
+		if removal.response.Code != http.StatusNoContent {
+			t.Fatalf("remove the document: %s, want 204 and no body", removal)
+		}
+		// Quiesce returns once every settlement under way has ended, so the log read below holds
+		// all that the queued one said.
+		if err := documents.Quiesce(ctx); err != nil {
+			t.Fatalf("wait for the settlements under way: %v", err)
+		}
+		// The removal's own request line names the document, and is the one line that may: it
+		// is also what says the log read covers the removal.
+		requests, said := 0, ""
+		for line := range strings.Lines(logs.Lines(document.ID)) {
+			if strings.Contains(line, `msg="dispatch: request"`) {
+				requests++
+				continue
+			}
+			said += line
+		}
+		if requests != 1 {
+			t.Fatalf("the log read holds %d request lines naming %s, want the removal's one; it read:\n%s", requests, document.ID, logs.String())
+		}
+		if said != "" {
+			t.Fatalf("the settlement queued behind the removal of %s went on against the row that has gone:\n%s", document.ID, said)
+		}
+		if rooms := documents.ResidentRooms(); slices.Contains(rooms, document.ID) {
+			t.Fatalf("this process holds a room of the removed document %s: %v", document.ID, rooms)
+		}
+		assertNoRowNamesTheDocument(t, queueDatabase, document.ID)
 	})
 }
 

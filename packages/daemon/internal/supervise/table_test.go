@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -238,6 +239,19 @@ func TestNoTwoEventTypesShareAKind(t *testing.T) {
 			}
 			byKind[k] = name
 		}
+	}
+}
+
+// States is the one list of every state that a test outside this package walks, such as record's
+// test of the states the role-holder publication counts live. Those tests cannot read this
+// package's source, so this test holds the list to the ClaimState constants the compiler sees here
+// (sealed): a state added to the const block and left out of the list fails here, rather than
+// passing every walk of the list. Each state is in the list once.
+func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
+	_, declared, _ := sealed(t)
+	listed := States()
+	if got, want := slices.Sorted(slices.Values(listed)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("States() = %v, want each declared ClaimState once: %v", listed, want)
 	}
 }
 

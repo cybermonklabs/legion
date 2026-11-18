@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -114,6 +115,35 @@ func TestConfigDerivesDefaultsAndServeRequiresURL(t *testing.T) {
 	}
 }
 
+// TestHelperConfigWithNoMachineSettingAsksNoMetadataServer: the helper's machine identity is the
+// one AGENT_SECRETS_MACHINE_IDENTITY names and nothing else. `agent-secrets` finds a machine's
+// identity with no setting (brokerclient.DetectMachineIdentity), but the helper does not: with no
+// setting it proves no identity, and a metadata server standing by is never asked.
+func TestHelperConfigWithNoMachineSettingAsksNoMetadataServer(t *testing.T) {
+	var requests atomic.Int64
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Metadata-Flavor", "Google")
+		_, _ = w.Write([]byte("machine@example.iam.gserviceaccount.com"))
+	}))
+	defer metadata.Close()
+	host := strings.TrimPrefix(metadata.URL, "http://")
+	t.Setenv("GCE_METADATA_HOST", host)
+	cfg, err := loadConfig(env(map[string]string{
+		"HOME": t.TempDir(), "XDG_RUNTIME_DIR": t.TempDir(), "AGENT_SECRETS_URL": "https://secrets.internal.example",
+		"GCE_METADATA_HOST": host,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Identity != nil {
+		t.Fatalf("the helper's config proves %s with no AGENT_SECRETS_MACHINE_IDENTITY; want none", cfg.Identity.Describe())
+	}
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("the metadata server saw %d requests; the helper's config asks it nothing", n)
+	}
+}
+
 // TestServeRefusesAMachineFileThatDoesNotParse: a machine file that is there but is not a machine
 // login stops serve before it listens, naming the file, rather than serving with no login.
 func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
@@ -122,7 +152,7 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 	if err := os.WriteFile(machineFile, []byte("not a login"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{URL: "https://s", Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: brokeraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), machineFile) {
 		t.Fatalf("serve on an unreadable machine file: %v; want an error naming %s", err, machineFile)
 	}
@@ -136,7 +166,7 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 // OperatorFile does not stop it from listening and answering `sessions` either.
 func TestServeStartsWithoutCredentialAndAnswersSessions(t *testing.T) {
 	dir := shortTempDir(t)
-	cfg := config{URL: "https://s", Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: dir + "/machine.json", StatePath: dir + "/s.json"}
+	cfg := config{URL: brokeraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: dir + "/machine.json", StatePath: dir + "/s.json"}
 	done := make(chan error, 1)
 	go func() { done <- serve(cfg) }()
 	t.Cleanup(func() {
@@ -488,7 +518,7 @@ func TestASecondServeNeverSpendsTheRefreshToken(t *testing.T) {
 	if err := kept.Save(machineFile); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{URL: srv.URL, Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: brokeraddr.New(srv.URL), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	first, err := claimSocket(cfg.Socket)
 	if err != nil {
 		t.Fatal(err)
@@ -527,7 +557,7 @@ func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T
 		t.Fatal(err)
 	}
 	defer first.Close()
-	cfg := config{URL: srv.URL, Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: brokeraddr.New(srv.URL), Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), machineFile) {
 		t.Fatalf("a serve on a claimed machine file: %v; want an error naming %s", err, machineFile)
 	}

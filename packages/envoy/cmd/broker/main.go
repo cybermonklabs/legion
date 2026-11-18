@@ -296,9 +296,14 @@ func main() {
 		signIn = "rds-iam"
 	}
 	slog.Info("database sign-in", "method", signIn)
-	// Who a person signs in to the approval page as, logged once at boot. Its client secret is
-	// never logged.
-	slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+	// Who a person signs in to the approval page as, logged once at boot, or that nobody does
+	// (BROKER_SIGNIN=off), so an operator reads from the log which of the two brokers this is.
+	// The client's secret is never logged.
+	if cfg.SignInOff {
+		slog.Info("approval sign-in off", "detail", "BROKER_SIGNIN=off: no approval page is served, and a request a person would approve is denied at once")
+	} else {
+		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+	}
 	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
 	// Secrets Manager and KMS clients of the AWS store, unless the fake secrets file stands in.
@@ -552,12 +557,17 @@ func main() {
 		OAuth: provider, Replay: enr.Replay,
 	}
 	// The approval page signs a person in with the broker's own client and returns them to
-	// BROKER_PUBLIC_URL as resolved above.
-	page, err := approval.New(approval.Config{
-		SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-		Store: st, Machine: reqMachine,
-	})
-	fatal(err)
+	// BROKER_PUBLIC_URL as resolved above. A broker that signs nobody in (BROKER_SIGNIN=off)
+	// builds none, so api.Register mounts no route of it and every one is a 404, and the
+	// request machine denies at once what the page would have put to a person.
+	var page *approval.Page
+	if !cfg.SignInOff {
+		page, err = approval.New(approval.Config{
+			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
+			Store: st, Machine: reqMachine,
+		})
+		fatal(err)
+	}
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
@@ -583,8 +593,11 @@ func main() {
 	// boot and never stops the process - a provider that is down stops nobody signing in later,
 	// since a sign-in reads the discovery document on its own path - so it is a goroutine with
 	// no error to return. It stops at the signal, as the sweeper does: a draining pod is
-	// answering its last requests, not reporting on a provider.
-	go runClientChecks(ctx, cfg.SignIn, st)
+	// answering its last requests, not reporting on a provider. A broker that signs nobody in
+	// has no client to check.
+	if page != nil {
+		go runClientChecks(ctx, cfg.SignIn, st)
+	}
 
 	mux := http.NewServeMux()
 	// Under the GCP store a reread spends Secret Manager's shared metadata quota, so the fleet
@@ -621,10 +634,11 @@ func main() {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
-		SecretsKMSKey:      cfg.SecretsKMSKey,
-		TrustedProxyHeader: cfg.TrustedProxyHeader,
-		Approval:           page,
-		Draining:           draining.Load,
+		SecretsKMSKey:          cfg.SecretsKMSKey,
+		GoogleExchangeAudience: googleExchangeAudience(cfg),
+		TrustedProxyHeader:     cfg.TrustedProxyHeader,
+		Approval:               page,
+		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: dropped from
@@ -664,15 +678,16 @@ func main() {
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
 	}
@@ -874,7 +889,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -897,6 +912,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -1078,17 +1094,17 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which kindMinters' copies keep.
+// unretried too: each holds the one pointer, which typeMinters' copies keep.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
-		// The two kinds whose minter calls an endpoint of its own carry the local stack's
+		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
-		Minters: kindMinters(
+		Minters: typeMinters(
 			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
@@ -1104,6 +1120,9 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
+		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
+		// person is denied at once.
+		SignInOff: cfg.SignInOff,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	return m
@@ -1134,8 +1153,13 @@ const judgeDispatchTimeout = 10 * time.Second
 // drain, while a half-finished run would approve a credential as the pod goes away.
 func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
 	if cfg.JudgeModelURL == "" {
-		slog.Info("model judge", "state", "off",
-			"detail", "none of "+strings.Join(config.JudgeSettings, ", ")+" is set, so every human-tier request waits for the person who decides it today")
+		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
+		// and its line says what such a broker does with a request a person would decide.
+		detail := "none of " + strings.Join(config.JudgeSettings, ", ") + " is set, so every human-tier request waits for the person who decides it today"
+		if cfg.SignInOff {
+			detail = "BROKER_SIGNIN=off: no request waits for a person, since every one a person would decide is denied at once, so there is nothing for a judge to decide"
+		}
+		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
 	runner := judge.New(ctx, judge.Options{
@@ -1155,6 +1179,18 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	m.Judge = runner.Consider
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+}
+
+// googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
+// where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
+// where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
+// exchange refuses every machine then, and a client that read the audience would mint a token, be
+// refused and stop on every command, where with none published it skips the machine source.
+func googleExchangeAudience(cfg config.Config) string {
+	if len(cfg.ExchangeGoogleAccounts) == 0 {
+		return ""
+	}
+	return cfg.GoogleOIDCAudience
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and
@@ -1297,20 +1333,20 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	return oidc.NewKeys(discovery, issuer)
 }
 
-// kindMinters is the broker's minter for each kind. Its arguments are the production minters in
+// typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that kind. The google-service-account minter is a pointer: its method value would
+// no secret of that type. The google-service-account minter is a pointer: its method value would
 // otherwise copy the credentials it caches away from the minter every later mint reads. The other
 // two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
 // from its one budget.
-func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
 	return map[string]requests.Minter{
-		policy.KindGitHubApp:            githubApp.Mint,
-		policy.KindGoogleLogin:          googleLogin.Mint,
-		policy.KindAzureLogin:           azureLogin.Mint,
-		policy.KindGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGoogleLogin:          googleLogin.Mint,
+		policy.TypeAzureLogin:           azureLogin.Mint,
+		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
 	}
 }
 

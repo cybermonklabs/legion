@@ -211,7 +211,9 @@ async function until<T>(
  * listener and the test holds a NATS connection. With `holdStartup` the stand-in holds its answer
  * to that first registration until `releaseStartup`: envoy.ts's `session_start` awaits it
  * (`reconcileNow` registers once the relay subject is open), so the host is still inside its
- * startup, before it starts any extension send or reads any RPC command. With `holdSetup` it holds
+ * startup, before it starts any extension send; on the pinned build it reads RPC input then and
+ * answers a command that starts no turn, and holds one that starts a turn until startup is over
+ * (`rpc-mode.ts` `waitsForStartup`). With `holdSetup` it holds
  * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
  * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
  * configured, neither a Legion pane nor a subagent), so the host is setting the first prompt up,
@@ -893,34 +895,32 @@ test.skipIf(skip)(
   120_000
 );
 
-// Oh My Pi reads no RPC command until every send an extension started during its startup has
-// settled (runtime-init.ts `initializeExtensions`: `runner.sends.drain()`), and an idle card sent
-// with `triggerTurn` lasts as long as the turn it starts: a card that reached pi-envoy while the
-// session started ran its whole turn inside that drain, and `get_state` and `prompt` waited for
-// it. The stand-in holds the registration envoy.ts's `session_start` awaits, with the relay
-// subject already open (it is opened before the registration that asks for the consumer), so the
-// cards reach pi-envoy inside the host's startup: the RPC command written meanwhile is not even
-// read until startup is over.
+// A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
+// stand-in holds the registration envoy.ts's `session_start` awaits, with the relay subject
+// already open (it is opened before the registration that asks for the consumer), so both cards
+// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261117-013345) reads
+// RPC input while its startup runs (`rpc-mode.ts` `runRpcMode`): it answers at once a command
+// that starts no turn, as `get_state`, holds one that starts a turn or changes the session
+// (`waitsForStartup`) until its startup is over, and calls `initializeExtensions` with
+// `drainSends: false`, so that startup waits on no extension send. So the `get_state` written
+// once both cards are in is answered while the startup is still held. 18.16.0 held every RPC
+// command but `set_ask_dialog`, in arrival order, until its startup was over, after
+// `initializeExtensions` had returned, and this test then held that the `get_state` written during
+// startup went unanswered until the startup was released. On 18.12.2, when this test was written,
+// RPC mode also drained every startup send first (`runner.sends.drain()`), so a card's own turn
+// there would have held `get_state` and `prompt` back until it ended.
 test.skipIf(skip)(
   "a card that arrives while the session starts holds no RPC input",
   async () => {
     const session = await startSession({ holdStartup: true });
-    const early = session.command({ type: "get_state" });
-    let answeredEarly = false;
-    void early.then(
-      () => {
-        answeredEarly = true;
-      },
-      () => undefined
-    );
     const cards = [await session.card("s1"), await session.card("s2")];
-    expect(answeredEarly).toBe(false);
+    await within("get_state written while the startup is held", 5_000, session.state());
+    // The cards wait for the startup: neither has started a turn while it is held.
+    expect(session.turns).toHaveLength(0);
     session.releaseStartup();
 
-    // The cards' turn is held at its model request, and the host still answers RPC commands:
-    // the one written during startup, and one written now.
+    // The cards' turn is held at its model request, and the host still answers RPC commands.
     const woken = await session.nextTurn("the turn the startup cards' wake started");
-    await within("get_state written during startup", 5_000, early);
     await within("get_state written while the turn is held", 5_000, session.state());
 
     const messages = conversation(woken.request);

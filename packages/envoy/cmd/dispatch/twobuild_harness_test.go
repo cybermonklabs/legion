@@ -175,12 +175,14 @@ func (b *twoBuilds) options(env map[string]string) dispatchOptions {
 }
 
 // startPrevious starts a process of the previous build, its own web app served, and returns once it
-// answers /healthz. The previous build may predate DISPATCH_LISTEN_FD, so it binds its port itself.
+// answers /healthz. It serves on the socket the test holds, as the current build does
+// (startDispatchProcessWith): every build this suite runs serves an inherited DISPATCH_LISTEN_FD,
+// the first-rollout build, the oldest, among them. A port the test let go of for the process to
+// bind would be any program's to take first, and the start would fail on `address already in use`.
 func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
 	options := b.options(env)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
-	options.BindsItsPort = true
 	b.a = startDispatchProcessWith(t, b.databaseURL(t), options)
 	b.a.waitHealthy(t)
 	return b.a

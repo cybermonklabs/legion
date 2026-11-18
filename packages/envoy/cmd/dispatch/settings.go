@@ -69,7 +69,7 @@ var settings = []setting{
 	{Name: "DISPATCH_LISTEN_FD", Required: "no",
 		Description: "An inherited listening TCP socket (descriptor number) the server serves on instead of binding; for test harnesses that hold the port. `DISPATCH_PORT` and `DISPATCH_LISTEN_HOST`, when set and not empty, must name the socket's address; `DISPATCH_SERVER_URL` is not derived from it. A descriptor that is not a listening TCP socket refuses startup, and the server binds nothing in its place."},
 	{Name: "DISPATCH_PPROF_PORT", Required: "no",
-		Description: "Port on `127.0.0.1` the Go profiler (`net/http/pprof`, under `/debug/pprof/`) and the process's `expvar` variables (`/debug/vars`, the document rooms' figures as `dispatch_rooms`) listen on, reachable only from inside the pod or through `kubectl port-forward`; unset or empty, nothing listens. A value that is not a port 1-65535 refuses startup."},
+		Description: "Port on `127.0.0.1` the Go profiler (`net/http/pprof`, under `/debug/pprof/`) and the process's `expvar` variables (`/debug/vars`, the document rooms' figures as `dispatch_rooms`) listen on, reachable only from inside the pod or through `kubectl port-forward`; unset or empty, nothing listens. `0` listens on a port the kernel chooses, which the `dispatch: pprof listening` line names; for test harnesses. Any other value that is not a port 1-65535 refuses startup."},
 	{Name: "DISPATCH_MAX_LIVE_ROOMS", Default: "`1000`", Required: "no",
 		Description: "Most document rooms the server holds in memory at once; a document socket that would open one more is refused (503) until a room goes. A positive integer."},
 	{Name: "DISPATCH_MAX_DOC_CONNECTIONS", Default: "`1000`", Required: "no",

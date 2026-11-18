@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -57,10 +58,10 @@ func cmdLogin(args []string, stdout, stderr io.Writer) int {
 // login runs the whole ceremony and keeps what it leaves.
 func login(ctx context.Context, stdout, stderr io.Writer) error {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return fmt.Errorf("%s is required: it names the secrets broker this sign-in is recorded at", brokerURLVar)
 	}
-	flow, err := brokerclient.SignInFlow(os.Getenv)
+	flow, err := brokerclient.SignInFlow(clientGetenv)
 	if err != nil {
 		return err
 	}
@@ -68,13 +69,13 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 		return fmt.Errorf("this machine is told of no sign-in client: set %s and %s to the device-flow client a person signs in with",
 			brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar)
 	}
-	machine, err := brokerclient.MachineIdentity(os.Getenv)
+	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
 		return err
 	}
 	if machine == nil {
-		return fmt.Errorf("a person signs in on a machine, and this machine proves no identity of its own: set %s (%s, %s or %s)",
-			brokerclient.IdentityVar, brokerclient.IdentityKubernetes, brokerclient.IdentityMetadata, brokerclient.IdentityPool)
+		return fmt.Errorf("a person signs in on a machine, and this machine proves no identity of its own (%s); set %s (%s or %s) to name one",
+			joinSkipped(skipped), brokerclient.IdentityVar, brokerclient.IdentityMetadata, brokerclient.IdentityPool)
 	}
 	boxKey, err := proof.NewKey()
 	if err != nil {
@@ -121,7 +122,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, thumbprint, token.CredentialID, signedIn.Person); err != nil {
 		return err
 	}
-	if err := brokerclient.SignIns(os.Getenv).Write(record); err != nil {
+	if err := brokerclient.SignIns(homeGetenv).Write(record); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, record.EnrollmentID)
@@ -163,7 +164,7 @@ func (l *launcherKeySigner) Sign(method, url string) (string, error) {
 // For a person, the key enrolled is the box key itself: one key per person per machine, which
 // the broker already knows as the sign-in's, signs that session's proofs too. For a machine, it
 // is the key the process made to prove the trade.
-func enrollUnderCredential(ctx context.Context, base string, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
+func enrollUnderCredential(ctx context.Context, base brokeraddr.Address, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return "", err
@@ -196,10 +197,10 @@ func enrollUnderCredential(ctx context.Context, base string, key *ecdsa.PrivateK
 // nothing here could renew that person's identity token.
 func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord, boxKey *ecdsa.PrivateKey) (brokerclient.SignInRecord, error) {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return record, fmt.Errorf("%s is required: it names the secrets broker %s's session registers at", brokerURLVar, record.Person)
 	}
-	flow, err := brokerclient.SignInFlow(os.Getenv)
+	flow, err := brokerclient.SignInFlow(clientGetenv)
 	if err != nil {
 		return record, err
 	}
@@ -211,12 +212,12 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 		return record, fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed; run: %s",
 			record.Person, record.ClientID, brokerclient.SignInCommand)
 	}
-	machine, err := brokerclient.MachineIdentity(os.Getenv)
+	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
 		return record, err
 	}
 	if machine == nil {
-		return record, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own: set %s", brokerclient.IdentityVar)
+		return record, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own (%s); set %s to name one", joinSkipped(skipped), brokerclient.IdentityVar)
 	}
 	client, err := brokerclient.New(brokerclient.Config{
 		BrokerURL: base,
@@ -239,5 +240,5 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, record.Thumbprint, token.CredentialID, record.Person); err != nil {
 		return record, err
 	}
-	return record, brokerclient.SignIns(os.Getenv).Write(record)
+	return record, brokerclient.SignIns(homeGetenv).Write(record)
 }

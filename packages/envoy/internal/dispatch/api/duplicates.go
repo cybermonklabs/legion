@@ -368,6 +368,13 @@ func (s *server) duplicateGate(
 func (s *server) readDuplicateCandidates(
 	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
 ) ([]scoredDuplicate, error) {
+	// The test seam: a case holds the read here until its bound ends it (server
+	// beforeDuplicateRead). Nothing but a test sets it.
+	if s.beforeDuplicateRead != nil {
+		if err := s.beforeDuplicateRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err

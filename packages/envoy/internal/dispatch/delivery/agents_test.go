@@ -17,8 +17,7 @@ const (
 	titlesIssueBand = 3000
 )
 
-// seedTitlesIssue writes titlesIssue in deliveryProject and clears its events, so a run against
-// the database an earlier run left reads only what this test writes.
+// seedTitlesIssue writes titlesIssue in deliveryProject.
 func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
@@ -27,9 +26,6 @@ func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 		values ($1, $2, $3, $1, 'todo', '{"kind":"system","id":"delivery-test"}', $1)
 		on conflict do nothing`, titlesIssue, deliveryProject, titlesIssueBand+1); err != nil {
 		t.Fatalf("seed issue %s: %v", titlesIssue, err)
-	}
-	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, titlesIssue); err != nil {
-		t.Fatalf("clear the events of %s: %v", titlesIssue, err)
 	}
 }
 

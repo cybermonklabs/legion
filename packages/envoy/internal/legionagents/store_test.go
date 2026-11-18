@@ -565,7 +565,7 @@ func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	}
 	second := testnats.Connect(t, uri)
 	t.Cleanup(second.Close)
-	if err := store.Reopen(second); err != nil {
+	if err := store.Reopen(context.Background(), second); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	if got, err := store.Get(ctx(t), "ses-tester"); err != nil || got.SessionID != "ses-tester" {

@@ -119,6 +119,15 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
 	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
 	"IdleReleaseConfig.BackstopMinutes":              "runtime.kubernetes.idle_release.backstop_minutes",
+	"Kubernetes.Sandbox":                             "runtime.kubernetes.sandbox",
+	"SandboxConfig.Type":                             "runtime.kubernetes.sandbox.type",
+	"SandboxConfig.CanaryIssues":                     "runtime.kubernetes.sandbox.canary_issues",
+	"SandboxConfig.MicroVM":                          "runtime.kubernetes.sandbox.microvm",
+	"MicroVMConfig.ComputeClass":                     "runtime.kubernetes.sandbox.microvm.compute_class",
+	"MicroVMConfig.StorageClass":                     "runtime.kubernetes.sandbox.microvm.storage_class (runtime.kubernetes.storage_class when the block names none)",
+	"MicroVMConfig.Metadata":                         "runtime.kubernetes.sandbox.microvm.metadata",
+	"MetadataConfig.WorkloadPool":                    "runtime.kubernetes.sandbox.microvm.metadata.workload_pool",
+	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
 	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
 	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
 	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
@@ -148,6 +157,7 @@ var settingsEmitted = map[string]string{
 	"AgentSecretsConfig.URL":                         "runtime.kubernetes.agent_secrets.url",
 	"AgentSecretsConfig.Audience":                    "runtime.kubernetes.agent_secrets.audience",
 	"AgentSecretsConfig.TokenExpirySeconds":          "runtime.kubernetes.agent_secrets.token_expiry_seconds",
+	"AgentSecretsConfig.ExchangeAudience":            "runtime.kubernetes.agent_secrets.exchange_audience",
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
@@ -345,7 +355,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
 		"agent_secrets", "plugins", "setup", "skills_repository", "test_postgres", "repository_cache", "idle_release",
-		"memory_guard",
+		"memory_guard", "sandbox",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
 		"idle_minutes", "backstop_minutes",
@@ -468,6 +478,70 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"}
 	if plugins := settings.Runtime.Kubernetes.Plugins; plugins == nil || *plugins != want {
 		t.Errorf("runtime.kubernetes.plugins = %+v, want %+v", plugins, want)
+	}
+}
+
+// The sandbox rides the settings as the loader settles it. The maximal file names no block, so it
+// shows gVisor, `canary_issues` as `[]` and no `microvm`. A block shows each member the file
+// names. An inert microvm block, which no issue pod uses, shows no compute class, and its storage
+// class is runtime.kubernetes.storage_class. None of it is a credential (settingsEmitted).
+func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
+	const pool = "example-project.svc.id.goog"
+	const provider = "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"
+	const metadata = `
+        metadata:
+          workload_pool: ` + pool + `
+          identity_provider: ` + provider + `
+`
+	for _, tc := range []struct {
+		name, block string
+		want        SandboxSettings
+		wire        string
+	}{
+		{
+			name: "no block",
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}},
+			wire: `{"type":"gvisor","canary_issues":[]}`,
+		},
+		{
+			name:  "a canary list on a gVisor project",
+			block: "    sandbox:\n      canary_issues: [LEGION-208, LEGION-209]\n      microvm:\n        compute_class: example-microvm\n        storage_class: example-microvm-disk" + metadata,
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{"LEGION-208", "LEGION-209"}, MicroVM: &MicroVMSettings{
+				ComputeClass: "example-microvm", StorageClass: "example-microvm-disk",
+				Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
+			}},
+			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk",` +
+				`"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+		},
+		{
+			name:  "a microVM project",
+			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm}\n",
+			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3"}},
+			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3"}}`,
+		},
+		{
+			name:  "an inert microvm block",
+			block: "    sandbox:\n      microvm:" + metadata,
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{
+				StorageClass: "gp3", Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
+			}},
+			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
+			}
+			encoded, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			kubernetes := keysOf(t, keysOf(t, keysOf(t, encoded)["runtime"])["kubernetes"])
+			if got := string(kubernetes["sandbox"]); got != tc.wire {
+				t.Errorf("settings.runtime.kubernetes.sandbox =\n%s\nwant\n%s", got, tc.wire)
+			}
+		})
 	}
 }
 
@@ -820,4 +894,31 @@ func nullKeys(document any, prefix string) []string {
 		}
 	}
 	return keys
+}
+
+// runtime.kubernetes.agent_secrets.exchange_audience reaches the settings as the block's
+// exchange_audience where the file sets it, an audience and no credential, and is absent where it
+// does not, so a deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ audience, want string }{
+		"set":   {"legion-broker-exchange", `"exchange_audience":"legion-broker-exchange"`},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = tc.audience
+			encoded, err := json.Marshal(SettingsOf(cfg).Runtime.Kubernetes.AgentSecrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const before = `{"url":"https://agent-secrets.internal.example","audience":"fixture-broker-audience","token_expiry_seconds":1800`
+			want := before + "}"
+			if tc.want != "" {
+				want = before + "," + tc.want + "}"
+			}
+			if string(encoded) != want {
+				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
 }

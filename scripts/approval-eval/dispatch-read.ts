@@ -146,6 +146,20 @@ export async function dispatchConfig(): Promise<DispatchConfig> {
  * when the caller hands none, which is what a single read does.
  */
 export async function readJson<T>(path: string, config?: DispatchConfig): Promise<T> {
+  return (await read(path, config, (answer) => answer.json())) as T;
+}
+
+/** GET one path of the Dispatch API and take its body as text, as a project file serves it. */
+export async function readText(path: string, config?: DispatchConfig): Promise<string> {
+  return read(path, config, (answer) => answer.text());
+}
+
+/** One GET under the retry policy, its successful answer's body taken by `body`. */
+async function read<T>(
+  path: string,
+  config: DispatchConfig | undefined,
+  body: (answer: Response) => Promise<T>
+): Promise<T> {
   const resolved = config ?? (await dispatchConfig());
   const url = `${resolved.baseUrl}${path}`;
   let lastFailure = "no try was made";
@@ -156,10 +170,10 @@ export async function readJson<T>(path: string, config?: DispatchConfig): Promis
         headers: { authorization: `Bearer ${resolved.token}` },
       });
       if (answer.status >= 400 && answer.status < 500) {
-        const body = (await answer.text()).slice(0, REFUSAL_BODY_CHARS);
-        throw new DispatchRefusedError(path, answer.status, body);
+        const refusal = (await answer.text()).slice(0, REFUSAL_BODY_CHARS);
+        throw new DispatchRefusedError(path, answer.status, refusal);
       }
-      if (answer.ok) return (await answer.json()) as T;
+      if (answer.ok) return await body(answer);
       lastFailure = `${answer.status} ${(await answer.text()).slice(0, REFUSAL_BODY_CHARS)}`;
     } catch (error) {
       if (error instanceof DispatchRefusedError) throw error;

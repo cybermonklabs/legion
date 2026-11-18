@@ -3,6 +3,7 @@ package launcher
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,8 +89,9 @@ func (p *guardPod) writeFile(path, content string) {
 }
 
 // guardProcess is one process of a guardPod: its place in the tree, its executable and arguments,
-// its PID namespace, its working directory when it matters, and the anonymous memory its smaps
-// reads.
+// its PID namespace, its working directory when it matters, the anonymous memory its smaps
+// reads, and its resident size, which its stat's rss field holds in pages, the size the guest
+// watch reads of it.
 type guardProcess struct {
 	pid, ppid int
 	exe       string
@@ -97,6 +99,7 @@ type guardProcess struct {
 	ns        string
 	cwd       string
 	anon      uint64
+	resident  uint64
 }
 
 // add writes each process. The test process holds a pid of its own, which stands for the
@@ -130,8 +133,8 @@ func (p *guardPod) write(gp guardProcess) {
 		p.t.Fatal(err)
 	}
 	// The start time is the pid's, so a role-init's children are oldest first by pid.
-	p.writeWhole(filepath.Join(dir, "stat"), fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 2048 "+
-		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", gp.pid, name, gp.ppid, gp.pid, gp.pid, gp.pid*10))
+	p.writeWhole(filepath.Join(dir, "stat"), fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 %d "+
+		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", gp.pid, name, gp.ppid, gp.pid, gp.pid, gp.pid*10, gp.resident/uint64(os.Getpagesize())))
 	p.writeWhole(filepath.Join(dir, "cmdline"), strings.Join(gp.args, "\x00")+"\x00")
 	p.writeWhole(filepath.Join(dir, "smaps"), fmt.Sprintf(
 		"01a5c000-41a5c000 rw-p 00000000 00:00 0                                  [heap]\nSize:           %d kB\nRss:            %d kB\nAnonymous:      %d kB\n",
@@ -156,6 +159,57 @@ func (p *guardPod) writeWhole(path, content string) {
 	if err := os.Rename(tmp, path); err != nil {
 		p.t.Fatal(err)
 	}
+}
+
+// setScore writes pid's oom_score_adj, which the guest watch reads and raises, and its oom_score,
+// the kernel's badness of it, which the watch does not read.
+func (p *guardPod) setScore(pid, adj, score int) {
+	p.t.Helper()
+	dir := filepath.Join(p.proc, strconv.Itoa(pid))
+	p.writeWhole(filepath.Join(dir, "oom_score"), fmt.Sprintf("%d\n", score))
+	p.writeWhole(filepath.Join(dir, "oom_score_adj"), fmt.Sprintf("%d\n", adj))
+}
+
+// setSelfScore writes the oom_score_adj of the process that reads the pod's /proc, the guest
+// watch's starting score.
+func (p *guardPod) setSelfScore(adj int) {
+	p.t.Helper()
+	if err := os.MkdirAll(filepath.Join(p.proc, "self"), 0o755); err != nil {
+		p.t.Fatal(err)
+	}
+	p.writeWhole(filepath.Join(p.proc, "self", "oom_score_adj"), fmt.Sprintf("%d\n", adj))
+}
+
+// score is pid's oom_score_adj as its file reads now.
+func (p *guardPod) score(pid int) int {
+	p.t.Helper()
+	data, err := os.ReadFile(filepath.Join(p.proc, strconv.Itoa(pid), "oom_score_adj"))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	return n
+}
+
+// setKernelKills writes the cgroup's kill counter as a v1 kernel does, in memory.oom_control, with
+// the memory.stat whose totals a kill's line reads: anon of anonymous memory and shmem of shared
+// memory.
+func (p *guardPod) setKernelKills(n, anon, shmem uint64) {
+	p.writeFile(filepath.Join(p.cgroup, "memory.oom_control"), fmt.Sprintf("oom_kill_disable 0\nunder_oom 0\noom_kill %d\n", n))
+	p.writeFile(filepath.Join(p.cgroup, "memory.stat"), fmt.Sprintf(
+		"cache 4096\nrss 4096\ntotal_cache %d\ntotal_rss %d\ntotal_shmem %d\ntotal_inactive_file %d\n", 400*guardMiB, anon, shmem, 100*guardMiB))
+}
+
+// showKernelKill writes pid's status as the guest kernel's out-of-memory kill leaves the process
+// while its memory is freed: still in /proc, with SIGKILL pending for its thread and its thread
+// group, the evidence by which the guest watch names a kill.
+func (p *guardPod) showKernelKill(pid int) {
+	p.t.Helper()
+	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "status"), fmt.Sprintf(
+		"State:\tR (running)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n", pid, pid))
 }
 
 // guardClock hands each wait the guard asks for to the test, which fires it: a reading is then a
@@ -239,8 +293,8 @@ func (h *guardHandle) Exited() bool {
 
 func (h *guardHandle) Close() error { return nil }
 
-// guardRig is the guard a launcher builds, pointed at a guardPod with a guardClock and a
-// guardSignal, one reading at a time.
+// guardRig is the guard or the guest watch a launcher builds, pointed at a guardPod with a
+// guardClock and, for the guard, a guardSignal, one reading or scan at a time.
 type guardRig struct {
 	t       *testing.T
 	pod     *guardPod
@@ -248,6 +302,7 @@ type guardRig struct {
 	signal  *guardSignal
 	mu      sync.Mutex
 	guard   *memoryguard.Guard
+	guest   *memoryguard.Guest
 	lines   []string
 	pending guardWait
 }
@@ -265,25 +320,7 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	previous := newMemoryGuard
 	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
 		cfg.Proc, cfg.Cgroup, cfg.Clock, cfg.Signal = pod.proc, pod.cgroup, rig.clock, rig.signal
-		if classify := cfg.Classify; len(roles) > 0 {
-			cfg.Classify = func(table *memoryguard.Table) map[int]memoryguard.Class {
-				classes := classify(table)
-				for pid, role := range roles {
-					class := classes[pid]
-					class.Role = role
-					classes[pid] = class
-				}
-				return classes
-			}
-		}
-		if logf := cfg.Logf; logf != nil {
-			cfg.Logf = func(format string, args ...any) {
-				logf(format, args...)
-				rig.mu.Lock()
-				defer rig.mu.Unlock()
-				rig.lines = append(rig.lines, fmt.Sprintf(format, args...))
-			}
-		}
+		cfg.Classify, cfg.Logf = withRoles(cfg.Classify, roles), rig.keep(cfg.Logf)
 		guard := memoryguard.New(cfg)
 		rig.mu.Lock()
 		rig.guard = guard
@@ -294,14 +331,68 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	return rig
 }
 
-// id is the id of the guard the launcher built.
+// useGuestPod is useGuardPod for a microVM pod's launcher: every guest watch a launcher builds from
+// here to the test's end reads pod and its cgroup directory and waits on the rig's clock, with the
+// launcher's own classifier and sink, roles named over the classifier's answer.
+func useGuestPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
+	t.Helper()
+	useContainerInit(t, true)
+	rig := &guardRig{t: t, pod: pod, clock: newGuardClock()}
+	previous := newGuest
+	newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest {
+		cfg.Proc, cfg.Cgroup, cfg.Clock = pod.proc, pod.cgroup, rig.clock
+		cfg.Classify, cfg.Logf = withRoles(cfg.Classify, roles), rig.keep(cfg.Logf)
+		guest := memoryguard.NewGuest(cfg)
+		rig.mu.Lock()
+		rig.guest = guest
+		rig.mu.Unlock()
+		return guest
+	}
+	t.Cleanup(func() { newGuest = previous })
+	return rig
+}
+
+// withRoles is classify with the role roles names for a pid put over its answer for that pid.
+func withRoles(classify memoryguard.Classifier, roles map[int]string) memoryguard.Classifier {
+	if len(roles) == 0 {
+		return classify
+	}
+	return func(table *memoryguard.Table) map[int]memoryguard.Class {
+		classes := classify(table)
+		for pid, role := range roles {
+			class := classes[pid]
+			class.Role = role
+			classes[pid] = class
+		}
+		return classes
+	}
+}
+
+// keep is logf, which also keeps each line in the rig's log, or nil for none.
+func (r *guardRig) keep(logf func(format string, args ...any)) func(format string, args ...any) {
+	if logf == nil {
+		return nil
+	}
+	return func(format string, args ...any) {
+		logf(format, args...)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.lines = append(r.lines, fmt.Sprintf(format, args...))
+	}
+}
+
+// id is the id of the guard or the guest watch the launcher built.
 func (r *guardRig) id() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.guard == nil {
-		r.t.Fatal("the launcher built no memory guard")
+	switch {
+	case r.guard != nil:
+		return r.guard.ID()
+	case r.guest != nil:
+		return r.guest.ID()
 	}
-	return r.guard.ID()
+	r.t.Fatal("the launcher built no memory guard and no guest watch")
+	return ""
 }
 
 // log is every line the guard has logged.
@@ -509,48 +600,57 @@ func podTree(t *testing.T) (*guardPod, *podClassifier) {
 // Pi's helpers but its eval kernel, and a Claude Code role's claude and MCP server. It spares
 // neither the commands the agents started, a Python kernel or a JavaScript eval kernel, nor a
 // program that copies the name of an agent's own process, or a test database's, at a place in
-// the tree that process does not hold.
+// the tree that process does not hold. It marks as a session process, whose end ends its role's
+// session, each role's role-init, its shim and every direct child of the shim: Oh My Pi, the
+// Claude Code bridge, and the secrets renewer, which no place in the tree tells from the agent. It
+// marks no other process: no Oh My Pi helper or eval kernel, no Python kernel, nothing under the
+// bridge, no command or what a command runs, no orphan the role-init adopted, and none of the
+// launcher's own processes or the test database's.
 func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheTree(t *testing.T) {
 	pod, classifier := podTree(t)
 	classes := classifier.classify(scanTable(t, pod))
 	for _, tc := range []struct {
 		pid       int
 		protected bool
+		session   bool
 		what      string
 	}{
-		{os.Getpid(), true, "the launcher"},
-		{treeHeldScript, true, "the test database's script, which the launcher holds"},
-		{treeHeldChild, true, "a child of the script the launcher holds"},
-		{treePostmaster, true, "the test database's postmaster"},
-		{treeBackend, true, "a backend of the test database"},
-		{treeOtherPostgres, false, "a postgres of the launcher's outside the test database's directory"},
-		{treeExecShell, false, "a shell a kubectl exec started"},
-		{treeExecChild, false, "what that shell ran"},
-		{treeTesterInit, true, "the Oh My Pi role's role-init"},
-		{treeTesterShim, true, "the Oh My Pi role's shim"},
-		{treeTesterOmp, true, "Oh My Pi, the shim's child"},
-		{treeTesterRenewer, true, "the secrets renewer, the shim's child"},
-		{treeTesterHelper, true, "an Oh My Pi helper"},
-		{treeTesterEval, false, "Oh My Pi's JavaScript eval kernel"},
-		{treeTesterKernel, false, "a Python kernel"},
-		{treeTesterCommand, false, "a command Oh My Pi started"},
-		{treeTesterTest, false, "what that command ran"},
-		{treeTesterFakeOmp, false, "an omp helper's name under the agent's command"},
-		{treeTesterFakeShim, false, "a worker-shim under the agent's command"},
-		{treeTesterOrphanShim, false, "a worker-shim the role-init adopted after its shim"},
-		{treeTesterSandbox, false, "a sandbox in a PID namespace of its own"},
-		{treeTesterReparented, false, "a role's process reparented out of its role-init's subtree"},
-		{treeTesterPostgres, false, "a postgres the agent started in the test database's directory"},
-		{treeReviewerInit, true, "the Claude Code role's role-init"},
-		{treeReviewerShim, true, "the Claude Code role's shim"},
-		{treeReviewerBridge, true, "the Claude Code bridge, the shim's child"},
-		{treeReviewerClaude, true, "claude, the bridge's child"},
-		{treeReviewerMCP, true, "claude's MCP server"},
-		{treeReviewerCommand, false, "a command claude started"},
-		{treeReviewerFakeMCP, false, "an MCP server's arguments under claude's command"},
+		{os.Getpid(), true, false, "the launcher"},
+		{treeHeldScript, true, false, "the test database's script, which the launcher holds"},
+		{treeHeldChild, true, false, "a child of the script the launcher holds"},
+		{treePostmaster, true, false, "the test database's postmaster"},
+		{treeBackend, true, false, "a backend of the test database"},
+		{treeOtherPostgres, false, false, "a postgres of the launcher's outside the test database's directory"},
+		{treeExecShell, false, false, "a shell a kubectl exec started"},
+		{treeExecChild, false, false, "what that shell ran"},
+		{treeTesterInit, true, true, "the Oh My Pi role's role-init"},
+		{treeTesterShim, true, true, "the Oh My Pi role's shim"},
+		{treeTesterOmp, true, true, "Oh My Pi, the shim's child"},
+		{treeTesterRenewer, true, true, "the secrets renewer, the shim's child, which no place in the tree tells from the agent"},
+		{treeTesterHelper, true, false, "an Oh My Pi helper"},
+		{treeTesterEval, false, false, "Oh My Pi's JavaScript eval kernel"},
+		{treeTesterKernel, false, false, "a Python kernel"},
+		{treeTesterCommand, false, false, "a command Oh My Pi started"},
+		{treeTesterTest, false, false, "what that command ran"},
+		{treeTesterFakeOmp, false, false, "an omp helper's name under the agent's command"},
+		{treeTesterFakeShim, false, false, "a worker-shim under the agent's command"},
+		{treeTesterOrphanShim, false, false, "a worker-shim the role-init adopted after its shim"},
+		{treeTesterSandbox, false, false, "a sandbox in a PID namespace of its own"},
+		{treeTesterReparented, false, false, "a role's process reparented out of its role-init's subtree"},
+		{treeTesterPostgres, false, false, "a postgres the agent started in the test database's directory"},
+		{treeReviewerInit, true, true, "the Claude Code role's role-init"},
+		{treeReviewerShim, true, true, "the Claude Code role's shim"},
+		{treeReviewerBridge, true, true, "the Claude Code bridge, the shim's child"},
+		{treeReviewerClaude, true, false, "claude, the bridge's child"},
+		{treeReviewerMCP, true, false, "claude's MCP server"},
+		{treeReviewerCommand, false, false, "a command claude started"},
+		{treeReviewerFakeMCP, false, false, "an MCP server's arguments under claude's command"},
 	} {
 		if got := classes[tc.pid].Protected; got != tc.protected {
 			t.Errorf("%s (pid %d): protected = %v, want %v", tc.what, tc.pid, got, tc.protected)
+		}
+		if got := classes[tc.pid].Session; got != tc.session {
+			t.Errorf("%s (pid %d): session = %v, want %v", tc.what, tc.pid, got, tc.session)
 		}
 	}
 }
@@ -1098,5 +1198,253 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	m.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d reports still wait after every write succeeded", left)
+	}
+}
+
+// waitingKillReport builds the tester's manager of an issue pod's launcher as Run builds it
+// (newManagers), from a configuration that says whether the pod is a microVM's, and queues report
+// on it as the pod's watch does while no connection is up (queueMemoryKill). The manager then
+// serves its connections to a listener of the test's; the test gets the daemon's end of the
+// first, up to its hello, and the launcher's log.
+func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+	t.Helper()
+	rolesDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rolesDir, "tester", RoleLauncherDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	stderr := &lockedBuffer{}
+	managers, err := newManagers(Config{
+		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
+		RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM, Stdout: stderr, Stderr: stderr, StopGrace: 2 * time.Second,
+	}, &pidGuard{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tester := managers[0]
+	tester.queueMemoryKill(report)
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = tester.serveUntil(ctx, listener.Addr().String())
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-served:
+		case <-time.After(30 * time.Second):
+			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
+		}
+	})
+	return acceptRole(t, listener), stderr
+}
+
+// A microVM pod's launcher opens its kill reports on a connection whose acknowledgement carries
+// kernelKills, whatever it says of the guard, so a deployment that turned the guard off still
+// tells its microVM roles of the kernel's kills; it drops them on one without kernelKills, a
+// daemon that does not know the report or, with guard settings, one that would tell a role of the
+// kernel's kill in the guard's words. A gVisor pod's launcher keeps the guard's rule on the same
+// acknowledgements: it sends its report where guard settings came and drops it where only
+// kernelKills did, with the line it always wrote.
+func TestAMicroVMLauncherSendsItsKillReportsOnKernelKillsAndAGVisorLauncherOnGuardSettings(t *testing.T) {
+	const noKernelKills = "reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+	const noSettings = "reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+	both := defaultsAck()
+	both.KernelKills = true
+	for _, tc := range []struct {
+		name    string
+		microVM bool
+		ack     shimwire.LauncherHelloAck
+		dropped string
+	}{
+		{"a microVM launcher on kernelKills and no guard settings", true, shimwire.LauncherHelloAck{KernelKills: true}, ""},
+		{"a microVM launcher on kernelKills and guard settings", true, both, ""},
+		{"a microVM launcher on guard settings and no kernelKills", true, defaultsAck(), noKernelKills},
+		{"a microVM launcher on an older daemon's acknowledgement", true, shimwire.LauncherHelloAck{}, noKernelKills},
+		{"a gVisor launcher on kernelKills and no guard settings", false, shimwire.LauncherHelloAck{KernelKills: true}, noSettings},
+		{"a gVisor launcher on kernelKills and guard settings", false, both, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: 1, PID: 900, Executable: "python3",
+				SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, CounterBytes: 3900 * guardMiB, LimitBytes: 4096 * guardMiB,
+				At: time.Date(2026, 11, 15, 6, 0, 0, 0, time.UTC)}
+			if tc.microVM {
+				report.Cause = shimwire.MemoryKillCauseKernel
+			}
+			conn, stderr := waitingKillReport(t, tc.microVM, report)
+			conn.acknowledgeWith(tc.ack)
+			if tc.dropped == "" {
+				if got := conn.nextMemoryKill(); got != report {
+					t.Fatalf("the connection carries the report %+v, want the one that waited for it, %+v", got, report)
+				}
+				conn.noMemoryKill("after the report that waited for it, the connection")
+				if strings.Contains(stderr.String(), "report dropped") {
+					t.Fatalf("the launcher logged %s, want no report dropped", stderr.String())
+				}
+				return
+			}
+			conn.noMemoryKill("a connection whose acknowledgement does not say the daemon knows the report")
+			line := "tester: launcher: memory guard: report dropped sequence=1 pid=900 " + tc.dropped
+			if !strings.Contains(stderr.String(), line) {
+				t.Fatalf("the launcher logged %s, want the line %q", stderr.String(), line)
+			}
+		})
+	}
+}
+
+// noGuard has every launcher this test starts fail it if it builds the memory guard.
+func noGuard(t *testing.T, why string) {
+	t.Helper()
+	previous := newMemoryGuard
+	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard { panic(why) }
+	t.Cleanup(func() { newMemoryGuard = previous })
+}
+
+// In a microVM pod's launcher the guest watch runs over the pod's processes with the launcher's own
+// classifier, the guard's: one scan raises to 1000 the language server the LSP multiplexer runs
+// under the broker helper, the eval kernel a helper started, the agent's command and a helper's
+// name under that command, and the launcher, the role-init, the shim, the agent and Oh My Pi's two
+// helpers keep the container's starting score. The launcher builds no guard, and its manager holds
+// none.
+func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStartingScore(t *testing.T) {
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	const omp = "/opt/omp/bin/omp"
+	const start = 200
+	const roleInit, shim, agent, broker, mux, gopls, eval, command, fakeMux = 730, 731, 732, 733, 734, 735, 736, 737, 738
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, 0)
+	pod.add(
+		guardProcess{pid: roleInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "tester"}, ns: testerNamespace},
+		guardProcess{pid: shim, ppid: roleInit, exe: exe, args: []string{"legion", "worker-shim", "--connect", "tcp://daemon"}, ns: testerNamespace},
+		guardProcess{pid: agent, ppid: shim, exe: omp, args: []string{omp, "--extension", "/opt/legion/pi-envoy"}, ns: testerNamespace, anon: 2 * guardGiB},
+		guardProcess{pid: broker, ppid: agent, exe: omp, args: []string{omp, "__omp_worker_daemon_broker"}, ns: testerNamespace},
+		guardProcess{pid: mux, ppid: broker, exe: omp, args: []string{omp, "__omp_worker_lsp_mux"}, ns: testerNamespace},
+		guardProcess{pid: gopls, ppid: mux, exe: "/usr/local/bin/gopls", args: []string{"/usr/local/bin/gopls", "serve"}, ns: testerNamespace},
+		guardProcess{pid: eval, ppid: broker, exe: omp, args: []string{omp, ompEvalKernel}, ns: testerNamespace},
+		guardProcess{pid: command, ppid: agent, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make"}, ns: testerNamespace},
+		guardProcess{pid: fakeMux, ppid: command, exe: omp, args: []string{omp, "__omp_worker_lsp_mux"}, ns: testerNamespace},
+	)
+	pod.setSelfScore(start)
+	for _, pid := range []int{launcher, roleInit, shim, agent, broker, mux, gopls, eval, command, fakeMux} {
+		pod.setScore(pid, start, 0)
+	}
+	noGuard(t, "a microVM pod's launcher built a memory guard")
+	rig := useGuestPod(t, pod, nil)
+	log := &roleLog{stderr: &lockedBuffer{}}
+	_, own := log.writers("tester")
+	tester := &manager{role: "tester", log: log, stderr: own, child: &child{pid: roleInit}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := serveMemoryGuard(ctx, Config{RolesDir: t.TempDir(), MicroVM: true}, []*manager{tester}, &pidGuard{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the guest watch did not return after its context ended")
+		}
+	})
+	rig.started()
+	for _, tc := range []struct {
+		pid, want int
+		what      string
+	}{
+		{gopls, 1000, "the language server the multiplexer runs"},
+		{eval, 1000, "an eval kernel a helper started"},
+		{command, 1000, "a command the agent started"},
+		{fakeMux, 1000, "a helper's name under the agent's command"},
+		{launcher, start, "the launcher"},
+		{roleInit, start, "the role-init"},
+		{shim, start, "the shim"},
+		{agent, start, "Oh My Pi, the shim's child"},
+		{broker, start, "the broker helper the agent started"},
+		{mux, start, "the LSP multiplexer helper the broker started"},
+	} {
+		if got := pod.score(tc.pid); got != tc.want {
+			t.Errorf("%s (pid %d) reads oom_score_adj %d after one scan, want %d; the watch's log:\n%s", tc.what, tc.pid, got, tc.want, rig.log())
+		}
+	}
+	if tester.memoryGuard != nil {
+		t.Fatalf("the tester's manager holds the guard %v in a microVM pod's launcher, want none", tester.memoryGuard)
+	}
+}
+
+// A microVM pod's launcher never builds the memory guard, whatever its acknowledgements say: it
+// logs one off line, and an acknowledgement's guard settings reach no guard, so no settings line
+// follows. Its guest watch reports the kernel's kill of the tester's process, which shows the kill
+// with SIGKILL pending in its status, to the tester's manager, which sends it, with the kernel's
+// cause, on the tester's connection, whose acknowledgement carries kernelKills; the reviewer's
+// connection, which carries kernelKills too, gets nothing. The kill of a process of no role in the
+// same rise, which the watch hands the launcher's sink with no role, has its line and reaches no
+// connection.
+func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testing.T) {
+	const testers, reviewers, outside = 750, 751, 752
+	pod := newGuardPod(t)
+	pod.add(
+		guardProcess{pid: testers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, resident: 900 * guardMiB},
+		guardProcess{pid: reviewers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "lint.py"}, resident: 300 * guardMiB},
+		guardProcess{pid: outside, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "outside.py"}, resident: 200 * guardMiB},
+	)
+	pod.setSelfScore(0)
+	pod.setScore(testers, 0, 1400)
+	pod.setScore(reviewers, 0, 1100)
+	pod.setScore(outside, 0, 1000)
+	pod.setKernelKills(0, guardGiB, 32*guardMiB)
+	noGuard(t, "a microVM pod's launcher built a memory guard")
+	rig := useGuestPod(t, pod, map[int]string{testers: "tester", reviewers: "reviewer"})
+	f := launchFleet(t, Config{StopGrace: 2 * time.Second, MicroVM: true}, "tester", "reviewer")
+	rig.started()
+	kernelKills := func(ack shimwire.LauncherHelloAck) shimwire.LauncherHelloAck {
+		ack.KernelKills = true
+		return ack
+	}
+	f.role("tester").acknowledgeWith(kernelKills(memoryGuardAck(90, 20, 7, 250)))
+	f.role("reviewer").acknowledgeWith(kernelKills(defaultsAck()))
+	off := "launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process"
+	if got := guardLines(f.stderr, ""); !slices.Equal(got, []string{off}) {
+		t.Fatalf("the launcher's memory guard lines are %q, want %q alone", got, off)
+	}
+	if !strings.Contains(f.stderr.String(), "\nlauncher: guest memory: start cgroup=v1 dir="+pod.cgroup+" ") {
+		t.Fatalf("the launcher logged %s, want the guest watch's start line", f.stderr.String())
+	}
+
+	pod.showKernelKill(testers)
+	pod.showKernelKill(outside)
+	pod.setKernelKills(2, 3500*guardMiB, 64*guardMiB)
+	rig.tick()
+	at := rig.clock.Now()
+	report := f.role("tester").nextMemoryKill()
+	want := shimwire.LauncherMemoryKill{
+		Guard: rig.id(), Sequence: 1, PID: testers, Executable: "python3.13", SizeBytes: 900 * guardMiB,
+		ReadingBytes: 3500 * guardMiB, CounterBytes: guardCounter, LimitBytes: guardLimit, Cause: shimwire.MemoryKillCauseKernel,
+	}
+	if !report.At.Equal(at) {
+		t.Fatalf("the tester's report is at %s, want the scan that saw the kill, at %s", report.At, at)
+	}
+	report.At = time.Time{}
+	if report != want {
+		t.Fatalf("the tester's report is %+v, want %+v", report, want)
+	}
+	if err := report.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
+	f.role("tester").noMemoryKill("after its one report, the tester's connection")
+	ended := []string{off,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
+	}
+	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {
+		t.Fatalf("the launcher's memory guard lines are %q, want %q", got, ended)
 	}
 }

@@ -205,9 +205,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		rig := newIdleRig(t)
 		rig.stoppedImplementer(t, false)
 
-		rig.w.releaseUnownedPods(ctx)
-
-		if got := rig.rows(t); len(got) != 1 || got[0] != "issue_release" {
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
 			t.Fatalf("queued rows = %v, want the teardown alone: this release saves no bundle and stops no role", got)
 		}
 		// The mark says which rule wrote it, and that kind is what the teardown and the cancel
@@ -260,12 +258,14 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		// This rule changes no claim, so an issue it decides stands in the candidate answer for
 		// ever and every later tick decides it again. The second pass must write no more than the
 		// first: a release of a pod that is gone would be recorded once a minute for ever.
-		rig.w.releaseUnownedPods(ctx)
-		rig.w.releaseUnownedPods(ctx)
+		queued := rig.queuedBy(t, func() {
+			rig.w.releaseUnownedPods(ctx)
+			rig.w.releaseUnownedPods(ctx)
+		})
 		rig.drain(t)
 
-		if got := rig.rows(t); len(got) != 0 {
-			t.Fatalf("queued rows = %v, want none: there is no pod to tear down", got)
+		if len(queued) != 0 {
+			t.Fatalf("queued rows = %v, want none: there is no pod to tear down", queued)
 		}
 		if rig.marked(t) {
 			t.Fatal("a pod the runtime does not hold was marked for release")
@@ -291,9 +291,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		// process nothing is going to stop.
 		rig.stoppedImplementer(t, true)
 
-		rig.w.releaseUnownedPods(ctx)
-
-		if got := rig.rows(t); len(got) != 0 {
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 0 {
 			t.Fatalf("queued rows = %v, want none: the pod still runs a process the daemon started", got)
 		}
 		if rig.marked(t) {
@@ -323,8 +321,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 			t.Fatalf("the pod was left owing %v, want the earlier release's backstop and open resume", owed)
 		}
 
-		rig.w.releaseUnownedPods(ctx)
-		if got := rig.rows(t); len(got) != 1 || got[0] != "issue_release" {
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
 			t.Fatalf("queued rows = %v, want the teardown alone: the released architect is already stopped", got)
 		}
 
@@ -358,9 +355,9 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 	rig.releasedArchitect(t)
 	architect := mustClaimToken(t, rig.issue.Key, claim.RoleArchitect)
 
-	quiet := func(t *testing.T, why string) {
+	quiet := func(t *testing.T, why string, act func()) {
 		t.Helper()
-		if got := rig.rows(t); len(got) != 0 {
+		if got := rig.queuedBy(t, act); len(got) != 0 {
 			t.Fatalf("queued rows = %v, want none: %s", got, why)
 		}
 		if rig.marked(t) {
@@ -372,9 +369,7 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		rig.wrote(t, rig.token, 2)
 		rig.wrote(t, architect, 2)
 
-		rig.w.releaseUnownedPods(ctx)
-
-		quiet(t, "the pod recorded something 2 minutes ago and the period is 10")
+		quiet(t, "the pod recorded something 2 minutes ago and the period is 10", func() { rig.w.releaseUnownedPods(ctx) })
 		if holds := rig.records(t).Holds; len(holds) != 0 {
 			t.Fatalf("holds = %+v, want none: a pod inside the period is not one this rule kept", holds)
 		}
@@ -384,9 +379,7 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		rig.wrote(t, architect, 20)
 		rig.wrote(t, rig.token, 2)
 
-		rig.w.releaseUnownedPods(ctx)
-
-		quiet(t, "the newest write of any claim of the pod decides, and that one is 2 minutes old")
+		quiet(t, "the newest write of any claim of the pod decides, and that one is 2 minutes old", func() { rig.w.releaseUnownedPods(ctx) })
 		if holds := rig.records(t).Holds; len(holds) != 0 {
 			t.Fatalf("holds = %+v, want none: a pod inside the period is not one this rule kept", holds)
 		}
@@ -402,24 +395,22 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		rig.w.idlePeriod = 0
 		defer func() { rig.w.idlePeriod = period }()
 
-		done := make(chan struct{})
-		go func() { defer close(done); rig.w.tickIdle(ctx) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("tickIdle kept running with release off")
-		}
-
-		quiet(t, "release is off")
+		quiet(t, "release is off", func() {
+			done := make(chan struct{})
+			go func() { defer close(done); rig.w.tickIdle(ctx) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("tickIdle kept running with release off")
+			}
+		})
 	})
 
 	t.Run("the whole pod has been quiet for the period", func(t *testing.T) {
 		rig.wrote(t, rig.token, 11)
 		rig.wrote(t, architect, 11)
 
-		rig.w.releaseUnownedPods(ctx)
-
-		if got := rig.rows(t); len(got) != 1 || got[0] != "issue_release" {
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
 			t.Fatalf("queued rows = %v, want the teardown: the pod has recorded nothing for 11 minutes", got)
 		}
 		if !rig.marked(t) {
@@ -466,13 +457,13 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 	rig.w.idleRuntime = reads
 	rig.rt.sandboxGone = true
 
-	rig.w.releaseUnownedPods(ctx)
+	queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) })
 
 	if reads.reads != 1 {
 		t.Fatalf("the runtime was asked for %d Sandboxes, want the one candidate's", reads.reads)
 	}
-	if got := rig.rows(t); len(got) != 0 {
-		t.Fatalf("queued rows = %v, want none: no transaction was opened for a pod that is gone", got)
+	if len(queued) != 0 {
+		t.Fatalf("queued rows = %v, want none: no transaction was opened for a pod that is gone", queued)
 	}
 	if rig.marked(t) {
 		t.Fatal("a release was marked for a pod the runtime does not hold, so the pass decided it in a transaction")

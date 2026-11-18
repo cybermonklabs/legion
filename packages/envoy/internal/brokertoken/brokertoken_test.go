@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -759,9 +759,8 @@ func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
 // TestABrokerThatCannotBeReachedIsTheUnreachableOutcome: a caller whose broker is away must be
 // asked to come back, not told its token is refused, or it would discard a token that is live.
 func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
-	away := httptest.NewServer(http.NotFoundHandler())
-	url := away.URL
-	away.Close()
+	// A broker at a port the test holds and nothing listens on.
+	url := "http://" + testport.Refused(t)
 	rig := newRig(t, func(o *brokertoken.Options) { o.BrokerURL = url })
 	caller := newSigner(t)
 

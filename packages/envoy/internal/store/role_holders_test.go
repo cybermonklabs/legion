@@ -446,7 +446,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 		t.Fatalf("the new bucket's architect claim is at revision %d, the old one's at %d; the test needs the new one lower", newArchitect, oldArchitect)
 	}
 	putRoleClaim(t, recreated, "reviewer", "ses_holder")
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	select {

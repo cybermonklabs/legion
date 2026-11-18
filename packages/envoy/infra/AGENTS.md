@@ -356,7 +356,7 @@ stamps it, for its `--version` (`cmd/envoy-infra/main_test.go`). The seed packag
 through `SSL_CERT_FILE`; setup any other seed test needs goes into it. The tests that start
 nats-server containers on this machine's Docker through `testnats` carry the `natslive` build
 tag, so a plain `go test ./...`, as that `build` job runs it, starts none. Each runs on
-`testnats.Image` and `testnats.HubImage`: `core/nats_auth_live_test.go` (the rendered authorization
+`testnats.Images`, which is `testnats.HubImage` alone (the listener refuses nats:2.10, `natsversion`): `core/nats_auth_live_test.go` (the rendered authorization
 on a real server: its users connect, a client with no credential is refused, the grants hold),
 `seed/seed_live_test.go` (a generated seed connects, and a client without it is refused) and
 `core/permissions_live_test.go` (the listener, built from `packages/envoy/cmd/listener` under the
@@ -461,6 +461,8 @@ The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
+flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
 go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```

@@ -119,7 +119,7 @@ func (r *legionAgentRegistry) open() bool {
 	}
 	r.state.Store(&legionAgentState{store: store})
 	if latest := r.conn.Load(); latest != conn {
-		if err := store.Reopen(latest); err != nil {
+		if err := store.Reopen(context.Background(), latest); err != nil {
 			reason := fmt.Sprintf("envoy: the legion agent registry is unavailable: it opened the %s bucket, then could not move it to the new NATS connection: %v", bus.LegionAgentBucket, err)
 			r.state.Store(&legionAgentState{unavailable: reason})
 			if r.failing != "move" {
@@ -168,14 +168,14 @@ func (r *legionAgentRegistry) close(context.Context) {
 	r.stop()
 }
 
-// reconnect is the registry's reconnect hook. A store it has moves to conn, failing the hook as any
-// other store's move does; a registry without one wakes the retry to open the bucket on conn in the
-// background, so an open that fails again holds up no other hook for its 10 s, and fails no hook
-// run, which the bus would retry without end.
-func (r *legionAgentRegistry) reconnect(conn *nats.Conn) error {
+// reconnect is the registry's reconnect hook. A store it has moves to conn under ctx, the hook's
+// run, failing the hook as any other store's move does; a registry without one wakes the retry to
+// open the bucket on conn in the background, so an open that fails again holds up no other hook
+// for its 10 s, and fails no hook run, which the bus would retry without end.
+func (r *legionAgentRegistry) reconnect(ctx context.Context, conn *nats.Conn) error {
 	r.conn.Store(conn)
 	if store := r.state.Load().store; store != nil {
-		return store.Reopen(conn)
+		return store.Reopen(ctx, conn)
 	}
 	select {
 	case r.reconnected <- struct{}{}:

@@ -16,8 +16,8 @@ import (
 
 // seedAttributionIssues writes one issue per key (ATTR-<n>) in the project that owns
 // acme/widgets (seedDeliveryProject), since an attribution holds an issue to the repository the
-// pull request is in, and each links[key] URL as that issue's external link. Idempotent, so
-// tests sharing the database can seed the same keys.
+// pull request is in, and each links[key] URL as that issue's external link. Idempotent, as
+// seedDeliveryProject is.
 func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, keys []string, links map[string][]string) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
@@ -552,9 +552,6 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-191"}, nil)
-	if _, err := pool.Exec(ctx, `delete from issue_external_links where url like 'https://github.com/acme/widgets/pull/19_'`); err != nil {
-		t.Fatalf("clear an earlier run's links: %v", err)
-	}
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
 	for number := 190; number < 195; number++ {
 		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
@@ -607,10 +604,6 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-171"}, nil)
-	// deliveryTestPool clears only the delivery tables: drop the link an earlier run added.
-	if _, err := pool.Exec(ctx, `delete from issue_external_links where url = 'https://github.com/acme/widgets/pull/170'`); err != nil {
-		t.Fatalf("clear an earlier run's link: %v", err)
-	}
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
 		Repo: "acme/widgets", Number: 170, Title: "feat: unlinked", URL: "https://github.com/acme/widgets/pull/170",

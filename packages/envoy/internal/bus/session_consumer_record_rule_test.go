@@ -26,7 +26,7 @@ func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_pending_above_record"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -38,6 +38,7 @@ func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, first)
+	waitForStoredState(t, owner, session)
 	recordFloor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -59,6 +60,7 @@ func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
 	requireNext(t, pull, held, "the message the session holds unacked")
 	pull.Stop()
 	waitForAckPending(t, consumers, session, 1)
+	waitForStoredState(t, owner, session)
 
 	consumers.SetCreateFault(func(string) error { return errors.New("the create faulted") })
 	if _, err := consumers.RestartAtFloor(ctx, session, filters); err == nil {
@@ -90,10 +92,10 @@ func TestTheRecordRuleLogsEachStartItLoweredAndNoOther(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_record_rule_lines"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 	for i := range 3 {
-		publishStored(t, owner, contracts.AgentSubject("ses_record_rule_lines_bystander"), fmt.Sprintf("bystander %d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_record_rule_lines_bystander"), fmt.Sprintf("bystander %d", i))
 	}
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -105,6 +107,7 @@ func TestTheRecordRuleLogsEachStartItLoweredAndNoOther(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, seq)
+	waitForStoredState(t, owner, session)
 
 	floor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {

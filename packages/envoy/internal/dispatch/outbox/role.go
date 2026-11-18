@@ -758,7 +758,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // the request with nothing (INFRA-771).
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
-	subject := contracts.AgentSubject(f.holder)
+	subject := contracts.LegacyAgentSubject(f.holder)
 	return sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
 		Timeout: deps.forwardAckTimeout(),

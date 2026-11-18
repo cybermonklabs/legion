@@ -13,6 +13,7 @@ module: scripts/e2e
 related_issues:
   - "INFRA-253"
   - "sjawhar/legion#2229"
+  - "INFRA-3904"
 ---
 
 # A server a test starts serves on a port the kernel chose and something holds until it serves
@@ -35,6 +36,24 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
   - The port must survive restarts, or a config file names it before the process starts: a keeper
     holds one socket for the whole run and hands each start a copy (`held-port.py keep` plus
     `exec --from`, `rig.sh`'s `keep_port` and `start_kept`).
+  - The process binds the number itself and cannot take a socket, and the number must be known
+    before it starts or survive its restarts (nats-server, whose peers' routes name its route
+    port; prometheus-nats-exporter, which logs the port it was told, not the one it bound). On
+    Linux with IPv6 enabled, and only for a server whose own socket sets `SO_REUSEADDR`: reserve
+    the port for the whole run with a socket bound to `[::]:0` with `SO_REUSEADDR` and
+    `IPV6_V6ONLY` off that never listens (`testport.Reserve` in
+    `packages/envoy/internal/testport/reserve.go`, as `reservePorts` in
+    `packages/envoy/infra/gcp/clusteredhub_live_test.go` calls it; testnats's `Gate` holds its
+    closed port with the same helper). A Go server binds beside it and binds it
+    again on a restart, since Go's listeners set `SO_REUSEADDR`, and meanwhile the kernel gives the
+    port to no `bind` to port 0 on any address and no `connect`. It cannot stop a program that
+    binds the same number itself with `SO_REUSEADDR`. The kernel keeps a reserved port from a
+    `bind` to port 0 only while `net.ipv4.ip_autobind_reuse` is 0, its default, so `reservePorts`
+    checks it and refuses to run otherwise. A host with no such setting reads as 0: a kernel
+    before Linux 5.7, which added it, never makes the second search, and in gVisor, which has no
+    such file either, 4,000 reservations were given to none of 8,000 binds to port 0 and 4,000
+    connects. Other kernels' bind rules differ, and a host without IPv6 fails the reservation
+    loudly.
 - A server's listening log line prints the bound address (`ln.Addr()`), never the configured one,
   or a port-0 server reports port 0.
 - A port someone sets explicitly is used as given and fails with `address already in use` when it
@@ -71,3 +90,11 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
 - Main's #2264 added `freeLoopbackPort` (listen, close, reuse the number) in
   `packages/envoy/cmd/dispatch/pprof_test.go` while #2229 was open; the merge replaced it with
   `startPprof(ctx, "127.0.0.1:0")`.
+- `loopbackPorts.draw` in `packages/envoy/infra/gcp/clusteredhub_live_test.go` (INFRA-3904) held
+  each drawn socket only until the draw returned, and `startBound` retried a start up to 10 times
+  on `address already in use`. In a container whose `ip_local_port_range` holds 8 ports, the
+  kernel gave a drawn port to the next `bind` to port 0 (on `127.0.0.1`, every address or `::1`)
+  and to the next `connect`, and the server's bind of it then failed, at a first start and between
+  an exit and a restart alike; a `reservePorts` port went to none of them in the same container and
+  the server bound it both times. A program binding a reserved number itself without
+  `SO_REUSEADDR` got `EADDRINUSE`; with it, it bound the port and then the server could not.

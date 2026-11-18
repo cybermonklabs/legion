@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  While a session has no id yet (a fresh TUI's), `DISPATCH_SESSION_ID` is the empty string rather
+  than deleted. A delete reached the process's own environment alone, so an Oh My Pi started from
+  another session's shell kept that session's id in the environment it started with, and a command
+  its bash tool ran in a PTY acted as that other session. The empty string lies over the inherited
+  value in every command's environment, and every reader takes it as unset.
+time: 2026-11-16T14:50:52Z
+custom:
+    Issue: INFRA-840

@@ -76,8 +76,9 @@
 # carries no consumer of that session, and the session is resumed from its session file under the
 # same id: its consumer is created again, at the position recorded before the delete, and the
 # issue comments stored while it was away reach it exactly once. The run ends the same way, both
-# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer at
-# all.
+# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer of
+# either session the run registered; a consumer of any other session is another run's and is left
+# alone.
 #
 # A direct send is judged by its own answer. The listener stores a send to every session Envoy
 # knows, whether it holds a live registration for it or knows it only from its 30-day
@@ -167,6 +168,12 @@
 # writes no header value and no message text, so the log holds no key and no conversation. The
 # serve banner names the file. ANTHROPIC_BASE_URL is required with it: the proxy forwards there.
 #
+# --issue-topic-form old|new names the form of the issue topic each session is told to follow: old
+# (the default) is notifications.dispatch.issue.<KEY>.>, new is the form that names the key's
+# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.> (dispatch://INFRA-3862). Dispatch
+# publishes in the old form until its producers move, so the new form's run is the proof that a
+# session following the new form receives what is published in the old one.
+#
 # Inputs (required ones refuse to start without them):
 #   LEGION_TEST_PG_DSN            required: a loopback Postgres with pgvector, as
 #                                 postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable; the run
@@ -244,6 +251,7 @@ disruptions="a,b,c,d,e,f,g,h"
 disruptions_given=""
 serve=""
 log_model_requests=""
+issue_topic_form=old
 while (($#)); do
   case $1 in
   --build-from) [ $# -ge 2 ] || refuse "--build-from needs a revision"; build_from=$2; shift 2 ;;
@@ -254,6 +262,11 @@ while (($#)); do
   --disruptions) [ $# -ge 2 ] || refuse "--disruptions needs a list"; disruptions=$2; disruptions_given=1; shift 2 ;;
   --serve) serve=1; shift ;;
   --log-model-requests) log_model_requests=1; shift ;;
+  --issue-topic-form)
+    [[ $# -ge 2 && ($2 == old || $2 == new) ]] || refuse "--issue-topic-form needs old or new"
+    issue_topic_form=$2
+    shift 2
+    ;;
   -h | --help) usage; exit 0 ;;
   *) refuse "unknown argument '$1' (--help lists them)" ;;
   esac
@@ -816,10 +829,12 @@ dispatch_user() {
   curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "X-Dispatch-User: ${dispatch_person}" \
     ${3:+-d "$3"} -w '\n%{http_code}' "${dispatch_url}$2"
 }
-# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token).
+# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token,
+# which reaches curl on standard input, in no command line).
 dispatch_agent() {
-  curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "Authorization: Bearer ${agent_token}" \
-    -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
+  printf 'Authorization: Bearer %s' "$agent_token" |
+    curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H @- \
+      -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
 }
 answer_ok() { [[ "${1##*$'\n'}" == 2?? ]]; }
 answer_body() { printf '%s' "${1%$'\n'*}"; }
@@ -832,7 +847,15 @@ followed_issue=$(answer_body "$answer" | jq -r .key)
 answer=$(dispatch_user POST /api/v1/issues '{"project":"LIVE","title":"Direct messages"}')
 answer_ok "$answer" || fail "Dispatch refused the messages issue: $answer"
 message_issue=$(answer_body "$answer" | jq -r .key)
-issue_topic="notifications.dispatch.issue.${followed_issue}.>"
+# issue_topic_of KEY: the topic of every event of issue KEY in the form --issue-topic-form names.
+issue_topic_of() {
+  if [[ $issue_topic_form == new ]]; then
+    printf 'notifications.dispatch.issue.%s.%s.>' "${1%%-*}" "$1"
+  else
+    printf 'notifications.dispatch.issue.%s.>' "$1"
+  fi
+}
+issue_topic=$(issue_topic_of "$followed_issue")
 note "Dispatch issues: ${followed_issue} (followed, ${issue_topic}) and ${message_issue} (direct messages)"
 second_topic=""
 second_issue=""
@@ -842,7 +865,7 @@ if [[ -n "$second_followed_issue" ]]; then
   answer=$(dispatch_user POST /api/v1/issues '{"project":"LIVE","title":"The second followed issue","force":true}')
   answer_ok "$answer" || fail "Dispatch refused the second followed issue: $answer"
   second_issue=$(answer_body "$answer" | jq -r .key)
-  second_topic="notifications.dispatch.issue.${second_issue}.>"
+  second_topic=$(issue_topic_of "$second_issue")
   note "second followed issue ${second_issue} (${second_topic}): both sessions follow two issue topics and a role"
 fi
 
@@ -1152,9 +1175,11 @@ for await (const m of messages) {
 }
 await nc.close();
 '
+# The stream holds the comments on the subject Dispatch publishes them on, which is the old form
+# whatever form the sessions follow (--issue-topic-form) until Dispatch's producers move.
 stored_comments() {
   (cd -- "$repo_root" && isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" LIVE_NATS_URL="$nats_url" \
-    LIVE_SUBJECT="$issue_topic" -- bun -e "$stored_js") 2>>"$work/logs/stored-comments.log"
+    LIVE_SUBJECT="notifications.dispatch.issue.${followed_issue}.>" -- bun -e "$stored_js") 2>>"$work/logs/stored-comments.log"
 }
 
 # The window's events, in this order: Dispatch's writes (when Dispatch is up), the listener sends,

@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -1212,6 +1213,63 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 	}
 }
 
+// A process that exits before it is healthy fails its test with the reason at the head of the
+// failure, before the whole output. An exit for any reason quotes the output's last lines. An exit
+// on a connection Postgres refused for too many clients (SQLSTATE 53300) quotes that line instead
+// and names the server's max_connections and the client backends open on it then
+// (connectionRefusalCause): the connection ceiling check counts only this binary's Dispatch
+// processes, so a server whose slots other clients hold passes it, and the process fails later.
+func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
+	exited := func(output, databaseURL string) error {
+		logged := &cmdtest.LockedBuffer{}
+		_, _ = logged.Write([]byte(output))
+		done := make(chan struct{})
+		close(done)
+		process := &dispatchProcess{Process: &cmdtest.Process{Output: logged, Exited: done}, databaseURL: databaseURL}
+		return process.healthyWithin(5 * time.Second)
+	}
+	// cause is what the failure says before the process's whole output.
+	cause := func(err error) string {
+		if err == nil {
+			t.Fatal("a process that exited passed as healthy")
+		}
+		head, _, found := strings.Cut(err.Error(), "\n"+dispatchOutputHeading+"\n")
+		if !found {
+			t.Fatalf("the failure does not set the process's output apart under %q:\n%v", dispatchOutputHeading, err)
+		}
+		return head
+	}
+
+	lines := make([]string, 0, exitCauseLines+3)
+	for i := range exitCauseLines + 3 {
+		lines = append(lines, fmt.Sprintf(`level=INFO msg="dispatch: step %d"`, i+1))
+	}
+	head := cause(exited(strings.Join(lines, "\n")+"\n", ""))
+	for _, line := range lines[len(lines)-exitCauseLines:] {
+		if !strings.Contains(head, line) {
+			t.Errorf("the failure of a process that exited does not quote %q, one of its last %d lines:\n%s", line, exitCauseLines, head)
+		}
+	}
+	if earlier := lines[len(lines)-exitCauseLines-1]; strings.Contains(head, earlier) {
+		t.Errorf("the failure quotes %q, which is not one of the process's last %d lines:\n%s", earlier, exitCauseLines, head)
+	}
+
+	database := storetest.Open(t)
+	var allowed string
+	if err := database.Pool.QueryRow(context.Background(), "select current_setting('max_connections')").Scan(&allowed); err != nil {
+		t.Fatalf("read the server's max_connections: %v", err)
+	}
+	refused := `level=ERROR msg="dispatch: register this server process" error="probe the database: failed to connect to ` +
+		"`user=postgres database=dispatch_test_0`: 127.0.0.1:5432 (127.0.0.1): server error: FATAL: sorry, too many clients already (SQLSTATE 53300)\""
+	head = cause(exited(`level=INFO msg="dispatch: starting"`+"\n"+refused+"\n"+`level=INFO msg="dispatch duty: leased pass cut short by shutdown"`+"\n",
+		database.Pool.Config().ConnString()))
+	for _, want := range []string{"exited before it became healthy", refused, "max_connections=" + allowed, "client backends open"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the failure of a process Postgres refused for too many clients does not say %q:\n%s", want, head)
+		}
+	}
+}
+
 // A harness that holds the port hands Dispatch the listening socket and sets neither
 // DISPATCH_LISTEN_HOST nor DISPATCH_PORT: Dispatch serves on the socket, at the address the kernel
 // chose for it, and says that address in its listening line. Without the socket it would bind
@@ -1291,6 +1349,10 @@ type dispatchProcess struct {
 	// process's own write transaction from one held by a foreign transaction
 	// (live_events_wait_test.go).
 	database string
+	// databaseURL is the URL the test gave the process (DATABASE_URL). A start that exits before
+	// it is healthy reads the server's connection ceiling through it when Postgres refused the
+	// process a connection for too many clients (connectionRefusalCause).
+	databaseURL string
 }
 
 // dispatchOptions is what a test varies about the Dispatch process it starts. Its zero value is
@@ -1310,10 +1372,6 @@ type dispatchOptions struct {
 	// cmdtest.BuildStamped and runs it here, and the two-build test names an earlier build's
 	// binary here (twobuild_test.go).
 	Binary string
-	// BindsItsPort has the process bind DISPATCH_PORT itself rather than serve on the socket the
-	// test holds: a build before DISPATCH_LISTEN_FD, as the two-build test's previous build can be.
-	// The test lets go of the port just before the start, so another program can take it first.
-	BindsItsPort bool
 	// Env overrides and adds to the rows below, by name: a row the caller names wins over the
 	// one here, and a name not here is added. It is how a test gives the process a GitHub App,
 	// a sign-in issuer or cookie identity without every other test growing those rows.
@@ -1342,11 +1400,6 @@ func startDispatchProcess(t *testing.T, databaseURL string) *dispatchProcess {
 func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settleDelay time.Duration) *dispatchProcess {
 	return startDispatchProcessWith(t, databaseURL, dispatchOptions{SettleDelay: settleDelay})
 }
-
-// testHorizonStallWarning is the stall and repeat threshold every process these tests start runs
-// the event horizon's warning at. A wait in these tests keys on that warning, so the signal must
-// arrive inside a test's own patience rather than at the production five and thirty seconds.
-const testHorizonStallWarning = 250 * time.Millisecond
 
 // startDispatchProcessWith starts Dispatch under options: a home of its own, nothing from the
 // caller's environment, and a loopback port the kernel chose and the test holds from that moment,
@@ -1388,9 +1441,10 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 		"DISPATCH_PORT":                    strconv.Itoa(held.Port),
 		"DISPATCH_WEB_DIST":                webDist,
 		"DISPATCH_TEST_HOOKS":              "1",
-		// Both thresholds, so the stall warning arrives and repeats inside a test's patience.
-		"DISPATCH_TEST_HORIZON_STALL_AFTER": testHorizonStallWarning.String(),
-		"DISPATCH_TEST_HORIZON_WARN_EVERY":  testHorizonStallWarning.String(),
+		// Both thresholds, so the stall warning arrives and repeats inside a test's patience
+		// (horizontest.StallWarning, which the events_start wait keys on).
+		"DISPATCH_TEST_HORIZON_STALL_AFTER": horizontest.StallWarning.String(),
+		"DISPATCH_TEST_HORIZON_WARN_EVERY":  horizontest.StallWarning.String(),
 	}
 	if options.NATSURL == "" {
 		environment["DISPATCH_NATS_DISABLED"] = "1"
@@ -1411,11 +1465,7 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	for name, value := range environment {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
-	if options.BindsItsPort {
-		held.Release()
-	} else {
-		held.Pass(cmd, "DISPATCH_LISTEN_FD")
-	}
+	held.Pass(cmd, "DISPATCH_LISTEN_FD")
 	// Sorted, so a failure's process listing and a test's own log read the same whichever run
 	// printed them: Go's map iteration order is not.
 	slices.Sort(cmd.Env)
@@ -1426,7 +1476,7 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	// waits on Exited and starts another process is counted with this one gone: a row that
 	// restarts a process one after another asks the server for one process's worth, not one per
 	// start. A start that fails leaves the count at the test's cleanup (requireConnectionCeiling).
-	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database}
+	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database, databaseURL: databaseURL}
 }
 
 func (p *dispatchProcess) url(path string) string {
@@ -1449,9 +1499,17 @@ func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	}
 }
 
+// exitCauseLines is how many of its last output lines the failure of a process that exited before
+// it was healthy quotes as the reason, when no line of it is a refusal for too many clients.
+const exitCauseLines = 5
+
+// dispatchOutputHeading sets a process's whole output apart from the reason its failure gives.
+const dispatchOutputHeading = "Dispatch's output:"
+
 // healthyWithin waits up to within for the process to log that it serves on its own port and for
 // /healthz there to answer 200 while the process still runs, and says why it did not, with the
-// process's output. The socket the process inherited is not readiness: the kernel queues
+// process's output; for a process that exited, the reason its output gives comes first
+// (exitCause). The socket the process inherited is not readiness: the kernel queues
 // connections on it from before the process starts, and only the process's listening line says it
 // serves them. Nor is an answer once the process has exited, which released the port to whatever
 // took it next. The process serves after the SIGTERM handler is installed, so a server that
@@ -1497,9 +1555,27 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 		}
 	}
 	if exited() {
-		return fmt.Errorf("Dispatch exited before it became healthy:\n%s", p.Output.String())
+		return fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(), dispatchOutputHeading, p.Output.String())
 	}
 	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+}
+
+// exitCause is the reason a process that exited before it was healthy gives in its output: the
+// first line where Postgres refused it a connection for too many clients, with what the server
+// says of its connections now (connectionRefusalCause), or else its last exitCauseLines lines.
+func (p *dispatchProcess) exitCause() string {
+	output := strings.TrimRight(p.Output.String(), "\n")
+	if strings.TrimSpace(output) == "" {
+		return "It wrote no output."
+	}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, tooManyConnections) {
+			return connectionRefusalCause(line, p.databaseURL)
+		}
+	}
+	last := lines[max(0, len(lines)-exitCauseLines):]
+	return fmt.Sprintf("Its last %d line(s):\n%s", len(last), strings.Join(last, "\n"))
 }
 
 // waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled, and requires it to

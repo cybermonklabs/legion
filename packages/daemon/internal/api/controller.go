@@ -59,23 +59,47 @@ type ControllerCredentialRequest struct {
 }
 
 // ControllerCredentialResponse is `POST /legion/v1/controller/github-credential`'s answer: the
-// review App's read-only token for every GitHub owner of the project, each rendered as the two
+// review App's read-only token for every owner that App is installed on, and for an owner a
+// configured rename moved a repository away from (appauth.ControllerCredential), each one
+// rendered as the two
 // files gh reads (`ghconfig.Rendered`: Hosts for hosts.yml, Config for config.yml) and keyed by
 // lowercased owner; Default, the owner whose directory the controller's GH_CONFIG_DIR names (the
-// request's, or the first owner, sorted); the App name; and the soonest of the tokens' expiries.
-// `legion controller start` writes them under `<state_dir>/gh/<owner>` and refreshes them every
-// minute; the plugin never reads this route or that directory.
+// request's, or the first owner, sorted); the App name; the soonest of the tokens' expiries;
+// Renames, the configured pairs the bundle routes a moved repository by, each `<owner>/<name>`
+// as GitHub spells it, which a project configuring none answers without; and Installed, the
+// owner accounts the review App is installed on.
+// `legion controller start` writes them under `<state_dir>/gh`, the owners' two files each in a
+// directory of its own and the pairs in the root's one file (ghconfig.WriteBundle), and
+// refreshes them every minute; the plugin never reads this route or that directory.
 type ControllerCredentialResponse struct {
 	Owners    map[string]ControllerOwnerCredential `json:"owners"`
 	Default   string                               `json:"default"`
 	App       string                               `json:"app"`
 	ExpiresAt string                               `json:"expiresAt"`
+	Renames   []ControllerRename                   `json:"renames,omitempty"`
+	// Installed is the owner accounts the review App is installed on, lowercased and sorted,
+	// as the one read of GitHub that opened this bundle's build answered them
+	// (appauth.ControllerCredential), so the directories and the installations of one answer
+	// are one moment's. `legion controller start` tells its controller which owners its App
+	// is installed on from it, which Owners cannot say: a bundle also holds a directory for
+	// an owner a configured rename moved a repository away from, where the App may not be
+	// installed, and holds none for an installed owner whose lease GitHub refused. Never
+	// null.
+	Installed []string `json:"installed"`
 }
 
 // ControllerOwnerCredential is one owner's two gh files in a ControllerCredentialResponse.
 type ControllerOwnerCredential struct {
 	Hosts  string `json:"hosts"`
 	Config string `json:"config"`
+}
+
+// ControllerRename is one configured pair of a ControllerCredentialResponse: the repository as
+// it was recorded and the one GitHub holds it under now, each `<owner>/<name>`. A request for
+// the first is answered from the gh directory of the second's owner (ghconfig.Bundle.Pairs).
+type ControllerRename struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // ControllerRegisterResponse is `POST /legion/v1/claims/register`'s answer to a session that
@@ -145,8 +169,8 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 // controllerGitHubCredential is `legion controller start`'s refresh call: proving the current
-// controller capability buys the review App's fresh read-only tokens for every owner of the
-// project, each narrowed to the repositories that owner serves
+// controller capability buys the review App's fresh read-only tokens for every owner that App
+// is installed on, each reaching every repository its own installation holds
 // (appauth.ControllerCredential), each rendered as the two files `gh` reads. The capability
 // compare runs under controllerMu, the same lock the mint and the controller-session grant take,
 // so a capability a concurrent mint just replaced is never matched; the token mints run after the
@@ -158,14 +182,13 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 // call, as controllerSecret does, since its controller's tokens live in its pod's Secret and no
 // `legion controller start` runs against it.
 //
-// A default owner the App's installation no longer reaches — GitHub refusing a lease over every
-// repository that owner serves (appauth.ErrNarrowingRefused) — is DEFAULT_OWNER_UNREACHABLE,
-// naming the owner and the repositories the lease would have reached. The caller sees a refusal
-// rather than a 200 whose bundle names no App and no owner, which it could only read as gh files
-// it cannot write; its refresh loop keeps the files it has and tries again at its next tick,
-// since the owner is reached again the moment the account adds those repositories to the
-// installation. A caller that names no owner is answered from the owners the mint did reach, so
-// this is the recorded default's case alone.
+// A default owner the mint could not fill — GitHub refusing the read-only permissions the lease
+// asks for on that installation (appauth.ErrNarrowingRefused) — is DEFAULT_OWNER_UNREACHABLE,
+// naming the owner. The caller sees a refusal rather than a 200 whose bundle names no App and no
+// owner, which it could only read as gh files it cannot write; its refresh loop keeps the files
+// it has and tries again at its next tick, since the owner is reached again the moment the
+// account grants the App those permissions. A caller that names no owner is answered from the
+// owners the mint did reach, so this is the recorded default's case alone.
 func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Request) {
 	if s.controllerLaunched {
 		s.log.Warn("api: refused a controller GitHub credential: this daemon launches the project's controller itself")
@@ -200,17 +223,21 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return
 	}
-	// No left-out record (appauth.LeftOut): this bundle is built per request and reaches a
-	// `legion controller start` that rewrites its own gh directory every minute, so no pod's
-	// fixed projection is ever compared against it.
-	bundle, err := appauth.ControllerCredential(s.tokens, s.githubRepositories, s.renames, nil, s.log)(r.Context(), req.Default)
+	// The owners this build reads the review App installed on are kept for the answer
+	// (ControllerCredentialResponse.Installed) in a record of this request's own, so what the
+	// answer names is the read this bundle was built from and no other caller's. What a mint
+	// found refused is recorded nowhere (appauth.LeftOut): this bundle is built per request
+	// and reaches a `legion controller start` that rewrites its own gh directory every minute,
+	// so no pod's fixed projection is ever compared against it.
+	read := appauth.NewInstalled()
+	bundle, err := appauth.ControllerCredential(s.tokens, s.githubRepositories, s.renames, read, nil, s.log)(r.Context(), req.Default)
 	switch {
 	case errors.Is(err, runtime.ErrNoGitHubOwner):
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return
-	case errors.Is(err, appauth.ErrOwnerOutsideProject):
-		s.log.Warn("api: refused a controller GitHub credential: DEFAULT_OWNER_OUTSIDE_PROJECT", "default", strings.ToLower(req.Default))
-		writeFailure(w, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT", err.Error())
+	case errors.Is(err, appauth.ErrDefaultOwnerNotInstalled):
+		s.log.Warn("api: refused a controller GitHub credential: DEFAULT_OWNER_NOT_INSTALLED", "default", strings.ToLower(req.Default))
+		writeFailure(w, http.StatusBadRequest, "DEFAULT_OWNER_NOT_INSTALLED", err.Error())
 		return
 	case appauth.NarrowingRefused(err):
 		s.log.Warn("api: refused a controller GitHub credential: DEFAULT_OWNER_UNREACHABLE", "default", strings.ToLower(req.Default), "error", err)
@@ -221,10 +248,18 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
+	installed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
+	if installed == nil {
+		installed = []string{}
+	}
 	answer := ControllerCredentialResponse{
-		Owners:  make(map[string]ControllerOwnerCredential, len(bundle.Dirs)),
-		Default: bundle.Default,
-		App:     bundle.Dirs[bundle.Default].App,
+		Owners:    make(map[string]ControllerOwnerCredential, len(bundle.Dirs)),
+		Default:   bundle.Default,
+		App:       bundle.Dirs[bundle.Default].App,
+		Installed: installed,
+	}
+	for _, pair := range bundle.Pairs {
+		answer.Renames = append(answer.Renames, ControllerRename{From: pair.From.String(), To: pair.To.String()})
 	}
 	var soonest time.Time
 	for owner, rendered := range bundle.Dirs {
@@ -234,7 +269,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	answer.ExpiresAt = soonest.UTC().Format(timeFormat)
-	s.log.Info("api: controller github credential served", "app", answer.App, "expiresAt", soonest, "owners", bundle.DirNames())
+	s.log.Info("api: controller github credential served", "app", answer.App, "expiresAt", soonest, "owners", bundle.DirNames(), "installed", installed)
 	writeJSON(w, http.StatusOK, answer)
 }
 

@@ -359,7 +359,7 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 		t.Fatalf("a pass ran (gauge %d) during 50 ticks with nothing changed", got)
 	}
 
-	if err := store.Rewatch(conn); err != nil {
+	if err := store.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	// The new watcher delivers every record before a key written after it started; a retired head
@@ -470,7 +470,7 @@ func TestARecreatedBucketForgetsTheOldBucketsRecords(t *testing.T) {
 	}
 	// The config openStore opens the bucket with.
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.CIStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: time.Hour})
-	if err := store.Rewatch(conn); err != nil {
+	if err := store.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	fresh := head{"example-org", "example-repo", "73", "f2e573000000000000000000000000000000beef"}

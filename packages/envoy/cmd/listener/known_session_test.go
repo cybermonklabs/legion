@@ -94,7 +94,7 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	if !slices.Contains(record.Topics, team) {
 		t.Errorf("the record's topics are %v, want the team topic %q the registration stored", record.Topics, team)
 	}
-	if !slices.Contains(record.Topics, contracts.AgentSubject("ses_registered")) {
+	if !slices.Contains(record.Topics, contracts.LegacyAgentSubject("ses_registered")) {
 		t.Errorf("the record's topics are %v, want the session's own agent subject", record.Topics)
 	}
 	if filter := rig.filters(t, "ses_registered"); !slices.Contains(filter, team) {

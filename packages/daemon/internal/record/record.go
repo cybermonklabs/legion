@@ -1677,12 +1677,16 @@ type Store interface {
 	DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) error
 	// ReadmittedApproval is the pair root keeps, in any state, zeros when it keeps none.
 	ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error)
-	// TellChildrenFirst marks that issue's architect has been told, for the run generation of
-	// tree, that the issue's own first phase waits for the Dispatch children under it, and
-	// reports whether this call is the telling. The wait itself is never stored, so that a stale
-	// mirror row costs one pass; the telling is, so that the pass every fact, tick, hold release
-	// and boot runs does not tell it again. A re-admission opens a new generation of the tree and
-	// so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
+	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
+	// generation of tree, that the issue's own first phase waits for the Dispatch children under
+	// it, and reports whether this call is the telling. That architect is the root's own for a
+	// root. For a child it is the architect above it, since the child's own starts only with that
+	// first phase, unless a person set the child back to todo while it ran or was held: that
+	// re-entry starts and stops nothing (workflow's ReenterChild), so a child's own architect that
+	// held its role still holds it and is the one told. The wait itself is never stored, so that a
+	// stale mirror row costs one pass; the telling is, so that the pass every fact, tick, hold
+	// release and boot runs does not tell it again. A re-admission opens a new generation of the
+	// tree and so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
 	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
 	// for the run its generation names of its tree, and answers, at each index of stalls,
@@ -1878,6 +1882,12 @@ type Store interface {
 	// a run of changes queues no second row, a row that already says this set is left as it is,
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
+	// LiveRoleHolders is the session of each live claim of issue, by role: the set a role-holder
+	// publication sends.
+	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
+	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
+	// changed at or after since, in key order: the issues the boot publishes.
+	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
@@ -1919,6 +1929,9 @@ type Store interface {
 	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
+	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
+	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
+	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
@@ -1992,7 +2005,9 @@ type Store interface {
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)
 	// EarlierNotices is every unfinished notice row of tree's issues written before row id, oldest
-	// first: the notices a later one of the tree must not overtake for the architect they share.
+	// first: the rows the fence reads, from which the daemon keeps those that go to the same
+	// architect as the later one (its earlierNoticeFor), since a child's own architect and the
+	// root's each take notices of the one tree.
 	// Each row comes whole, its next_at among it, so the holder can wait for the moment the row it
 	// waits behind is due rather than climb a backoff to it (the daemon's deliverNotice, whose
 	// fence waits with wait.Until for a catch-up the wake pacing holds).

@@ -201,7 +201,7 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 5 {
-		publishStored(t, owner, contracts.AgentSubject("ses_past_end_bystander"), fmt.Sprintf("bystander %d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_past_end_bystander"), fmt.Sprintf("bystander %d", i))
 	}
 	id := streamIDOf(t, consumers)
 
@@ -253,7 +253,7 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			agent := contracts.AgentSubject(tc.session)
+			agent := contracts.LegacyAgentSubject(tc.session)
 			// The messages stored for the session before its consumer is created: the stream's
 			// last sequence, and so the sequence after it, is past each of them.
 			var stored []uint64
@@ -310,7 +310,7 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			lastSeq := lastSeqOf(t, consumers)
 			want := tc.start(lastSeq)
-			start, err := consumers.Ensure(ctx, tc.session, []string{contracts.AgentSubject(tc.session)}, want)
+			start, err := consumers.Ensure(ctx, tc.session, []string{contracts.LegacyAgentSubject(tc.session)}, want)
 			if err != nil {
 				t.Fatalf("Ensure: %v", err)
 			}
@@ -333,9 +333,9 @@ func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_past_end_faulted"
-	filters := []string{contracts.AgentSubject(session)}
+	filters := []string{contracts.LegacyAgentSubject(session)}
 	for i := range 3 {
-		publishStored(t, owner, contracts.AgentSubject("ses_past_end_faulted_bystander"), fmt.Sprintf("bystander %d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_past_end_faulted_bystander"), fmt.Sprintf("bystander %d", i))
 	}
 	state := streamStateOf(t, consumers)
 	first, lastSeq := state.firstSeq, state.lastSeq
@@ -387,7 +387,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 3 {
-		publishStored(t, owner, contracts.AgentSubject("ses_kept_past_end_bystander"), fmt.Sprintf("bystander %d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_kept_past_end_bystander"), fmt.Sprintf("bystander %d", i))
 	}
 	id := streamIDOf(t, consumers)
 	state, err := consumers.streamState(ctx)
@@ -405,7 +405,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 		t.Helper()
 		var held []uint64
 		for i := range 2 {
-			seq := publishStored(t, owner, contracts.AgentSubject(session), fmt.Sprintf("below the old start %d", i))
+			seq := publishStored(t, owner, contracts.LegacyAgentSubject(session), fmt.Sprintf("below the old start %d", i))
 			if want := lastSeq + uint64(i) + 1; seq != want {
 				t.Fatalf("message %d on the agent subject of %s was stored at %d, want %d: something else was stored since the stream was read", i, session, seq, want)
 			}
@@ -435,7 +435,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 	// stream order.
 	delivered := func(t *testing.T, session string, held []uint64) {
 		t.Helper()
-		written := publishStored(t, owner, contracts.AgentSubject(session), "written after the path ran")
+		written := publishStored(t, owner, contracts.LegacyAgentSubject(session), "written after the path ran")
 		if want := held[len(held)-1] + 1; written != want {
 			t.Fatalf("the message was stored at %d, want %d: something else was stored since the messages below the old start", written, want)
 		}
@@ -448,7 +448,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 
 	t.Run("RestartAtFloor", func(t *testing.T) {
 		const session = "ses_kept_past_end_restarted"
-		filters := []string{contracts.AgentSubject(session)}
+		filters := []string{contracts.LegacyAgentSubject(session)}
 		lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
 		held := below(t, session, lastSeq)
 		start, err := consumers.RestartAtFloor(ctx, session, filters)
@@ -461,7 +461,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 
 	t.Run("KeepListed", func(t *testing.T) {
 		const session, atTheEnd = "ses_kept_past_end_listed", "ses_kept_at_end_listed"
-		filters, atTheEndFilters := []string{contracts.AgentSubject(session)}, []string{contracts.AgentSubject(atTheEnd)}
+		filters, atTheEndFilters := []string{contracts.LegacyAgentSubject(session)}, []string{contracts.LegacyAgentSubject(atTheEnd)}
 		createAsAnEarlierBuild(t, consumers, atTheEnd, atTheEndFilters, 1)
 		lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
 		held := below(t, session, lastSeq)
@@ -512,7 +512,7 @@ func TestASequencePastAStaleStreamReadIsJudgedAgainstASecondRead(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	for i := range 3 {
-		publishStored(t, owner, contracts.AgentSubject("ses_past_stream_end"), fmt.Sprintf("stored %d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_past_stream_end"), fmt.Sprintf("stored %d", i))
 	}
 	live := streamStateOf(t, consumers)
 	if live.lastSeq < 3 {

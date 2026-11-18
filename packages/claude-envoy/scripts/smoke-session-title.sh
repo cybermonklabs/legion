@@ -46,15 +46,24 @@ fail() {
   exit 1
 }
 
-# nats-server is a `go install` away and lands in GOPATH's bin, which is often off PATH.
+# nats-server is a `go install` away and lands in GOPATH's bin, which is often off PATH. The
+# listener refuses a nats-server below natsversion's floor, so install the hub's v2.15.1.
 if ! command -v nats-server >/dev/null 2>&1; then
   PATH="$(go env GOPATH 2>/dev/null)/bin:${PATH}"
   export PATH
 fi
 for tool in bun curl jq go nats-server; do
   command -v "$tool" >/dev/null 2>&1 ||
-    fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.11.4)"
+    fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.15.1)"
 done
+# Whether the listener takes this nats-server is natsversion's own rule, which natsfloor answers
+# (packages/envoy/natsversion/cmd/natsfloor), so this smoke holds no copy of it.
+nats_version=$(nats-server --version 2>/dev/null | sed -n 's/^nats-server: \(v\{0,1\}[0-9][^[:space:]]*\).*$/\1/p')
+[[ -n "$nats_version" ]] || fail "could not read nats-server's version from '$(nats-server --version 2>&1)'"
+floor_verdict=$(go run -C "${repo_root}/packages/envoy" ./natsversion/cmd/natsfloor "$nats_version") ||
+  fail "could not ask natsversion whether the listener takes nats-server ${nats_version}"
+[[ "$floor_verdict" == taken$'\t'* ]] ||
+  fail "$(command -v nats-server): ${floor_verdict##*$'\t'}: go install github.com/nats-io/nats-server/v2@v2.15.1"
 
 workdir="$(mktemp -d /tmp/claude-session-title.XXXXXX)"
 readonly workdir

@@ -26,6 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -73,8 +74,8 @@ type Config struct {
 	// names a user and an RDS endpoint host, pgx finds no password for it, and it verifies that
 	// host.
 	DatabaseIAM bool
-	// BROKER_PUBLIC_URL: the broker's own address as its callers reach it, an absolute URL with no
-	// path. Required. Every signed proof and request object names it, so a client's
+	// BROKER_PUBLIC_URL: the broker's own address as its callers reach it, an absolute http or
+	// https URL with no path. Required. Every signed proof and request object names it, so a client's
 	// AGENT_SECRETS_URL must be exactly this.
 	PublicURL string
 	// BROKER_MACHINE_LOGIN_URL: the absolute http(s) URL of the page where a person types a
@@ -138,10 +139,28 @@ type Config struct {
 	// trimmed; no variable carries the secret itself, so BROKER_SIGNIN_CLIENT_SECRET is refused),
 	// the Google Workspace domain a person's ID token must name in its hd claim, and how many
 	// seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24 hours, the
-	// default). The first four are required: a broker missing any of them refuses to start,
-	// naming the ones missing, since nobody could approve a secret request on a page nobody can
-	// sign in to.
+	// default). The first four are required unless BROKER_SIGNIN is off: a broker that signs
+	// people in and is missing any of them refuses to start, naming the ones missing, since
+	// nobody could approve a secret request on a page nobody can sign in to. With BROKER_SIGNIN
+	// off every one of the five is refused, and SignIn is empty.
 	SignIn approval.SignIn
+	// BROKER_SIGNIN: unset, or exactly off, which turns the broker's person sign-in off. Unset,
+	// the broker signs people in to its approval page through BROKER_SIGNIN_ISSUER,
+	// BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE and BROKER_SIGNIN_DOMAIN, as it
+	// always has. off is a broker that signs nobody in, for a deployment whose way of signing
+	// people in is not settled yet: it needs none of those settings and serves no
+	// approval page (every route under /approve and /signin/ is a 404), and a request naming a
+	// secret whose answer would be a person's approval — a human-tier secret, another person's
+	// agent-tier secret, one the session's operator withheld from it — is denied at once, its
+	// detail naming this setting, rather than left pending for a person who cannot come. Of the
+	// requests a broker with sign-in on left or leaves pending, the next sweep expires the
+	// overdue ones first, then denies the rest whose signed record verifies for this broker. What
+	// the policy grants at once (a person's own or a shared agent-tier secret for their sessions,
+	// a service's own secret for its pods) is granted as with sign-in on, and a machine login,
+	// which a person decides on Dispatch's page, is unchanged. off refuses to start beside any
+	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
+	// only a request that waits for a person; any other value refuses naming it.
+	SignInOff bool
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
 	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
@@ -155,8 +174,10 @@ type Config struct {
 	// BROKER_VM_SERVICES: the listed machines are the boxes a person may sign in on. Unset, the
 	// broker accepts no person's sign-in and registers neither token type, so a caller presenting
 	// either is refused by name. It is not one of the four SignInSettings, which are required
-	// together: those are what a person approves a secret request through and no broker serves
-	// without them, where this one is optional, as the whole Google exchange is.
+	// together: those are what a person approves a secret request through and no broker that
+	// signs people in serves without them, where this one is optional, as the whole Google
+	// exchange is. Beside BROKER_SIGNIN=off it is refused with them, since that broker holds no
+	// BROKER_SIGNIN_DOMAIN to hold a person to.
 	SignInDeviceAudience string
 	// BROKER_SECRETS_STORE: which secret store the agent secrets live in: aws-secrets-manager (the
 	// default when unset, AWS Secrets Manager with the agent-secrets key in AWS KMS) or
@@ -269,6 +290,13 @@ type Config struct {
 	// belong to. For the broker's local stack alone: a production start, which is one with
 	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestNoKind bool
+	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY: the host of the token authority the airlock proxy
+	// makes every exchange of an azure entry's federated token at, in place of
+	// login.microsoftonline.com, so the exchange is made at a stand-in Microsoft. A host name an
+	// airlock rules entry can bind, in lower case and with no "*."; anything else refuses the
+	// start. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestAzureAuthority string
 	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
 	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
 	// with none of the five set there is no judge, and every human-tier request waits for the
@@ -332,7 +360,7 @@ type Config struct {
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
 	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
 	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with kind=azure-login,
+	// approval recorded for that name in its grant. Another secret with type=azure-login,
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
@@ -361,7 +389,7 @@ type Config struct {
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
-	// a broker with no binding still boots and still serves every other kind. The policy loader
+	// a broker with no binding still boots and still serves every other type. The policy loader
 	// reads it as well (policy.Loader.ServiceAccounts), for one rule — a secret bound to a
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
@@ -597,9 +625,22 @@ const (
 	signInDomainSetting       = "BROKER_SIGNIN_DOMAIN"
 )
 
-// SignInSettings are those four settings, every one of them required. Every message that names
-// them names them in this order.
+// SignInSettings are those four settings, every one of them required unless BROKER_SIGNIN is
+// off. Every message that names them names them in this order.
 var SignInSettings = []string{signInIssuerSetting, signInClientIDSetting, signInClientSecretSetting, signInDomainSetting}
+
+// signInSwitchSetting is the one setting that turns the broker's person sign-in off, and
+// signInOffValue the one value it takes; unset, the broker signs people in.
+const (
+	signInSwitchSetting = "BROKER_SIGNIN"
+	signInOffValue      = "off"
+)
+
+// signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
+// message naming them uses: the four of the sign-in client, how long a sign-in lasts, and the
+// audience a person's own device sign-in is traded at, which holds the person to the sign-in's
+// domain.
+var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
 // them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
@@ -661,8 +702,8 @@ const noRulesFile = "the broker reads each secret's owner and tier from the secr
 // secret carries default-grant=session.
 const noGrantCap = "a request's --ttl chooses a shorter grant lifetime, otherwise its grant lasts 12 hours, or until the requesting session ends for a secret tagged default-grant=session"
 
-// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's kind tag names its minter.
-const noMintTargets = "the broker no longer reads one list of mint targets; each secret's kind tag names the minter it is served by"
+// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's type tag names its minter.
+const noMintTargets = "the broker no longer reads one list of mint targets; each secret's type tag names the minter it is served by"
 
 // removedVars are environment variables the broker no longer reads. A stale deployment still
 // setting one must fail loudly rather than silently running on configuration that means nothing
@@ -1171,6 +1212,26 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 	return hosts, nil
 }
 
+// parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
+// holds every exchange to and compares the ASCII lower-cased host of a token request's
+// connection with, exactly. It refuses, naming the value, a host no rules entry can bind
+// (airlock.HostShapeOK: a scheme, a port, a path, an empty label, a label opening or closing
+// with "-", a last label of digits alone, which an address has), since a token request reaches
+// the proxy only at a host an entry binds; a "*." suffix, which is no one host; and a capital
+// letter, since the proxy compares the value as it is written with a lower-cased host. A value
+// of any of those would refuse every exchange.
+func parseAirlockTestAzureAuthority(value string) (string, error) {
+	const setting = "BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"
+	host := strings.TrimSpace(value)
+	if host == "" {
+		return "", nil
+	}
+	if !airlock.HostShapeOK(host) || strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return "", fmt.Errorf("%s must be a host name in lower case that an airlock rules entry can bind, with no scheme, port, path, address or \"*.\", got %q", setting, host)
+	}
+	return host, nil
+}
+
 // testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
 // the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
 // than taken as off, since a misspelled value would otherwise turn a negative control into the
@@ -1327,6 +1388,13 @@ func Load(getenv func(string) string) (Config, error) {
 	if strings.Contains(getenv("BROKER_DATABASE_URL"), databasePasswordPlaceholder) {
 		return Config{}, fmt.Errorf("BROKER_DATABASE_URL names the removed %s placeholder; %s", databasePasswordPlaceholder, noDatabasePassword)
 	}
+	// The switch is read first, so off beside a sign-in setting is refused as that, before any
+	// refusal of the setting on its own (BROKER_SIGNIN_DEVICE_AUDIENCE's, below) could name a
+	// gap the operator never meant to fill.
+	signInOff, err := parseSignInSwitch(getenv)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
 		MetricsListenAddr:         orDefault(getenv("BROKER_METRICS_LISTEN_ADDR"), "127.0.0.1:13382"),
@@ -1359,6 +1427,7 @@ func Load(getenv func(string) string) (Config, error) {
 		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
+		SignInOff:                 signInOff,
 	}
 	// The local stack's test-only settings, the airlock's and the judge's: each is read
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
@@ -1375,6 +1444,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
@@ -1406,11 +1478,13 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s is required", req.name)
 		}
 	}
-	var err error
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	if parsed, err := url.Parse(cfg.PublicURL); err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" {
+	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no path here and to an
+	// http or https scheme by Load's last check.
+	publicURL, parseErr := url.Parse(cfg.PublicURL)
+	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.Path != "" {
 		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute URL with no path: %q", redact.URL(cfg.PublicURL))
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an
@@ -1492,6 +1566,14 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
 				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
 		}
+	}
+	// A judge decides a request that waits for a person, and with sign-in off no request waits:
+	// every one is refused at once (requests.Machine.SignInOff). So a judge beside off is a
+	// setting that configures nothing, refused as the broker refuses every other such setting.
+	// A judge named in part, or by its protocol alone, was refused above.
+	if cfg.SignInOff && len(judgeMissing) == 0 {
+		return Config{}, fmt.Errorf("%s=%s refuses at once every request that would wait for a person, so the broker's model judge, which decides such a request, would never run: unset the judge's settings (%s) or %s",
+			signInSwitchSetting, signInOffValue, strings.Join(JudgeSettings, ", "), signInSwitchSetting)
 	}
 	// The project-access settings are both or neither, as the judge's are: a URL with no token to
 	// present would be refused at every call, and a token with nowhere to present it asks nothing,
@@ -1739,8 +1821,10 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		*i.dst = n
 	}
-	if cfg.SignIn, err = parseSignIn(getenv, time.Duration(sessionSeconds)*time.Second); err != nil {
-		return Config{}, err
+	if !cfg.SignInOff {
+		if cfg.SignIn, err = parseSignIn(getenv, time.Duration(sessionSeconds)*time.Second); err != nil {
+			return Config{}, err
+		}
 	}
 	// A gap of up to leasetime.NotServingSweeps sweeps still reads as a broker serving, so none
 	// of it is given back and a lease that ran out inside it is simply over. Surviving one is
@@ -1756,14 +1840,57 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BROKER_LEASE_SECONDS (%d) is too short for BROKER_SWEEP_SECONDS (%d): a session must outlive a gap of %d s that still counts as a broker serving and the time its renewer then takes to renew. The shortest lease that survives both renewers at this sweep is %d s.",
 			cfg.LeaseSeconds, cfg.SweepSeconds, leasetime.NotServingSweeps*cfg.SweepSeconds, int(model.Shortest(sweep)/time.Second))
 	}
+	// BROKER_PUBLIC_URL's scheme, http or https and nothing else: every proof, request object and
+	// metadata endpoint the broker names is under this URL, which its clients reach over HTTP.
+	// approval.New refuses any other scheme too, but a broker with BROKER_SIGNIN=off builds no
+	// page, so the rule is held here. It is Load's last check, so every other refusal comes first,
+	// in the order it always did, and only a configuration the page would have refused is refused
+	// here. The scheme alone is printed: it holds no credential.
+	if publicURL.Scheme != "https" && publicURL.Scheme != "http" {
+		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an http or https URL, got the scheme %q", publicURL.Scheme)
+	}
 	return cfg, nil
 }
 
+// parseSignInSwitch reads BROKER_SIGNIN: unset (or empty) is a broker that signs people in,
+// exactly off one that signs nobody in, and any other value, a word a person would read as off
+// included, refuses naming the setting and the value, so a misspelled off never starts a broker
+// whose sign-in its operator thought was off, nor one whose sign-in they thought they had kept.
+// off refuses beside every setting signInOffRefuses lists that is set, naming each one: a
+// deployment that names a sign-in and turns sign-in off has said two things, and the broker
+// does not pick one for it. A setting holding only spaces counts as unset, as parseSignIn reads
+// it.
+func parseSignInSwitch(getenv func(string) string) (bool, error) {
+	switch value := getenv(signInSwitchSetting); value {
+	case "":
+		return false, nil
+	case signInOffValue:
+	default:
+		return false, fmt.Errorf("%s must be %s or unset, got %q", signInSwitchSetting, signInOffValue, value)
+	}
+	var set []string
+	for _, setting := range signInOffRefuses {
+		if strings.TrimSpace(getenv(setting)) != "" {
+			set = append(set, setting)
+		}
+	}
+	if len(set) > 0 {
+		verb := "is"
+		if len(set) > 1 {
+			verb = "are"
+		}
+		return false, fmt.Errorf("%s=%s turns the broker's person sign-in off, and %s %s set: set %s=%s or the sign-in settings, not both",
+			signInSwitchSetting, signInOffValue, strings.Join(set, ", "), verb, signInSwitchSetting, signInOffValue)
+	}
+	return true, nil
+}
+
 // parseSignIn reads the broker's sign-in client, its session lasting sessionLifetime, the
-// BROKER_SIGNIN_SESSION_SECONDS Load read. All four of the client's settings are required, since
-// a broker nobody can sign in to is a broker on which no secret request is ever approved. It
-// refuses: any of them missing, naming each one; an issuer that is not an absolute https URL, or
-// http to a loopback host; and an unreadable or blank secret file. No refusal carries the secret.
+// BROKER_SIGNIN_SESSION_SECONDS Load read. Load calls it unless BROKER_SIGNIN is off, and then
+// all four of the client's settings are required, since a broker that signs people in and that
+// nobody can sign in to is a broker on which no secret request is ever approved. It refuses: any
+// of them missing, naming each one; an issuer that is not an absolute https URL, or http to a
+// loopback host; and an unreadable or blank secret file. No refusal carries the secret.
 func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (approval.SignIn, error) {
 	signIn := approval.SignIn{SessionLifetime: sessionLifetime}
 	// One destination per SignInSettings entry, read in that order, so the missing ones are named
