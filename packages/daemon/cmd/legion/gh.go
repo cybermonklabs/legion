@@ -73,18 +73,18 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // refused, exit 2, naming it. With no LEGION_GH_PATH, --help prints this command's usage, so
 // `legion gh --help` outside a pane answers as every legion command does.
 //
-// The real gh never leads back to this command. A LEGION_GH_PATH that is a `legion gh` wrapper —
-// the one first on PATH, or any script of that form — is refused, exit 2, before anything runs
-// (refuseLegionGhAsRealGh). One that leads back only when it runs, such as a machine's own gh
-// shim that hands every call to the next gh on PATH, which is the wrapper, is caught when it
-// does: every real gh this command runs, for a help read or for the call itself, is given
-// leakguard.RunByRealGhVar, and a `legion gh` started under it refuses, exit 2, so the help read
-// that reached it fails and nothing runs again. The leak guard blanks the variable for every child
-// it runs (leakguard's Guard.env says why): a push a real gh makes reaches the guard with it set,
-// through git's pre-push hook, and the guard's visibility reads, which come back through this
-// command, are the guard's and not that gh's. Each such read runs its own real gh under the
-// variable again, so a real gh that leads back is still refused one start later, with or without
-// a caller's GH_TOKEN.
+// The real gh never leads back to this command. A LEGION_GH_PATH that is not an absolute path, and
+// one that is a `legion gh` wrapper — the one first on PATH, or any script of that form — are
+// refused, exit 2, before anything runs (refuseLegionGhAsRealGh). One that leads back only when it
+// runs, such as a machine's own gh shim that hands every call to the next gh on PATH, which is the
+// wrapper, is caught when it does: every real gh this command runs, for a help read or for the
+// call itself, is given leakguard.RunByRealGhVar, and a `legion gh` started under it refuses, exit
+// 2, so the help read that reached it fails and nothing runs again. The leak guard blanks the
+// variable for every child it runs (leakguard's Guard.env says why): a push a real gh makes reaches
+// the guard with it set, through git's pre-push hook, and the guard's visibility reads, which come
+// back through this command, are the guard's and not that gh's. Each such read runs its own real
+// gh under the variable again, so a real gh that leads back is still refused one start later, with
+// or without a caller's GH_TOKEN.
 //
 // Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
 // children, the shared check and the visibility reads, which the guard starts under the context
@@ -139,7 +139,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
 	}
-	if err := refuseLegionGhAsRealGh(gh, wrapper); err != nil {
+	if err := refuseLegionGhAsRealGh(gh); err != nil {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
 	}
@@ -648,12 +648,7 @@ func ghWrapperPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("no gh on PATH runs `legion gh` (%v), so the git gh runs would not authenticate through it; run it as a Legion pane's gh", err)
 	}
-	file, err := os.Open(wrapper)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", wrapper, err)
-	}
-	defer file.Close()
-	ok, err := isGhWrapper(file)
+	ok, err := ghWrapperFile(wrapper)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", wrapper, err)
 	}
@@ -671,6 +666,18 @@ func isGhWrapper(r io.Reader) (bool, error) {
 		return false, err
 	}
 	return len(script) <= ghWrapperMaxBytes && ghWrapperScript.Match(script), nil
+}
+
+// ghWrapperFile says whether the file at path is, whole, a script ghWrapperScript accepts
+// (isGhWrapper): the read both the wrapper first on PATH (ghWrapperPath) and LEGION_GH_PATH
+// (refuseLegionGhAsRealGh) are judged by.
+func ghWrapperFile(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	return isGhWrapper(file)
 }
 
 // withGitHubUseHTTPPath adds credential.https://github.com.useHttpPath=true to env's GIT_CONFIG_COUNT
@@ -1028,24 +1035,19 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	return nil
 }
 
-// refuseLegionGhAsRealGh refuses a LEGION_GH_PATH that is `legion gh` itself: the wrapper first
-// on PATH, or another script of the wrapper's form (isGhWrapper). Run as the real gh, either would
-// run this command again for every help read and every call. A LEGION_GH_PATH it cannot read is
-// left to the run that follows to fail on.
-func refuseLegionGhAsRealGh(gh, wrapper string) error {
-	info, err := os.Stat(gh)
-	if err != nil {
-		return nil
+// refuseLegionGhAsRealGh refuses a LEGION_GH_PATH that is not an absolute path, and one that is
+// `legion gh` itself: a script of the wrapper's form (ghWrapperFile), the wrapper first on PATH
+// among them, which ghWrapperPath has already found to be one. Run as the real gh, a wrapper would
+// run this command again for every help read and every call. A name with no slash is run from PATH
+// (exec.LookPath), whose first gh is that wrapper, and read here, if at all, from the working
+// directory, so nothing this reads of it says what would run; the daemon takes no LEGION_GH_PATH
+// that is not absolute either (internal/daemon's resolveTool). An absolute LEGION_GH_PATH it cannot
+// read is left to the run that follows to fail on.
+func refuseLegionGhAsRealGh(gh string) error {
+	if !filepath.IsAbs(gh) {
+		return fmt.Errorf("LEGION_GH_PATH is not an absolute path: %q; set LEGION_GH_PATH to the real gh's install path", gh)
 	}
-	if wrapperInfo, err := os.Stat(wrapper); err == nil && os.SameFile(info, wrapperInfo) {
-		return fmt.Errorf("LEGION_GH_PATH %s is the wrapper first on PATH, which runs `legion gh`, not the real gh; set LEGION_GH_PATH to the real gh's install path", gh)
-	}
-	file, err := os.Open(gh)
-	if err != nil {
-		return nil
-	}
-	defer file.Close()
-	if wrapped, err := isGhWrapper(file); err == nil && wrapped {
+	if wrapped, err := ghWrapperFile(gh); err == nil && wrapped {
 		return fmt.Errorf("LEGION_GH_PATH %s is a wrapper that runs `legion gh`, not the real gh; set LEGION_GH_PATH to the real gh's install path", gh)
 	}
 	return nil

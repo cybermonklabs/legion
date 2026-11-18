@@ -262,9 +262,10 @@ wrapper would answer in place of the role's App token. Set `LEGION_GH_PATH` to t
 install path (`mise which gh` or `asdf which gh` prints it). The check reads scripts only: mise's
 shim is compiled and passes, and where mise has no gh for the directory it runs the next `gh` on
 `PATH`, which in a pane is the pane's own `legion gh`, so a shims directory is no real gh either.
-`legion gh` refuses such a gh itself too: a `LEGION_GH_PATH` that is the pane's wrapper, or another
-`legion gh` wrapper script, exits 2 before anything runs, and every real gh it runs carries
-`LEGION_GH_RUN_BY_REAL_GH`, under which a `legion gh` that gh leads back to exits 2 and runs nothing.
+`legion gh` refuses such a gh itself too: a `LEGION_GH_PATH` that is not an absolute path, that is
+the pane's wrapper, or that is another `legion gh` wrapper script, exits 2 before anything runs, and
+every real gh it runs carries `LEGION_GH_RUN_BY_REAL_GH`, under which a `legion gh` that gh leads
+back to exits 2 and runs nothing.
 The leak guard blanks that variable for every child it runs, so a push the real gh makes still
 passes the pre-push hook's visibility read, whose own real gh carries the variable again. Its help
 read of the real gh runs in a process group of its own, which a read past its timeout stops whole,

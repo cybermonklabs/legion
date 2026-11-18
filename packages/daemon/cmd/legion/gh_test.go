@@ -832,21 +832,26 @@ func ghWrapperDir(t *testing.T) string {
 	return dir
 }
 
-// legionGhCommand is the command legionGhIn runs and the one environment a `legion gh` of these
-// tests is given: this test binary as `legion gh args…` in the working directory dir, with env
-// and nothing of this process's own but PATH, whose head is a pane's `gh` wrapper
-// (ghWrapperDir) unless env names a PATH of its own. A test that drives the run itself — one
-// that signals it, or starts it under a shell of its own — takes the command and runs it, so
-// that base environment is built in one place.
-func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
+// legionCommand is the one environment a `legion` command of these tests is given: this test
+// binary as `legion args…` in the working directory dir, with env and nothing of this process's
+// own but PATH, whose head is a pane's `gh` wrapper (ghWrapperDir) unless env names a PATH of its
+// own. A test that drives the run itself — one that signals it, or starts it under a shell of its
+// own — takes the command and runs it, so that base environment is built in one place.
+func legionCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], append([]string{"gh"}, args...)...)
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Dir = dir
 	cmd.Env = []string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
 	return cmd
+}
+
+// legionGhCommand is the command legionGhIn runs: legionCommand's `legion gh args…`.
+func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
+	t.Helper()
+	return legionCommand(t, dir, env, append([]string{"gh"}, args...)...)
 }
 
 // legionGhIn runs `legion gh args…` as legionGh does, in the working directory dir with stdin,
@@ -1011,23 +1016,27 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 }
 
-// `legion gh` never runs itself as the real gh. A LEGION_GH_PATH that is the wrapper first on PATH,
-// or another script of the wrapper's form, is refused, exit 2, before anything runs. One that
-// leads back to `legion gh` only when it runs — a machine's own gh shim that hands every call to
-// the next gh on PATH, which is the wrapper, as the operator's knives shim did — reaches `legion
-// gh` once more, under the variable every real gh this command runs is given
-// (leakguard.RunByRealGhVar), and that run refuses, exit 2, so the help read fails and nothing
-// runs again. gh's own git credential helper still answers under that variable, and the real gh
-// a call runs is given it. The `legion` the wrappers here run counts its starts and stops a chain
-// at five, so code that loops fails this test rather than running away; before the refusals, each
-// case below started `legion gh` five times.
+// `legion gh` never runs itself as the real gh. A LEGION_GH_PATH that is not an absolute path,
+// which exec would look up on PATH, whose first gh is the wrapper, is refused, exit 2, before
+// anything runs, and so is one that is the wrapper first on PATH, or another script of the
+// wrapper's form. One that leads back to `legion gh` only when it runs — a machine's own gh shim
+// that hands every call to the next gh on PATH, which is the wrapper, as the operator's knives
+// shim did — reaches `legion gh` once more, under the variable every real gh this command runs is
+// given (leakguard.RunByRealGhVar), and that run refuses, exit 2, so the help read fails and
+// nothing runs again. gh's own git credential helper still answers under that variable, and the
+// real gh a call runs is given it. The `legion` the wrappers here run counts its starts and stops
+// a chain at five, so code that loops fails this test rather than running away; before the
+// refusals, each case below started `legion gh` five times.
 //
 // The bound holds under a caller's GH_TOKEN, with which the guard's own visibility reads skip the
 // help reads (ghVisibilityRead): the read's real gh, the shim, leads back once and that run
-// refuses. It holds through the leak guard too, which blanks the variable for its children: a push
-// a real gh makes runs `legion leak-check pre-push` under the variable, the guard's read through
-// the wrapper starts `legion gh` once, and the shim that read runs, for its help read or for the
-// read itself under the token, leads back once more and is refused there. A refusal that let the
+// refuses. It holds through the leak guard too, which blanks the variable for its children. The
+// guard's own read for a push a real gh makes, whose `legion leak-check pre-push` runs under the
+// variable, is two `legion gh` starts deep: the one the read runs through the wrapper, and the one
+// the shim that read runs, for its help read or for the read itself under the token, leads back
+// to, which refuses. The shared check's own read, which the check makes itself, is three deep: the
+// `legion gh` that answers it (answerVisibilityRead), the one that answer's REST read runs through
+// the wrapper, and the one that read's shim leads back to, which refuses. A refusal that let the
 // guard's reads through under the variable loops under the token until the cap stops it.
 func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
@@ -1068,7 +1077,8 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		name, gh, want string
 		starts         int
 	}{
-		{"the wrapper first on PATH", filepath.Join(wrappers, "gh"), "is the wrapper first on PATH", 0},
+		{"a bare name", "gh", `LEGION_GH_PATH is not an absolute path: "gh"`, 0},
+		{"the wrapper first on PATH", filepath.Join(wrappers, "gh"), "is a wrapper that runs `legion gh`", 0},
 		{"a wrapper elsewhere", filepath.Join(elsewhere, "gh"), "is a wrapper that runs `legion gh`", 0},
 		{"a shim that runs the wrapper", shim, "the real gh " + shim + " ran `legion gh` again", 1},
 	} {
@@ -1120,6 +1130,42 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 			if got := startsOf(t); code != 2 || stdout != "" || !strings.Contains(stderr, want) || got != tc.starts {
 				t.Errorf("%s with LEGION_GH_PATH %s = exit %d, stdout %q, stderr %q, and `legion gh` started %d more times; want exit 2 containing %q and %d more starts",
 					tc.name, shim, code, stdout, stderr, got, want, tc.starts)
+			}
+		})
+	}
+
+	// The shared check's own read of slug, made by a stand-in check of the hook of a push the real
+	// gh makes. The push names a local path, so the hook's guard reads no visibility of its own and
+	// the check's read is where every start comes from. The `legion gh` that answers the read finds
+	// no visibility, since the real gh its read reaches leads back, and answers exit 1, which the
+	// check records with what that `legion gh` said.
+	for _, token := range []bool{false, true} {
+		name := "a shim that runs the wrapper: the shared check's own read in the hook of a push the real gh makes"
+		if token {
+			name += " under GH_TOKEN"
+		}
+		t.Run(name, func(t *testing.T) {
+			if err := os.Remove(starts); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			record := filepath.Join(t.TempDir(), "read")
+			readsVisibility := "cat >/dev/null 2>&1\n" +
+				leakguard.VisibilityReadVar + "=" + slug + " gh " + strings.Join(leakguard.VisibilityReadArgs(slug), " ") + " >/dev/null 2>'" + record + "'\n" +
+				"echo \"exit $?\" >'" + record + ".status'\nexit 0\n"
+			env := envFor(shim)
+			env["PUBLIC_LEAK_CHECK"] = leakguardtest.Write(t, t.TempDir(), readsVisibility)
+			env[leakguard.RunByRealGhVar] = shim
+			if token {
+				env["GH_TOKEN"] = "ghs_caller"
+			}
+			code, printed := legionLeakCheckPrePush(t, pushDir, env, pushLine, pushDir+".git")
+			if code != leakguard.StatusClean || printed != "" {
+				t.Errorf("legion leak-check pre-push = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
+			}
+			want := "the real gh " + shim + " ran `legion gh` again"
+			if status, said, got := readRecord(t, record+".status"), readRecord(t, record), startsOf(t); status != "exit 1\n" || !strings.Contains(said, want) || got != 3 {
+				t.Errorf("the shared check's own read with LEGION_GH_PATH %s = %q, stderr %q, and `legion gh` started %d more times; want exit 1 containing %q and 3 more starts",
+					shim, status, said, got, want)
 			}
 		})
 	}
