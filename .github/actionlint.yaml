@@ -1,5 +1,6 @@
 # actionlint's configuration (rhysd/actionlint docs/config.md). Each entry below drops one finding
-# of actionlint 1.7.12, its newest release, that is not a defect of these workflows. Remove an
+# of actionlint 1.7.12, its newest release and the one ci.yaml's lint job runs
+# (.github/ci-images.yaml's actionlint row), that is not a defect of these workflows. Remove an
 # entry when a release that knows the key is the one in use.
 paths:
   .github/workflows/**/*.{yml,yaml}:

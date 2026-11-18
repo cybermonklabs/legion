@@ -661,6 +661,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
+          # shellcheck disable=SC2086 # $projects splits into its --project words, and the full lane's empty $lane_grep into none
           { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0

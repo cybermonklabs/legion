@@ -84,6 +84,22 @@ jobs:
       - name: Check every remote action is pinned to a commit SHA
         run: .github/scripts/check-action-pins.sh
 
+      # actionlint, with the shellcheck it hands each inline `run:` body, from the copy that
+      # .github/ci-images.yaml's actionlint row names by digest, so the verdict here is the one a
+      # workstation running this same line reaches. Given no file, actionlint reads every *.yml and
+      # *.yaml file of .github/workflows, and it fails with nothing to read, so no list or filter
+      # names a file and a new workflow is checked by the pull request that adds it: this job runs
+      # on every change. -verbose prints the files it read. .github/actionlint.yaml drops the
+      # findings of actionlint's own rules that are not defects, each with its reason, and a
+      # `run:` body answers a shellcheck finding it means with a `# shellcheck disable=` line on
+      # that command, with its reason.
+      - name: Check every workflow file with actionlint
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -verbose
+          -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n{{end}}'
+
       - name: Check no file names the private deployment repository, company, internal host, or tailnet host
         run: .github/scripts/check-private-names.sh
 

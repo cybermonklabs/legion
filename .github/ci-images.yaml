@@ -128,6 +128,14 @@ images:
     tag: buildkit-buildx-stable-1-cec9f139
     digest: sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
+  # actionlint and the shellcheck it hands each inline `run:` body (0.11.0 in this image): the
+  # `Check every workflow file with actionlint` step of .github/workflows/ci-job-lint.yaml runs
+  # this copy by digest as a command, so the verdict on a workflow file moves only when this row
+  # does, and never with what a runner image or a workstation has installed.
+  - upstream: docker.io/rhysd/actionlint:1.7.12
+    tag: actionlint-1.7.12-b1934ee5
+    digest: sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
   # The Postgres the Stage 1 live proof starts when no DSN is given: PostgreSQL 18, the major
   # version CI's `services:` Postgres and Cloud SQL run. The `test` job gives the script a DSN
   # (LEGION_E2E_PG_DSN), so CI does not reach this pull today; the devbox does, and it was the

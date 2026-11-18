@@ -126,6 +126,7 @@ jobs:
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
           . .github/scripts/ci-tools.sh
+          # shellcheck disable=SC2119 # ci_tools_registry takes no argument (.github/scripts/ci-tools.sh)
           registry=$(ci_tools_registry)
           token=$(ci_tools_ghcr_token)
           rows=$(ci_tools_rows ghcr-mirror)
@@ -153,6 +154,7 @@ jobs:
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
           . .github/scripts/ci-tools.sh
+          # shellcheck disable=SC2119 # ci_tools_rows's one argument is optional, and this step reads every row
           rows=$(ci_tools_rows)
           unread=""
           for row in $rows; do
@@ -650,7 +652,7 @@ jobs:
           # tests read is .github/scripts/check-ci-tools.sh, in lint.
           # A digest is no version, so this keeps its own word as the bunx reading does rather
           # than joining the list below, whose sentence is about versions.
-          plugin=read
+          plugin="read"
           tarball="${{ steps.docker-plugin.outputs.tarball }}"
           echo "pulumi-docker is the tarball $tarball, and its row pins $(ci_tools_field pulumi-docker version)"
           ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball this job installed" ||
@@ -662,13 +664,13 @@ jobs:
           # the first bunx a later job runs. The verb prints which of the three things it reads
           # — the name, the version, the bytes — was wrong, so this keeps its own word and does
           # not join the list below, whose sentence is about versions.
-          bunx=read
+          bunx="read"
           "$proof" installed-bunx || bunx=refused
           # The other half of every reading above: how many requests to github.com the fault
           # proxy refused since the probe, and which. A version says which tool is here and a
           # digest says it is the pinned one; neither can say that the first source did not
           # serve it, because a row's two sources are one binary by design. The 504s say it.
-          refusals=read
+          refusals="read"
           "$proof" refusals github.com || refusals=refused
           if [ -n "$wrong" ]; then
             echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
