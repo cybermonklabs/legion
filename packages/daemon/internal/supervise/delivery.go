@@ -208,11 +208,13 @@ type Delivery struct {
 	// Empty for a task no provider error has taken back.
 	ProviderErrorNote string
 	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of a reviewer's
-	// review round (reviewround.Sentences), from the start row that queued it
-	// (record.SuperviseRequest.RoundNamed, RequestDeliver.RoundNamed). message reads it: a task of
-	// the reviewer without it, which a start row of the release before this one, an operator or a
-	// delivery the release before stored can be, is sent with the daemon's sentences naming no
-	// commit and no entry at its end.
+	// review round (reviewround.Sentences), from the start that queued it (RequestDeliver.RoundNamed):
+	// the start row's own mark (record.SuperviseRequest.RoundNamed), or the round the start
+	// executor names on a reviewer's start queued for news alone (the daemon's newsForStart). The
+	// send of a task that carries news keeps the two last, after the news (the daemon's
+	// renderNews). message reads it: a task of the reviewer without it, which a start row of the
+	// release before this one, an operator or a delivery the release before stored can be, is sent
+	// with the daemon's sentences naming no commit and no entry at its end.
 	RoundNamed bool
 }
 
@@ -357,13 +359,14 @@ type sentences struct{ abandoned, ended bool }
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
 // prompt of a delivery is composed, so it is where the rule holds for every task, whatever queued
 // it. A task that says it ends with them (RoundNamed), as each task the workflow queues for the
-// reviewer does (workflow's queuedRow), is sent as it stands. A task of the reviewer that does
-// not say so is given them at its end, naming no commit and no entry: a start row or a delivery
-// the release before this one stored, whose text can end with words of the same shape that no
-// review recorded, or a task an operator wrote. Its reviewer reads the whole change and keeps the
-// entry of its round. It is the fact and never the task's text that tells the two apart, since
-// two such texts can be the same word for word. The relaunch's record is no task, and is sent as
-// it is.
+// reviewer does (workflow's queuedRow) and each the start executor names on a reviewer's start
+// queued for news alone (the daemon's newsForStart), is sent as it stands. A task of the reviewer
+// that does not say so is given them at its end, naming no commit and no entry: a start row or a
+// delivery the release before this one stored, whose text can end with words of the same shape
+// that no review recorded, or a task an operator wrote. Its reviewer reads the whole change and
+// keeps the entry of its round. It is the fact and never the task's text that tells the two
+// apart, since two such texts can be the same word for word. The relaunch's record is no task, and
+// is sent as it is.
 //
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps

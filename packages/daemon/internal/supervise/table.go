@@ -533,8 +533,11 @@ type RequestDeliver struct {
 	// alone.
 	ResendEntry bool
 	// RoundNamed marks a task that ends with the daemon's two sentences of a reviewer's review
-	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
-	// task and the controller's carry none (Delivery.RoundNamed).
+	// round: from the start row that queued it (record.SuperviseRequest.RoundNamed), or, for a
+	// reviewer's start queued for news alone, which the queue named no round on, from the round
+	// the start executor names when it composes that task (the daemon's newsForStart,
+	// startNews.roundNamed). An operator's task and the controller's carry none
+	// (Delivery.RoundNamed).
 	RoundNamed bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an

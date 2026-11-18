@@ -2125,17 +2125,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (supervise's Delivery.message). The news the task carries travels the same way
 		// (supervise.Delivery.News): the task is the start's own text and the news after it, the
 		// round's two sentences after the news where the task names them (renderNews), the send
-		// renders that news again from the
-		// record (the daemon's designNews), and the write recording the turn's confirmation
-		// makes what the prompt of that turn carried the delivery's credit, which the write
-		// recording the turn's result folds into the told rows (supervise.Delivery.Carried, the
-		// claim store's settleDesignNews). A start queued for news alone travels marked so
-		// (supervise.RequestDeliver.NewsOnly, stored as pending_task_deliveries.news_only): its
-		// task holds no work, so the machine refuses it behind any task that does, the one a
-		// running turn works among them, and the row waits on its backoff until that turn has
-		// ended. A task of news alone the worker has not taken gives way to a start of an entry,
-		// whose own task carries that same news (supervise's Machine.supersedes), so the start
-		// that StartedBy is told of below reads it too.
+		// renders that news again from the record (the daemon's designNews), and the write
+		// recording the turn's confirmation makes what the prompt of that turn carried the
+		// delivery's credit, which the write recording the turn's result folds into the told rows
+		// (supervise.Delivery.Carried, the claim store's settleDesignNews). A start queued for news
+		// alone travels marked so (supervise.RequestDeliver.NewsOnly, stored as
+		// pending_task_deliveries.news_only): its task holds no work, so the machine refuses it
+		// behind any task that does, the one a running turn works among them, and the row waits on
+		// its backoff until that turn has ended. A task of news alone the worker has not taken
+		// gives way to a start of an entry, whose own task carries that same news (supervise's
+		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.News {
 			kept, err := keptJSON(payload.Kept)
