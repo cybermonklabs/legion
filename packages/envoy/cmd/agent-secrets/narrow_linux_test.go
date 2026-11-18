@@ -94,14 +94,14 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	}
 
 	rig := brokertest.NewRig(t, brokertest.WithMinters(map[string]requests.Minter{
-		policy.KindGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
+		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
 	_, appKey := githubapptest.Key(t)
 	value, err := json.Marshal(map[string]string{"app_id": "123456", "private_key": appKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig.Secrets.Put(policytest.KindSecret("APP_KEY", rig.Operator, policy.TierAgent, policy.KindGitHubApp, string(value)))
+	rig.Secrets.Put(policytest.TypeSecret("APP_KEY", rig.Operator, policy.TierAgent, policy.TypeGitHubApp, string(value)))
 	if status, body := rig.Req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread APP_KEY = %d %s", status, body)
 	}

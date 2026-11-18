@@ -62,13 +62,13 @@ func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 	r.grants.connections[azureFederatedPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			azureName: {Kind: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
+			azureName: {Type: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
 		},
 	}
 	// No expiry on the federated token itself: what these rows are about is the life of the
 	// access token the proxy exchanges it for, which is the endpoint's own expires_in.
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		azureName: {Kind: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated}},
+		azureName: {Type: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated}},
 	})
 	// One token for every exchange, as a real endpoint answers one identity's calls: a row
 	// about a second token says so itself. The endpoint takes the real federated token as its
