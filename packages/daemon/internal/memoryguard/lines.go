@@ -40,8 +40,9 @@ import (
 // Its rule and sizes, which come before the executable so that the name stays last, say why that
 // process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends that
 // put it first, or the urgent rule for a process ended beside the first at a reading at or above
-// the urgent share (ruleUrgent, spec version 39), and sizes where the sizes the guard chose it by
-// came from. Its less_parent, after sizes, is how much of its size its rank did not count
+// the urgent share, one that grew over the window or one new to the stay with memory of its own
+// (ruleUrgent, spec versions 39 and 41), and sizes where the sizes the guard chose it by came
+// from. Its less_parent, after sizes, is how much of its size its rank did not count
 // (INFRA-3531 R1 of spec version 33): for a fork that runs its parent's executable with its
 // parent's arguments, its parent being one the guard has read in this stay, its parent's size at
 // the guard's latest read of the parent, or its own size where that is less, so that size less
@@ -102,9 +103,11 @@ const (
 // versions 34 and 37; candidate.sinceFirstKill); ruleLargest, none of these applies and it is the
 // largest. ruleUrgent is a process ended beside the first at a reading at or above the urgent
 // share, the mark plus half the distance from the mark to the limit, where the guard ends every
-// process that grew over the window, each with its line, the first naming its own tier and each
-// other this rule (endAt, INFRA-3531 R1 of spec version 39). ruleKernel is a process the guest
-// kernel killed (Guest), which the kernel chose by rules of its own.
+// process that grew over the window and every process new to the stay that holds memory of its
+// own, a fork whose parent's size covers its own not among them, each with its line, the first
+// naming its own tier and each other this rule, whichever of the two groups it is of (endAt,
+// INFRA-3531 R1 of spec versions 39 and 41; `4g-latepool-4tpqx`). ruleKernel is a process the
+// guest kernel killed (Guest), which the kernel chose by rules of its own.
 const (
 	ruleGrew          = "grew"
 	ruleNew           = "new"
