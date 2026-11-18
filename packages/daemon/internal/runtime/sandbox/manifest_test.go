@@ -1159,10 +1159,9 @@ func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testin
 				return routes
 			}
 			containers := slices.Concat(pod.InitContainers, pod.Containers)
-			holderNames := []string{fetchContainer}
 			for _, c := range containers {
 				_, pointed := envOf(c)["LEGION_PROVISION_TOKEN_FILE"]
-				holds := slices.Contains(holderNames, c.Name)
+				holds := c.Name == fetchContainer
 				mounted := volumeRoutes(c)
 				var named []string
 				for _, r := range mounted {
@@ -1178,8 +1177,8 @@ func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testin
 					}
 				}
 				if routes := envRoutes(c); len(routes) > 0 {
-					t.Errorf("%s reaches the provisioning token through the environment by %v, which no container may, %v included: an environment value is fixed for the container's life, so a renewed token never reaches it",
-						c.Name, routes, holderNames)
+					t.Errorf("%s reaches the provisioning token through the environment by %v, which no container may, %s included: an environment value is fixed for the container's life, so a renewed token never reaches it",
+						c.Name, routes, fetchContainer)
 				}
 			}
 			kind, err := podKindOf(template.Metadata.Labels)
@@ -1187,10 +1186,8 @@ func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testin
 				t.Fatal(err)
 			}
 			if kind == (controllerPod{}) {
-				for _, name := range holderNames {
-					if slices.ContainsFunc(containers, func(c corev1.Container) bool { return c.Name == name }) {
-						t.Errorf("the controller's pod runs %s", name)
-					}
+				if slices.ContainsFunc(containers, func(c corev1.Container) bool { return c.Name == fetchContainer }) {
+					t.Errorf("the controller's pod runs %s", fetchContainer)
 				}
 				return
 			}
@@ -1202,84 +1199,71 @@ func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testin
 				}
 				return ""
 			}
-			// Every container that holds the token: no other container may write what it mounts.
-			// The feed, a subPath of the issue volume, is reachable through another container's
-			// read-write mount of the volume (or of a subPath above the feed) unless that
-			// container mounts the feed read-only over exactly the path the read-write mount
-			// reaches it at.
-			var holders []corev1.Container
-			for _, name := range holderNames {
-				if c := slices.IndexFunc(containers, func(c corev1.Container) bool { return c.Name == name }); c >= 0 {
-					holders = append(holders, containers[c])
-				}
-			}
-			if len(holders) != 1 {
-				t.Fatalf("the issue pod runs %d token-holding containers (%v), want 1", len(holders), holderNames)
-			}
-			for _, holder := range holders {
-				for _, mount := range holder.VolumeMounts {
-					for _, other := range containers {
-						if other.Name == holder.Name {
-							continue
-						}
-						for _, theirs := range other.VolumeMounts {
-							if theirs.Name != mount.Name || theirs.ReadOnly {
-								continue
-							}
-							below, ok := strings.CutPrefix(mount.SubPath, theirs.SubPath)
-							if !ok || (theirs.SubPath != "" && below != "" && !strings.HasPrefix(below, "/")) {
-								continue
-							}
-							reached := path.Join(theirs.MountPath, below)
-							shadowed := slices.ContainsFunc(other.VolumeMounts, func(m corev1.VolumeMount) bool {
-								return m.Name == mount.Name && m.ReadOnly && m.SubPath == mount.SubPath && m.MountPath == reached
-							})
-							if !shadowed {
-								t.Errorf("%s can write volume %s at %s, which %s mounts at %s", other.Name, mount.Name, reached, holder.Name, mount.MountPath)
-							}
-						}
-					}
-				}
-				// The holder's TMPDIR is an in-memory volume of its own: a TMPDIR another
-				// container shared would be one that container could read the one-shot
-				// credential in.
-				temp := envOf(holder)["TMPDIR"]
-				volume := in(holder, temp)
-				if dir := volumes[volume].EmptyDir; temp == "" || dir == nil || dir.Medium != corev1.StorageMediumMemory {
-					t.Errorf("%s's TMPDIR %q is not an in-memory volume of its own", holder.Name, temp)
-				}
-				// "Of its own" is about the volume, not the path: another container that mounted
-				// the same volume read-only somewhere else would read the credential just as
-				// well, and the write-overlap check above passes a read-only mount by design. So
-				// compare by volume name across every mount of every other container, whatever
-				// its path and whether it is read-only.
+			// The one container that holds the token, workspace-fetch: no other container may
+			// write what it mounts. The feed, a subPath of the issue volume, is reachable through
+			// another container's read-write mount of the volume (or of a subPath above the feed)
+			// unless that container mounts the feed read-only over exactly the path the
+			// read-write mount reaches it at.
+			holder := containerNamed(t, pod, fetchContainer)
+			for _, mount := range holder.VolumeMounts {
 				for _, other := range containers {
 					if other.Name == holder.Name {
 						continue
 					}
-					for _, mount := range other.VolumeMounts {
-						if mount.Name == volume {
-							t.Errorf("%s mounts %s's TMPDIR volume %s at %s (readOnly %t)",
-								other.Name, holder.Name, volume, mount.MountPath, mount.ReadOnly)
+					for _, theirs := range other.VolumeMounts {
+						if theirs.Name != mount.Name || theirs.ReadOnly {
+							continue
+						}
+						below, ok := strings.CutPrefix(mount.SubPath, theirs.SubPath)
+						if !ok || (theirs.SubPath != "" && below != "" && !strings.HasPrefix(below, "/")) {
+							continue
+						}
+						reached := path.Join(theirs.MountPath, below)
+						shadowed := slices.ContainsFunc(other.VolumeMounts, func(m corev1.VolumeMount) bool {
+							return m.Name == mount.Name && m.ReadOnly && m.SubPath == mount.SubPath && m.MountPath == reached
+						})
+						if !shadowed {
+							t.Errorf("%s can write volume %s at %s, which %s mounts at %s", other.Name, mount.Name, reached, holder.Name, mount.MountPath)
 						}
 					}
 				}
-				// No operator mount reaches a token holder: the operator's pod block
-				// (runtime.kubernetes.pod) names volumes of its own, and one of them in a
-				// container holding the token would share the token with whatever the operator
-				// put there.
-				if len(r.pod.VolumeMounts) == 0 {
-					t.Fatal("the operator's pod carries no mount, so this check would pass on a manifest that gave the token holder every one of them")
+			}
+			// The holder's TMPDIR is an in-memory volume of its own: a TMPDIR another container
+			// shared would be one that container could read the one-shot credential in.
+			temp := envOf(holder)["TMPDIR"]
+			volume := in(holder, temp)
+			if dir := volumes[volume].EmptyDir; temp == "" || dir == nil || dir.Medium != corev1.StorageMediumMemory {
+				t.Errorf("%s's TMPDIR %q is not an in-memory volume of its own", holder.Name, temp)
+			}
+			// "Of its own" is about the volume, not the path: another container that mounted the
+			// same volume read-only somewhere else would read the credential just as well, and
+			// the write-overlap check above passes a read-only mount by design. So compare by
+			// volume name across every mount of every other container, whatever its path and
+			// whether it is read-only.
+			for _, other := range containers {
+				if other.Name == holder.Name {
+					continue
 				}
-				for _, mount := range holder.VolumeMounts {
-					if slices.ContainsFunc(r.pod.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == mount.Name }) {
-						t.Errorf("%s carries the operator's mount %s at %s", holder.Name, mount.Name, mount.MountPath)
+				for _, mount := range other.VolumeMounts {
+					if mount.Name == volume {
+						t.Errorf("%s mounts %s's TMPDIR volume %s at %s (readOnly %t)",
+							other.Name, holder.Name, volume, mount.MountPath, mount.ReadOnly)
 					}
 				}
 			}
-			fetch := containerNamed(t, pod, fetchContainer)
-			if feed := in(containerNamed(t, pod, initContainer), FeedDir); feed == "" || feed != in(fetch, FeedDir) {
-				t.Errorf("workspace-init reads the feed from %q, and %s fills %q", feed, fetch.Name, in(fetch, FeedDir))
+			// No operator mount reaches the token holder: the operator's pod block
+			// (runtime.kubernetes.pod) names volumes of its own, and one of them in the container
+			// holding the token would share the token with whatever the operator put there.
+			if len(r.pod.VolumeMounts) == 0 {
+				t.Fatal("the operator's pod carries no mount, so this check would pass on a manifest that gave the token holder every one of them")
+			}
+			for _, mount := range holder.VolumeMounts {
+				if slices.ContainsFunc(r.pod.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == mount.Name }) {
+					t.Errorf("%s carries the operator's mount %s at %s", holder.Name, mount.Name, mount.MountPath)
+				}
+			}
+			if feed := in(containerNamed(t, pod, initContainer), FeedDir); feed == "" || feed != in(holder, FeedDir) {
+				t.Errorf("workspace-init reads the feed from %q, and %s fills %q", feed, holder.Name, in(holder, FeedDir))
 			}
 		})
 	}
