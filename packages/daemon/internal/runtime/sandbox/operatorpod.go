@@ -30,9 +30,10 @@ import (
 // LEGION_LEAK_CHECK_TAG is the tag of the shared public leak check the daemon reads and pushes to
 // the pod's launcher, which installs it once for the pod before any role starts
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
-// and PATH, which the runtime sets as well. TestImageEnvIsWhatTheWorkerImageSets holds the list to
+// PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
+// skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
 // the Dockerfile.
-var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH"}
+var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
 // env may set it too: the pod baseline yields to the operator's own value, and the operator's
