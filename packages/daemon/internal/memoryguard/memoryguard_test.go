@@ -2555,6 +2555,60 @@ func TestMemoryGuardEndsEveryProcessThatGrewOverTheWindowAtAReadingAtOrAboveTheU
 	}
 }
 
+// At a reading at or above the urgent share at the mark, a held process that grew over the window
+// and that the reads again did not reach within half an interval is ended at that reading too: it
+// keeps its growth by the held reads (INFRA-3531 R1 of spec version 39, "every process it may end
+// that grew over the window"). Here each smaps read at the mark takes 60 ms, as under a pod's CPU
+// throttle, so the reads again read pid 302, the most grown, alone, and pids 301 and 300 keep the
+// growth the band read. A guard that took from them the growth of a read it did not make ended pid
+// 302 alone at 3800 MiB and left the two others to the readings after it.
+func TestMemoryGuardEndsAtAnUrgentReadingTheGrowersItDidNotReadAgainWithinHalfAnInterval(t *testing.T) {
+	pod := newFakePod(t)
+	growers := []*fakeProcess{
+		{pid: 300, ppid: 100, args: []string{"python3", "grow.py"}, anon: 200 * mib},
+		{pid: 301, ppid: 100, args: []string{"python3", "grow.py"}, anon: 300 * mib},
+		{pid: 302, ppid: 100, args: []string{"python3", "grow.py"}, anon: 400 * mib},
+	}
+	idle := fakeProcess{pid: 303, ppid: 100, args: []string{"python3", "idle.py"}, anon: 700 * mib}
+	pod.add(agent(2*gib), *growers[0], *growers[1], *growers[2], idle)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	_, perRead := slowMark(h)
+	h.run()
+	grow := func() {
+		for i, g := range growers {
+			pod.resize(g, g.anon+uint64(i+1)*20*mib)
+		}
+	}
+	for _, reading := range []uint64{3200, 3300, 3400} {
+		grow()
+		pod.setAnon(reading * mib)
+		h.tick()
+	}
+	h.requireKilled()
+	grow()
+	perRead.Store(int64(60 * time.Millisecond))
+	pod.setAnon(3800 * mib)
+	h.tick()
+	got := endedChoices(h)
+	var ended []int
+	for _, c := range got {
+		ended = append(ended, c.pid)
+	}
+	if len(got) == 0 || got[0].pid != 302 || got[0].rule != "grew" || got[0].sizes != "reread" {
+		t.Fatalf("at the urgent reading at the mark the guard ended %+v first, want pid 302 by rule=grew sizes=reread; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+	}
+	slices.Sort(ended)
+	if want := []int{300, 301, 302}; !slices.Equal(ended, want) {
+		t.Fatalf("at the urgent reading at the mark the guard ended %v, want %v, the two growers it did not read again among them; the log:\n%s", ended, want, strings.Join(h.log.all(), "\n"))
+	}
+	for _, c := range got[1:] {
+		if c.rule != "urgent" {
+			t.Fatalf("the guard ended pid %d by rule=%s at the urgent reading, want rule=urgent; the log:\n%s", c.pid, c.rule, strings.Join(h.log.all(), "\n"))
+		}
+	}
+}
+
 // After the kills of a reading at or above the urgent share the guard waits until every process it
 // killed there has exited, and no longer than the wait setting; a fall and growth since the kill
 // are measured from that one reading (INFRA-3531 R1 of spec version 39). At 3800 MiB it ends pids
