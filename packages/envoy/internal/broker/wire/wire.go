@@ -11,7 +11,8 @@ package wire
 
 import "time"
 
-// PendingEntry is one undecided record in GET /v1/pending's answer.
+// PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still
+// settle, or one whose deadline passed before anybody decided it.
 type PendingEntry struct {
 	// The credential-request record's id, which the approval page and the machine login's approve
 	// and deny routes take.
@@ -29,12 +30,38 @@ type PendingEntry struct {
 	// signed in to the broker decides it; absent for a machine login, which is decided with its
 	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// "pending" for a record a decision may still settle, and "expired" for one whose deadline
+	// passed before anybody decided it, which every decision refuses and which a list asking for
+	// ?state=expired holds until somebody dismisses it (POST
+	// /v1/credential-requests/{record}/dismiss). A broker from before records had a state sends
+	// none, and a reader takes a row with no state as pending.
+	State string `json:"state,omitempty" enum:"pending,expired"`
+	// The record's deadline: a secret request's own expiry, the moment its decision compares
+	// with, and a machine login's. A broker from before records had a state sends none.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // PendingResponse is GET /v1/pending's answer.
 type PendingResponse struct {
-	// The undecided records the named person decides, newest first.
+	// The undecided records the named person decides. With no ?state=, every record still
+	// pending by what is stored, newest first, an overdue one included until the expiry sweep
+	// ends it; with ?state=, the records of the states asked for, the pending ones first and the
+	// expired ones nobody has dismissed after them, each newest first.
 	Pending []PendingEntry `json:"pending"`
+}
+
+// DismissResponse is what POST /v1/credential-requests/{record}/dismiss answers: the record's one
+// dismissal, the one this call made or, for a record dismissed already, the earlier one, whose
+// values a second dismissal answers unchanged.
+type DismissResponse struct {
+	// The dismissed record's id.
+	RecordID string `json:"record_id"`
+	// Who dismissed it: the canonical login of the person whose dismissal took it off every list,
+	// or "broker" for a record that had already left the lists, expired, when the broker began
+	// keeping dismissals (store migration 0033).
+	DismissedBy string `json:"dismissed_by"`
+	// When it was dismissed.
+	DismissedAt time.Time `json:"dismissed_at"`
 }
 
 // ApproverGrantResp is one grant in GET /v1/grants?approver=<login>: a grant on a session the login
