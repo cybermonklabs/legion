@@ -78,9 +78,9 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 // "untag" (a removal retag's removal) or "tag" (a tag write: a set retag's write, or a removal
 // retag's second write, the requesters rewrite). failReadBack names the kind of write after which
 // every DescribeSecret fails with readBackErr (a plain error when nil), as a read-back the network
-// lost, or IAM refused, does. loseAnswer names the kind of write that applies and then answers
-// lostAnswer, as a call the store carried out and whose answer was lost. A refused write is
-// countingTagWrites' (refuseUntag) or refusedTagWrites'.
+// lost, or IAM refused, does. loseAnswer names the call that applies and then answers lostAnswer,
+// as a call the store carried out and whose answer was lost: "tag", "untag", "put" (a value),
+// "delete" or "restore". A refused write is countingTagWrites' (refuseUntag) or refusedTagWrites'.
 type raceOnTag struct {
 	secretsAPI
 	racing, failReadBack, loseAnswer string
@@ -136,6 +136,30 @@ func (r *raceOnTag) DescribeSecret(ctx context.Context, in *secretsmanager.Descr
 		return nil, errors.New("DescribeSecret lost for this test")
 	}
 	return r.secretsAPI.DescribeSecret(ctx, in, o...)
+}
+
+func (r *raceOnTag) PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
+	out, err := r.secretsAPI.PutSecretValue(ctx, in, o...)
+	if err == nil && r.loseAnswer == "put" {
+		return nil, lostAnswer
+	}
+	return out, err
+}
+
+func (r *raceOnTag) DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
+	out, err := r.secretsAPI.DeleteSecret(ctx, in, o...)
+	if err == nil && r.loseAnswer == "delete" {
+		return nil, lostAnswer
+	}
+	return out, err
+}
+
+func (r *raceOnTag) RestoreSecret(ctx context.Context, in *secretsmanager.RestoreSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.RestoreSecretOutput, error) {
+	out, err := r.secretsAPI.RestoreSecret(ctx, in, o...)
+	if err == nil && r.loseAnswer == "restore" {
+		return nil, lostAnswer
+	}
+	return out, err
 }
 
 // TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded: on AWS a tag write is made first and checked

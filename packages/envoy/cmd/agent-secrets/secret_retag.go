@@ -54,29 +54,6 @@ func writeLanded(err error) bool {
 	return errors.As(err, &landed)
 }
 
-// tagsUnknown is a tag write's error that leaves open whether the write landed: the store answered
-// with no definite refusal, a service fault, an outage or a lost connection, which may follow a
-// call it carried out (an AWS call is a definite refusal only when it made one attempt whose code
-// awsDefiniteRefusals lists, awsAttempts.definiteRefusal; a GCP update only for a code
-// gcpDefiniteRefusal names). Its text is the store's error with that said after it. It marks the
-// error so a message says the outcome is unknown (writeUnknown) rather than describe the tags as
-// they were before the write.
-type tagsUnknown struct{ err error }
-
-func (e tagsUnknown) Error() string {
-	return e.err.Error() + "; the store's answer leaves open whether this write landed"
-}
-
-// Unwrap is the store's error, so isAccessDenied and errors.Is still read it.
-func (e tagsUnknown) Unwrap() error { return e.err }
-
-// writeUnknown reports whether err, a tag write's error, leaves open whether the write landed
-// (tagsUnknown).
-func writeUnknown(err error) bool {
-	var unknown tagsUnknown
-	return errors.As(err, &unknown)
-}
-
 // tagPairs is tags as sorted `key=value` pairs separated by single spaces, for a message that
 // names one read of a secret's tags beside another. A tag is metadata, never a value.
 func tagPairs(tags map[string]string) string {
@@ -114,7 +91,7 @@ func tagPairs(tags map[string]string) string {
 // write another writer raced answers errTagsChanged, which the retag prints, exiting 1. A write
 // that landed with an error (AWS: a race beside that writer's, or a read-back that failed;
 // tagsLanded), and one whose answer leaves open whether it landed (a service fault, an outage, a
-// lost connection; tagsUnknown), also ask the broker to reread, and the retag says what it knows
+// lost connection; outcomeUnknown), also ask the broker to reread, and the retag says what it knows
 // of the write and never what the tags held before it.
 //
 // A retag that leaves the secret a type is refused, before anything is written, by a broker whose
