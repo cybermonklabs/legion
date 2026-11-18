@@ -108,6 +108,11 @@ func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
 	if held := state.Checks["ci-ok"]; held.Status != "in_progress" {
 		t.Fatalf("the record holds %+v, want ci-ok in_progress from the webhook", state.Checks)
 	}
+	// The summary loop settles no head while its record holds a running check, which is the
+	// state read above. The webhook changed the record, which wakes the loop: it arms its next
+	// tick, and noSettlement runs that pass and every one after it over three debounces, so a
+	// loop that settled a head holding a running check would publish within them.
+	h.ciClock.AwaitArmed(t, "the summary loop's tick after the webhook's change", 1)
 	h.noSettlement(settlements, "while the record holds a running ci-ok")
 
 	// GitHub holds what the completion webhook would have carried: the same run, ended, beside
@@ -268,8 +273,8 @@ func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
 	if asked := h.queriesFor(gitHubRepository); asked != 1 {
 		t.Fatalf("the repository was queried %d times, want once: the pass must read GitHub", asked)
 	}
-	// The summary loop settles on its own clock, so the record is given the same room a second
-	// settlement would have needed before its revision is read again.
+	// The summary loop publishes a settlement only through two writes of the record, so the
+	// record still at the revision it settled at is the proof that the pass made it publish none.
 	h.noSettlement(settlements, "after a pass over what the webhooks recorded")
 	_, after, ok := h.record()
 	if !ok {

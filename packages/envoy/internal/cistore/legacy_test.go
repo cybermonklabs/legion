@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // headGatedState is State as the head-gated listeners decode and write it: legion 1ad2466c, and
@@ -111,19 +112,14 @@ func putHeadGatedRecord(t *testing.T, s *Store, h head, lastEventAt int64, edit 
 // waitCached polls the cache until key's record satisfies ok.
 func waitCached(t *testing.T, s *Store, key string, ok func(State) bool) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
+	testwait.Eventually(t, "the cache reaches the expected record for "+key, func() bool {
 		for _, st := range s.List() {
 			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key && ok(st) {
-				return
+				return true
 			}
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never reached the expected record for %s", key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return false
+	})
 }
 
 // storedSchema is the schema field of key's stored record as the bucket holds it, 0 when absent.
@@ -207,7 +203,7 @@ func TestANewCheckRunOnAHeadGatedRecordSettlesItOnce(t *testing.T) {
 		t.Fatalf("stored schema after the new check run = %d, want %d", schema, recordSchema)
 	}
 	waitCacheChecks(t, store, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha, 2)
-	time.Sleep(2 * debounce)
+	setLastEventAt(t, store, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha, 0)
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 
@@ -285,7 +281,7 @@ func TestASettledRecordIsNotPublishedAgain(t *testing.T) {
 		t.Fatalf("record the check run: %v", err)
 	}
 	waitCacheChecks(t, store, stamped.owner, stamped.repo, stamped.number, stamped.sha, 1)
-	time.Sleep(2 * debounce)
+	setLastEventAt(t, store, stamped.owner, stamped.repo, stamped.number, stamped.sha, 0)
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the stamped record's first settlement published %d envelopes, want 1", got)
@@ -343,7 +339,7 @@ func TestTheHeldBacklogIsCountedAndLoggedOnce(t *testing.T) {
 		t.Fatalf("record the new check run: %v", err)
 	}
 	waitCacheChecks(t, store, touched.owner, touched.repo, touched.number, touched.sha, 2)
-	time.Sleep(2 * debounce)
+	setLastEventAt(t, store, touched.owner, touched.repo, touched.number, touched.sha, 0)
 	backlog.observe(runSummaryTick(store, pub, debounce, logger), logger)
 	if got := gauge(); got != "envoy_ci_legacy_records_held 1" || pub.count() != 1 {
 		t.Fatalf("after the touched record settled: gauge %q, %d settlements, want 1 held and 1 settlement", got, pub.count())

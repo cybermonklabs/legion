@@ -15,8 +15,11 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // writtenState is one state the store wrote to a record, at the revision the write created.
@@ -145,15 +148,11 @@ func (k *writeKV) holdNextWrite() (entered <-chan struct{}, release func()) {
 	return reached, func() { close(gate) }
 }
 
-// recv waits up to 10 s for ch, failing the test when it never comes, so a regression in the
-// hand-over fails the test instead of hanging it.
+// recv waits for ch, failing the test when it never comes, so a regression in the hand-over fails
+// the test instead of hanging it.
 func recv(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s never happened", what)
-	}
+	testwait.Receive(t, what, ch)
 }
 
 // storedRecord is a record as the bucket holds it.
@@ -190,23 +189,22 @@ func (k *writeKV) states(key string) []State {
 }
 
 // wrapStore opens a store on the shared NATS and routes its writes through a writeKV.
-func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *writeKV) {
+func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration, opts ...Option) (*Store, *writeKV) {
 	t.Helper()
-	s := openStore(t, conn)
+	s := openStore(t, conn, opts...)
 	kv := &writeKV{KeyValue: s.watcher.KV().Legacy(), delay: delay, written: map[string][]writtenState{}}
 	useKV(t, s, kv)
 	return s, kv
 }
 
 // record records one observation of a head as the webhook handler does, a check when CheckName is
-// set and a suite otherwise, failing after 10 s rather than hanging (within).
+// set and a suite otherwise. Each call bounds itself on the store's clock (update's RecordWait), so
+// a broken hand-over returns an error rather than hanging.
 func record(s *Store, observation contracts.CIObservation) error {
-	return within(func() error {
-		if observation.CheckName == "" {
-			return s.RecordSuite(context.Background(), observation)
-		}
-		return s.Record(context.Background(), observation)
-	})
+	if observation.CheckName == "" {
+		return s.RecordSuite(context.Background(), observation)
+	}
+	return s.Record(context.Background(), observation)
 }
 
 type head struct{ owner, repo, number, sha string }
@@ -240,16 +238,10 @@ func queued(s *Store, key string) int {
 
 func waitQueued(t *testing.T, s *Store, key string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for queued(s, key) != n {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d callers queued for %s, want %d", queued(s, key), key, n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.Eventually(t, fmt.Sprintf("%d callers queued for %s", n, key), func() bool { return queued(s, key) == n })
 }
 
-// waitAll waits up to 10 s for every call started on wg, failing the test if one hangs.
+// waitAll waits for every call started on wg, failing the test if one hangs.
 func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 	t.Helper()
 	done := make(chan struct{})
@@ -257,11 +249,7 @@ func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 		wg.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s: a caller never returned", what)
-	}
+	testwait.Receive(t, what, done)
 }
 
 // calls runs numbered calls against one record, each in its own goroutine, and keeps each one's
@@ -768,18 +756,18 @@ func TestAWriteThatRunsOutOfItsBudgetLogsTheHeadAndItsAttempts(t *testing.T) {
 func TestQueuedCallersReturnPromptlyWhenTheConnectionCloses(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s, kv := wrapStore(t, conn, 0)
+	fake := clocktest.New(time.Now())
+	s, kv := wrapStore(t, conn, 0, WithClock(fake))
 	h := head{"example-org", "example-repo", "42", "4444444444444444444444444444444444444444"}
 	entered, release := kv.holdNextWrite()
 	batch := newCalls(t, s, h.key(), 10, checkCall(s, h, 600))
 	batch.behind(entered, 10)
 	conn.Close()
-	began := time.Now()
 	release()
+	// The batch returns without the test moving the fake clock: a closed connection fails the
+	// write at once (a lasting error), so a regression that waited the budget would arm a timer
+	// the frozen fake never passes and hang batch.wait here.
 	errs := batch.wait("closed connection")
-	if elapsed := time.Since(began); elapsed > 3*time.Second {
-		t.Fatalf("callers took %s to return after the connection closed", elapsed)
-	}
 	for i, err := range errs {
 		if err == nil {
 			t.Fatalf("caller %d returned success on a closed connection", i)
@@ -840,7 +828,8 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
-			s, kv := wrapStore(t, conn, 0)
+			fake := clocktest.New(time.Now())
+			s, kv := wrapStore(t, conn, 0, WithClock(fake))
 			h := head{"example-org", "example-repo", "42", "7777777777777777777777777777777777777777"}
 			const n = 10
 			entered, release := tc.hang(kv)
@@ -852,14 +841,15 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 			}()
 			batch := newCalls(t, s, h.key(), n, checkCall(s, h, 900))
 			batch.behind(entered, n)
-			began := time.Now()
 			if err := s.Rewatch(context.Background(), conn); err != nil {
 				t.Fatalf("rewatch: %v", err)
 			}
+			// The in-flight call is given up on at the rewatch; the write then retries on the new
+			// connection, arming a backoff on the fake. Move the fake less than the budget to let the
+			// retry run, so the callers are written within the budget, not at JetStream's MaxWait.
+			fake.AwaitArmed(t, "the retry backoff after the rewatch", n+1)
+			fake.Advance(recordBudget / 2)
 			requireNoErrors(t, "a burst with a KV call in flight at a reconnect", batch.wait("a KV call in flight at a reconnect"))
-			if elapsed := time.Since(began); elapsed > recordBudget {
-				t.Fatalf("the callers took %s after the reconnect, want within the %s budget", elapsed.Round(time.Millisecond), recordBudget)
-			}
 			before := getRecord(t, s, h.key())
 			if len(before.state.Checks) != n {
 				t.Fatalf("record holds %d checks, want all %d", len(before.state.Checks), n)
@@ -886,13 +876,18 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 func TestASlowKVCallOnALiveConnectionIsWaitedFor(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s, kv := wrapStore(t, conn, 0)
+	fake := clocktest.New(time.Now())
+	s, kv := wrapStore(t, conn, 0, WithClock(fake))
 	h := head{"example-org", "example-repo", "42", "8888888888888888888888888888888888888888"}
 	const n = 10
 	entered, release := kv.holdNextWrite()
 	batch := newCalls(t, s, h.key(), n, checkCall(s, h, 950))
 	batch.behind(entered, n)
-	time.Sleep(recordBudget + 500*time.Millisecond)
+	// Each queued caller armed its record wait (RecordWait) on the fake. Move the fake past the
+	// write's budget but within that wait, to show the held call is waited for past the budget
+	// rather than failing at it.
+	fake.AwaitArmed(t, "the record waits of the queued callers", n)
+	fake.Advance(recordBudget + 500*time.Millisecond)
 	release()
 	requireNoErrors(t, "a burst behind a slow KV call", batch.wait("a slow KV call"))
 	if checks := len(getState(t, s, h.owner, h.repo, h.number, h.sha).Checks); checks != n {
@@ -947,17 +942,20 @@ func TestALastingKVErrorFailsAWriteAtOnce(t *testing.T) {
 		t.Run(lasting.Error(), func(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
-			s, kv := wrapStore(t, conn, 0)
+			fake := clocktest.New(time.Now())
+			s, kv := wrapStore(t, conn, 0, WithClock(fake))
 			kv.failNextGet(lasting)
 			h := head{"example-org", "example-repo", "42", "6666666666666666666666666666666666666666"}
-			began := time.Now()
-			err := record(s, h.check("check-0", 800, "completed", "success", "2026-09-24T01:00:00Z"))
-			elapsed := time.Since(began)
+			done := make(chan error, 1)
+			go func() {
+				done <- record(s, h.check("check-0", 800, "completed", "success", "2026-09-24T01:00:00Z"))
+			}()
+			// A lasting error fails the write at once with no retry, so the error arrives without
+			// the test moving the fake: a regression that retried would arm a backoff the frozen
+			// fake never passes and hang here.
+			err := testwait.Receive(t, "the lasting error returns at once", done)
 			if !errors.Is(err, lasting) {
 				t.Fatalf("the write returned %v, want %v", err, lasting)
-			}
-			if elapsed >= recordBudget/2 {
-				t.Fatalf("the write took %s to fail (%v), want well under the %s budget", elapsed, err, recordBudget)
 			}
 		})
 	}
@@ -970,8 +968,9 @@ func TestALastingKVErrorFailsAWriteAtOnce(t *testing.T) {
 func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s, _ := wrapStore(t, conn, 0)
-	js, err := conn.JetStream()
+	fake := clocktest.New(time.Now())
+	s, _ := wrapStore(t, conn, 0, WithClock(fake))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -979,14 +978,18 @@ func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 		t.Fatalf("delete the bucket: %v", err)
 	}
 	h := head{"example-org", "example-repo", "42", "6666666666666666666666666666666666666666"}
-	began := time.Now()
-	writeErr := record(s, h.check("check-0", 800, "completed", "success", "2026-09-24T01:00:00Z"))
-	elapsed := time.Since(began)
+	done := make(chan error, 1)
+	go func() {
+		done <- record(s, h.check("check-0", 800, "completed", "success", "2026-09-24T01:00:00Z"))
+	}()
+	// No responders is transient, so the write retries, arming a backoff on the fake. Move the
+	// fake past the budget and the write gives up there, where without the clock it would wait
+	// JetStream's MaxWait.
+	fake.AwaitArmed(t, "the write's retry backoff", 2)
+	fake.Advance(recordBudget + time.Second)
+	writeErr := testwait.Receive(t, "the write fails within the budget", done)
 	if writeErr == nil {
 		t.Fatal("the write succeeded against a deleted bucket, want an error")
-	}
-	if elapsed > recordBudget+time.Second {
-		t.Fatalf("the write took %s to fail (%v), want within the %s budget", elapsed.Round(time.Millisecond), writeErr, recordBudget)
 	}
 }
 

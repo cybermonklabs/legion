@@ -22,9 +22,11 @@ import (
 // and session the test registers: each write is committed, its thumbprint becoming the row's
 // binding, and then answered. When holdNext is set, the next write is held open until release
 // closes, and committed then — whether or not the caller is still waiting, as a server that
-// received a write commits it — and committed closes once it has been.
+// received a write commits it — and committed closes once it has been. A request without the
+// daemon's own token (registrationsToken) is another process's: it is answered 404 and logged,
+// fails nothing, takes no hold and is recorded as nothing (fromTheDaemon).
 type holdingBroker struct {
-	t         *testing.T
+	t         testing.TB
 	pod       string
 	held      chan struct{}
 	release   chan struct{}
@@ -37,6 +39,9 @@ type holdingBroker struct {
 }
 
 func (b *holdingBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !fromTheDaemon(b.t, w, r, registrationsToken) {
+		return
+	}
 	var body struct {
 		Session, Thumbprint string
 	}

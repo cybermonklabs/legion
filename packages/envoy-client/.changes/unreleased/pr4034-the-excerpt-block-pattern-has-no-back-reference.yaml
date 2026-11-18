@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The Dispatch excerpt's script-or-style block pattern names its two tags in place of a
+  back-reference, and gives the same output as the form it replaced.

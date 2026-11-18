@@ -44,7 +44,7 @@ func (w *workflowRuntime) listenerLive(ctx context.Context) bool {
 	if w.idleStore == nil {
 		return false
 	}
-	live, at, found, err := w.idleStore.ListenerLive(ctx, w.projectID, time.Now(), listenerReadyWindow)
+	live, at, found, err := w.idleStore.ListenerLive(ctx, w.projectID, w.timers().Now(), listenerReadyWindow)
 	switch {
 	case err != nil:
 		w.log.Warn("idle release: could not read the listener's liveness report; releasing nothing", "error", err)
@@ -64,21 +64,12 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 	if w.idlePeriod <= 0 || w.idleStore == nil {
 		return
 	}
-	interval := w.idleTick
-	if interval <= 0 {
-		interval = wakeTickInterval
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			now := time.Now().UTC()
-			w.fireDueBackstops(ctx, now)
-			w.warnStuckResumes(ctx, now)
-		}
+	ticks := newPassTimer(w.timers(), w.passes, passWakes, wakeTickInterval)
+	defer ticks.stop()
+	for pass := uint64(1); ticks.next(ctx); pass = passEnded(w.observe, passWakes, pass) {
+		now := w.timers().Now().UTC()
+		w.fireDueBackstops(ctx, now)
+		w.warnStuckResumes(ctx, now)
 	}
 }
 

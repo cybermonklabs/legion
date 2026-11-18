@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
 /** The idempotency key the shared transport mints for a send that names none. */
@@ -70,14 +71,17 @@ afterAll(() => {
   server.stop(true)
 })
 
-/** Runs `envoy-send` with `words` in `scratch`, with `env` and PATH as its whole environment. */
+/**
+ * Runs `envoy-send` with `words` in `scratch`, with `env`, PATH and the Bun cache key that turns
+ * the child's transpiler cache off (`bunCacheOff`) as its whole environment.
+ */
 async function envoySend(
   words: readonly string[],
   env: Readonly<Record<string, string>>,
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const send = Bun.spawn(["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), ...words], {
     cwd: scratch,
-    env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", HOME: scratch, ...env },
     stdout: "pipe",
     stderr: "pipe",
   })

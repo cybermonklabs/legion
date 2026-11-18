@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveOnlyServer serves GET /ws/live as a Dispatch from #2449 on does, and 404 everywhere else: it
@@ -100,16 +101,10 @@ func TestDashboardChoice(t *testing.T) {
 				winEnd:   time.Now().Add(time.Minute),
 			}
 			ds := st.startDashboard(ctx, url, nil)
-			var frames []liveFrame
-			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-				if frames = ds.frames.snapshot(); len(frames) >= 2 {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			if len(frames) < 2 {
-				t.Fatalf("%d frames from 2 %s streams, want 2", len(frames), kind)
-			}
+			frames := testwait.Until(t, fmt.Sprintf("a frame from each of the 2 %s streams", kind), func() ([]liveFrame, bool) {
+				frames := ds.frames.snapshot()
+				return frames, len(frames) >= 2
+			})
 			for _, f := range frames {
 				if f.id != 41 || f.marker != 1234 || f.at == 0 {
 					t.Fatalf("frame %+v: want event 41 with the run's marker, timed on arrival", f)

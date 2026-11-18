@@ -14,7 +14,6 @@
 package sandbox
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // secretsBlocked reports r.secretsBlockReason first — the broker refused the token login newLiveRig
@@ -70,8 +70,7 @@ func (r *liveRig) enroll(c *liveClaim, reg registration) (string, error) {
 	if err := r.revoke(c); err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	enrolled, err := r.secrets.Enroll(ctx, agentsecrets.PodEnrollment{
 		PodUID: c.loc.Sandbox.PodUID, Slot: agentSecretsSlot(c), Thumbprint: reg.identity.Thumbprint, PodToken: reg.identity.PodToken,
 		Session: "s4a-" + string(c.token),
@@ -97,8 +96,7 @@ func (r *liveRig) revoke(c *liveClaim) error {
 	if !ok {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	if err := r.secrets.Revoke(ctx, e.id); err != nil {
 		return err
 	}
@@ -271,8 +269,7 @@ func (r *liveRig) checkSecretsCopiedTokenNegative() error {
 	root, worker := r.claim("root"), r.claim("worker")
 	rootRegs, workerRegs := r.reg.registrations(root.token), r.reg.registrations(worker.token)
 	rootID, workerID := rootRegs[len(rootRegs)-1].identity, workerRegs[len(workerRegs)-1].identity
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	_, err := r.secrets.Enroll(ctx, agentsecrets.PodEnrollment{
 		PodUID: "another-pod-uid", Slot: agentSecretsSlot(worker), Thumbprint: workerID.Thumbprint, PodToken: rootID.PodToken, Session: "s4a-copied",
 	})
@@ -435,12 +432,9 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 	if _, err := r.kubectl("delete", "pod", SandboxName(worker.token), "--wait=false"); err != nil {
 		return err
 	}
-	gone, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+	gone := r.obs.await(r.t, mark, string(worker.token)+"'s process in pod uid "+short(oldUID)+" to be observed ended", func(o runtime.Observation) bool {
 		return o.Locator.Claim == worker.token && o.Locator.Incarnation == oldIncarnation && (o.Kind == runtime.Gone || o.Kind == runtime.NotRecordedProcess)
 	})
-	if !ok {
-		return fmt.Errorf("no gone observation for %s (pod uid %s) within %s", worker.token, short(oldUID), liveGoneLimit)
-	}
 	note("runtime", "observed %s process %s in pod uid %s: %s", worker.token, short(oldIncarnation), short(oldUID), gone.Kind)
 	if err := r.revoke(worker); err != nil {
 		return err
@@ -460,8 +454,7 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	_, err = r.secrets.Enroll(ctx, agentsecrets.PodEnrollment{
 		PodUID: oldUID, Slot: agentSecretsSlot(worker), Thumbprint: reg.identity.Thumbprint, PodToken: reg.identity.PodToken, Session: "s4a-old-uid",
 	})

@@ -659,11 +659,13 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// document in the service's log. The log is taken from after the removal, so the
 		// request's own line is not one of the lines read.
 		logs := captureLogs(t)
-		if testwait.Holds(time.Second, 10*time.Millisecond, func() bool {
-			return slices.Contains(documents.ResidentRooms(), document.ID) || strings.Contains(logs.String(), document.ID)
-		}) {
+		testwait.Span(t, time.Second, "a settlement the evicted room had armed would run on that room's own "+
+			"settle timer (20 ms here) and read the removed row, and no state the service exposes says a "+
+			"timer is armed, the service does real PostgreSQL I/O (no synctest), and no later action of the "+
+			"test is ordered after that timer")
+		if rooms := documents.ResidentRooms(); slices.Contains(rooms, document.ID) || strings.Contains(logs.String(), document.ID) {
 			t.Fatalf("the service read the removed document %s again: rooms=%v log=%s",
-				document.ID, documents.ResidentRooms(), logs.Lines(document.ID))
+				document.ID, rooms, logs.Lines(document.ID))
 		}
 		assertNoRowNamesTheDocument(t, roomDatabase, document.ID)
 	})
@@ -817,24 +819,22 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
 			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
 		}
-		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-			return slices.Contains(process.service.ResidentRooms(), document.ID)
-		}) {
-			t.Fatalf("%s holds the rooms %v, and not %s, whose room the removal must close",
-				process.what, process.service.ResidentRooms(), document.ID)
-		}
+		testwait.Until(t, fmt.Sprintf("%s to hold a room of %s, whose room the removal must close", process.what, document.ID),
+			func() ([]string, bool) {
+				rooms := process.service.ResidentRooms()
+				return rooms, slices.Contains(rooms, document.ID)
+			})
 	}
 
 	removedDocument(t, handler, document.ID)
 
 	// The second process hears the removal over the database and closes its room. The wait is
 	// for the notification's trip, not for a retry: nothing announces this twice.
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return !slices.Contains(holding.ResidentRooms(), document.ID)
-	}) {
-		t.Fatalf("the second process still holds the room of the removed document %s: %v; its next append meets a foreign key that no longer resolves",
-			document.ID, holding.ResidentRooms())
-	}
+	testwait.Until(t, fmt.Sprintf("the second process to close its room of the removed document %s, "+
+		"whose next append meets a foreign key that no longer resolves", document.ID), func() ([]string, bool) {
+		rooms := holding.ResidentRooms()
+		return rooms, !slices.Contains(rooms, document.ID)
+	})
 	if rooms := removing.ResidentRooms(); slices.Contains(rooms, document.ID) {
 		t.Fatalf("the removing process still holds the room of %s: %v", document.ID, rooms)
 	}
@@ -844,13 +844,14 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// No append of either room reached the database after the removal, and neither process takes
 	// the room up again: a settle window passes with doc_updates holding nothing of the document
 	// and no room of it resident anywhere.
-	if testwait.Holds(time.Second, testwait.Poll, func() bool {
-		return documentAppendCount(t, database, document.ID) > 0 ||
-			slices.Contains(holding.ResidentRooms(), document.ID) ||
-			slices.Contains(removing.ResidentRooms(), document.ID)
-	}) {
+	testwait.Span(t, time.Second, "an append or a room loaded again would come from a room's own settle "+
+		"timer or a late notification on either process, which no state the services expose records, over "+
+		"real PostgreSQL (no synctest), with no later action of the test ordered after either")
+	if appends := documentAppendCount(t, database, document.ID); appends > 0 ||
+		slices.Contains(holding.ResidentRooms(), document.ID) ||
+		slices.Contains(removing.ResidentRooms(), document.ID) {
 		t.Fatalf("after the removal of %s the store holds %d appends of it, the second process the rooms %v and the removing process %v",
-			document.ID, documentAppendCount(t, database, document.ID), holding.ResidentRooms(), removing.ResidentRooms())
+			document.ID, appends, holding.ResidentRooms(), removing.ResidentRooms())
 	}
 	assertNoRowNamesTheDocument(t, database, document.ID)
 
@@ -898,12 +899,11 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return slices.Contains(third.ResidentRooms(), untouched.ID)
-	}) {
-		t.Fatalf("the third process holds the rooms %v, and not %s, whose room the removal must close",
-			third.ResidentRooms(), untouched.ID)
-	}
+	testwait.Until(t, fmt.Sprintf("the third process to hold a room of %s, whose room the removal must close", untouched.ID),
+		func() ([]string, bool) {
+			rooms := third.ResidentRooms()
+			return rooms, slices.Contains(rooms, untouched.ID)
+		})
 
 	removedDocument(t, handler, untouched.ID)
 
@@ -911,17 +911,13 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// nobody there and is never sent again. Its hub is let through, and its LISTEN is waited
 	// for: what closes the room now is a pass that LISTEN runs.
 	close(through)
-	select {
-	case <-listening:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the third process's listener hub never listened after the test let its dial through")
-	}
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return !slices.Contains(third.ResidentRooms(), untouched.ID)
-	}) {
-		t.Fatalf("the third process, whose hub was between connections when %s was removed, still holds the room of it after its LISTEN stood again: %v; it holds a resident room over a deleted row, and its next append meets the doc_updates foreign key",
-			untouched.ID, third.ResidentRooms())
-	}
+	testwait.Receive(t, "the third process's listener hub to listen after the test let its dial through", listening)
+	testwait.Until(t, fmt.Sprintf("the third process, whose hub was between connections when %s was removed, to close "+
+		"its room of it after its LISTEN stood again (else it holds a resident room over a deleted row, and its next "+
+		"append meets the doc_updates foreign key)", untouched.ID), func() ([]string, bool) {
+		rooms := third.ResidentRooms()
+		return rooms, !slices.Contains(rooms, untouched.ID)
+	})
 	assertNoRowNamesTheDocument(t, database, untouched.ID)
 }
 

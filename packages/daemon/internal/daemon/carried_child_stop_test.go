@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -119,7 +120,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	// the implementer's stored claim as it stands: working, in the old tree.
 	trees := outboxTreeStore(t, pool, rootKey)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	machineClock := &heldClock{at: start}
+	machineClock := heldClockAt(start)
 	sup.deps.Clock, sup.deps.Timeouts.Stop, sup.deps.Store = machineClock, stopTimeout, trees
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
@@ -292,23 +293,16 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 	machine, _ := sup.Machine(architect)
 	rt.stalling.Store(true)
 	go func() { _ = machine.Handle(context.Background(), supervise.RequestSpawn{Claim: architect}) }()
-	select {
-	case <-rt.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the architect's launch never reached the runtime")
-	}
+	testwait.Receive(t, "the architect's launch to reach the runtime", rt.entered)
 	runner := &outbox{log: quietLogger(), supervisor: sup, project: "legion"}
 	checked := make(chan error, 1)
 	go func() {
 		checked <- runner.stopElsewhere(context.Background(), record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1"})
 	}()
-	select {
-	case err := <-checked:
-		if err != nil {
-			t.Fatalf("the check before a start of LEGION-1 in its own tree = %v, want nothing to wait for", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the check before a start waited on its architect's launch in the runtime")
+	// The architect's launch stays stalled in the runtime until the test ends, so a check that
+	// waited on it would never return.
+	if err := testwait.Receive(t, "the check before a start of LEGION-1 in its own tree to return while its architect's launch stalls", checked); err != nil {
+		t.Fatalf("the check before a start of LEGION-1 in its own tree = %v, want nothing to wait for", err)
 	}
 }
 

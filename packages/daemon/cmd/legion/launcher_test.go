@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // syncBuffer is a bytes.Buffer the launcher writes from its role goroutines while a test reads it.
@@ -40,8 +40,11 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
-		t.Fatal(err)
+	// The accepts below wait as every wait here does, until the shared wait's deadline.
+	if deadline, ok := testwait.Context(t).Deadline(); ok {
+		if err := listener.(*net.TCPListener).SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("POD_UID", "pod-7")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,27 +57,41 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		}, &stdout, &stderr)
 	}()
 
+	// Each accepted connection's first frame is read on a goroutine of its own, so one that sends
+	// nothing holds up no other. Only a launcher hello under one of the roles' tokens is the
+	// command's: any other connection is another process's (a loopback port the kernel gives a
+	// listener may be one a process of the machine still dials), closed and failing nothing.
+	type opened struct {
+		conn  net.Conn
+		hello shimwire.LauncherHello
+	}
+	launchers := make(chan opened, 2)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				line, err := bufio.NewReader(conn).ReadBytes('\n')
+				frame, decodeErr := shimwire.Frame(nil), err
+				if err == nil {
+					frame, decodeErr = shimwire.Decode(line)
+				}
+				if hello, ok := frame.(shimwire.LauncherHello); decodeErr == nil && ok && strings.HasPrefix(hello.Token, "token-") {
+					launchers <- opened{conn, hello}
+					return
+				}
+				_ = conn.Close()
+			}()
+		}
+	}()
 	hellos := map[string]shimwire.LauncherHello{}
 	for range 2 {
-		conn, err := listener.Accept()
-		if err != nil {
-			t.Fatalf("accept: %v; the launcher's log: %s", err, stderr.String())
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		line, err := bufio.NewReader(conn).ReadBytes('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-		frame, err := shimwire.Decode(line)
-		if err != nil {
-			t.Fatal(err)
-		}
-		hello, ok := frame.(shimwire.LauncherHello)
-		if !ok {
-			t.Fatalf("first frame = %#v, want a launcher hello", frame)
-		}
-		hellos[hello.Role] = hello
-		if err := shimwire.NewWriter(conn).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
+		launcher := testwait.Receive(t, "the launcher's connection of each role", launchers)
+		t.Cleanup(func() { _ = launcher.conn.Close() })
+		hellos[launcher.hello.Role] = launcher.hello
+		if err := shimwire.NewWriter(launcher.conn).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,21 +101,13 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 			t.Fatalf("role %s hello = %#v, want its own token, the sandbox and POD_UID's pod", role, hello)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(stderr.String(), "tester: launcher: connected") || !strings.Contains(stderr.String(), "reviewer: launcher: connected") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want each role's acknowledged hello behind its role's name", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the launcher to log each role's acknowledged hello behind its role's name", func() bool {
+		logged := stderr.String()
+		return strings.Contains(logged, "tester: launcher: connected") && strings.Contains(logged, "reviewer: launcher: connected")
+	})
 	cancel()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the launcher did not leave at the container's stop")
+	if code := testwait.Receive(t, "the launcher to leave at the container's stop", exited); code != 0 {
+		t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
 	}
 }
 
@@ -122,8 +131,7 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A launcher that took the mixture would dial the unreachable daemon until its
 			// context ends; the bound makes that a failure of this test, not a hung run.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			var stdout, stderr bytes.Buffer
 			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
 			if code := run(ctx, args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), tc.want) {
@@ -136,14 +144,14 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 // A service account to impersonate names a session database, so the launcher told one without the
 // instance, the database and the login refuses before it dials anything. A launcher that did not
 // know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the
-// configuration for the other stores and dial the unreachable daemon until its context ends.
+// configuration for the other stores and dial the unreachable daemon until its context ends; the
+// test's context (testwait.Context) makes that a failure of this test, not a hung run.
 func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, []string{
 		"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p",
@@ -186,8 +194,7 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			var stdout, stderr bytes.Buffer
 			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
 			if code := run(ctx, args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) {

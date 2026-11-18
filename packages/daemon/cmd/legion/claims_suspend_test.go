@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -71,15 +69,20 @@ func operatorTokenFile(t *testing.T) string {
 	return path
 }
 
+// suspendArgs is the argv of `legion claims suspend` of architectClaim against port, waiting up
+// to wait, with any extra flags.
+func suspendArgs(t *testing.T, port, wait string, extra ...string) []string {
+	t.Helper()
+	return append([]string{"legion", "claims", "suspend", "--port", port,
+		"--operator-token-file", operatorTokenFile(t), "--claim", string(architectClaim), "--wait", wait}, extra...)
+}
+
 // suspendAgainst runs `legion claims suspend` of architectClaim against port, waiting up to wait,
 // with any extra flags.
 func suspendAgainst(t *testing.T, port, wait string, extra ...string) (int, string, string) {
 	t.Helper()
-	var out, errb bytes.Buffer
-	args := append([]string{"legion", "claims", "suspend", "--port", port,
-		"--operator-token-file", operatorTokenFile(t), "--claim", string(architectClaim), "--wait", wait}, extra...)
-	code := run(context.Background(), args, &out, &errb)
-	return code, out.String(), errb.String()
+	got := runLegion(suspendArgs(t, port, wait, extra...))
+	return got.code, got.out, got.errb
 }
 
 // A suspend the daemon holds for the agent's turn (202) is waited out: the command polls the

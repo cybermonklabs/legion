@@ -15,11 +15,14 @@
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
 //
-// The database URL is the run's own, which the shell script resets before the server migrates it.
-// The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
-// the attribution rule before this build's, which no route of Dispatch can write, since every
-// write stamps the rule this build judges by; and the issue and the source that row holds now,
-// which no route answers either.
+// The database URL is the run's own, which the shell script makes on its DSN's server before the
+// server migrates it. The driver writes SQL for one fixture and reads it for one answer: a stored
+// pull request row of the attribution rule before this build's, which no route of Dispatch can
+// write, since every write stamps the rule this build judges by; and the issue and the source
+// that row holds now, which no route answers either.
+//
+// Every wait goes through @legion/test-fixtures/wait, which ends at the proof's deadline:
+// LEGION_PROOF_DEADLINE_MS, which verification-results.sh's proof_guard sets.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -39,6 +42,7 @@ import type {
   CheckResultRecorded,
   IssueSummaryPage,
 } from "@legion/contracts";
+import { until } from "@legion/test-fixtures/wait";
 import { connect, StringCodec } from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
@@ -61,12 +65,28 @@ if (
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long a head a bus event teaches Dispatch may take to settle, and how often the results are
- *  read again. The intake binds its durable once the settings cache holds a row, takes the
- *  envelope and writes the pull request's head row; nothing else is waited on, since every other
- *  answer is computed while the results are read. */
-const headWaitMs = 30_000;
-const pollMs = 250;
+/** Waits until `read` answers a reading `holds` takes, and answers that reading. A head a bus
+ *  event teaches Dispatch, or a row the reconcile re-judges, lands after the write that caused it:
+ *  the intake binds its durable once the settings cache holds a row, takes the envelope and writes
+ *  the pull request's head row, and every other answer is computed while the results are read. A
+ *  wait that gives up names `what` and the reading it last took. */
+async function readUntil<T>(
+  what: string,
+  read: () => Promise<T>,
+  holds: (seen: T) => boolean
+): Promise<T> {
+  let last = "nothing yet";
+  const held = await until(what, async () => {
+    const seen = await read();
+    last = JSON.stringify(seen);
+    return holds(seen) && { seen };
+  }).catch((error: unknown) => {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; it last read ${last}`
+    );
+  });
+  return held.seen;
+}
 
 const person = "alice";
 const session = "verification-results-e2e";
@@ -281,22 +301,20 @@ async function passStandsOf(key: string, blockID: string): Promise<string> {
   return roles.length === 0 ? pass.answer : `${pass.answer} (${roles.join(", ")})`;
 }
 
-/** Waits, bounded, for the commit of the result at `commit` to stand where `want` says, and
- *  answers what it last read. Where a commit stands is computed while the results are read, so
- *  this writes nothing and polls the read. */
+/** Waits for the commit of the result at `commit` to stand where `want` says, and answers it.
+ *  Where a commit stands is computed while the results are read, so this writes nothing and
+ *  waits on the read. */
 async function awaitCommitStands(
   key: string,
   blockID: string,
   commit: string,
   want: string
 ): Promise<string> {
-  const deadline = Date.now() + headWaitMs;
-  let seen = await commitStandsAt(key, blockID, commit);
-  while (seen !== want && Date.now() < deadline) {
-    await Bun.sleep(pollMs);
-    seen = await commitStandsAt(key, blockID, commit);
-  }
-  return seen;
+  return readUntil(
+    `the commit of the result at ${commit.slice(0, 12)} on ${key}'s ${blockID} to stand ${want}`,
+    () => commitStandsAt(key, blockID, commit),
+    (seen) => seen === want
+  );
 }
 
 /** Records one result through `POST /api/v1/issues/{key}/results`, and answers what Dispatch
@@ -391,6 +409,9 @@ async function runDispatch(
     const child = Bun.spawn([process.execPath, dispatchCommand, ...argv], {
       cwd,
       env: {
+        // HOME below is a directory this run made, where Bun would write its runtime transpiler
+        // cache for every large module the command loads: "0" turns that cache off.
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: session,
         DISPATCH_TOKEN: agentToken,
@@ -510,16 +531,14 @@ async function storedHead(number: number): Promise<string> {
   return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, rule ${rule})`;
 }
 
-/** Waits, bounded, for the stored row of `number` to read as `want`, and answers what it last
- *  read. The reconcile is the writer here, so this polls and writes nothing. */
+/** Waits for the stored row of `number` to read as `want`, and answers it. The intake or the
+ *  reconcile is the writer here, so this writes nothing and waits on the read. */
 async function awaitStoredHead(number: number, want: string): Promise<string> {
-  const deadline = Date.now() + headWaitMs;
-  let seen = await storedHead(number);
-  while (seen !== want && Date.now() < deadline) {
-    await Bun.sleep(pollMs);
-    seen = await storedHead(number);
-  }
-  return seen;
+  return readUntil(
+    `#${number} to be stored as ${want}`,
+    () => storedHead(number),
+    (seen) => seen === want
+  );
 }
 
 /** Every `issue.pull_request_attribution_changed` event on one issue, oldest first, in the
@@ -538,16 +557,13 @@ async function attributionMoves(key: string): Promise<string[]> {
     );
 }
 
-/** Waits, bounded, for one issue to carry `want` attribution events, and answers what it last
- *  read. */
+/** Waits for one issue to carry `want` attribution events, and answers them. */
 async function awaitAttributionMoves(key: string, want: number): Promise<string[]> {
-  const deadline = Date.now() + headWaitMs;
-  let seen = await attributionMoves(key);
-  while (seen.length < want && Date.now() < deadline) {
-    await Bun.sleep(pollMs);
-    seen = await attributionMoves(key);
-  }
-  return seen;
+  return readUntil(
+    `${key} to carry ${want} attribution events`,
+    () => attributionMoves(key),
+    (seen) => seen.length >= want
+  );
 }
 
 function note(line: string): void {
@@ -822,9 +838,6 @@ A result stands while its commit is the pull request's head.
   });
   const atFirstHead = await awaitCommitStands(a4Issue, "a4", commits.headOne, "at_basis");
   note(`the commit of the result at ${commits.headOne.slice(0, 12)} stands ${atFirstHead}`);
-  if (atFirstHead !== "at_basis") {
-    return `the commit of the result at the first head stands ${atFirstHead}`;
-  }
   const passAtFirstHead = await passStandsOf(a4Issue, "a4");
   note(`a pass of a4 stands: ${passAtFirstHead}`);
   if (passAtFirstHead !== "yes (tester)") return `a pass of a4 stands ${passAtFirstHead}`;
@@ -847,9 +860,6 @@ A result stands while its commit is the pull request's head.
   note(`published the synchronize envelope on ${pushed}`);
   const moved = await awaitCommitStands(a4Issue, "a4", commits.headOne, "other_commit");
   note(`after the push the same result stands ${moved}, with no write of Dispatch's`);
-  if (moved !== "other_commit") {
-    return `the commit of the result at the first head stands ${moved} after the push`;
-  }
   const passAfterPush = await passStandsOf(a4Issue, "a4");
   note(`after the push a pass of a4 stands: ${passAfterPush}`);
   if (passAfterPush !== "no") return `after the push a pass of a4 stands ${passAfterPush}`;
@@ -863,7 +873,6 @@ A result stands while its commit is the pull request's head.
   });
   const atNewHead = await awaitCommitStands(a4Issue, "a4", commits.headTwo, "at_basis");
   note(`the result at the new head ${commits.headTwo.slice(0, 12)} stands ${atNewHead}`);
-  if (atNewHead !== "at_basis") return `the result at the new head stands ${atNewHead}`;
   const passAtNewHead = await passStandsOf(a4Issue, "a4");
   note(`at the new head a pass of a4 stands: ${passAtNewHead}`);
   return passAtNewHead === "yes (tester)"
@@ -907,7 +916,16 @@ A result stands while its commit is the head of a pull request of this repositor
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFork = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  // Where a commit stands is computed while the results are read, from the pull request rows the
+  // intake stores, so the state that would make the fork's head a basis is its stored row: once
+  // the row is there, attributed to nobody by the source "none" and stamped with this build's
+  // rule, which the reconcile leaves as it is, one read of the result is the answer.
+  const forkRow = await awaitStoredHead(
+    9,
+    `nobody by none (open at ${commits.fork.slice(0, 12)}, rule 2)`
+  );
+  note(`the fork's pull request #9 is stored as ${forkRow}`);
+  const atFork = await commitStandsAt(forkIssue, "fork", commits.fork);
   note(`the commit of the result at the fork's head ${commits.fork.slice(0, 12)} stands ${atFork}`);
   if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
   const compared = await checkOf(forkIssue, "fork");
@@ -938,9 +956,7 @@ A result stands while its commit is the head of a pull request of this repositor
   note(`published the same pull request with its head in ${repo} on ${owned}`);
   const atOwnHead = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
   note(`the same result now stands ${atOwnHead}`);
-  return atOwnHead === "at_basis"
-    ? undefined
-    : `the result at this repository's head stands ${atOwnHead}`;
+  return undefined;
 });
 
 // A5. A closed issue takes an after-merge result, and still refuses a document write.
@@ -1213,13 +1229,7 @@ A default-branch result is compared with the default branch alone.
       surface: "api",
     });
   }
-  const atOwnHead = await awaitCommitStands(
-    basesIssue,
-    "before",
-    commits.comparedHeadA2,
-    "at_basis"
-  );
-  if (atOwnHead !== "at_basis") return `the result at A2 stands ${atOwnHead} before any read`;
+  await awaitCommitStands(basesIssue, "before", commits.comparedHeadA2, "at_basis");
 
   // The command, with no commit named. Its head line is where it names the bases.
   const printed = await resultsCommand(basesIssue);
@@ -1349,13 +1359,7 @@ A default-branch result is compared with the default branch alone.
     updated_at: movedAt,
     url: `https://github.com/${repo}/pull/21`,
   });
-  const movedTo = await awaitCommitStands(
-    basesIssue,
-    "before",
-    commits.comparedHeadA,
-    "other_commit"
-  );
-  if (movedTo !== "other_commit") return `after the event the result at A stands ${movedTo}`;
+  await awaitCommitStands(basesIssue, "before", commits.comparedHeadA, "other_commit");
   const afterMove = await checkOf(basesIssue, "before");
   note(`after the event the before check compares with ${comparedOf(afterMove)}`);
   const moved = (afterMove.compared_with ?? []).find((basis) => basis.pull_request === 21);
@@ -1524,7 +1528,6 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     const stored = await awaitStoredHead(envelope.number, wanted);
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
-    if (stored !== wanted) return `#${envelope.number} is stored as ${stored}, want ${wanted}`;
   }
 
   // The child's own pull request answers for the child's checks and for none of the parent's.
@@ -1605,7 +1608,6 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 2)`;
     const seen = await awaitStoredHead(row.number, wanted);
     note(`the reconcile re-judged #${row.number}: ${seen}`);
-    if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
   }
 
   // One pass re-judges both rows, in an order of the reconcile's own, so the moves are compared
@@ -1646,7 +1648,6 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 2)`;
   const movedHead = await awaitStoredHead(41, wantedHead);
   note(`#41 after the push is stored as ${movedHead}`);
-  if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;
   const afterPush = await attributionMoves(child);
   note(`${child} still records ${afterPush.length} move(s), the push among them appending none`);
   return afterPush.length === childMoves.length

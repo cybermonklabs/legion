@@ -278,9 +278,15 @@ func (l *Ledger) commit(ctx context.Context) error {
 		captures = append(captures, flushCapture(flush))
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
-	// lock, after the flushes' classes are marked stored.
+	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
+	// fork, which the room's durable writers move on from there (roomShadow.measure), so the
+	// write's rendering describes its fork for the last time here, under the document's advisory
+	// lock this transaction still holds (checkRendering's "commit").
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
+		if l.service.checkRendering != nil && !write.finished {
+			l.service.checkRendering("commit", write)
+		}
 		if shadow := write.newShadow(); shadow != nil {
 			captures = append(captures, roomCapture{room: artifactID, capture: authorCapture{state: write.state}, shadow: shadow})
 		}

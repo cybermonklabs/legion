@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const notLoggedInNotice = "agent-secrets: this machine is not logged in to the secrets broker; not an agent session (run: agent-secrets machine login)\n"
@@ -48,32 +49,36 @@ func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 	}
 }
 
-// TestRegisterWaitReturnsAtOnceWithoutALauncherCredential runs `register --wait 10 --exec` against
-// the real helper while it holds no launcher credential: its enroll loop cannot succeed, so the
-// helper answers at once instead of holding the launch for the full wait. The launch still execs,
-// warning that the machine is not logged in, what the session's secrets calls do until it is, and
-// the login command. The bound only rules out the 10 s wait.
+// TestRegisterWaitReturnsAtOnceWithoutALauncherCredential runs `register --wait <a day> --exec`
+// against the real helper while it holds no launcher credential: its enroll loop cannot succeed,
+// so the helper answers at once instead of holding the launch for the full wait. The launch still
+// execs, warning that the machine is not logged in, what the session's secrets calls do until it
+// is, and the login command. A day is longer than any test binary's -timeout, so a helper that
+// held the launch for the wait never lets the command end inside the shared wait, which then
+// fails naming it.
 func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
-	cmd := exec.Command(binary, "register", "--wait", "10", "--exec", "--", "sh", "-c", "echo ran")
+	const aDay = "86400"
+	cmd := exec.Command(binary, "register", "--wait", aDay, "--exec", "--", "sh", "-c", "echo ran")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	start := time.Now()
-	out, err := cmd.Output()
-	elapsed := time.Since(start)
-	if err != nil || strings.TrimSpace(string(out)) != "ran" {
-		t.Fatalf("the command must still run: %q %v (stderr %q)", out, err, stderr.String())
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	ran := make(chan struct{})
+	go func() { err = cmd.Wait(); close(ran) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-ran })
+	testwait.Receive(t, "register --wait "+aDay+" to launch at once on a helper holding no launcher credential", ran)
+	if err != nil || strings.TrimSpace(stdout.String()) != "ran" {
+		t.Fatalf("the command must still run: %q %v (stderr %q)", stdout.String(), err, stderr.String())
 	}
 	const warning = "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway, and until it is (run: agent-secrets machine login) this session's agent-secrets calls fail\n"
 	if stderr.String() != warning {
 		t.Fatalf("stderr %q, want the no-credential warning %q", stderr.String(), warning)
 	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("register --wait 10 took %s with no credential; it must not wait", elapsed)
-	}
-	t.Logf("register --wait 10 with no credential returned in %s", elapsed)
 }
 
 // TestIdentityWhileAHelperWithACredentialEnrolls: once the helper holds a launcher credential, a
@@ -102,13 +107,7 @@ func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
 	if _, err := srv.Broker.Login(context.Background(), srv.Hostname); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for !srv.Broker.HasCredential() && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !srv.Broker.HasCredential() {
-		t.Fatal("the helper never installed the issued launcher credential")
-	}
+	testwait.Eventually(t, "the helper to install the issued launcher credential", srv.Broker.HasCredential)
 	code, stdout, stderr := runInSession(t, binary, sock, "identity")
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Fatalf("identity in a registered, enrolling session on a logged-in helper: exit %d, stdout %q, stderr %q; want 0 and nothing", code, stdout, stderr)

@@ -59,5 +59,10 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record of this proof or of its siblings, whose run makes this
+# same run around another driver, rounded up to the minute: this proof's own 2 green e2e.yaml jobs
+# up to 2026-11-15 (none in a green run) took at most 121 s (run 43679368771), and the siblings'
+# longest, handoff-records.sh's proof step, 217 s (run 43017653696).
+proof_guard 480
 live_daemon_proof 'behind entry fence' behind-entry-fence TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive \
   "${BEHIND_ENTRY_FENCE_EVIDENCE_DIR:-}"

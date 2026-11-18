@@ -65,8 +65,25 @@ test("a transcript is settled unless it ends mid-line; an empty or absent one is
   expect(await transcriptSettled(scratchDir())).toBe(true);
 });
 
-test("the wait for a settled transcript returns at once, and throws naming it at its bound", async () => {
-  await awaitSettled(await sessions(`${entry(KIND, 1)}\n`), 5_000);
+test("the wait for a settled transcript returns at once, and names it when it gives up", async () => {
+  await awaitSettled(await sessions(`${entry(KIND, 1)}\n`));
+  // The wait ends at its deadline, which a process outside `bun test` takes from
+  // LEGION_PROOF_DEADLINE_MS (`@legion/test-fixtures/wait`): a driver whose deadline has already
+  // passed asks once and gives up at once, so the failure is read without spending a row's guard.
   const mid = await sessions(`${entry(KIND, 1)}\n{"cus`);
-  await expect(awaitSettled(mid, 50)).rejects.toThrow(`the transcript under ${mid}`);
+  const helper = JSON.stringify(path.join(import.meta.dir, "transcript-entries.ts"));
+  const driver = Bun.spawnSync(
+    [
+      process.execPath,
+      "-e",
+      `import { awaitSettled } from ${helper};
+await awaitSettled(${JSON.stringify(mid)}).then(
+  () => console.log("settled"),
+  (error) => console.log(error.message)
+);`,
+    ],
+    { env: { ...process.env, LEGION_PROOF_DEADLINE_MS: "0" } }
+  );
+  expect(driver.stderr.toString()).toBe("");
+  expect(driver.stdout.toString()).toContain(`gave up waiting for the transcript under ${mid}`);
 });

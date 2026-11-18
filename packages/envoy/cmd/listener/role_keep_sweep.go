@@ -109,7 +109,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 			<-slots
 			continue
 		}
-		headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
+		headCtx, cancelHead := cfg.clk().WithTimeout(ctx, roleKeepDrainWindow)
 		head, err := readKeptLaneHead(headCtx, cfg.client, role)
 		cancelHead()
 		if err != nil {
@@ -153,7 +153,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // caller gives the role's guard back first, so no handover of the role waits on that read, and
 // keeps its sweep slot through the read and gives it back after it (sweepKeptRoleLanes).
 func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) uint64 {
-	handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
+	handoverCtx, cancel := cfg.clk().WithTimeout(ctx, roleKeepHandoverWindow)
 	defer cancel()
 	handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now)
 	reportKeptRoleDrain(cfg, role, err)
@@ -176,7 +176,7 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // which is given back after it (sweepKeptRoleLanes).
 func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, from uint64) {
 	now := cfg.now()
-	readCtx, cancel := context.WithTimeout(ctx, roleKeepDrainWindow)
+	readCtx, cancel := cfg.clk().WithTimeout(ctx, roleKeepDrainWindow)
 	wakes, err := keptLaneWakesItsRole(readCtx, cfg.client, role, from, now)
 	cancel()
 	if err != nil {

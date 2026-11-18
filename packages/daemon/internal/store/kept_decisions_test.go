@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // keptRig is a store with the records a kept decision's claim and hold read: issues and their
@@ -313,26 +314,22 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	case pid = <-backend:
 	case <-read:
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for waiting := false; !waiting; {
+	testwait.Eventually(t, "the second composer to compose or to wait on the first's lock", func() bool {
 		select {
 		case <-read:
-			waiting = true
-			continue
+			return true
 		default:
 		}
+		var waiting bool
 		if err := r.store.Pool().QueryRow(r.ctx, `select exists (select 1 from pg_locks where pid = $1 and not granted)`, pid).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second composer neither composed nor waited on the first")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return waiting
+	})
 	if err := first.Commit(r.ctx); err != nil {
 		t.Fatalf("commit the first composer: %v", err)
 	}
-	got := <-second
+	got := testwait.Receive(t, "the second composer to return once the first committed", second)
 	if got.err != nil {
 		t.Fatalf("the second composer: %v", got.err)
 	}

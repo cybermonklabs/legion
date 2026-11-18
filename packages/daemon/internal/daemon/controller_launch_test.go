@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -177,7 +176,9 @@ func TestForgetSessionLetsTheControllerKeeperSpawnFresh(t *testing.T) {
 	rt := fake.NewRuntime()
 	var record built
 	o := fakeRuntime(rt, &record)
-	o.orphanSweep, o.controllerRetry = 2*time.Second, 100*time.Millisecond
+	clock := newStillClock()
+	o.clock = clock
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -205,7 +206,11 @@ func TestForgetSessionLetsTheControllerKeeperSpawnFresh(t *testing.T) {
 	if forgotten.Session != "" || forgotten.SessionFile != "" || forgotten.State != string(supervise.StateFailed) {
 		t.Fatalf("forget-session answered %+v, want a failed controller with no session", forgotten)
 	}
-	testwait.Eventually(t, "the controller keeper to start a fresh controller", func() bool {
+	// The keeper waits controllerRetryFirst before it retries a controller that stopped: one look
+	// marks that moment, the clock reaches it, and the look after it starts the fresh controller.
+	passes.pass(t, passControllerKeeper)
+	clock.Advance(controllerRetryFirst)
+	passes.until(t, passControllerKeeper, "the controller keeper to start a fresh controller", func() bool {
 		return controllerSpawns(rt, token) == 2 && d.claim(token).State == string(supervise.StateLaunching)
 	})
 	if spawn := lastLaunch(t, rt, token); spawn.ResumeSessionFile != "" {
@@ -269,26 +274,31 @@ func TestTheKeeperRetriesAControllerWhoseLaunchesRanOut(t *testing.T) {
 	refused := errors.New("the cluster refused the Sandbox")
 	rt.ScriptSpawn(fake.SpawnResult{Err: refused}, fake.SpawnResult{Err: refused}, fake.SpawnResult{Err: refused})
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep, o.controllerRetry = 50*time.Millisecond, 200*time.Millisecond
+	clock := newStillClock()
+	o.clock = clock
+	passes := triggering(&o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
 	}
 	token := claim.ControllerToken(project)
-	// The claim is failed only from the third refusal until the keeper's retry a controllerRetry
+	// The claim is failed only from the third refusal until the keeper's retry a wait of its own
 	// later, a window a loaded machine's polls can miss; the keeper's own line marks it for good.
 	failedAt := &atomic.Int64{}
 	failedAt.Store(-1)
 	log := slog.New(keeperSawFailure{Handler: quietLogger().Handler(), token: token,
 		spawns: func() int { return controllerSpawns(rt, token) }, failedAt: failedAt})
 	d := startDaemonLogging(t, cfg, o, log)
-	testwait.Eventually(t, "the controller's refused launches to fail its claim", func() bool {
+	passes.until(t, passControllerKeeper, "the controller's refused launches to fail its claim", func() bool {
 		return failedAt.Load() >= 0
 	})
 	if spawns := failedAt.Load(); spawns != int64(cfg.LaunchFailureLimit) {
 		t.Fatalf("the controller's claim failed after %d launches, want %d refused", spawns, cfg.LaunchFailureLimit)
 	}
-	testwait.Eventually(t, "the keeper to retry the failed controller on fresh budgets", func() bool {
+	// The keeper retries a stopped controller controllerRetryFirst after the look that found it
+	// stopped, and not before: the clock reaches that moment here, and the looks are this test's.
+	clock.Advance(controllerRetryFirst)
+	passes.until(t, passControllerKeeper, "the keeper to retry the failed controller on fresh budgets", func() bool {
 		c := d.claim(token)
 		return controllerSpawns(rt, token) == cfg.LaunchFailureLimit+1 && c.State == string(supervise.StateLaunching) &&
 			c.Budgets.LaunchFailures == 0
@@ -302,7 +312,7 @@ func TestARestartedDaemonReadoptsItsControllerAndLaunchesNoSecond(t *testing.T) 
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 50 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -322,7 +332,9 @@ func TestARestartedDaemonReadoptsItsControllerAndLaunchesNoSecond(t *testing.T) 
 	testwait.Eventually(t, "the restarted daemon to supervise its controller's claim", func() bool {
 		return d.claim(token).State == string(supervise.StateLaunching)
 	})
-	time.Sleep(5 * o.orphanSweep)
+	// The keeper is what would spawn a second controller: one look of its own, run and reported,
+	// is the proof it looked at the readopted claim and spawned nothing.
+	passes.pass(t, passControllerKeeper)
 	if spawns := controllerSpawns(rt, token); spawns != 1 {
 		t.Fatalf("the controller was spawned %d times across the restart, want once", spawns)
 	}
@@ -337,7 +349,7 @@ func TestADaemonSwitchedBackToTheOperatorStopsItsControllersClaim(t *testing.T) 
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 50 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -360,7 +372,9 @@ func TestADaemonSwitchedBackToTheOperatorStopsItsControllersClaim(t *testing.T) 
 	if !released {
 		t.Fatalf("the operator's daemon never released the controller's process; runtime calls %+v", rt.Calls())
 	}
-	time.Sleep(5 * o.orphanSweep)
+	// As above: the liveness sweep's pass is the periodic work coming round under
+	// `controller: operator`, where no keeper runs at all.
+	passes.pass(t, passControllerWatch)
 	if spawns := controllerSpawns(rt, token); spawns != 1 {
 		t.Fatalf("the controller was spawned %d times across the switch, want once", spawns)
 	}
@@ -387,7 +401,6 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 	rt := fake.NewRuntime()
 	var record built
 	o := fakeRuntime(rt, &record)
-	o.orphanSweep = 50 * time.Millisecond
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -445,7 +458,6 @@ func TestASwitchedBackDaemonWhoseStopFailsLeavesItsControllerRegistered(t *testi
 	rt := fake.NewRuntime()
 	var record built
 	o := fakeRuntime(rt, &record)
-	o.orphanSweep = 50 * time.Millisecond
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -506,7 +518,6 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 	rt := fake.NewRuntime()
 	var record built
 	o := fakeRuntime(rt, &record)
-	o.orphanSweep = 50 * time.Millisecond
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -563,7 +574,6 @@ func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 50 * time.Millisecond
 	d := startDaemon(t, cfg, o)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -615,12 +625,14 @@ func TestASwitchedBackDaemonNeverLaunchesAControllerLaunchACrashCutShort(t *test
 	})
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 50 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	if state := d.claim(token).State; state != string(supervise.StateRetired) {
 		t.Fatalf("the controller launch a crash cut short is %s once the operator's daemon booted, want retired", state)
 	}
-	time.Sleep(5 * o.orphanSweep)
+	// The controller's own liveness sweep runs under either mode: a pass of it, run and
+	// reported, is the daemon's periodic work having come round with no controller spawned.
+	passes.pass(t, passControllerWatch)
 	if spawns := controllerSpawns(rt, token); spawns != 0 {
 		t.Fatalf("the operator's daemon spawned the controller %d times, want none", spawns)
 	}

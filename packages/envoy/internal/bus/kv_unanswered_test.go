@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -219,9 +220,10 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 // of it. The denied row holds the other half of that path, where the record names a refusal and
 // the send is not made again (TestADeniedBucketLookupIsNotSentAgain). A connection no client owns
 // returns refusedSend at its early exit, so a row on one would never reach the record at all.
-func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
+// options are the client's own, such as the clock a row moves its lookups' bounds on (WithClock).
+func relayedJetStream(t *testing.T, relay *unansweredRelay, options ...ConnectOption) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
-	client, err := Connect([]string{relay.url})
+	client, err := Connect([]string{relay.url}, options...)
 	if err != nil {
 		t.Fatalf("connect the client whose connection the start opens the bucket on: %v", err)
 	}
@@ -371,7 +373,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(context.Background(), conn, kv, true, startSendsAgain)
+	handle, err := wrapKeyValue(context.Background(), clock.Real(), conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
@@ -396,7 +398,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(context.Background(), conn, kv, false, startSendsAgain)
+	handle, err := wrapKeyValue(context.Background(), clock.Real(), conn, kv, false, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
 	}
@@ -416,7 +418,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(0)
-	if _, err := wrapKeyValue(context.Background(), conn, kv, true, startSendsAgain); err != nil {
+	if _, err := wrapKeyValue(context.Background(), clock.Real(), conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 

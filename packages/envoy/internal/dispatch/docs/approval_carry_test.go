@@ -647,7 +647,8 @@ const regionSpec = "Context\n\n:::ask{#region urgency=\"low\" multiple=\"false\"
 // seededRegionDocument creates regionSpec as a document, starts a service that settles a live
 // write after settle, seeds the document's live text with the same markdown, and returns the
 // store, the service and the document's id once settlement has indexed the block as an ask of the
-// document - the row the carry reads.
+// document - the row the carry reads. That settlement runs at once (SettleNow), whatever settle
+// is, so a test that holds every later settlement off its steps passes an hour.
 func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -656,8 +657,8 @@ func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Se
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads.
-	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index the block", func() bool {
+	service.SettleNow(artifactID)
+	waitFor(t, "settlement to index the block", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
 			t.Fatal(err)

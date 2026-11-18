@@ -3,14 +3,18 @@ package docs
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Writes through a room and joined writes leave, once the queue has checked their document, the
@@ -41,22 +45,20 @@ func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T
 		}},
 	} {
 		t.Run(writers.name, func(t *testing.T) {
-			service, artifactID := newTestService(t)
-			service.settle = time.Hour
-			steps := quickCompactionQueue(service, 50*time.Millisecond)
+			fake := clocktest.New(time.Now())
+			service, artifactID := newClockedTestService(t, fake)
+			steps := recordCompactionSteps(service)
 			seedServiceText(t, service, artifactID, "First.\n")
 			for index := range 20 {
 				writers.write(t, service, artifactID, index)
 			}
 			waitForLandedAppends(t, service, artifactID)
+			stepWhenDue(t, fake, service, artifactID)
 			steps.await(t, artifactID, 0, "the queue's first check of the young rows", func(step compactionStepRecord) bool {
 				return step.next.kind == compactionLater
 			})
-			// The queue checks a noted room at once here, so the notes of the writes below would
-			// let it compact before the rows it folds are read. It is held from here until they are,
-			// which drops what it holds and every note meanwhile; the document is then noted as
-			// the writes' commits noted it.
-			resume := service.compactions.pause(context.Background())
+			// The queue steps only as the test moves the fake, so the rows the compaction folds are
+			// read here before it runs; the writes below note the document as every write does.
 			old := storedRows(t, service.store, artifactID)
 			if len(old) < 1+compactMinRows {
 				t.Fatalf("the writes stored %d rows, want at least %d", len(old), 1+compactMinRows)
@@ -71,8 +73,7 @@ func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T
 			foldPoint := old[len(old)-1].version
 
 			from := steps.count()
-			resume()
-			service.compactions.note(artifactID)
+			stepWhenDue(t, fake, service, artifactID)
 			steps.await(t, artifactID, from, "the queue to compact the document", func(step compactionStepRecord) bool {
 				return step.next.kind == compactionAgain
 			})
@@ -92,10 +93,11 @@ func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T
 // or any row after its first older than compactMaxTailAge. A document that is not due keeps its
 // rows as stored, and is checked again when it will be.
 func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	loads := map[string]func(t *testing.T, artifactID string){
 		"a room load": func(t *testing.T, artifactID string) { liveTree(t, service, artifactID) },
 		"a cold read": func(t *testing.T, artifactID string) {
@@ -124,6 +126,7 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 				reading := storedReading(t, NewPgVersioned(database), artifactID)
 				from := steps.count()
 				load(t, artifactID)
+				stepWhenDue(t, fake, service, artifactID)
 				if test.dueIn == 0 {
 					steps.await(t, artifactID, from, "the queue to compact the due document", func(step compactionStepRecord) bool {
 						return step.next.kind == compactionAgain
@@ -156,31 +159,28 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 // queue schedules it for when its oldest row after the first passes compactMaxTailAge, and that
 // check compacts it.
 func TestTheCompactionQueueComesBackToADocumentWhenItsRowsComeOfAge(t *testing.T) {
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	fake := clocktest.New(time.Now())
+	service, artifactID := newClockedTestService(t, fake)
+	steps := recordCompactionSteps(service)
 	seedServiceText(t, service, artifactID, "First.\n")
 	for _, paragraph := range []string{"Second.\n", "Third.\n", "Fourth.\n"} {
 		editLiveTree(t, service, artifactID, appendBlocks(t, paragraph))
 	}
 	waitForLandedAppends(t, service, artifactID)
+	checked := stepWhenDue(t, fake, service, artifactID)
 	step := steps.await(t, artifactID, 0, "the queue's check of the young rows", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
 	if wait := step.next.after; wait > compactMaxTailAge || wait < compactMaxTailAge-time.Minute {
 		t.Fatalf("the queue checks the young rows again in %s, want about %s", wait, compactMaxTailAge)
 	}
-	// The step is recorded before it settles, and recheckNow reaches only a room the queue has
-	// scheduled again: a recheck sent while the step is still settling misses the room, which then
-	// waits out the young rows' check, minutes away.
-	waitFor(t, 10*time.Second, "the queue to schedule the young rows' check", func() bool {
-		return queueWaitsOn(service, artifactID)
-	})
 	before := storedRows(t, service.store, artifactID)
 
 	ageUpdatesThrough(t, service.store, artifactID, everyVersion, compactMaxTailAge+time.Minute)
 	from := steps.count()
-	recheckNow(service)
+	if at := stepWhenDue(t, fake, service, artifactID); at.Sub(checked) != step.next.after {
+		t.Fatalf("the queue checks the young rows again %s after their check, want %s, when that check said they are due", at.Sub(checked), step.next.after)
+	}
 	steps.await(t, artifactID, from, "the queue to compact the rows come of age", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionAgain
 	})
@@ -193,12 +193,12 @@ func TestTheCompactionQueueComesBackToADocumentWhenItsRowsComeOfAge(t *testing.T
 // A compaction another writer drops - a prune between its read and its write - is retried after the
 // queue's backoff, and the retry folds the rows the prune left.
 func TestTheCompactionQueueRetriesACompactionAPruneDropped(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	backoff := 50 * time.Millisecond
-	steps := quickCompactionQueue(service, backoff)
+	steps := recordCompactionSteps(service)
 	artifactID := storeAgedRows(t, database, 6, 20*time.Minute)
 	var pruned LoadedDocument
 	duringCompactionFold(persist, artifactID, func() {
@@ -214,17 +214,24 @@ func TestTheCompactionQueueRetriesACompactionAPruneDropped(t *testing.T) {
 	if _, err := persist.Load(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document: %v", err)
 	}
+	dropped := stepWhenDue(t, fake, service, artifactID)
+	steps.await(t, artifactID, 0, "the queue's compaction the prune drops", func(step compactionStepRecord) bool {
+		return step.next.kind == compactionRetry
+	})
+	if retried := stepWhenDue(t, fake, service, artifactID); retried.Sub(dropped) != compactBackoff {
+		t.Fatalf("the queue retried the dropped compaction %s after it, want its backoff, %s", retried.Sub(dropped), compactBackoff)
+	}
 	steps.await(t, artifactID, 0, "the queue to drop the compacted document", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionDone
 	})
 	got := steps.of(artifactID)
 	want := []compactionStepRecord{
 		{room: artifactID, next: compactionNext{kind: compactionRetry}},
-		{room: artifactID, retry: backoff, next: compactionNext{kind: compactionAgain}},
+		{room: artifactID, backoff: compactBackoff, next: compactionNext{kind: compactionAgain}},
 		{room: artifactID, next: compactionNext{kind: compactionDone}},
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("the queue's steps = %v, want the dropped compaction retried after %s and then compacted: %v", got, backoff, want)
+		t.Fatalf("the queue's steps = %v, want the dropped compaction retried after %s and then compacted: %v", got, compactBackoff, want)
 	}
 	if after := storedRows(t, database, artifactID); len(after) != 1 || after[0].version != 4 {
 		t.Fatalf("the document holds rows %v after the retry, want the pruned rows folded into version 4", rowVersions(after))
@@ -238,32 +245,52 @@ func TestTheCompactionQueueRetriesACompactionAPruneDropped(t *testing.T) {
 // A document whose lock another holder has is retried, the backoff doubling to its cap, and
 // compacts on the first retry after the lock is free.
 func TestTheCompactionQueueRetriesABusyDocumentUntilItsLockIsFree(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	backoff := 20 * time.Millisecond
-	steps := quickCompactionQueue(service, backoff)
+	steps := recordCompactionSteps(service)
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
 	before := storedRows(t, database, artifactID)
 	unlock := holdDocumentLock(t, database, artifactID)
 
 	loadStored(t, service, artifactID)
-	steps.await(t, artifactID, 0, "four retries of the busy document", func(step compactionStepRecord) bool {
-		return step.retry == 4*backoff && step.next.kind == compactionRetry
+	at := stepWhenDue(t, fake, service, artifactID)
+	steps.await(t, artifactID, 0, "the busy document's first check", func(step compactionStepRecord) bool {
+		return step.next.kind == compactionRetry
 	})
-	requireRowsAsStored(t, database, artifactID, before)
-	var retries []time.Duration
-	for _, step := range steps.of(artifactID) {
-		retries = append(retries, step.retry)
+	// Every retry finds the lock held too, and comes its backoff after the step before it: the
+	// backoff doubles from compactBackoff to compactBackoffCap, and stays there.
+	backoffs := []time.Duration{compactBackoff}
+	for backoffs[len(backoffs)-1] < compactBackoffCap {
+		backoffs = append(backoffs, min(2*backoffs[len(backoffs)-1], compactBackoffCap))
 	}
-	if want := []time.Duration{0, backoff, 2 * backoff, 4 * backoff}; fmt.Sprint(retries[:4]) != fmt.Sprint(want) {
-		t.Fatalf("the busy document's steps ran after backoffs %v, want %v", retries, want)
+	backoffs = append(backoffs, compactBackoffCap)
+	for index, backoff := range backoffs {
+		from := steps.count()
+		retried := stepWhenDue(t, fake, service, artifactID)
+		if gap := retried.Sub(at); gap != backoff {
+			t.Fatalf("retry %d of the busy document came %s after the step before it, want %s", index+1, gap, backoff)
+		}
+		at = retried
+		steps.await(t, artifactID, from, fmt.Sprintf("retry %d of the busy document", index+1), func(step compactionStepRecord) bool {
+			return step.next.kind == compactionRetry
+		})
+	}
+	requireRowsAsStored(t, database, artifactID, before)
+	var got []time.Duration
+	for _, step := range steps.of(artifactID) {
+		got = append(got, step.backoff)
+	}
+	if want := append([]time.Duration{0}, backoffs...); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("the busy document's steps ran after backoffs %v, want %v", got, want)
 	}
 
 	from := steps.count()
 	unlock()
+	stepWhenDue(t, fake, service, artifactID)
 	steps.await(t, artifactID, from, "the retry after the lock is free to compact", func(step compactionStepRecord) bool {
-		return step.retry > 0 && step.next.kind == compactionAgain
+		return step.backoff > 0 && step.next.kind == compactionAgain
 	})
 	if after := storedRows(t, database, artifactID); len(after) != 1 || after[0].version != before[len(before)-1].version {
 		t.Fatalf("the document holds rows %v, want the head %d alone", rowVersions(after), before[len(before)-1].version)
@@ -274,26 +301,30 @@ func TestTheCompactionQueueRetriesABusyDocumentUntilItsLockIsFree(t *testing.T) 
 // retrying it but does not drop it: the young rows stay as stored, and the queue checks the
 // document again for when they come due, which compacts it.
 func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 20*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
 	unlock := holdDocumentLock(t, database, artifactID)
 
 	loadStored(t, service, artifactID)
+	stepWhenDue(t, fake, service, artifactID)
+	stepWhenDue(t, fake, service, artifactID)
 	steps.await(t, artifactID, 0, "a retry of the busy document", func(step compactionStepRecord) bool {
-		return step.retry > 0 && step.next.kind == compactionRetry
+		return step.backoff > 0 && step.next.kind == compactionRetry
 	})
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 0)
 	young := storedRows(t, database, artifactID)
+	retried := stepWhenDue(t, fake, service, artifactID)
 	step := steps.await(t, artifactID, 0, "the retry that finds no old row to check the document again later", func(step compactionStepRecord) bool {
-		return step.retry > 0 && step.next.kind == compactionLater
+		return step.backoff > 0 && step.next.kind == compactionLater
 	})
 	if wait := step.next.after; wait > compactMaxTailAge || wait < compactMaxTailAge-time.Minute {
 		t.Fatalf("the queue checks the young rows again in %s, want about %s, when they are due", wait, compactMaxTailAge)
 	}
-	waitFor(t, 10*time.Second, "the queue to schedule the document's check", func() bool {
+	waitFor(t, "the queue to schedule the document's check", func() bool {
 		return queueWaitsOn(service, artifactID)
 	})
 	requireRowsAsStored(t, database, artifactID, young)
@@ -301,9 +332,11 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	unlock()
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 20*time.Minute)
 	from := steps.count()
-	recheckNow(service)
+	if at := stepWhenDue(t, fake, service, artifactID); at.Sub(retried) != step.next.after {
+		t.Fatalf("the queue checks the young rows again %s after the retry, want %s, when that retry said they are due", at.Sub(retried), step.next.after)
+	}
 	steps.await(t, artifactID, from, "the check once the rows are due to compact them", func(step compactionStepRecord) bool {
-		return step.retry == 0 && step.next.kind == compactionAgain
+		return step.backoff == 0 && step.next.kind == compactionAgain
 	})
 	if after := storedRows(t, database, artifactID); len(after) != 1 || after[0].version != young[len(young)-1].version {
 		t.Fatalf("the document holds rows %v, want the head %d alone", rowVersions(after), young[len(young)-1].version)
@@ -314,11 +347,12 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 // an append that commits as the check after a compaction finds no row after the first has the
 // queue check the document again, and once the appended row is due that check compacts it.
 func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	artifactID := createDocument(t, database, "renoted")
 	writer := newProofHistory(t, 101)
 	appendUpdates(t, NewPgVersioned(database), artifactID, writer.write("Row 0.\n"), writer.write("Row 1.\n"), writer.write("Row 2.\n"))
@@ -329,17 +363,18 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 	appended := make(chan error, 1)
 	var once sync.Once
 	record := service.compactions.afterStep
-	service.compactions.afterStep = func(room string, retry time.Duration, next compactionNext) {
+	service.compactions.afterStep = func(room string, backoff time.Duration, next compactionNext) {
 		if room == artifactID && next.kind == compactionDone {
 			once.Do(func() {
 				_, err := persist.AppendUpdate(context.Background(), artifactID, late)
 				appended <- err
 			})
 		}
-		record(room, retry, next)
+		record(room, backoff, next)
 	}
 
 	loadStored(t, service, artifactID)
+	compacted := stepWhenDue(t, fake, service, artifactID)
 	steps.await(t, artifactID, 0, "the queue to compact the document", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionAgain
 	})
@@ -349,13 +384,18 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 	if err := <-appended; err != nil {
 		t.Fatalf("append while the step was in flight: %v", err)
 	}
+	// The note in flight queues the document for the check a first note gives it.
+	renoted := stepWhenDue(t, fake, service, artifactID)
+	if renoted.Sub(compacted) != compactFirstCheck {
+		t.Fatalf("the note in flight queued the document's check %s after the step it came in, want %s", renoted.Sub(compacted), compactFirstCheck)
+	}
 	step := steps.await(t, artifactID, 0, "the check the note in flight queued", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
 	if wait := step.next.after; wait > compactMaxTailAge || wait < compactMaxTailAge-time.Minute {
 		t.Fatalf("the queue checks the appended row again in %s, want about %s, when it is due", wait, compactMaxTailAge)
 	}
-	waitFor(t, 10*time.Second, "the queue to schedule the document's check", func() bool {
+	waitFor(t, "the queue to schedule the document's check", func() bool {
 		return queueWaitsOn(service, artifactID)
 	})
 	before := storedRows(t, database, artifactID)
@@ -365,7 +405,7 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 20*time.Minute)
 	from := steps.count()
-	recheckNow(service)
+	stepWhenDue(t, fake, service, artifactID)
 	steps.await(t, artifactID, from, "the check once the appended row is due to compact it", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionAgain
 	})
@@ -376,15 +416,17 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 
 // A burst of appends that starts after a quiet check brings the document's check forward: the
 // document waits out its oldest row's compactMaxTailAge after a check that found it not due, and
-// every append of the burst notes it, so once compactMinRows of the burst's rows are older than the
-// tail the next note's check folds them, rather than leaving them all for the 15-minute check. The
-// document then holds its fold point, the rows younger than the tail and no older row.
+// the burst's first append notes it, which brings its check to compactFirstCheck from then, so once
+// compactMinRows of the burst's rows are older than the tail that check folds them, rather than
+// leaving them all for the 15-minute check. The document then holds its fold point, the rows
+// younger than the tail and no older row.
 func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	artifactID := createDocument(t, database, "burst")
 	writer := newProofHistory(t, 101)
 	quiet := NewPgVersioned(database)
@@ -394,18 +436,17 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 5*time.Minute)
 
 	loadStored(t, service, artifactID)
+	checked := stepWhenDue(t, fake, service, artifactID)
 	step := steps.await(t, artifactID, 0, "the quiet check", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
 	if wait := step.next.after; wait < 9*time.Minute {
 		t.Fatalf("the quiet check schedules the next in %s, want about 10 minutes, the oldest row's age rule", wait)
 	}
-	waitFor(t, 10*time.Second, "the queue to schedule the quiet document's check", func() bool {
+	waitFor(t, "the queue to schedule the quiet document's check", func() bool {
 		return queueWaitsOn(service, artifactID)
 	})
 
-	// Every note of the burst brings the check forward, so the compaction may come from the check of
-	// any of them once the burst is of age, or from the young row's; either leaves the same two rows.
 	from := steps.count()
 	for index := range 20 {
 		appendUpdates(t, persist, artifactID, writer.write(fmt.Sprintf("Burst %d.\n", index)))
@@ -413,7 +454,10 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 	// The burst comes of age, as it does compactTail after it was written.
 	ageUpdatesThrough(t, database, artifactID, everyVersion, 5*time.Minute)
 	appendUpdates(t, persist, artifactID, writer.write("Young.\n"))
-	steps.await(t, artifactID, from, "a check the burst's notes brought forward to compact it", func(step compactionStepRecord) bool {
+	if at := stepWhenDue(t, fake, service, artifactID); at.Sub(checked) != compactFirstCheck {
+		t.Fatalf("after the burst the queue checks the document %s after the quiet check, want %s, the check its notes brought forward", at.Sub(checked), compactFirstCheck)
+	}
+	steps.await(t, artifactID, from, "the check the burst's notes brought forward to compact it", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionAgain
 	})
 	if after := storedRows(t, database, artifactID); len(after) != 2 {
@@ -425,14 +469,15 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 // document each return while the queue's compaction of it is held inside its fold, and the
 // compaction then folds the rows it read beneath theirs.
 func TestWritesReturnWhileTheCompactionQueueIsInsideTheirDocumentsFold(t *testing.T) {
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	fake := clocktest.New(time.Now())
+	service, artifactID := newClockedTestService(t, fake)
+	steps := recordCompactionSteps(service)
 	persist := service.persistence.(*PgVersioned)
 	held, release := holdCompactionFold(t, persist, artifactID)
 	seedServiceText(t, service, artifactID, "First.\n")
 	editLiveTree(t, service, artifactID, appendBlocks(t, "Second.\n"))
 	waitForLandedAppends(t, service, artifactID)
+	stepWhenDue(t, fake, service, artifactID)
 	steps.await(t, artifactID, 0, "the queue's check of the young rows", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
@@ -440,20 +485,15 @@ func TestWritesReturnWhileTheCompactionQueueIsInsideTheirDocumentsFold(t *testin
 	rows := storedRows(t, service.store, artifactID)
 	foldPoint := rows[len(rows)-1].version
 
-	recheckNow(service)
+	stepWhenDue(t, fake, service, artifactID)
 	<-held
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := joinedReplaceText(service, artifactID, "Replaced.\n", model.Actor{Kind: "session", ID: "agent"})
 		wrote <- err
 	}()
-	select {
-	case err := <-wrote:
-		if err != nil {
-			t.Fatalf("the joined write: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the joined write did not return while the queue's compaction was inside its fold")
+	if err := testwait.Receive(t, "the joined write to return while the queue's compaction is inside its fold", wrote); err != nil {
+		t.Fatalf("the joined write: %v", err)
 	}
 	editLiveTree(t, service, artifactID, appendBlocks(t, "After.\n"))
 	waitForLandedAppends(t, service, artifactID)
@@ -476,11 +516,12 @@ func TestWritesReturnWhileTheCompactionQueueIsInsideTheirDocumentsFold(t *testin
 // Shutdown lets the queue's compaction in flight finish and commit before it returns, takes no note
 // once it has begun, and returns only once the queue's worker has.
 func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	compacting := storeAgedRows(t, database, 4, 20*time.Minute)
 	later := storeAgedRows(t, database, 4, 20*time.Minute)
 	untouched := storedRows(t, database, later)
@@ -489,10 +530,17 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 	if _, err := persist.Load(context.Background(), compacting); err != nil {
 		t.Fatalf("load the document: %v", err)
 	}
+	stepWhenDue(t, fake, service, compacting)
 	<-held
-	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(context.Background()) }()
-	waitFor(t, 10*time.Second, "Shutdown to stop the queue's intake", func() bool {
+	// Shutdown runs on a goroutine of its own and records whether the queue's compaction had been
+	// let go of its fold before it returned: one that returned before then did not wait for it.
+	var released atomic.Bool
+	shutdown := make(chan heldReturn, 1)
+	go func() {
+		err := service.Shutdown(context.Background())
+		shutdown <- heldReturn{err: err, afterRelease: released.Load()}
+	}()
+	waitFor(t, "Shutdown to stop the queue's intake", func() bool {
 		service.compactions.mu.Lock()
 		defer service.compactions.mu.Unlock()
 		return service.compactions.shut
@@ -504,19 +552,19 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 		t.Fatal("the queue took a note after Shutdown began")
 	}
 	select {
-	case err := <-shutdown:
-		t.Fatalf("Shutdown returned (%v) while the queue's compaction was inside its fold", err)
-	case <-time.After(200 * time.Millisecond):
+	case returned := <-shutdown:
+		t.Fatalf("Shutdown returned (%v) while the queue's compaction was inside its fold", returned.err)
+	default:
 	}
 
+	released.Store(true)
 	release()
-	select {
-	case err := <-shutdown:
-		if err != nil {
-			t.Fatalf("shutdown: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Shutdown did not return once the queue's compaction was released")
+	returned := testwait.Receive(t, "Shutdown to return once the queue's compaction was released", shutdown)
+	if returned.err != nil {
+		t.Fatalf("shutdown: %v", returned.err)
+	}
+	if !returned.afterRelease {
+		t.Fatal("Shutdown returned while the queue's compaction was inside its fold")
 	}
 	select {
 	case <-service.compactions.done:
@@ -535,11 +583,12 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 // Quiesce waits for the queue's compaction in flight, takes no note while it runs and drops what the
 // queue held, and the queue takes notes again once it returns.
 func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 50*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	compacting := storeAgedRows(t, database, 4, 20*time.Minute)
 	young := storeAgedRows(t, database, 4, 0)
 	later := storeAgedRows(t, database, 4, 20*time.Minute)
@@ -548,16 +597,24 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 	if _, err := persist.Load(context.Background(), young); err != nil {
 		t.Fatalf("load the young document: %v", err)
 	}
+	stepWhenDue(t, fake, service, young)
 	steps.await(t, young, 0, "the queue's check of the young document", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
 	if _, err := persist.Load(context.Background(), compacting); err != nil {
 		t.Fatalf("load the document: %v", err)
 	}
+	stepWhenDue(t, fake, service, compacting)
 	<-held
-	quiesced := make(chan error, 1)
-	go func() { quiesced <- service.Quiesce(context.Background()) }()
-	waitFor(t, 10*time.Second, "Quiesce to pause the queue", func() bool {
+	// Quiesce runs on a goroutine of its own and records whether the queue's compaction had been
+	// let go of its fold before it returned: one that returned before then did not wait for it.
+	var released atomic.Bool
+	quiesced := make(chan heldReturn, 1)
+	go func() {
+		err := service.Quiesce(context.Background())
+		quiesced <- heldReturn{err: err, afterRelease: released.Load()}
+	}()
+	waitFor(t, "Quiesce to pause the queue", func() bool {
 		service.compactions.mu.Lock()
 		defer service.compactions.mu.Unlock()
 		return service.compactions.paused
@@ -569,19 +626,19 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 		t.Fatal("the queue took a note while Quiesce ran")
 	}
 	select {
-	case err := <-quiesced:
-		t.Fatalf("Quiesce returned (%v) while the queue's compaction was inside its fold", err)
-	case <-time.After(200 * time.Millisecond):
+	case returned := <-quiesced:
+		t.Fatalf("Quiesce returned (%v) while the queue's compaction was inside its fold", returned.err)
+	default:
 	}
 
+	released.Store(true)
 	release()
-	select {
-	case err := <-quiesced:
-		if err != nil {
-			t.Fatalf("quiesce: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Quiesce did not return once the queue's compaction was released")
+	returned := testwait.Receive(t, "Quiesce to return once the queue's compaction was released", quiesced)
+	if returned.err != nil {
+		t.Fatalf("quiesce: %v", returned.err)
+	}
+	if !returned.afterRelease {
+		t.Fatal("Quiesce returned while the queue's compaction was inside its fold")
 	}
 	if rows := storedUpdateCount(t, database, compacting); rows != 1 {
 		t.Fatalf("the document held %d rows when Quiesce returned, want the compaction in flight committed", rows)
@@ -596,9 +653,18 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 	if _, err := persist.Load(context.Background(), later); err != nil {
 		t.Fatalf("load the other document after Quiesce: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the queue to compact a document noted after Quiesce", func() bool {
+	stepWhenDue(t, fake, service, later)
+	waitFor(t, "the queue to compact a document noted after Quiesce", func() bool {
 		return storedUpdateCount(t, database, later) == 1
 	})
+}
+
+// heldReturn is what a call the test runs on a goroutine of its own while it holds the queue's
+// compaction inside its fold answers with: its error, and whether the test had let the compaction
+// go before the call returned.
+type heldReturn struct {
+	err          error
+	afterRelease bool
 }
 
 // The rooms Shutdown closes compact as they close, and leave every row younger than the tail as
@@ -642,9 +708,9 @@ func TestShutdownsCompactionLeavesTheYoungRowsAsWritten(t *testing.T) {
 // compactionStepRecord is one step the compaction queue ran: its room, the backoff it retried
 // under (zero for a check), and what it decided.
 type compactionStepRecord struct {
-	room  string
-	retry time.Duration
-	next  compactionNext
+	room    string
+	backoff time.Duration
+	next    compactionNext
 }
 
 // compactionSteps is every step a service's compaction queue has run, in order.
@@ -653,21 +719,62 @@ type compactionSteps struct {
 	steps []compactionStepRecord
 }
 
-// quickCompactionQueue makes the service's compaction queue check a noted room at once and retry
-// after backoff, doubling to four times it, and returns the record of its steps. It runs before
-// anything notes a room, so the worker reads none of it before it is set.
-func quickCompactionQueue(service *Service, backoff time.Duration) *compactionSteps {
+// recordCompactionSteps has the service's compaction queue record every step it runs, and returns
+// the record. It runs before anything notes a room, so the worker reads no hook before it is set.
+func recordCompactionSteps(service *Service) *compactionSteps {
 	steps := &compactionSteps{}
-	q := service.compactions
-	q.afterStep = func(room string, retry time.Duration, next compactionNext) {
+	service.compactions.afterStep = func(room string, backoff time.Duration, next compactionNext) {
 		steps.mu.Lock()
 		defer steps.mu.Unlock()
-		steps.steps = append(steps.steps, compactionStepRecord{room: room, retry: retry, next: next})
+		steps.steps = append(steps.steps, compactionStepRecord{room: room, backoff: backoff, next: next})
 	}
-	q.mu.Lock()
-	q.timing = compactionTiming{backoff: backoff, backoffCap: 4 * backoff}
-	q.mu.Unlock()
 	return steps
+}
+
+// newClockedTestService is newTestService on c, with settlement left to the test: the service's
+// compaction queue steps only as the test moves c (stepWhenDue).
+func newClockedTestService(t *testing.T, c *clocktest.Fake) (*Service, string) {
+	t.Helper()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	service := New(Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		Identity:  headerIdentity(database),
+		ServerURL: "https://dispatch.example",
+		Settle:    time.Hour,
+		Clock:     c,
+	})
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	return service, artifactID
+}
+
+// stepWhenDue moves fake to the time the service's compaction queue has scheduled room's next step
+// for, once no step is in flight and the queue's worker waits on its timer for the earliest step,
+// and returns that time: the step, and any step due before it, then runs as that time coming runs
+// it. A move made before the worker armed its timer would leave the timer armed past the time.
+func stepWhenDue(t *testing.T, fake *clocktest.Fake, service *Service, room string) time.Time {
+	t.Helper()
+	q := service.compactions
+	at := testwait.Until(t, "the compaction queue to schedule a step of "+room+" and its worker to arm its timer for the earliest step", func() (time.Time, bool) {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		if q.current != nil || len(q.due) == 0 {
+			return time.Time{}, false
+		}
+		for _, entry := range q.due {
+			if entry.room == room {
+				return entry.at, slices.ContainsFunc(fake.Armed(), q.due[0].at.Equal)
+			}
+		}
+		return time.Time{}, false
+	})
+	fake.Set(at)
+	return at
 }
 
 func (s *compactionSteps) count() int {
@@ -693,7 +800,7 @@ func (s *compactionSteps) of(room string) []compactionStepRecord {
 func (s *compactionSteps) await(t *testing.T, room string, from int, description string, want func(compactionStepRecord) bool) compactionStepRecord {
 	t.Helper()
 	var found compactionStepRecord
-	waitFor(t, 30*time.Second, description, func() bool {
+	waitFor(t, description, func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for _, step := range s.steps[min(from, len(s.steps)):] {
@@ -705,19 +812,6 @@ func (s *compactionSteps) await(t *testing.T, room string, from int, description
 		return false
 	})
 	return found
-}
-
-// recheckNow brings every room the service's compaction queue waits on to its check now, as the
-// time the queue scheduled it for would once it came.
-func recheckNow(service *Service) {
-	q := service.compactions
-	q.mu.Lock()
-	now := time.Now()
-	for _, entry := range q.due {
-		entry.at = now
-	}
-	q.mu.Unlock()
-	q.signal()
 }
 
 // queueHolds reports whether the service's compaction queue holds room.

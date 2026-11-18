@@ -37,6 +37,9 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "//": [
+    "test: --timeout 15000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): gen-api > the committed client types are what the generator emits, 5,478.95 ms."
+  ],
   "scripts": {
     "gen:go": "bun run scripts/gen-go.ts",
     "check:go": "bun run scripts/gen-go.ts --check",
@@ -45,7 +48,7 @@
     "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
     "build:dispatch": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 15000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ schemas/"
   },
   "dependencies": {

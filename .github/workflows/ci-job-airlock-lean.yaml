@@ -32,7 +32,12 @@ env:
 jobs:
   airlock-lean:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Each go test's -timeout 10m holds its slowest run over this job's 20 newest green merge-group
+    # runs up to 2026-11-15 many times: the seed corpus 0.051 s (run 43278643090), the two-minute
+    # fuzz 121.054 s (run 43335301897). The limit is at least the job's sum over those runs: its
+    # other steps at their longest, 57 s, 7 s of its clock over them, and the two steps' longest,
+    # 16 s and 133 s, each plus its 10 minutes: 1413 s, or 24 minutes.
+    timeout-minutes: 25
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock and TestModelAgreesOnHostShapes skip
@@ -76,10 +81,10 @@ jobs:
       # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides; and
       # the host shapes a rules file may hold, which no seed decodes to, through both validations.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes)$' ./internal/broker/airlock/
+        run: go test -timeout 10m -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes)$' ./internal/broker/airlock/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -timeout 10m -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

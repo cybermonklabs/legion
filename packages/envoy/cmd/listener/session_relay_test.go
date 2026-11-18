@@ -17,6 +17,8 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -33,32 +35,34 @@ type relayRig struct {
 	*sessionConsumerRig
 	relays *sessionRelays
 	url    string
+	// relayClock is the clock the relay's own waits run on (the receipt wait, the pause and
+	// retry backoffs): a clocktest.Held the test advances, so a silent session pauses and a
+	// paused relay restarts only when the test moves the clock past relayReceiptWait or
+	// relayPauseFirst. It is Held rather than still because the relay hands frames back in the
+	// order of their sentAt stamps (sessionRelays.release), which a still clock would make equal.
+	relayClock *clocktest.Fake
 }
 
 func newRelayRig(t *testing.T) *relayRig {
 	t.Helper()
-	return newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, relayReceiptWait)
+	return newRelayRigReceipt(t)
 }
 
-// newRelayRigReceipt is newRelayRig with the backoff a paused relay waits before it sends the
-// session's unanswered messages again bounded by first and max, and the receipt wait shortened too:
-// how long the oldest frame a session has not answered may wait before the relay pauses. A row
-// about what an unreachable session leaves behind spends that wait twice over in fixed sleeps, and
-// production's three seconds buy it nothing, so such a row names a short one of its own and scales
-// its sleeps and its silent windows to it.
-func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayRig {
+// newRelayRigReceipt is newRelayRig that holds the binding from the start. The relay's waits run on
+// rig.relayClock (clocktest.Held), which the test advances past relayReceiptWait / relayPauseFirst
+// to pause and restart it, rather than on the machine's clock.
+func newRelayRigReceipt(t *testing.T) *relayRig {
 	t.Helper()
-	rig := newRelayRigUnowned(t, first, max)
-	rig.relays.receiptWait = receipt
+	rig := newRelayRigUnowned(t)
 	rig.relays.setOwned(true)
 	return rig
 }
 
-// newRelayRigUnowned bounds the same backoff, for a task that does not hold its machine's durable
+// newRelayRigUnowned is newRelayRigReceipt for a task that does not hold its machine's durable
 // binding yet: it relays nothing, and no relay starts, until the test calls
 // rig.relays.setOwned(true). A test that must run the durable path before any relay orders them
 // this way rather than by timing.
-func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
+func newRelayRigUnowned(t *testing.T) *relayRig {
 	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
@@ -67,18 +71,19 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	}
 	t.Cleanup(client.Close)
 	rig := newSessionConsumerRigOn(t, client, url)
-	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
+	// The relay reads its waits from the delivery config's clock; a copy with a fake clock gives
+	// the relay a clock the test drives without touching the delivery handlers' own.
+	relayClock := clocktest.Held()
+	cfg := rig.harness.config
+	cfg.clock = relayClock
+	relays, err := startSessionRelays(rig.deps.consumers, cfg)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		relays.stop(ctx)
+		relays.stop(testwait.Context(t))
 	})
-	// Set before the first relay starts, which gaining the binding is what does.
-	relays.pauseFirst, relays.pauseMax = first, max
-	return &relayRig{sessionConsumerRig: rig, relays: relays, url: url}
+	return &relayRig{sessionConsumerRig: rig, relays: relays, url: url, relayClock: relayClock}
 }
 
 // consumerRegistration is the registration body of a session in consumer mode at epoch, following
@@ -192,30 +197,29 @@ func (s *sessionStandIn) reply(frame relayedFrame, word string) {
 	}
 }
 
-// collect returns the next n frames, failing the test when they do not all arrive within the bound.
-func (s *sessionStandIn) collect(t *testing.T, n int, within time.Duration) []relayedFrame {
+// collect returns the next n frames the session receives, in order.
+func (s *sessionStandIn) collect(t *testing.T, n int) []relayedFrame {
 	t.Helper()
-	deadline := time.After(within)
 	frames := make([]relayedFrame, 0, n)
-	for len(frames) < n {
-		select {
-		case frame := <-s.frames:
-			frames = append(frames, frame)
-		case <-deadline:
-			t.Fatalf("the session received %d of %d frames within %s: %v", len(frames), n, within, frameEvents(frames))
-		}
+	for range n {
+		frames = append(frames, testwait.Receive(t, fmt.Sprintf("frame %d of %d for the session", len(frames)+1, n), s.frames))
 	}
 	return frames
 }
 
-// none fails the test when a frame arrives within the window.
-func (s *sessionStandIn) none(t *testing.T, window time.Duration) {
+// relayNoFrameWindow is how long none watches for a further frame. With the relay on the test's
+// held clock a resend cannot happen (it needs the clock advanced past the receipt and pause
+// waits), so this span only has to be long enough to catch an immediate duplicate a bug would
+// publish without waiting.
+const relayNoFrameWindow = 250 * time.Millisecond
+
+// none fails the test when a further frame arrives. The relay delivers one only after the test
+// advances rig.relayClock past the receipt wait and the pause backoff, which this check does not,
+// so the held clock is what makes a further frame impossible (testwait.Quiet's why).
+func (s *sessionStandIn) none(t *testing.T) {
 	t.Helper()
-	select {
-	case frame := <-s.frames:
-		t.Fatalf("the session received another frame within %s, want none: seq %d event %s", window, frame.seq, frame.item.EventID)
-	case <-time.After(window):
-	}
+	testwait.Quiet(t, "a further frame for the session", s.frames, relayNoFrameWindow,
+		"the relay sends a further frame only after the test advances the held relay clock past the receipt and pause waits, which it does not here, so no state read or later action distinguishes a duplicate already in flight")
 }
 
 func frameEvents(frames []relayedFrame) []string {
@@ -256,7 +260,7 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	first := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
-	requireFrames(t, first.collect(t, 1, 5*time.Second), before)
+	requireFrames(t, first.collect(t, 1), before)
 	awaitAcked(t, rig.consumers, sessionID, beforeSeq)
 
 	first.conn.Close()
@@ -265,17 +269,16 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 		item, _ := rig.storeEvent(t, agent)
 		away = append(away, item)
 	}
-	// The relay sends what it pulls at once, to nobody now.
-	time.Sleep(300 * time.Millisecond)
-	// The registration below restarts the relay at the ack floor, which deletes the consumer
-	// holding those three unanswered and creates it again.
+	// The relay sends what it pulls at once, to nobody now, so the consumer holds those three for
+	// an ack. The registration below restarts the relay at the ack floor, which deletes the
+	// consumer holding those three unanswered and creates it again.
 	awaitAckState(t, rig.consumers, sessionID, len(away), beforeSeq)
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 
 	second := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	requireFrames(t, second.collect(t, 3, 5*time.Second), away...)
-	second.none(t, time.Second)
+	requireFrames(t, second.collect(t, 3), away...)
+	second.none(t)
 }
 
 // A frame is acked only once the session answers done: after received alone the consumer still
@@ -288,7 +291,7 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
-	frame := standIn.collect(t, 1, 5*time.Second)[0]
+	frame := standIn.collect(t, 1)[0]
 	requireFrames(t, []relayedFrame{frame}, stored)
 	header := frame.msg.Header
 	if got := header.Get(relayHeaderSubject); got != contracts.LegacyAgentSubject(sessionID) {
@@ -301,15 +304,19 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 		t.Errorf("%s = %q, want 1", relayHeaderDelivered, got)
 	}
 	storedAt, err := time.Parse(time.RFC3339Nano, header.Get(relayHeaderStoredAt))
-	if err != nil || !strings.HasSuffix(header.Get(relayHeaderStoredAt), "Z") || time.Since(storedAt) > time.Minute {
-		t.Errorf("%s = %q, want the stored time in RFC 3339 with nanoseconds, UTC: %v", relayHeaderStoredAt, header.Get(relayHeaderStoredAt), err)
+	raw, msgErr := rig.harness.client.JS().GetMsg(bus.Stream, seq)
+	if msgErr != nil {
+		t.Fatalf("read message %d from the stream for its stored time: %v", seq, msgErr)
+	}
+	if err != nil || !strings.HasSuffix(header.Get(relayHeaderStoredAt), "Z") || !storedAt.Equal(raw.Time) {
+		t.Errorf("%s = %q, want the stream's own stored time %s in RFC 3339 with nanoseconds, UTC: %v", relayHeaderStoredAt, header.Get(relayHeaderStoredAt), raw.Time.UTC().Format(time.RFC3339Nano), err)
 	}
 	if got := header.Get(relayHeaderGap); got != "" {
 		t.Errorf("%s = %q on a restart that lost nothing", relayHeaderGap, got)
 	}
 
 	standIn.reply(frame, relayReplyReceived)
-	time.Sleep(300 * time.Millisecond)
+	testwait.Span(t, 300*time.Millisecond, "the relay handles the 'received' reply on its reply-subscription goroutine with no positive signal of its own, and this test's real NATS I/O keeps synctest from seeing it settle; 'received' must leave the frame pending, not ack it")
 	info, err := rig.consumers.Info(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the consumer: %v", err)
@@ -322,38 +329,32 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 	awaitAcked(t, rig.consumers, sessionID, seq)
 }
 
-// awaitAcked waits up to 5 s for sessionID's consumer to hold nothing for an ack with every message
-// through seq acked.
+// awaitAcked waits for sessionID's consumer to hold nothing for an ack with every message through
+// seq acked.
 func awaitAcked(t *testing.T, consumers *bus.SessionConsumers, sessionID string, seq uint64) {
 	t.Helper()
 	awaitAckState(t, consumers, sessionID, 0, seq)
 }
 
-// awaitAckState waits up to 5 s for sessionID's consumer to hold pending messages for an ack with
-// every message through floor acked.
+// awaitAckState waits for sessionID's consumer to hold pending messages for an ack with every
+// message through floor acked.
 func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID string, pending int, floor uint64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the consumer of %s to have %d pending ack and everything through %d acked", sessionID, pending, floor), func() (string, bool) {
 		info, err := consumers.Info(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}
-		if info.NumAckPending == pending && info.AckFloor.Stream >= floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s has %d pending ack, ack floor %d; want %d pending and everything through %d acked", sessionID, info.NumAckPending, info.AckFloor.Stream, pending, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == pending && info.AckFloor.Stream >= floor
+	})
 }
 
 // A frame the session holds unwritten (received and progress, no done, as a side question held
-// over a turn) does not delay the receipt of the frames after it, which are written and done. When
-// the session restarts mid-hold and registers with a new epoch, the relay restarts at the ack floor
-// and sends the held frame and those after it again, in stream order, and the session, deduping by
-// event id as a plugin's ledger does, shows each event once.
+// over a turn) does not delay the receipt of the frames after it, which are written and done, even
+// once it has been held past the relay's receipt wait (on the relay's own clock). When the session
+// restarts mid-hold and registers with a new epoch, the relay restarts at the ack floor and sends
+// the held frame and those after it again, in stream order, and the session, deduping by event id
+// as a plugin's ledger does, shows each event once.
 func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_held"
@@ -377,7 +378,7 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	first := startSessionStandIn(t, rig.url, sessionID, show)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, e0Seq := rig.storeEvent(t, agent)
-	requireFrames(t, first.collect(t, 1, 5*time.Second), e0)
+	requireFrames(t, first.collect(t, 1), e0)
 
 	e1 := listenerTestEnvelope(agent, "relay-test-held")
 	ledgerMu.Lock()
@@ -386,14 +387,20 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	if _, err := rig.harness.client.JS().Publish(agent, marshalListenerEnvelope(t, e1)); err != nil {
 		t.Fatalf("store the held message: %v", err)
 	}
-	storedAt := time.Now()
 	e2, _ := rig.storeEvent(t, agent)
+	frames := first.collect(t, 2)
+	requireFrames(t, frames, e1, e2)
+	// The frame after the held one is written and acked while the held one waits, in progress. The
+	// stand-in sends its replies on one connection and the relay hears them on one subscription, in
+	// that order, so once e2 is acked the relay has heard e1's received and progress as well.
+	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
+	// The held frame outlives the receipt wait on the relay's clock, as a side question held over a
+	// turn outlives it. A relay that took a held frame for one the session never answered would
+	// pause here, and send nothing more until its backoff, which this clock never reaches.
+	rig.relayClock.Advance(relayReceiptWait)
 	e3, _ := rig.storeEvent(t, agent)
-	frames := first.collect(t, 3, 5*time.Second)
+	frames = append(frames, first.collect(t, 1)...)
 	requireFrames(t, frames, e1, e2, e3)
-	if late := frames[2].arrived.Sub(storedAt); late > time.Second {
-		t.Fatalf("the frame after the held one arrived %s after it was stored, want under 1s", late)
-	}
 	// Everything but the held frame is written and acked; the held one waits, in progress.
 	awaitAckState(t, rig.consumers, sessionID, 1, e0Seq)
 
@@ -404,8 +411,8 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	second := startSessionStandIn(t, rig.url, sessionID, show)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	requireFrames(t, second.collect(t, 3, 5*time.Second), e1, e2, e3)
-	second.none(t, time.Second)
+	requireFrames(t, second.collect(t, 3), e1, e2, e3)
+	second.none(t)
 
 	ledgerMu.Lock()
 	defer ledgerMu.Unlock()
@@ -434,19 +441,19 @@ func TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing(t *test
 	heard := rig.deps.consumers.mark()
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	held, heldSeq := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
+	requireFrames(t, standIn.collect(t, 1), held)
 
 	// The run has restarted and sent a frame; the loop hears the registration only now.
 	rig.relays.registered(sessionID, true, heard)
-	standIn.none(t, time.Second)
+	standIn.none(t)
 
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	again := standIn.collect(t, 1, 5*time.Second)[0]
+	again := standIn.collect(t, 1)[0]
 	requireFrames(t, []relayedFrame{again}, held)
 	standIn.reply(again, relayReplyDone)
 	awaitAcked(t, rig.consumers, sessionID, heldSeq)
-	standIn.none(t, time.Second)
+	standIn.none(t)
 }
 
 // A relay restart sets the consumer's filter to the session's stored topics as they stand under
@@ -461,7 +468,7 @@ func TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock(t *testin
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), before)
+	requireFrames(t, standIn.collect(t, 1), before)
 	awaitAcked(t, rig.consumers, sessionID, beforeSeq)
 
 	unlock := rig.deps.consumers.locks.lock(sessionID)
@@ -475,7 +482,7 @@ func TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock(t *testin
 	awaitLockUsers(t, &rig.deps.consumers.locks, sessionID, 0)
 
 	item, _ := rig.storeEvent(t, "notifications.dispatch.issue.RESTARTSTALE.comment")
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), item)
+	requireFrames(t, standIn.collect(t, 1), item)
 	requireFilters(t, rig.sessionConsumerRig, sessionID, followed)
 }
 
@@ -509,14 +516,9 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 	run := &relayRun{resume: make(chan struct{}, 1)}
 	run.wake()
 	goesOn := make(chan bool, 1)
-	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
-	select {
-	case ok := <-goesOn:
-		if !ok {
-			t.Fatal("the retry wait reported the run stopped")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the retry wait did not end on the wake sent before it")
+	go func() { goesOn <- run.waitRetry(context.Background(), clock.Real(), time.Hour) }()
+	if !testwait.Receive(t, "the retry wait to end on the wake sent before it", goesOn) {
+		t.Fatal("the retry wait reported the run stopped")
 	}
 }
 
@@ -526,37 +528,35 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 // unanswered frame and the one stored during the pause, in stream order, which a session that is
 // answering again takes once.
 func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *testing.T) {
-	// Shorter than the production bounds, long enough that the silent window below ends before
-	// the first probe: the relay sends again receipt + pauseFirst after the frame it got no
-	// answer for. The receipt wait is this row's own rather than production's three seconds,
-	// which it would otherwise spend twice over in fixed sleeps (INFRA-985).
-	const receipt = 500 * time.Millisecond
-	const pauseFirst, pauseMax = 2 * time.Second, 4 * time.Second
-	rig := newRelayRigReceipt(t, pauseFirst, pauseMax, receipt)
+	rig := newRelayRigReceipt(t)
 	const sessionID = "ses_unreachable"
 	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), e0)
+	requireFrames(t, standIn.collect(t, 1), e0)
 
 	standIn.silent.Store(true)
 	e1, _ := rig.storeEvent(t, agent)
-	unanswered := standIn.collect(t, 1, 5*time.Second)[0]
+	unanswered := standIn.collect(t, 1)[0]
 	requireFrames(t, []relayedFrame{unanswered}, e1)
 	// The relay's own restart after the pause deletes the consumer holding that frame and creates
 	// it again; nothing the consumer delivers or takes changes after this frame until then, since
 	// the paused relay pulls nothing.
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
-	// The relay stops receipt after that frame: a message stored once it has reaches the session
-	// only when the relay sends again, which is pauseFirst later.
-	time.Sleep(time.Until(unanswered.arrived.Add(receipt + 300*time.Millisecond)))
+	// The relay waits relayReceiptWait for an answer to e1; advancing the clock past it is what
+	// makes it pause. A message stored once it has paused reaches the session only when it sends
+	// again, after relayPauseFirst.
+	rig.relayClock.AwaitArmed(t, "the relay's receipt wait on the unanswered frame", 1)
+	rig.relayClock.Advance(relayReceiptWait)
 	e2, _ := rig.storeEvent(t, agent)
-	standIn.none(t, 900*time.Millisecond)
+	standIn.none(t)
 
 	standIn.silent.Store(false)
-	requireFrames(t, standIn.collect(t, 2, receipt+2*pauseFirst+2*time.Second), e1, e2)
-	standIn.none(t, time.Second)
+	rig.relayClock.AwaitArmed(t, "the paused relay's backoff before it restarts at the ack floor", 1)
+	rig.relayClock.Advance(relayPauseFirst)
+	requireFrames(t, standIn.collect(t, 2), e1, e2)
+	standIn.none(t)
 	if lines := strings.Count(rig.harness.logs.String(), "session relay paused: the session answered no frame"); lines != 1 {
 		t.Fatalf("the pause was logged %d times, want once for the episode:\n%s", lines, rig.harness.logs.String())
 	}
@@ -564,24 +564,22 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 
 // A registration resumes a paused relay at once, long before its backoff would send again.
 func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testing.T) {
-	// A backoff no test waits out: only the registration can make the relay send again here.
-	// The receipt wait is this row's own, as in the row above.
-	const receipt = 500 * time.Millisecond
-	rig := newRelayRigReceipt(t, time.Minute, time.Minute, receipt)
+	rig := newRelayRigReceipt(t)
 	const sessionID = "ses_unreachable_registers"
 	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), e0)
+	requireFrames(t, standIn.collect(t, 1), e0)
 
 	standIn.silent.Store(true)
 	e1, _ := rig.storeEvent(t, agent)
-	unanswered := standIn.collect(t, 1, 5*time.Second)[0]
+	unanswered := standIn.collect(t, 1)[0]
 	requireFrames(t, []relayedFrame{unanswered}, e1)
-	time.Sleep(time.Until(unanswered.arrived.Add(receipt + 500*time.Millisecond)))
+	rig.relayClock.AwaitArmed(t, "the relay's receipt wait on the unanswered frame", 1)
+	rig.relayClock.Advance(relayReceiptWait)
 	e2, _ := rig.storeEvent(t, agent)
-	standIn.none(t, 1500*time.Millisecond)
+	standIn.none(t)
 	if lines := strings.Count(rig.harness.logs.String(), "session relay paused: the session answered no frame"); lines != 1 {
 		t.Fatalf("the pause was logged %d times, want once for the episode:\n%s", lines, rig.harness.logs.String())
 	}
@@ -589,8 +587,8 @@ func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testin
 	standIn.silent.Store(false)
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	requireFrames(t, standIn.collect(t, 2, 5*time.Second), e1, e2)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, 2), e1, e2)
+	standIn.none(t)
 }
 
 // A topic the session follows from a registration on reaches it through its consumer: an event
@@ -602,12 +600,11 @@ func TestSessionConsumerEventPublishedJustAfterAFollowIsRelayed(t *testing.T) {
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), before)
+	requireFrames(t, standIn.collect(t, 1), before)
 
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
-	time.Sleep(100 * time.Millisecond)
 	followed, _ := rig.storeEvent(t, "notifications.dispatch.issue.FOLLOW.comment")
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), followed)
+	requireFrames(t, standIn.collect(t, 1), followed)
 }
 
 // A relay frame travels over core NATS only: after frames are relayed, the stream holds nothing on
@@ -619,7 +616,7 @@ func TestSessionConsumerRelaySubjectIsNotStored(t *testing.T) {
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	second, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 2, 5*time.Second), first, second)
+	requireFrames(t, standIn.collect(t, 2), first, second)
 
 	info, err := rig.harness.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: bus.DeliverSubjectPrefix + ">"})
 	if err != nil {
@@ -657,14 +654,14 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 	publisher := connectPublisher(t, uri)
 	before := newEnvelope("agent", agent, "before the kill")
 	publish(t, publisher, before)
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), before)
+	requireFrames(t, standIn.collect(t, 1), before)
 	info, err := consumers.Info(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the session's consumer: %v", err)
 	}
 	awaitAcked(t, consumers, sessionID, info.Delivered.Stream)
 	publish(t, publisher, midFlight)
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), midFlight)
+	requireFrames(t, standIn.collect(t, 1), midFlight)
 
 	if err := listener.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the listener: %v", err)
@@ -687,10 +684,10 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 		}
 	})
 	startedAt := time.Now()
-	frames := standIn.collect(t, 4, 10*time.Second)
+	frames := standIn.collect(t, 4)
 	requireFrames(t, frames, append([]contracts.Envelope{midFlight}, down...)...)
 	t.Logf("the frames stored while the listener was down arrived %s after its restart", frames[3].arrived.Sub(startedAt).Round(time.Millisecond))
-	standIn.none(t, time.Second)
+	standIn.none(t)
 	awaitAcked(t, consumers, sessionID, frames[3].seq)
 }
 
@@ -701,14 +698,14 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	rig := newRelayRigReceipt(t)
 	sessionID := "ses_relay_lost_" + id.New()
 	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
 	// stays delivered and unacked.
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
+	requireFrames(t, standIn.collect(t, 1), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
 	// Losing the machine's durable binding cancels the run that holds the message
@@ -718,8 +715,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// this pull, which stands in for the listener the session moved to -- is delivered that
 	// message again at once.
 	rig.relays.setOwned(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	pull, err := rig.consumers.Pull(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
@@ -741,14 +737,14 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	rig := newRelayRigReceipt(t)
 	sessionID := "ses_relay_handover_lost_" + id.New()
 	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
 	// stays delivered and unacked.
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
+	requireFrames(t, standIn.collect(t, 1), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
 	// Closing the listener's own session-consumer connection leaves the hand-over nothing to
@@ -760,7 +756,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 
 	const failed = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
 	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
-	awaitLogLine(t, rig, failed, 15*time.Second)
+	awaitLogLine(t, rig, failed)
 	// The log is read once the hand-over line is in it: before that the run has written neither
 	// line, and a missing line of a whole hand-over would say nothing.
 	logs := rig.harness.logs.String()
@@ -808,7 +804,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder(t *testing.T) {
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the
 	// frames it holds, before the row takes the session away.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 60*time.Second)
+	rig := newRelayRigReceipt(t)
 	sessionID := "ses_relay_lost_many_" + id.New()
 	// A nil answer leaves the stand-in silent, so every frame stays outstanding and every one of
 	// its messages stays delivered and unacked.
@@ -825,15 +821,14 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 		items = append(items, item)
 		stored = append(stored, seq)
 	}
-	requireFrames(t, standIn.collect(t, held, 30*time.Second), items...)
+	requireFrames(t, standIn.collect(t, held), items...)
 	awaitAckState(t, rig.consumers, sessionID, held, 0)
 
 	// The next owner's pull is open before the hand-over, as the second listener's already is
 	// when a session moves to it. That pull request is what the server delivers the naked
 	// messages into, and what the cancelled run's own pull request, left subscribed, used to
 	// take some of them away from.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	pull, err := rig.consumers.Pull(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
@@ -912,7 +907,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 
 	postListener(t, first.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 	before := publishEach("through the first")
-	beforeFrames := standIn.collect(t, 3, 10*time.Second)
+	beforeFrames := standIn.collect(t, 3)
 	requireFrames(t, beforeFrames, before...)
 	// The session wrote all three, so the second listener's restart at the ack floor sends none
 	// again.
@@ -932,9 +927,9 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 		`"relay_machine_id":"relay-first"`,
 		`"session_id":"`+sessionID+`"`)
 	after := publishEach("through the second")
-	afterFrames := standIn.collect(t, 3, 10*time.Second)
+	afterFrames := standIn.collect(t, 3)
 	requireFrames(t, afterFrames, after...)
-	standIn.none(t, 2*time.Second)
+	standIn.none(t)
 
 	byListener := map[string][]string{}
 	for _, frame := range append(beforeFrames, afterFrames...) {
@@ -1007,48 +1002,71 @@ func awaitFanoutFinished(t *testing.T, rig *relayRig, durable string, seq uint64
 	awaitDurableState(t, rig.harness.client, durable, 0, seq)
 }
 
-// deliveryExceptionsFor reads the delivery exceptions for sessionID that arrive on exceptions
-// within window, each as its reason, and ignores those for any other session.
-func deliveryExceptionsFor(t *testing.T, exceptions *natsgo.Subscription, sessionID string, window time.Duration) []string {
+// exceptionLaneMarker is the payload deliveryExceptionsFor publishes on the exception lane to mark
+// the end of a fan-out's exceptions: no reason can equal it, so a reader tells it from a real one.
+const exceptionLaneMarker = "\x00delivery-exceptions-marker"
+
+// deliveryExceptionsFor returns the reasons of the next want exceptions for sessionID on the
+// exception lane, in order, and proves no further one comes. The caller has already waited for the
+// fan-out that would raise them (awaitFanoutFinished), so every exception for it is published
+// before the marker this publishes on the same client's connection: reading up to the marker is
+// the shared wait on a stream of the lane, and want may be 0, which proves the lane carried none.
+func deliveryExceptionsFor(t *testing.T, client *bus.Client, exceptions *natsgo.Subscription, sessionID string, want int) []string {
 	t.Helper()
-	deadline := time.Now().Add(window)
-	var reasons []string
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return reasons
+	lane := &testwait.Stream[string]{}
+	go func() {
+		for {
+			msg, err := exceptions.NextMsg(time.Hour)
+			if err != nil {
+				return // the subscription was unsubscribed at cleanup
+			}
+			if string(msg.Data) == exceptionLaneMarker {
+				lane.Add(exceptionLaneMarker)
+				return
+			}
+			var envelope contracts.Envelope
+			if err := json.Unmarshal(msg.Data, &envelope); err != nil {
+				continue
+			}
+			var payload struct {
+				Reason           string `json:"reason"`
+				RecipientSession string `json:"recipient_session"`
+			}
+			if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+				continue
+			}
+			if payload.RecipientSession == sessionID {
+				lane.Add(payload.Reason)
+			}
 		}
-		msg, err := exceptions.NextMsg(remaining)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			return reasons
-		}
-		if err != nil {
-			t.Fatalf("read the exception lane of %s: %v", sessionID, err)
-		}
-		var envelope contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-			t.Fatalf("decode the exception on %s: %v", msg.Subject, err)
-		}
-		var payload struct {
-			Reason           string `json:"reason"`
-			RecipientSession string `json:"recipient_session"`
-		}
-		if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
-			t.Fatalf("decode the exception payload on %s: %v", msg.Subject, err)
-		}
-		if payload.RecipientSession == sessionID {
-			reasons = append(reasons, payload.Reason)
-		}
+	}()
+	reasons := make([]string, 0, want)
+	for range want {
+		reasons = append(reasons, testwait.Next(t, fmt.Sprintf("exception %d of %d for %s on its lane", len(reasons)+1, want, sessionID), lane, func(reason string) bool { return reason != exceptionLaneMarker }))
 	}
+	// The marker orders after every exception of this fan-out, so the next item proving to be it
+	// proves no exception past the want already read.
+	markerSubject := exceptions.Subject
+	if strings.HasSuffix(markerSubject, ">") {
+		markerSubject = markerSubject[:len(markerSubject)-1] + "marker"
+	}
+	if err := client.Conn.Publish(markerSubject, []byte(exceptionLaneMarker)); err != nil {
+		t.Fatalf("publish the exception-lane marker for %s: %v", sessionID, err)
+	}
+	if next := testwait.Next(t, "the exception-lane marker after "+sessionID+"'s exceptions", lane, func(string) bool { return true }); next != exceptionLaneMarker {
+		t.Fatalf("an unexpected exception %q for %s past the %d awaited", next, sessionID, want)
+	}
+	return reasons
 }
 
-// awaitLogLine waits for line to appear in the listener's log, failing the test when it does not
-// within the bound.
-func awaitLogLine(t *testing.T, rig *relayRig, line string, within time.Duration) {
+// awaitLogLine waits for line to appear in the listener's log, failing the test with the log it
+// read when it does not.
+func awaitLogLine(t *testing.T, rig *relayRig, line string) {
 	t.Helper()
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool { return strings.Contains(rig.harness.logs.String(), line) }) {
-		t.Fatalf("the listener never logged %q within %s", line, within)
-	}
+	testwait.Until(t, "the listener to log "+line, func() (string, bool) {
+		logged := rig.harness.logs.String()
+		return logged, strings.Contains(logged, line)
+	})
 }
 
 // grantConfigBeforeSessionConsumers is the configuration of a server whose one user, the nkey user
@@ -1094,12 +1112,13 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 		refusal.requireRefused(t, http.StatusServiceUnavailable, "no_grant")
 	}
 	awaitRefusedCalls := func(want int) {
-		deadline := time.Now().Add(2 * time.Second)
-		for refusedCalls() < want && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
-		// Any further refusal would be logged by now too.
-		time.Sleep(200 * time.Millisecond)
+		testwait.Eventually(t, fmt.Sprintf("the server to log %d refused consumer calls", want), func() bool {
+			return refusedCalls() >= want
+		})
+		// No further refusal: the server logs Publish Violations asynchronously with no signal
+		// that all are written, and this test issues no more registrations, so a span bounds the
+		// check for any beyond want.
+		testwait.Span(t, 200*time.Millisecond, "the server logs Publish Violations asynchronously with no signal that all are written; the test issues no more registrations, so a span bounds the check for extra ones")
 		if got := refusedCalls(); got != want {
 			t.Fatalf("the server refused %d consumer calls, want %d:\n%s", got, want, server.Log())
 		}
@@ -1155,6 +1174,98 @@ accounts {
 		}
 	}
 	t.Fatalf("no ERROR says the session-consumer connection failed:\n%s", output)
+}
+
+// A listener's start opens its session relays' reply subscription (startSessionRelays) and ends
+// the process when that open fails (main), so a server that has not answered the subscription
+// yet, as a server on a loaded machine answers late, must not read as one that refused it: the
+// relays start while the server holds back every answer and has not read the subscription, and
+// once it answers again a session's done comes back on the subscription the start made and acks
+// the session's message. A start that waited for the server's answer, within nats.go's Flush bound
+// of 10 s, returned `nats: timeout` here, on which main ends the start: a listener pinned to a
+// starved CPU exited at its start that way (INFRA-4240).
+//
+// The rig runs on a server of its own (testnats.Start), frozen once every connection of the rig
+// is up (testnats.Server.Freeze): each connection stays CONNECTED, and what the client sends
+// waits in front of the server until the thaw, the subscription among it, which the server's own
+// monitoring endpoint shows it does not hold when the relays have started. The relay's waits run
+// on a held clock, as newRelayRigUnowned's do, so the frame is not sent again while the row waits
+// for its ack.
+func TestTheSessionRelaysStartWhileTheServerHasNotAnsweredTheirReplySubscription(t *testing.T) {
+	server, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newSessionConsumerRigOn(t, client, url)
+	relayClock := clocktest.Held()
+	cfg := rig.harness.config
+	cfg.clock = relayClock
+
+	thaw := server.Freeze(t)
+	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown.
+	t.Cleanup(thaw)
+	type start struct {
+		relays *sessionRelays
+		err    error
+	}
+	starts := make(chan start, 1)
+	go func() {
+		relays, err := startSessionRelays(rig.deps.consumers, cfg)
+		starts <- start{relays: relays, err: err}
+	}()
+	started := testwait.Receive(t, "the session relays to start while the server holds back its answer to their reply subscription", starts)
+	if started.err != nil {
+		t.Fatalf("the session relays did not start while the server held back its answer to their reply subscription: %v", started.err)
+	}
+	t.Cleanup(func() { started.relays.stop(testwait.Context(t)) })
+	inbox := started.relays.replyPrefix + ">"
+	if n := subscriptionsOnServer(t, server, inbox); n != 0 {
+		t.Fatalf("the server held %d subscriptions on the reply inbox %s when the relays had started behind its freeze, want 0: the row did not hold the subscription back from it", n, inbox)
+	}
+
+	thaw()
+	relay := &relayRig{sessionConsumerRig: rig, relays: started.relays, url: url, relayClock: relayClock}
+	relay.relays.setOwned(true)
+	const sessionID = "ses_reply_subscription_answered_late"
+	standIn := startSessionStandIn(t, url, sessionID, answerDone)
+	relay.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, seq := relay.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1), stored)
+	awaitAcked(t, rig.consumers, sessionID, seq)
+}
+
+// subscriptionsOnServer counts the subscriptions server holds on subject across all of its
+// connections, read from the server's own monitoring endpoint, which the relay a freeze stops
+// does not stand in front of.
+func subscriptionsOnServer(t *testing.T, server *testnats.Server, subject string) int {
+	t.Helper()
+	endpoint := server.MonitorURL() + "/connz?subs=detail&limit=4096"
+	response, err := http.Get(endpoint)
+	if err != nil {
+		t.Fatalf("read %s: %v", endpoint, err)
+	}
+	defer response.Body.Close()
+	var connz struct {
+		Connections []struct {
+			Subscriptions []struct {
+				Subject string `json:"subject"`
+			} `json:"subscriptions_list_detail"`
+		} `json:"connections"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
+		t.Fatalf("decode %s: %v", endpoint, err)
+	}
+	n := 0
+	for _, connection := range connz.Connections {
+		for _, subscription := range connection.Subscriptions {
+			if subscription.Subject == subject {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // nakLadderAcker is the acker of a frame whose naks are read rather than sent: it records the
@@ -1271,36 +1382,70 @@ func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing
 
 // The count the ladder climbs is the message's own, carried from the pull that published the
 // frame to the reply that refuses it (relayFrame.delivered): a session that refuses the same
-// frame over and over has it back about a second later, then about two seconds later, rather
-// than every second. The row reads the frames' arrivals on the session's own connection, as the
-// relay rows above read what the session was sent, and their Envoy-Delivered headers, which is
-// the same count the ladder is read from.
+// frame over and over has it back after the delay its own delivery count earns, about a second
+// and then about two, rather than every second. How long the server waits is the server's own
+// timer, which no clock of this process reaches (relayNakDelayMax), so the row reads what the
+// relay asked of it: the delay each nak carries (watchRelayNaks), beside each frame's
+// Envoy-Delivered header, the count the ladder is read from. The frame coming back at all is the
+// server keeping those naks.
 func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_nak_relay_ladder"
+	naks := watchRelayNaks(t, rig.url, sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string {
 		return []string{relayReplyReceived, relayReplyNak}
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
-	frames := standIn.collect(t, 3, 20*time.Second)
-	for i, frame := range frames {
+	for delivered := uint64(1); delivered <= 3; delivered++ {
+		frame := standIn.collect(t, 1)[0]
 		if frame.item.EventID != stored.EventID || frame.seq != seq {
-			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", i+1, frame.seq, frame.item.EventID, seq, stored.EventID)
+			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", delivered, frame.seq, frame.item.EventID, seq, stored.EventID)
 		}
-		if got := frame.msg.Header.Get(relayHeaderDelivered); got != strconv.Itoa(i+1) {
-			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
+		if got := frame.msg.Header.Get(relayHeaderDelivered); got != strconv.FormatUint(delivered, 10) {
+			t.Fatalf("frame %d carries %s = %q, want %d", delivered, relayHeaderDelivered, got, delivered)
+		}
+		want := relayNakDelay << (delivered - 1)
+		if got := testwait.Receive(t, fmt.Sprintf("the relay's nak of delivery %d", delivered), naks); got != want {
+			t.Errorf("the relay naked delivery %d with a delay of %s, want %s: a delay that does not climb with the frame's own count brings the frame back every second for the stream's whole retention",
+				delivered, got, want)
 		}
 	}
-	first := frames[1].arrived.Sub(frames[0].arrived)
-	second := frames[2].arrived.Sub(frames[1].arrived)
-	t.Logf("the refused frame came back after %s and then %s", first, second)
-	if first < 500*time.Millisecond || first > 2500*time.Millisecond {
-		t.Errorf("the first redelivery came %s after the refusal, want about relayNakDelay (%s)", first, relayNakDelay)
+}
+
+// watchRelayNaks hands on the delay of every nak the relay sends sessionID's consumer, in the
+// order the relay sent them, read off that consumer's ack subjects on a connection of the test's
+// own: a nak is `-NAK {"delay": <nanoseconds>}` there, and a nak with no delay is a bare `-NAK`.
+func watchRelayNaks(t *testing.T, url, sessionID string) <-chan time.Duration {
+	t.Helper()
+	consumer, ok := bus.SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("session %s can have no consumer", sessionID)
 	}
-	if second < 1600*time.Millisecond {
-		t.Errorf("the second redelivery came %s after the first, want about twice relayNakDelay (%s): the delay is flat, so the frame comes back every second for the stream's whole retention",
-			second, 2*relayNakDelay)
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	naks := make(chan time.Duration, 64)
+	if _, err := conn.Subscribe("$JS.ACK."+bus.Stream+"."+consumer+".>", func(msg *natsgo.Msg) {
+		rest, nak := strings.CutPrefix(string(msg.Data), "-NAK")
+		if !nak {
+			return
+		}
+		var body struct {
+			Delay time.Duration `json:"delay"`
+		}
+		if rest = strings.TrimSpace(rest); rest != "" {
+			if err := json.Unmarshal([]byte(rest), &body); err != nil {
+				t.Errorf("decode the relay's nak %q: %v", msg.Data, err)
+				return
+			}
+		}
+		naks <- body.Delay
+	}); err != nil {
+		t.Fatalf("subscribe to the ack subjects of %s: %v", consumer, err)
 	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the ack subscription of %s: %v", consumer, err)
+	}
+	return naks
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // newerAskAttribute is an attribute of the decision block that this build's manifest does not
@@ -90,19 +91,15 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	}
 
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
-	refusal := ""
-	for deadline := time.Now().Add(10 * time.Second); refusal == ""; {
+	// The settlement's log line, read as it lands; the last reading is the whole log so far.
+	refusal := testwait.Until(t, "a settlement to meet the approved version's attribute", func() (string, bool) {
 		for line := range strings.Lines(logged.String()) {
 			if strings.Contains(line, newerAskAttribute) {
-				refusal = line
-				break
+				return line, true
 			}
 		}
-		if refusal == "" && time.Now().After(deadline) {
-			t.Fatalf("no settlement met the approved version's attribute:\n%s", logged.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return logged.String(), false
+	})
 	if !strings.Contains(refusal, "no version written") || !strings.Contains(refusal, "a build that reads the element writes it") || !strings.Contains(refusal, "version 1") {
 		t.Fatalf("settlement log = %q, want it to say it wrote no version, that a build that reads the element writes it, and which version holds the element", refusal)
 	}

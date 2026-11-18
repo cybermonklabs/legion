@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
@@ -45,6 +46,12 @@ func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
 
 type listenerDeliveryHandlerConfig struct {
 	client *bus.Client
+	// clock is what the bounds the delivery paths hold in this process are measured on: the
+	// session reads of a role resolution and of an agent delivery. It is nil in production and
+	// in every test that does not drive time, and clk reads it as clock.Real then; a test that
+	// asserts one of those bounds hands a clocktest.Fake here. What nats.go times for itself is
+	// not here.
+	clock clock.Clock
 	// wakes publishes the wake reports an unplaceable agent delivery raises, off the delivery
 	// path and under the listener's own lifetime (wakeReporter); nil in a test that builds the
 	// handlers without it, which reports no wake.
@@ -133,6 +140,15 @@ type listenerDeliveryHandlerConfig struct {
 	// must cross a copy's hour moves this clock rather than waiting the hour out, since the store
 	// time is the stream's own and no caller chooses it.
 	now func() time.Time
+}
+
+// clk is the clock cfg's own bounds are measured on: the one a test gave it, and clock.Real for a
+// configuration built without one.
+func (cfg listenerDeliveryHandlerConfig) clk() clock.Clock {
+	if cfg.clock == nil {
+		return clock.Real()
+	}
+	return cfg.clock
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -526,7 +542,7 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
 // the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
-	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{SessionRegistry: cfg.sessions, clk: cfg.clk()}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -695,7 +711,11 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 // (bus.ErrForwardNotStored), or not known to have left this process -- the flush timed out or
 // failed, the publish failed -- is delivery_failed like a stale holder or an
 // unadvertised/unreadable delivery mode; no claim is no_holder. A failure clears the attempt, so
-// a re-send is forwarded again; a delivered forward records the dedupe entry.
+// a re-send is forwarded again; a delivered forward records the dedupe entry. A failure whose
+// window ended before the forward was published (bus.ErrWindowEndedBeforePublish) says so on its
+// line, "window_ended_before_publish":true: the window ran out before this process made the
+// publish, so nothing reached the holder's subject, where a flush or an acknowledgement that ran
+// out of it may follow a forward the holder receives.
 func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {
@@ -713,7 +733,11 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 			sessionID:    sessionID,
 			metricStatus: "failed",
 			log: func(logger *logging.Logger) {
-				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", append(attrs, slog.String("error", err.Error()))...)
+				failed := append(attrs, slog.String("error", err.Error()))
+				if errors.Is(err, bus.ErrWindowEndedBeforePublish) {
+					failed = append(failed, slog.Bool("window_ended_before_publish", true))
+				}
+				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", failed...)
 			},
 			exceptionReason: "delivery_failed",
 			clearAttempt:    true,
@@ -792,7 +816,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// entry is held and retried for the whole window before it is given up
 	// (unplaceableAgentDelivery), while the interest path's own failures NAK with an error
 	// instead and never reach that branch.
-	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
+	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.clk(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
 		entryPtr = &entry

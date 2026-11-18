@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func sleeper(t *testing.T) *exec.Cmd {
@@ -168,13 +170,8 @@ func TestPinnedPeerReportsExit(t *testing.T) {
 	go func() { exited <- peer.WaitExit(nil) }()
 	_ = child.Process.Kill()
 	_ = child.Wait()
-	select {
-	case ok := <-exited:
-		if !ok {
-			t.Fatal("WaitExit returned false for an exited process")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("WaitExit did not observe the exit within 3 s")
+	if ok := testwait.Receive(t, "WaitExit to observe the exit", exited); !ok {
+		t.Fatal("WaitExit returned false for an exited process")
 	}
 	if got := peer.PID(); got != 0 {
 		t.Fatalf("a dead pinned process must read as pid 0, got %d", got)
@@ -192,13 +189,8 @@ func TestWaitExitStops(t *testing.T) {
 	done := make(chan bool, 1)
 	go func() { done <- peer.WaitExit(stop) }()
 	close(stop)
-	select {
-	case ok := <-done:
-		if ok {
-			t.Fatal("WaitExit must return false when stopped")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("WaitExit ignored stop")
+	if ok := testwait.Receive(t, "WaitExit to return once stopped", done); ok {
+		t.Fatal("WaitExit must return false when stopped")
 	}
 }
 

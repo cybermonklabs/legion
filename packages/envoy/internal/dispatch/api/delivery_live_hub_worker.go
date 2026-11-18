@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -23,7 +24,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 		return
 	case <-g.ready:
 	}
-	var timer hubTimer
+	var timer clock.Timer
 	defer func() {
 		if timer != nil {
 			timer.Stop()
@@ -32,7 +33,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 	for {
 		for h.runDue(g) {
 		}
-		now := h.clock.Now()
+		now := h.now()
 		h.mu.Lock()
 		h.judgeLocked(g, now)
 		next, ok := h.nextWakeLocked(g, now)
@@ -42,7 +43,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 			timer = nil
 		}
 		if ok {
-			timer = h.clock.At(next, func() { signal(g.wakeWork) })
+			timer = h.clock.AfterFunc(next.Sub(h.now()), func() { signal(g.wakeWork) })
 		}
 		select {
 		case <-g.ctx.Done():
@@ -54,7 +55,7 @@ func (h *deliveryHub) work(g *hubGeneration) {
 
 // runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	var due *deliveryView
 	var dueAt time.Time
@@ -157,7 +158,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	read, err := h.read(g, view, spec, epoch)
 	h.note(deliveryHubNote{what: "recompute read", view: spec.key, cause: cause, through: read.seq})
 
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	view.computing, view.readingSeq = false, 0
 	sent := 0
@@ -249,7 +250,7 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
 		return read, err
 	}
-	now := h.clock.Now()
+	now := h.now()
 	var body any
 	if spec.kind == deliveryLivePipeline {
 		read.at = now
@@ -317,7 +318,7 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: deliveryCauseExpiry})
 
-	now := h.clock.Now()
+	now := h.now()
 	var body any
 	var from, at, expiry time.Time
 	var prs, runs int

@@ -93,10 +93,8 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	testwait.Eventually(t, path+" to appear", func() bool {
 		_, err := os.Stat(path)
 		return err == nil
-	}) {
-		t.Fatalf("%s never appeared", path)
-	}
+	})
 }

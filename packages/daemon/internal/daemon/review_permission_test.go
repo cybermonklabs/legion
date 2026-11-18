@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,7 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -81,7 +82,9 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// A request without a lease of the package's App token stand-ins (aLease) is another
+			// process's: it is answered 404 and logged, and counts as no call.
+			server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if got, want := r.URL.Path, "/repos/acme/widgets/collaborators/"+tc.login+"/permission"; got != want {
 					t.Errorf("GitHub was asked %s, want %s", got, want)
@@ -102,7 +105,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 					answered = tc.login
 				}
 				fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q}}`, tc.permission, answered)
-			}))
+			}})
 			defer server.Close()
 			var logs bytes.Buffer
 			w := reviewPermissionRuntime(pool, server.URL, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -162,14 +165,14 @@ func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := reviewPermissionPool(t)
 			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if calls == 1 {
 					http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 					return
 				}
 				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer"}}`)
-			}))
+			}})
 			defer server.Close()
 			w := reviewPermissionRuntime(pool, server.URL, quietLogger())
 			tokens := &forgettingTokens{minted: time.Now().Add(tc.minted)}
@@ -225,7 +228,7 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 	pool := reviewPermissionPool(t)
 	var limitFirst bool
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if limitFirst && calls == 1 {
 			w.Header().Set("Retry-After", "1")
@@ -238,7 +241,7 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 			permission = "read"
 		}
 		fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q}}`, permission, login)
-	}))
+	}})
 	defer server.Close()
 	review := func(author string) intake.PullRequestReview {
 		return intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: author}
@@ -264,13 +267,18 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 	t.Run("no write access, after the window", func(t *testing.T) {
 		limitFirst, calls = false, 0
 		w := reviewPermissionRuntime(pool, server.URL, quietLogger())
-		w.permissionTTL = time.Millisecond
-		for range 2 {
-			read(t, w, "a-reader", false)
-			time.Sleep(2 * w.permissionTTL)
+		clk := clocktest.New(time.Date(2026, 10, 8, 22, 0, 0, 0, time.UTC))
+		w.clock = clk
+		read(t, w, "a-reader", false)
+		clk.Advance(reviewPermissionTTL - time.Nanosecond)
+		read(t, w, "a-reader", false)
+		if calls != 1 {
+			t.Fatalf("GitHub was asked %d times for two reviews within one window, want once", calls)
 		}
+		clk.Advance(time.Nanosecond)
+		read(t, w, "a-reader", false)
 		if calls != 2 {
-			t.Fatalf("GitHub was asked %d times for two reviews a window apart, want twice", calls)
+			t.Fatalf("GitHub was asked %d times once the window had passed, want twice", calls)
 		}
 	})
 	t.Run("write access is read every time", func(t *testing.T) {
@@ -286,18 +294,21 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 	t.Run("while the rate limit stands", func(t *testing.T) {
 		limitFirst, calls = true, 0
 		w := reviewPermissionRuntime(pool, server.URL, quietLogger())
+		clk := clocktest.New(time.Date(2026, 10, 8, 22, 0, 0, 0, time.UTC))
+		w.clock = clk
 		if _, err := w.reviewerCanWrite(context.Background(), review("a-writer")); err == nil {
 			t.Fatal("a rate-limited read answered; want its error")
 		}
 		_, err := w.reviewerCanWrite(context.Background(), review("another-writer"))
 		var later *intake.RetryLater
-		if !errors.As(err, &later) || later.After <= 0 {
-			t.Fatalf("a read while the limit stands = %v; want the wait left", err)
+		if !errors.As(err, &later) || later.After != time.Second {
+			t.Fatalf("a read while the limit stands = %v; want the wait left, the second GitHub asked for", err)
 		}
 		if calls != 1 {
 			t.Fatalf("GitHub was asked %d times while its limit stood, want once: the limit itself", calls)
 		}
-		time.Sleep(1100 * time.Millisecond)
+		// GitHub asked for a second (Retry-After: 1), which the clock now passes.
+		clk.Advance(time.Second)
 		read(t, w, "a-writer", true)
 		if calls != 2 {
 			t.Fatalf("GitHub was asked %d times once the wait had passed, want twice", calls)
@@ -451,10 +462,10 @@ func TestAReviewNamingARenamedRepositoryReadsThePermissionOfTheRecordedPullReque
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []string
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 				asked = append(asked, r.URL.Path)
 				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer"}}`)
-			}))
+			}})
 			defer server.Close()
 			w := reviewPermissionRuntimeRenamed(pool, server.URL, quietLogger(), tc.renames)
 			review := intake.PullRequestReview{Repo: "cybermonklabs/widgets", Number: 42, State: "approved", Author: "a-writer"}
@@ -569,7 +580,7 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					var asked []string
-					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 						asked = append(asked, r.URL.Path)
 						if r.URL.Path != caller.asked {
 							// GitHub's own refusal of a read addressed at a repository the
@@ -579,7 +590,7 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 							return
 						}
 						fmt.Fprint(w, caller.answers)
-					}))
+					}})
 					defer server.Close()
 					w := reviewPermissionRuntimeRenamed(pool, server.URL, quietLogger(), tc.renames)
 					// Dispatch maps the repository under the name it moved to, which is what

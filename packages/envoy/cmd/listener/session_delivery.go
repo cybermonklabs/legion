@@ -930,6 +930,11 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 // registry holds no entry for writes nothing: it is stopped or gone, and a stop keeps the record
 // it had (deleteSessionHandler). A listener whose known-session bucket is not open writes nothing
 // either. A failed write is this WARN and nothing else: the route answers whatever the write did.
+// That is not the registration's rule (answerRegistration), because no answer here rests on the
+// write. The session holds a live entry, so its registration was answered 200 and its record
+// is already stored; what this write changes is only the topics a publish counts it for, and the
+// session's next registration stores them, since its record then differs from this listener's
+// copy, and that registration is not answered 200 until it has.
 func recordFollowedTopics(ctx context.Context, d *listenerDeps, sessionID string, logger *logging.Logger) {
 	entry, err := d.sessions.Get(sessionID)
 	if err != nil {

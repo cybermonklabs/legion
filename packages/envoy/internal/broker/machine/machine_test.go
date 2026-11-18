@@ -722,7 +722,7 @@ func TestASweepWhileADecisionHoldsItsRowLockCommits(t *testing.T) {
 // the waiting operation's result if it returns first (Dispatch's docs tests use the same probe).
 func waitForLockWait(t *testing.T, ctx context.Context, st *store.Store, like string, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 2*time.Millisecond, func() bool {
+	testwait.Eventually(t, "a statement matching "+like+" to wait on a lock", func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before any statement matching %s waited on a lock", err, like)
@@ -734,9 +734,7 @@ func waitForLockWait(t *testing.T, ctx context.Context, st *store.Store, like st
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0
-	}) {
-		t.Fatalf("no statement waiting on a lock matching %s", like)
-	}
+	})
 }
 
 // TestChainVerificationRefusesADecisionTheBrokerDidNotWrite pins what AuthenticateLauncher's

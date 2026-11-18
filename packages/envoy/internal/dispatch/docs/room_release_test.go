@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The room cap counts live rooms, and the service forgets a document's state once its room has
@@ -51,7 +52,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	}
 	for batch := range slices.Chunk(openedIDs, 200) {
 		openInEditor(t, service, httpServer.URL, batch)
-		waitFor(t, 30*time.Second, "the rooms the editor opened to go idle", func() bool {
+		waitFor(t, "the rooms the editor opened to go idle", func() bool {
 			return len(service.srv.Rooms()) <= written
 		})
 	}
@@ -60,7 +61,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	} else {
 		leaveDocument(connection)
 	}
-	waitFor(t, 30*time.Second, "the untouched document's room to go idle", func() bool {
+	waitFor(t, "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) <= written
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -85,7 +86,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 			t.Fatalf("warm read of document %s: %v", id, err)
 		}
 	}
-	waitFor(t, 30*time.Second, "the rooms the API opened to go idle", func() bool {
+	waitFor(t, "the rooms the API opened to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	connection, err := dialDocument(httpServer.URL, untouched)
@@ -93,7 +94,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 		t.Fatalf("open a document nobody touched after %d were: %v, want it admitted", len(touched), err)
 	}
 	leaveDocument(connection)
-	waitFor(t, 30*time.Second, "the untouched document's room to go idle", func() bool {
+	waitFor(t, "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -133,7 +134,7 @@ func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 		t.Fatalf("close the documents' issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+	waitFor(t, "the closed issue's rooms to close", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -206,7 +207,10 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 		ServerURL: "https://dispatch.example",
 		Settle:    20 * time.Millisecond,
 	})
-	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room.
+	// Shortened so ygo's idle sweep happens within the test, which waits for each room's release
+	// through the shared wait. The sweep reads the wall clock inside ygo
+	// (provider/websocket/idle_sweep.go), so no clock of the test's reaches it; it reads the
+	// timeout when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -291,9 +295,15 @@ func appendThroughAPI(t *testing.T, service *Service, id string) {
 }
 
 // openInEditor opens each document as a browser does, waits for its room to be live, and leaves.
+// Eight sockets open at once; the test's goroutine waits for each room and leaves it.
 func openInEditor(t *testing.T, service *Service, serverURL string, ids []string) {
 	t.Helper()
+	type opened struct {
+		id         string
+		connection *gws.Conn
+	}
 	work := make(chan string)
+	live := make(chan opened)
 	failures := make(chan error, len(ids))
 	var workers sync.WaitGroup
 	for range 8 {
@@ -306,22 +316,22 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 					failures <- fmt.Errorf("open document %s: %w", id, err)
 					continue
 				}
-				deadline := time.Now().Add(10 * time.Second)
-				for service.srv.GetDoc(id) == nil && time.Now().Before(deadline) {
-					time.Sleep(time.Millisecond)
-				}
-				if service.srv.GetDoc(id) == nil {
-					failures <- fmt.Errorf("document %s's room never went live", id)
-				}
-				leaveDocument(connection)
+				live <- opened{id: id, connection: connection}
 			}
 		}()
 	}
-	for _, id := range ids {
-		work <- id
+	go func() {
+		for _, id := range ids {
+			work <- id
+		}
+		close(work)
+		workers.Wait()
+		close(live)
+	}()
+	for open := range live {
+		waitFor(t, "document "+open.id+"'s room to go live", func() bool { return service.srv.GetDoc(open.id) != nil })
+		leaveDocument(open.connection)
 	}
-	close(work)
-	workers.Wait()
 	close(failures)
 	var refused []error
 	for err := range failures {
@@ -370,20 +380,10 @@ func leaveDocument(connection *gws.Conn) {
 // releases the state, so this holds a few milliseconds after the room count does.
 func waitForStateToFollowLiveRooms(t *testing.T, service *Service) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Until(t, "every map the service keeps per document to hold the live rooms at most", func() ([]string, bool) {
 		problems := perDocumentStateProblems(service)
-		if len(problems) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			for _, problem := range problems {
-				t.Error(problem)
-			}
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return problems, len(problems) == 0
+	})
 }
 
 func perDocumentStateProblems(service *Service) []string {

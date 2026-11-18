@@ -39,7 +39,8 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 		t.Fatalf("record the issue the hand-over's read finds: %v", err)
 	}
 	client := &blockingDispatch{issue: dispatch.Issue{Key: issue, Status: "todo"}}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), observe: obs.observe}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue,
 		record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), clock.Now()))
 
@@ -83,5 +84,8 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	}
 
 	unlock()
-	testwait.Eventually(t, "the row finished once the lock went", func() bool { return outboxRows(t, pool) == 0 })
+	obs.settled(t, rowOf{id: id, outcome: settledFinished})
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("once the row finished after the lock went %d rows are left, want none", left)
+	}
 }

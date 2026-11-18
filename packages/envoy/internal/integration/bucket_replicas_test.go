@@ -2,7 +2,6 @@ package integration
 
 import (
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -25,7 +24,12 @@ func TestEveryBucketIsCreatedAtThreeCopiesOnAThreeCopyDeployment(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
+	// The context redeliver.OpenState opens its bucket through is a program's, bounded per send by
+	// bus.RequestTimeout as the program opens its own: bus.EnsureKeyValue sends a lookup or a create
+	// again when that bound runs out, and on a cluster a member that is not the new bucket's leader
+	// leaves such a request unanswered while the group elects one (nats-server v2.15.1,
+	// jsStreamInfoRequest), where testnats.MaxWait(t) would hold it until the test binary's deadline.
+	js, err := conn.JetStream(natsgo.MaxWait(bus.RequestTimeout))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

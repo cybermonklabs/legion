@@ -18,11 +18,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The live test's environment. TestMemoryGuardLiveSandbox runs only where liveEnv is 1, which the
@@ -41,8 +43,8 @@ const (
 	// liveExpectEnv is `ended` or `kept`, what the guard must do to the scenario; the guard off
 	// ignores it.
 	liveExpectEnv = "LEGION_MEMORY_GUARD_LIVE_EXPECT"
-	// liveSecondsEnv bounds the scenario: a kept scenario still alive after it has been kept, and a
-	// scenario to be ended that the guard has not ended by then fails.
+	// liveSecondsEnv is the span over which the guard must keep a kept scenario: one still alive at
+	// its end has been kept. A scenario to be ended is waited for with no span of its own.
 	liveSecondsEnv = "LEGION_MEMORY_GUARD_LIVE_SECONDS"
 	// liveCPUSecondsEnv is how long the guard runs alone before the scenario, for its CPU time.
 	liveCPUSecondsEnv = "LEGION_MEMORY_GUARD_LIVE_CPU_SECONDS"
@@ -62,27 +64,13 @@ const (
 	liveSampleEvery       = 100 * time.Millisecond
 	liveSecondsDefault    = 120
 	liveCPUSecondsDefault = 60
-	// liveStartBound bounds the holder's start: writing 256 MiB takes about a second.
-	liveStartBound = time.Minute
-	// liveExitBound bounds how long a process sent SIGKILL takes to exit.
-	liveExitBound = time.Minute
-	// liveReportGrace is how long the test waits for the guard's report of a kill once the
-	// scenario has exited by SIGKILL: the guard reads the cgroup's counter between its kill and
-	// its report.
-	liveReportGrace = 5 * time.Second
-	// liveFallBound bounds the wait for the reading to fall after a kill: the longest wait the
-	// settings allow, so a fall slower than the guard's own wait is still measured.
-	liveFallBound = shimwire.MemoryGuardWaitMax * time.Second
-	// liveDeadlineMargin is what the test leaves of the test binary's deadline for its own end, so
-	// a -timeout shorter than the run ends in a verdict line and not in the binary's panic.
-	liveDeadlineMargin = 15 * time.Second
 	// liveRelayLineBytes bounds one relayed line of the holder's or the scenario's output, so each
 	// is one write that no other line splits.
 	liveRelayLineBytes = 1024
 	// liveStamp is RFC 3339 with milliseconds, the time every line carries.
 	liveStamp = "2006-01-02T15:04:05.000Z07:00"
 
-	liveDeadlineReason = "the test binary's deadline came first: run with a longer -timeout"
+	liveDeadlineReason = "a wait or a window was still open 30s before the test binary's deadline (a wait's testwait line on stderr names what it waited for and what it last read): run with a longer -timeout"
 	liveGuardOffReason = "the guard turned off for good; its off line says why"
 )
 
@@ -105,7 +93,17 @@ func TestMemoryGuardLiveSandbox(t *testing.T) {
 	}
 	out := &liveLog{}
 	r := &liveRun{t: t, out: out}
-	if reason := r.run(); reason != "" {
+	// A wait that reaches the shared wait's bound fails the test from inside run, which then
+	// answers nothing: this keeps the verdict line last for that failure too.
+	judged := false
+	defer func() {
+		if !judged && t.Failed() {
+			out.printf("verdict FAIL reason=%s", liveDeadlineReason)
+		}
+	}()
+	reason := r.run()
+	judged = true
+	if reason != "" {
 		out.printf("verdict FAIL reason=%s", reason)
 		t.Fatal(reason)
 	}
@@ -132,10 +130,11 @@ func holdMemory() {
 type liveConfig struct {
 	guardOn bool
 	// settings are what the guard runs by; wire is liveSettingsEnv's, nil for the defaults.
-	settings  Settings
-	wire      *shimwire.LauncherMemoryGuard
-	run       string
-	expect    string
+	settings Settings
+	wire     *shimwire.LauncherMemoryGuard
+	run      string
+	expect   string
+	// bound is the span a kept scenario must be kept over (liveSecondsEnv).
 	bound     time.Duration
 	cpuWindow time.Duration
 }
@@ -231,6 +230,8 @@ type liveRun struct {
 	t   *testing.T
 	out *liveLog
 	cfg liveConfig
+	// ctx ends at the shared wait's bound (testwait.Context), and ends the windows the harness
+	// spends (measureCPU, awaitKept), which are not waits for a fact.
 	ctx context.Context
 
 	holder    *liveChild
@@ -254,9 +255,7 @@ func (r *liveRun) run() string {
 		return err.Error()
 	}
 	r.cfg = cfg
-	ctx, cancel := liveDeadline(r.t)
-	defer cancel()
-	r.ctx = ctx
+	r.ctx = testwait.Context(r.t)
 	defer r.teardown()
 	if reason := r.printStart(); reason != "" {
 		return reason
@@ -281,14 +280,6 @@ func (r *liveRun) run() string {
 	default:
 		return r.awaitKept()
 	}
-}
-
-// liveDeadline is a context that ends liveDeadlineMargin before the test binary's own deadline.
-func liveDeadline(t *testing.T) (context.Context, context.CancelFunc) {
-	if deadline, ok := t.Deadline(); ok {
-		return context.WithDeadline(context.Background(), deadline.Add(-liveDeadlineMargin))
-	}
-	return context.WithCancel(context.Background())
 }
 
 // printStart prints the start line: the guard's mode and settings, the limit and AnonPages read
@@ -343,15 +334,22 @@ func (r *liveRun) startHelpers() string {
 		return fmt.Sprintf("start the holder: %v", err)
 	}
 	r.holder = holder
-	r.t.Cleanup(func() { holder.end() })
+	r.t.Cleanup(func() { holder.end(r.t) })
+	pid := holder.cmd.Process.Pid
+	testwait.Until(r.t, fmt.Sprintf("the holder %d to say it holds its memory, or to end (the reading is its /proc status)", pid), func() (string, bool) {
+		select {
+		case <-ready:
+			return "", true
+		case <-holder.done:
+			return "", true
+		default:
+			return liveStatus(pid), false
+		}
+	})
 	select {
 	case <-ready:
-	case <-holder.done:
+	default:
 		return fmt.Sprintf("the holder ended (%s) before it held its memory", holder.state)
-	case <-time.After(liveStartBound):
-		return fmt.Sprintf("the holder did not hold its memory within %s", liveStartBound)
-	case <-r.ctx.Done():
-		return liveDeadlineReason
 	}
 	for range liveIdleSleeps {
 		sleep := exec.Command("sleep", "3600")
@@ -394,7 +392,7 @@ func (r *liveRun) startGuard() {
 	r.guard = g
 	r.stopGuard = sync.OnceFunc(func() {
 		cancel()
-		<-done
+		testwait.Receive(r.t, "the guard's loop to return once its context ended", done)
 	})
 }
 
@@ -403,6 +401,10 @@ func (r *liveRun) startGuard() {
 // the test process (the Go runtime, and the goroutines that wait on the holder and relay its
 // output), which one process cannot tell apart. The window starts as the guard does, so its first
 // reading, and the scan for the hourly line that reading starts, count in it.
+//
+// The window is a measurement and not a wait for a fact: the CPU time is read over the span the
+// run names (liveCPUSecondsEnv), so the harness spends all of it, and no event of the guard's
+// ends it. Only ctx, at the shared wait's bound, cuts it short.
 func (r *liveRun) measureCPU() string {
 	userBefore, sysBefore, err := liveCPU()
 	if err != nil {
@@ -458,13 +460,12 @@ func (r *liveRun) startScenario() string {
 }
 
 // awaitOff waits, with no guard, for the scenario to end. The kernel is expected to end the pod
-// first, so a scenario that ends by itself is a negative control that never reached the kill.
+// first, so a scenario that ends by itself is a negative control that never reached the kill, and
+// a run the kernel does not end fails at the shared wait's bound.
 func (r *liveRun) awaitOff() string {
-	select {
-	case <-r.scenario.done:
-	case <-r.ctx.Done():
-		return liveDeadlineReason
-	}
+	testwait.Until(r.t, "the scenario to end, which the kernel is expected to forestall by ending the pod (the reading is the scenario's last sample)", func() (string, bool) {
+		return r.sampler.latestLine(), !r.scenario.alive()
+	})
 	r.finishScenario()
 	return fmt.Sprintf("with no guard the scenario ended by itself (%s) before the kernel ended the pod: the negative control never reached the kernel's kill",
 		r.scenario.state)
@@ -483,17 +484,16 @@ func (r *liveRun) awaitEnded() string {
 		r.finishScenario()
 		return fmt.Sprintf(`the guard ended pid %d and not the scenario's root %d: executable="%s"`, k.PID, root, k.Executable)
 	}
-	select {
-	case <-r.scenario.done:
-	case <-time.After(liveExitBound):
-	case <-r.ctx.Done():
-		return liveDeadlineReason
-	}
-	exited := !r.scenario.alive()
+	testwait.Until(r.t, fmt.Sprintf("the scenario's root %d to exit after the guard's kill (the reading is its /proc status)", root), func() (string, bool) {
+		return liveStatus(root), !r.scenario.alive()
+	})
 	_, finish := r.finishScenario()
-	r.watch.await(r.ctx, time.Until(k.At.Add(liveFallBound)), func() bool {
+	// The fall is measured to the reading that shows it, however long that takes; only a guard
+	// that has turned off, and so reads no more, leaves it unmeasured.
+	testwait.Until(r.t, fmt.Sprintf("the reading to fall, by the guard's own rule, after its kill of pid %d at the reading %d, or the guard to turn off (the reading is the guard's watch)",
+		k.PID, k.ReadingBytes), func() (string, bool) {
 		first, _ := r.watch.firstKill()
-		return first.fallen
+		return r.watch.reading(), first.fallen || r.guard.isDead()
 	})
 	k, _ = r.watch.firstKill()
 	fall := time.Duration(-1)
@@ -504,8 +504,6 @@ func (r *liveRun) awaitEnded() string {
 		k.PID, k.ReadingBytes, 100*float64(k.ReadingBytes)/float64(k.LimitBytes), liveMS(k.decision), liveMS(fall),
 		liveMS(r.watch.longestInterval()), r.sampler.maxRise, k.SizeBytes, r.watch.kills())
 	switch {
-	case !exited:
-		return fmt.Sprintf("the scenario's root %d had not exited %s after the guard's kill", root, liveExitBound)
 	case !liveSIGKILL(r.scenario.state):
 		return fmt.Sprintf("the scenario's root %d ended with %s and not by SIGKILL", root, r.scenario.state)
 	case !r.holder.alive():
@@ -514,46 +512,61 @@ func (r *liveRun) awaitEnded() string {
 	return finish
 }
 
-// awaitFirstKill waits for the guard's first kill, and answers why there is none: the scenario
-// ended by itself, the bound passed, or the guard turned off.
+// awaitFirstKill waits for the guard's first kill, with no bound of its own, and answers why
+// there is none: the guard turned off, the scenario ended by itself, or a SIGKILL that was not the
+// guard's ended it.
 func (r *liveRun) awaitFirstKill() (watchedKill, string) {
-	bound := time.NewTimer(r.cfg.bound)
-	defer bound.Stop()
-	scenarioDone := r.scenario.done
-	var grace <-chan time.Time
-	for {
-		if k, ok := r.watch.firstKill(); ok {
-			return k, ""
-		}
-		select {
-		case <-r.watch.notify:
-		case <-scenarioDone:
-			scenarioDone = nil
-			if !liveSIGKILL(r.scenario.state) {
-				r.finishScenario()
-				return watchedKill{}, fmt.Sprintf("the scenario ended by itself (%s) and the guard ended nothing", r.scenario.state)
-			}
-			grace = time.After(liveReportGrace)
-		case <-grace:
-			r.finishScenario()
-			return watchedKill{}, fmt.Sprintf("the scenario ended by SIGKILL and the guard reported no kill within %s", liveReportGrace)
-		case <-bound.C:
-			r.finishScenario()
-			if r.guard.isDead() {
-				return watchedKill{}, liveGuardOffReason
-			}
-			return watchedKill{}, fmt.Sprintf("the guard ended nothing within %ds", int(r.cfg.bound/time.Second))
-		case <-r.ctx.Done():
-			return watchedKill{}, liveDeadlineReason
-		}
+	testwait.Until(r.t, "the guard's first kill, the scenario's end or the guard's turning off (the reading is the guard's watch and the scenario's last sample)", func() (string, bool) {
+		_, killed := r.watch.firstKill()
+		return r.watch.reading() + "; " + r.sampler.latestLine(), killed || !r.scenario.alive() || r.guard.isDead()
+	})
+	if k, ok := r.watch.firstKill(); ok {
+		return k, ""
 	}
+	if r.scenario.alive() {
+		// A scenario still running ended the wait only by the guard's turning off.
+		r.finishScenario()
+		return watchedKill{}, liveGuardOffReason
+	}
+	if !liveSIGKILL(r.scenario.state) {
+		r.finishScenario()
+		return watchedKill{}, fmt.Sprintf("the scenario ended by itself (%s) and the guard ended nothing", r.scenario.state)
+	}
+	// The guard may have sent that SIGKILL and not reported it yet.
+	r.awaitNextReading()
+	if k, ok := r.watch.firstKill(); ok {
+		return k, ""
+	}
+	r.finishScenario()
+	if r.guard.isDead() {
+		return watchedKill{}, liveGuardOffReason
+	}
+	return watchedKill{}, "the scenario ended by SIGKILL and the guard reported no kill by its next reading: the SIGKILL was not the guard's"
 }
 
-// awaitKept waits for the scenario to end by itself or to outlive the bound, and passes when it
-// ended with status 0 or was alive at the bound, the guard ended nothing, and the holder is alive.
+// awaitNextReading waits for a reading the guard starts after this call, or for the guard to turn
+// off. The guard reports a kill on the loop that made it, before it starts its next reading, so
+// a kill it made before this call is reported by then: the proof, with no span held for the
+// report, that a SIGKILL that ended the scenario before the call was not the guard's.
+func (r *liveRun) awaitNextReading() {
+	seen := r.watch.readingCount()
+	testwait.Until(r.t, fmt.Sprintf("a reading the guard starts after its reading %d, or the guard to turn off (the reading is the guard's watch)", seen), func() (string, bool) {
+		return r.watch.reading(), r.watch.readingCount() > seen || r.guard.isDead()
+	})
+}
+
+// awaitKept waits for the scenario to end by itself or to outlive the span the run asks it be
+// kept over, and passes when it ended with status 0 or was alive at the span's end, the guard
+// ended nothing, and the holder is alive.
+//
+// The span is not a wait for a fact. It is the span the run names (liveSecondsEnv) for the guard
+// to keep the scenario over, which the harness spends as it spends the CPU window: the samples
+// over it are the run's record, and that the guard ends nothing in it is the verdict. Only the
+// scenario's own end closes it early, since neither the guard's state nor a later action proves
+// that a scenario still running will not be ended later in the span.
 func (r *liveRun) awaitKept() string {
-	bound := time.NewTimer(r.cfg.bound)
-	defer bound.Stop()
+	span := time.NewTimer(r.cfg.bound)
+	defer span.Stop()
 	for waiting := true; waiting; {
 		if k, ok := r.watch.firstKill(); ok {
 			r.finishScenario()
@@ -563,21 +576,16 @@ func (r *liveRun) awaitKept() string {
 		case <-r.watch.notify:
 		case <-r.scenario.done:
 			waiting = false
-		case <-bound.C:
+		case <-span.C:
 			waiting = false
 		case <-r.ctx.Done():
 			return liveDeadlineReason
 		}
 	}
 	byTest, finish := r.finishScenario()
-	if r.scenario.alive() {
-		return finish
-	}
 	if !byTest && liveSIGKILL(r.scenario.state) {
-		r.watch.await(r.ctx, liveReportGrace, func() bool {
-			_, ok := r.watch.firstKill()
-			return ok
-		})
+		// The guard may have sent that SIGKILL and not reported it yet.
+		r.awaitNextReading()
 	}
 	if k, ok := r.watch.firstKill(); ok {
 		return liveKeptKillReason(k)
@@ -615,20 +623,13 @@ func (r *liveRun) finishScenario() (byTest bool, reason string) {
 	}
 	r.finished = true
 	byTest = r.scenario.alive()
-	exited := r.scenario.end()
+	r.scenario.end(r.t)
 	close(r.samplerStop)
-	<-r.samplerDone
-	status := "running"
-	if exited {
-		status = r.scenario.state.String()
-	}
+	testwait.Receive(r.t, "the sampler to stop", r.samplerDone)
 	s := r.sampler
 	r.out.printf("end pid=%d status=%q ended_by_test=%t samples=%d highest_sample=%s max_rise_per_sample=%d",
-		r.scenario.cmd.Process.Pid, status, byTest, s.samples, s.highestField(), s.maxRise)
-	switch {
-	case !exited:
-		return byTest, fmt.Sprintf("the scenario's root had not exited %s after SIGKILL", liveExitBound)
-	case s.err != nil:
+		r.scenario.cmd.Process.Pid, r.scenario.state.String(), byTest, s.samples, s.highestField(), s.maxRise)
+	if s.err != nil {
 		return byTest, fmt.Sprintf("a sample failed: %v", s.err)
 	}
 	return byTest, ""
@@ -648,7 +649,9 @@ func (r *liveRun) teardown() {
 // liveChild is a process the live test started, its output relayed as the test's own lines and
 // its exit watched on a goroutine of its own.
 type liveChild struct {
-	cmd *exec.Cmd
+	// name is what its relayed lines start with: holder or scenario.
+	name string
+	cmd  *exec.Cmd
 	// group is the child leading a process group of its own, which end kills whole.
 	group bool
 	done  chan struct{}
@@ -672,7 +675,7 @@ func startLiveChild(out *liveLog, name string, cmd *exec.Cmd, onLine func(string
 		return nil, err
 	}
 	go relayLines(out, name, read, onLine)
-	c := &liveChild{cmd: cmd, group: cmd.SysProcAttr != nil && cmd.SysProcAttr.Setpgid, done: make(chan struct{})}
+	c := &liveChild{name: name, cmd: cmd, group: cmd.SysProcAttr != nil && cmd.SysProcAttr.Setpgid, done: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
 		c.state = cmd.ProcessState
@@ -710,20 +713,18 @@ func (c *liveChild) alive() bool {
 	}
 }
 
-// end sends SIGKILL to the child, or to its whole process group when it leads one, and answers
-// whether the child has exited within liveExitBound.
-func (c *liveChild) end() bool {
+// end sends SIGKILL to the child, or to its whole process group when it leads one, and waits for
+// the child to exit.
+func (c *liveChild) end(t *testing.T) {
 	if c.group {
 		_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL)
 	} else if c.alive() {
 		_ = c.cmd.Process.Kill()
 	}
-	select {
-	case <-c.done:
-		return true
-	case <-time.After(liveExitBound):
-		return false
-	}
+	pid := c.cmd.Process.Pid
+	testwait.Until(t, fmt.Sprintf("the %s %d to exit after SIGKILL (the reading is its /proc status)", c.name, pid), func() (string, bool) {
+		return liveStatus(pid), !c.alive()
+	})
 }
 
 // guardWatch is what the test learns from the guard's own loop: each reading through the guard's
@@ -734,10 +735,14 @@ type guardWatch struct {
 	notify chan struct{}
 
 	mu sync.Mutex
-	// last is the latest reading's time, and longest the longest time from one reading to the
-	// next over the whole run.
-	last    time.Time
-	longest time.Duration
+	// readings counts the guard's readings; last, lastReading and lastLimit are the latest one's
+	// time, AnonPages and limit, and longest the longest time from one reading to the next over
+	// the whole run.
+	readings    int
+	last        time.Time
+	lastReading uint64
+	lastLimit   uint64
+	longest     time.Duration
 	// riseStart is the time of the first reading at or above the mark since the reading was last
 	// below it: the start of the rise a kill decides on.
 	riseStart time.Time
@@ -760,7 +765,8 @@ func (w *guardWatch) observe(now time.Time, reading, limit uint64) {
 	if !w.last.IsZero() {
 		w.longest = max(w.longest, now.Sub(w.last))
 	}
-	w.last = now
+	w.readings++
+	w.last, w.lastReading, w.lastLimit = now, reading, limit
 	mark := share(limit, w.act)
 	switch {
 	case reading < mark:
@@ -819,24 +825,29 @@ func (w *guardWatch) longestInterval() time.Duration {
 	return w.longest
 }
 
-// await waits until done holds, d passes or ctx ends, asking done again at each kill and fall.
-func (w *guardWatch) await(ctx context.Context, d time.Duration, done func() bool) {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	for !done() {
-		select {
-		case <-w.notify:
-		case <-timer.C:
-			return
-		case <-ctx.Done():
-			return
-		}
+// readingCount is how many readings the guard has taken.
+func (w *guardWatch) readingCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.readings
+}
+
+// reading is what the watch knows now, as a wait on the guard prints it when it gives up: the
+// guard's readings so far, the latest one with the mark it was judged by, and the kills reported.
+func (w *guardWatch) reading() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.readings == 0 {
+		return "the guard has taken no reading"
 	}
+	return fmt.Sprintf("guard readings=%d last_reading=%d mark=%d last_at=%s kills=%d",
+		w.readings, w.lastReading, share(w.lastLimit, w.act), liveTime(w.last), len(w.killed))
 }
 
 // liveSampler prints one sample line each liveSampleEvery while the scenario runs, and keeps the
 // highest sample by AnonPages and the largest rise of AnonPages from one sample to the next. Its
-// fields are the sampler's goroutine's until that has stopped.
+// fields are the sampler's goroutine's until that has stopped, but latest, the line of its latest
+// sample, which it publishes for a wait's reading (latestLine).
 type liveSampler struct {
 	out   *liveLog
 	root  int
@@ -851,6 +862,7 @@ type liveSampler struct {
 	highestText string
 	maxRise     uint64
 	err         error
+	latest      atomic.Pointer[string]
 }
 
 func (s *liveSampler) run(ended, stop <-chan struct{}) {
@@ -888,6 +900,7 @@ func (s *liveSampler) take() error {
 	text := fmt.Sprintf("sample anon_pages=%d counter=%d shmem=%d pid=%d anonymous=%d size=%d vm_rss=%d at=%s",
 		anon, counter, shmem, top.pid, top.anonymous, top.size, top.vmRSS, liveTime(at))
 	s.out.write(text)
+	s.latest.Store(&text)
 	if s.samples > 0 && anon > s.last {
 		s.maxRise = max(s.maxRise, anon-s.last)
 	}
@@ -905,6 +918,15 @@ func (s *liveSampler) highestField() string {
 		return "none"
 	}
 	return `"` + s.highestText + `"`
+}
+
+// latestLine is the line of the latest sample, or says there is none yet; any goroutine may call
+// it.
+func (s *liveSampler) latestLine() string {
+	if text := s.latest.Load(); text != nil {
+		return *text
+	}
+	return "no sample yet"
 }
 
 // liveProcess is one of the scenario's processes as a sample prints it: its smaps' Anonymous
@@ -1012,6 +1034,24 @@ func liveMeminfo() (anon, shmem uint64, err error) {
 	}
 	shmem, _ = meminfoBytes(data, "Shmem")
 	return anon, shmem, nil
+}
+
+// liveStatus is the state and resident size /proc/<pid>/status gives for pid, the reading of a
+// wait on a process the live test started, or why it cannot be read (a reaped process has none).
+func liveStatus(pid int) string {
+	data, err := os.ReadFile(filepath.Join(liveProc, strconv.Itoa(pid), "status"))
+	if err != nil {
+		return err.Error()
+	}
+	state := "unknown"
+	for line := range bytes.Lines(data) {
+		if rest, ok := bytes.CutPrefix(line, []byte("State:")); ok {
+			state = string(bytes.TrimSpace(rest))
+			break
+		}
+	}
+	rss, _ := meminfoBytes(data, "VmRSS")
+	return fmt.Sprintf("pid=%d state=%q vm_rss=%d", pid, state, rss)
 }
 
 // liveCount is the one number the file at path holds, such as the cgroup's limit or counter.

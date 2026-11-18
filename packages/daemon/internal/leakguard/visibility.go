@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"golang.org/x/sys/unix"
@@ -23,26 +24,15 @@ import (
 
 const rateLimitWaitBound = 2 * time.Minute
 
-// Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
-// rate-limit reset does not sleep for wall-clock time.
+// Clock supplies the time and waits visibility reads use, the cap of a child the guard bounds
+// itself (child.bound: ls-remote's lsRemoteBound), and the time a child the guard stopped is said
+// to have run (stoppedError): a narrowing of clock.Clock, clock.Real unless Options.Clock names a
+// test's clocktest.Fake, so retrying a near rate-limit reset does not sleep for wall-clock time,
+// and a stopped child's time and cap are the test's.
 type Clock interface {
 	Now() time.Time
 	Sleep(context.Context, time.Duration) error
-}
-
-type wallClock struct{}
-
-func (wallClock) Now() time.Time { return time.Now() }
-
-func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	WithTimeout(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 // VisibilitySource says where a guard's answer came from: GitHub's REST API, the role's kept
@@ -130,8 +120,9 @@ func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibil
 // wait is made only where it is no more than rateLimitWaitBound, and where it and then
 // lsRemoteBound, the longest cap of the reads that can follow it (the retried REST read, GraphQL
 // and ls-remote), end before ctx's deadline, where ctx has one: a wait that leaves them no room
-// only makes the call refuse later. A core limit with no reset, or one already past, and a
-// secondary limit with no Retry-After are not waited for.
+// only makes the call refuse later. The room is read on the guard's clock, as the reset is. A
+// core limit with no reset, or one already past, and a secondary limit with no Retry-After are
+// not waited for.
 func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Duration, bool) {
 	var wait time.Duration
 	switch {
@@ -145,7 +136,7 @@ func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Dur
 	if wait < 0 || wait > rateLimitWaitBound {
 		return 0, false
 	}
-	if deadline, ok := ctx.Deadline(); ok && wait+lsRemoteBound >= time.Until(deadline) {
+	if deadline, ok := ctx.Deadline(); ok && wait+lsRemoteBound >= deadline.Sub(g.clock().Now()) {
 		return 0, false
 	}
 	return wait, true
@@ -184,7 +175,7 @@ func (g *Guard) clock() Clock {
 	if g.opts.Clock != nil {
 		return g.opts.Clock
 	}
-	return wallClock{}
+	return clock.Real()
 }
 
 func (g *Guard) readVisibility(ctx context.Context, slug string) (Visibility, error) {
@@ -568,18 +559,16 @@ const githubOrigin = "https://github.com"
 //
 // LC_ALL=C keeps git's messages in the refusal in English.
 //
-// The read runs at most lsRemoteBound, and never past the caller's own bound. That cap is this
-// read's own, not the call's: a call that waited out a near reset and was refused again has spent
-// up to rateLimitWaitBound waiting before this read starts, so the two together can take about
-// twice rateLimitWaitBound where the caller's bound allows that long.
+// The read runs at most lsRemoteBound, on the guard's clock, and never past the caller's own bound
+// (child.bound). That cap is this read's own, not the call's: a call that waited out a near reset
+// and was refused again has spent up to rateLimitWaitBound waiting before this read starts, so the
+// two together can take about twice rateLimitWaitBound where the caller's bound allows that long.
 func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, error) {
 	home, err := os.MkdirTemp("", "legion-ls-remote-")
 	if err != nil {
 		return "", fmt.Errorf("the empty home for git ls-remote could not be made: %w", err)
 	}
 	defer os.RemoveAll(home)
-	ctx, cancel := context.WithTimeout(ctx, lsRemoteBound)
-	defer cancel()
 	url := origin + "/" + slug + ".git"
 	status, printed, err := g.run(ctx, child{
 		argv: gitArgv("-c", "credential.helper=",
@@ -589,6 +578,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		dir:     "/",
 		inherit: lsRemoteInherits,
 		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
+		bound:   lsRemoteBound,
 	})
 	if err != nil {
 		return "", err
@@ -602,8 +592,8 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 
 // lsRemoteBound is the longest the read with no credential runs (Guard.lsRemote): as long as the
 // guard waits for a near reset, so a server that never answers costs no more than that wait would
-// have. It is a variable so that a test can shorten it.
-var lsRemoteBound = rateLimitWaitBound
+// have.
+const lsRemoteBound = rateLimitWaitBound
 
 // lsRemoteInherits is which names of the caller's environment the read with no credential keeps
 // (Guard.lsRemote). It keeps every name that is not git's own, and of git's own the three that say

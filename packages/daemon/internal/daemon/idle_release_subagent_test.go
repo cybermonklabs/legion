@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -23,7 +24,7 @@ const (
 	idleRigNothingRunning = "nothing-running"
 )
 
-// idleRigHeldPasses is how many passes of the daemon's idle tick the subagent's report holds the
+// idleRigHeldPasses is how many passes of the daemon's idle loop the subagent's report holds the
 // pod for before the test ends the subagent: more than one, so the hold is seen to stand pass
 // after pass for as long as the report does, and not to be read once and dropped.
 const idleRigHeldPasses = 4
@@ -38,12 +39,12 @@ const idleRigHeldPasses = 4
 //
 // The session takes its start task's turn, and then its host starts a subagent between turns,
 // which the session reports as soon as it reads it. The pod is made quiet past the idle bound and
-// the daemon's own idle tick decides it pass after pass: each pass holds it for `background_work`
-// with the detail `subagent`, and the release records count those passes as one streak, read
-// through the route the `legion` tool's read_release_records posts to. The claim stays live and
-// the pod stands for every one of them. When the subagent ends, the session reports that nothing
-// runs, and the next pass that reads the pod quiet releases it: the hold stood exactly as long as
-// the report did.
+// the daemon's idle loop decides it pass after pass, each a pass the test runs (idlePass): each
+// pass holds it for `background_work` with the detail `subagent`, and the release records count
+// those passes as one streak, read through the route the `legion` tool's read_release_records
+// posts to. The claim stays live and the pod stands for every one of them. When the subagent ends,
+// the session reports that nothing runs, and the next pass that reads the pod quiet releases it:
+// the hold stood exactly as long as the report did.
 func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
 	rig := newIdleWakeRig(t, idleRigSubagent)
 	issue := rig.issue(idleRigSubagent)
@@ -130,27 +131,24 @@ func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
 // turn and reports as soon as it has recorded the task (idleRigRoleProcess.prompted).
 func (r *idleWakeRig) awaitStartTask(issue idleRigIssue) {
 	r.t.Helper()
-	idleRigEventually(r.t, idleRigRecordWait, "the start task of "+issue.key+"'s role", func() bool {
+	testwait.Eventually(r.t, "the start task of "+issue.key+"'s role", func() bool {
 		return len(r.agents.prompts(issue.key, string(issue.role))) > 0
 	})
 }
 
-// awaitHeld waits until the daemon's idle tick has held the issue's pod for background work over
+// awaitHeld waits until the daemon's idle loop has held the issue's pod for background work over
 // at least passes passes of one streak, and answers that streak as the route the `legion` tool's
-// read_release_records posts to reads it (releaseRecords). The claim rows are back-dated every
-// couple of seconds, as awaitReleased back-dates them, since they are the clock the rule reads
-// the idle period against. A claim that stops being live on the way is a release, or a stop,
-// that the report should have held off, and fails the test at once.
+// read_release_records posts to reads it (releaseRecords). Each turn of the wait runs one pass of
+// the idle loop (idlePass), which back-dates the claim rows first, as awaitReleased does, since
+// they are the clock the rule reads the idle period against, and returns once the pass has ended:
+// the rig's clock runs no pass of its own. A claim that stops being live on the way is a release,
+// or a stop, that the report should have held off, and fails the test at once.
 func (r *idleWakeRig) awaitHeld(issue idleRigIssue, passes int64) api.HoldRecord {
 	r.t.Helper()
 	token := r.token(issue)
 	var held api.HoldRecord
-	var quieted time.Time
-	idleRigEventually(r.t, idleRigRecordWait, "the pod of "+issue.key+" held for background work over passes of the idle tick", func() bool {
-		if time.Since(quieted) > 2*time.Second {
-			quieted = time.Now()
-			r.quiet()
-		}
+	testwait.Eventually(r.t, "the pod of "+issue.key+" held for background work over passes of the idle loop", func() bool {
+		r.idlePass()
 		if state := r.api.claim(token); !idleRigWorking(state.State) {
 			r.t.Fatalf("%s is %s (suspended by %q) while its session reports background work, want it live and its pod kept",
 				issue.key, state.State, state.SuspendedBy)
@@ -173,7 +171,7 @@ func (r *idleWakeRig) awaitHeld(issue idleRigIssue, passes int64) api.HoldRecord
 // wait on that report.
 func (r *idleWakeRig) awaitReported(token claim.Token, kinds string) {
 	r.t.Helper()
-	idleRigEventually(r.t, idleRigRecordWait, fmt.Sprintf("the report of %s naming background work %q", token, kinds), func() bool {
+	testwait.Eventually(r.t, fmt.Sprintf("the report of %s naming background work %q", token, kinds), func() bool {
 		var background bool
 		var held string
 		err := r.pool.QueryRow(context.Background(),
@@ -207,7 +205,7 @@ func (r *idleWakeRig) awaitReleaseRecords(issue idleRigIssue) store.PodReleaseRe
 	}
 	defer st.Close()
 	var records store.PodReleaseRecords
-	idleRigEventually(r.t, idleRigRecordWait, "the record of the release of "+issue.key+"'s pod", func() bool {
+	testwait.Eventually(r.t, "the record of the release of "+issue.key+"'s pod", func() bool {
 		read, err := st.PodReleaseRecords(ctx, r.project, time.Time{})
 		if err != nil {
 			r.t.Fatalf("read the release records: %v", err)

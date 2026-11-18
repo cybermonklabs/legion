@@ -29,7 +29,9 @@ const podSessionRetention = 24 * time.Hour
 // expiringBroker is POST /v1/oauth/exchange/pod-sessions as the broker serves it, on the test's
 // clock: each write registers the pod its token names for the session until
 // podSessionRetention from that write, and an exchange is admitted only while a write of that pod
-// and session has not lapsed (oauthstore.PodSessionRegistered, `expires_at > now()`).
+// and session has not lapsed (oauthstore.PodSessionRegistered, `expires_at > now()`). A request
+// without the daemon's own token (registrationsToken) is another process's: it is answered 404
+// and logged, and is taken as no write (fromTheDaemon).
 type expiringBroker struct {
 	t     *testing.T
 	clock *waveClock
@@ -39,14 +41,19 @@ type expiringBroker struct {
 }
 
 // podSessionWrite is one registration the broker took: the pod, the session, the moment on the
-// test's clock, the thumbprint it bound the registration to, and the bearer it was authenticated
-// with.
+// test's clock, and the thumbprint it bound the registration to.
 type podSessionWrite struct {
-	pod, session, thumbprint, bearer string
-	at                               time.Time
+	pod, session, thumbprint string
+	at                       time.Time
 }
 
+// registrationsToken is the daemon's own token, the bearer of every write it makes to the broker.
+const registrationsToken = "the-daemon's-token"
+
 func (b *expiringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !fromTheDaemon(b.t, w, r, registrationsToken) {
+		return
+	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/oauth/exchange/pod-sessions" {
 		http.NotFound(w, r)
 		return
@@ -67,7 +74,7 @@ func (b *expiringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	at := b.clock.Now()
 	b.mu.Lock()
-	b.writes = append(b.writes, podSessionWrite{pod: pod, session: body.Session, thumbprint: body.Thumbprint, bearer: r.Header.Get("Authorization"), at: at})
+	b.writes = append(b.writes, podSessionWrite{pod: pod, session: body.Session, thumbprint: body.Thumbprint, at: at})
 	b.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"pod_uid": pod, "session": body.Session, "thumbprint": body.Thumbprint, "expires_at": at.Add(podSessionRetention)})
@@ -121,7 +128,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	server := httptest.NewServer(broker)
 	defer server.Close()
 	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte("the-daemon's-token\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokenFile, []byte(registrationsToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
@@ -170,7 +177,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	}
 	started := clock.Now()
 	for range 25 {
-		clock.advance(time.Hour)
+		clock.Advance(time.Hour)
 	}
 
 	writes := broker.taken()
@@ -181,8 +188,8 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		t.Fatalf("the broker took %d writes of session %s in 25 hours, want at least four", len(writes), session)
 	}
 	for i, write := range writes {
-		if write.pod != pod || write.session != session || write.thumbprint != thumbprint || write.bearer != "Bearer the-daemon's-token" {
-			t.Errorf("write %d registered pod %s for session %s bound to %q under %q, want pod %s for %s bound to the hello's thumbprint %q under the daemon's own token", i, write.pod, write.session, write.thumbprint, write.bearer, pod, session, thumbprint)
+		if write.pod != pod || write.session != session || write.thumbprint != thumbprint {
+			t.Errorf("write %d registered pod %s for session %s bound to %q, want pod %s for %s bound to the hello's thumbprint %q", i, write.pod, write.session, write.thumbprint, pod, session, thumbprint)
 		}
 		if gap := write.at.Sub(started); i > 0 && gap-writes[i-1].at.Sub(started) > agentsecrets.RegistrationRenewal {
 			t.Errorf("write %d came %s after the one before it, want at most %s", i, gap-writes[i-1].at.Sub(started), agentsecrets.RegistrationRenewal)
@@ -193,7 +200,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		t.Fatalf("stop %s: %v", token, err)
 	}
 	for range 30 {
-		clock.advance(time.Hour)
+		clock.Advance(time.Hour)
 	}
 	if after := broker.taken(); len(after) != len(writes) {
 		t.Errorf("the broker took %d writes of session %s after the claim ended, want none", len(after)-len(writes), session)
@@ -204,12 +211,16 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 // sent, until it is set to answer at a fixed one, as a broker holding a row another claim or
 // another service login wrote at that generation answers.
 type foreignBroker struct {
+	t      *testing.T
 	mu     sync.Mutex
 	answer int64
 	writes int
 }
 
 func (b *foreignBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !fromTheDaemon(b.t, w, r, registrationsToken) {
+		return
+	}
 	var body struct {
 		PodToken   string `json:"pod_token"`
 		Session    string `json:"session"`
@@ -242,7 +253,7 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 		thumbprint = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
 	)
 	clock := newWaveClock()
-	broker := &foreignBroker{}
+	broker := &foreignBroker{t: t}
 	server := httptest.NewServer(broker)
 	defer server.Close()
 	tokenFile := filepath.Join(t.TempDir(), "token")
@@ -295,9 +306,9 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	broker.mu.Lock()
 	broker.answer = 9
 	broker.mu.Unlock()
-	clock.advance(agentsecrets.RegistrationRenewal)
+	clock.Advance(agentsecrets.RegistrationRenewal)
 	for range 3 {
-		clock.advance(agentsecrets.RegistrationRenewal)
+		clock.Advance(agentsecrets.RegistrationRenewal)
 	}
 
 	const foreign = "at generation 9, above this claim's generation 1 (this write's was generation 1): a registration this daemon never made"

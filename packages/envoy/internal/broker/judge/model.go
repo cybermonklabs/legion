@@ -124,14 +124,14 @@ var finalSchema = json.RawMessage(`{
 	"additionalProperties": false
 }`)
 
-// Ask makes the judge's one model call: one agentloop.Run with no tools, one call, 20 seconds,
-// 1024 output tokens and no cache marks, since a single call that is never re-sent would pay a
-// cache write's premium and read nothing back (D5).
+// Ask makes the judge's one model call: one agentloop.Run with no tools, one call, 20 seconds on
+// clk, 1024 output tokens and no cache marks, since a single call that is never re-sent would pay
+// a cache write's premium and read nothing back (D5).
 //
 // Every outcome is a verdict. A fault of any kind, an answer outside the two words and an error
 // are all Refer, with the error beside them for the row and the log; the third answer is the raw
 // reply, clamped and filtered, for an answer that did not parse, and is empty for one that did.
-func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, string, error) {
+func (m Model) Ask(ctx context.Context, clk agentloop.BoundClock, data Data) (Verdict, agentloop.Usage, string, error) {
 	block, err := json.Marshal(data)
 	if err != nil {
 		return Verdict{Word: Refer}, agentloop.Usage{}, "", fmt.Errorf("the data for the model could not be encoded: %w", err)
@@ -147,6 +147,7 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 		}},
 		NoCache: true,
 		Bounds:  agentloop.Bounds{Time: modelBound, Calls: 1, OutputTokens: 1024},
+		Clock:   clk,
 		Final:   finalSchema,
 	})
 	switch {

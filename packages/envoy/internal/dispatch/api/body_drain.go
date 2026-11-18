@@ -27,31 +27,24 @@ import (
 // whatever the layer that answered it holds - for as long as it cares to.
 const bodyDrainLimit = time.Minute
 
-// drainTime is how long a drain waits for a body (bodyDrainLimit; drainReadLimit in a test).
-func (s *server) drainTime() time.Duration {
-	if s.drainReadLimit > 0 {
-		return s.drainReadLimit
-	}
-	return bodyDrainLimit
-}
-
-// readFor bounds a drain of the body of the request w answers to drainTime from now, a read
-// deadline on its connection (http.ResponseController.SetReadDeadline), past which a read fails
-// and the drain ends; it answers what lifts the bound, which the drain calls only once the body has
-// reached its end. Lifted, the connection has no read deadline, which is what it has between
-// requests on this server, whose http.Server sets no ReadTimeout (cmd/dispatch): a deadline left in
-// place there would end the read net/http keeps on an idle connection once the body has ended, and
-// cancel the request's context under its answer. A drain that ends short of the body's end - its
-// read failed, or the body ran past the route's limit - leaves the deadline in place, since net/http
-// reads on after the answer itself: it discards up to 256 KiB more of a body whose Content-Length
-// leaves that little unread before it writes the answer's header, and again when it closes the body
-// once the handler returns. With the deadline those reads end where the drain's did and the
-// connection closes; lifted, a client that stopped sending would hold the connection open after its
-// answer, and withhold the answer itself where its body ran past the limit. A writer with no
-// connection of its own (a test's recorder) bounds nothing.
+// readFor bounds a drain of the body of the request w answers to bodyDrainLimit from now on the
+// server's clock, a read deadline on its connection (http.ResponseController.SetReadDeadline),
+// past which a read fails and the drain ends; it answers what lifts the bound, which the drain
+// calls only once the body has reached its end. Lifted, the connection has no read deadline, which
+// is what it has between requests on this server, whose http.Server sets no ReadTimeout
+// (cmd/dispatch): a deadline left in place there would end the read net/http keeps on an idle
+// connection once the body has ended, and cancel the request's context under its answer. A drain
+// that ends short of the body's end - its read failed, or the body ran past the route's limit -
+// leaves the deadline in place, since net/http reads on after the answer itself: it discards up to
+// 256 KiB more of a body whose Content-Length leaves that little unread before it writes the
+// answer's header, and again when it closes the body once the handler returns. With the deadline
+// those reads end where the drain's did and the connection closes; lifted, a client that stopped
+// sending would hold the connection open after its answer, and withhold the answer itself where
+// its body ran past the limit. A writer with no connection of its own (a test's recorder) bounds
+// nothing.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
 	controller := http.NewResponseController(w)
-	if err := controller.SetReadDeadline(time.Now().Add(s.drainTime())); err != nil {
+	if err := controller.SetReadDeadline(s.clock.Now().Add(bodyDrainLimit)); err != nil {
 		return func() {}
 	}
 	return func() { _ = controller.SetReadDeadline(time.Time{}) }
@@ -75,7 +68,7 @@ var (
 // drainBeforeAnswer serves a route whose requests carry a body - every route but a GET - so that
 // whatever layer answers a request, and however little of its body that layer read, the answer
 // is written only once the rest of the body is read and discarded: at most the route's limit and
-// one byte more, in io.Discard's buffer, for at most drainTime (readFor). A body that runs past the
+// one byte more, in io.Discard's buffer, for at most bodyDrainLimit (readFor). A body that runs past the
 // limit is answered as the limit answers it, 413 with the route's own refusal, in place of the
 // answer the layer gave, since no such request is taken whoever answers it; the connection then
 // closes, as net/http closes one whose body runs past what it will discard. The one answer the

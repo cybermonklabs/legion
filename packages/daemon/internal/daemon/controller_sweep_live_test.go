@@ -46,10 +46,10 @@ import (
 // speaks.
 var controllerSweepLiveSandboxes = schema.GroupVersionResource{Group: "agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxes"}
 
-// controllerSweepLiveSweeps is how many sweeps a check runs, each controllerSweepLivePause apart: a
-// delete the fence refused because the runtime's informer had not yet seen the Sandbox's last write
-// (deleteFenced) is decided again at the next sweep, so a sweep that deletes the Sandbox gets that
-// many chances to.
+// controllerSweepLiveSweeps is how many sweeps the check that the Sandbox is kept runs, each
+// controllerSweepLivePause apart (sweepFenceWhy): a delete the fence refused because the runtime's
+// informer had not yet seen the Sandbox's last write (deleteFenced) is decided again at the next
+// sweep, so a sweep that would delete the Sandbox gets that many chances to.
 const (
 	controllerSweepLiveSweeps = 5
 	controllerSweepLivePause  = 2 * time.Second
@@ -95,8 +95,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		t.Fatalf("LEGION_E2E_KUBE_CONTEXT %q is no kind cluster's context (kind-<name>); the proof runs only on the cluster its script creates", env["LEGION_E2E_KUBE_CONTEXT"])
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	path := writeControllerSweepKindConfig(t, filepath.Join(env["LEGION_E2E_WORK"], "controller-sweep-"+expect), env["LEGION_E2E_STORE_DSN"],
 		env["LEGION_E2E_STREAM_HOST"], env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"])
@@ -292,13 +291,17 @@ func (r *controllerSweepLive) sweepKeeps(known []runtime.Known) {
 		}
 		fmt.Printf("   sweep %d of %d at grace 0: Sandbox %s uid %s resourceVersion %s, not terminating; volume claim %s %s\n",
 			sweep, controllerSweepLiveSweeps, r.name, s.GetUID(), s.GetResourceVersion(), r.volume, pvc.Status.Phase)
-		time.Sleep(controllerSweepLivePause)
+		testwait.Span(r.t, controllerSweepLivePause, sweepFenceWhy)
 	}
 }
 
-// sweepUntilGone sweeps at grace 0 told known until one deletes the controller's Sandbox, at most
-// controllerSweepLiveSweeps times, then waits until the API server holds neither the Sandbox nor
-// its volume claim, and returns the sweep that deleted it.
+// sweepFenceWhy is why a sweep after one the fence may have refused comes a span later.
+const sweepFenceWhy = "a delete the fence refused because the runtime's informer had not yet seen the Sandbox's last write (deleteFenced) is decided again at the next sweep, " +
+	"and the informer reports nothing a test can read, nor does a later action wait on it, so the next sweep comes a span later"
+
+// sweepUntilGone sweeps at grace 0 told known until one deletes the controller's Sandbox, each
+// controllerSweepLivePause after the last, then waits until the API server holds neither the
+// Sandbox nor its volume claim, and returns the sweep that deleted it.
 func (r *controllerSweepLive) sweepUntilGone(known []runtime.Known) int {
 	r.t.Helper()
 	launched := r.sandbox()
@@ -306,52 +309,46 @@ func (r *controllerSweepLive) sweepUntilGone(known []runtime.Known) int {
 		r.t.Fatalf("there is no Sandbox %s to sweep", r.name)
 	}
 	fmt.Printf("   the Sandbox settled at resourceVersion %s\n", r.settle())
-	deleted := 0
-	for sweep := 1; sweep <= controllerSweepLiveSweeps && deleted == 0; sweep++ {
+	sweeps := 0
+	deleted := testwait.Until(r.t, fmt.Sprintf("a sweep at grace 0 to delete Sandbox %s (uid %s)", r.name, launched.GetUID()), func() (int, bool) {
+		sweeps++
 		if err := r.rt.ReconcileOrphans(r.ctx, known, 0); err != nil {
-			r.t.Fatalf("sweep %d: ReconcileOrphans: %v", sweep, err)
+			r.t.Fatalf("sweep %d: ReconcileOrphans: %v", sweeps, err)
 		}
 		if s := r.sandbox(); s == nil || s.GetDeletionTimestamp() != nil || s.GetUID() != launched.GetUID() {
-			deleted = sweep
-			fmt.Printf("   sweep %d of %d at grace 0 deleted Sandbox %s (uid %s)\n", sweep, controllerSweepLiveSweeps, r.name, launched.GetUID())
-			break
+			return sweeps, true
 		}
-		fmt.Printf("   sweep %d of %d at grace 0 kept Sandbox %s\n", sweep, controllerSweepLiveSweeps, r.name)
-		time.Sleep(controllerSweepLivePause)
-	}
-	if deleted == 0 {
-		r.t.Fatalf("%d sweeps at grace 0 kept Sandbox %s (uid %s)", controllerSweepLiveSweeps, r.name, launched.GetUID())
-	}
+		fmt.Printf("   sweep %d at grace 0 kept Sandbox %s\n", sweeps, r.name)
+		testwait.Span(r.t, controllerSweepLivePause, sweepFenceWhy)
+		return sweeps, false
+	})
+	fmt.Printf("   sweep %d at grace 0 deleted Sandbox %s (uid %s)\n", deleted, r.name, launched.GetUID())
 	started := time.Now()
-	for r.sandbox() != nil || r.pvc() != nil {
-		if time.Since(started) > 5*time.Minute {
-			r.t.Fatalf("Sandbox %s or volume claim %s is still there %s after the sweep deleted it", r.name, r.volume, time.Since(started).Round(time.Second))
-		}
-		time.Sleep(time.Second)
-	}
+	testwait.Eventually(r.t, fmt.Sprintf("the API server to hold neither Sandbox %s nor volume claim %s after the sweep deleted it", r.name, r.volume), func() bool {
+		return r.sandbox() == nil && r.pvc() == nil
+	})
 	fmt.Printf("   the API server holds neither Sandbox %s nor volume claim %s, %s after the sweep\n", r.name, r.volume, time.Since(started).Round(time.Second))
 	return deleted
 }
 
-// settle waits until the Sandbox's resourceVersion has not moved for five seconds, so the Agent
-// Sandbox controller's status writes after the launch are done and the runtime's informer holds the
-// Sandbox as the API server does, and returns that version.
+// settle waits until the Sandbox's resourceVersion holds still over a span of five seconds, so the
+// Agent Sandbox controller's status writes after the launch are done and the runtime's informer
+// holds the Sandbox as the API server does, and returns that version.
 func (r *controllerSweepLive) settle() string {
 	r.t.Helper()
-	version, since := "", time.Now()
-	if !testwait.Holds(2*time.Minute, 500*time.Millisecond, func() bool {
-		s := r.sandbox()
-		if s == nil {
+	return testwait.Until(r.t, fmt.Sprintf("Sandbox %s's resourceVersion to hold still over a span", r.name), func() (string, bool) {
+		before := r.sandbox()
+		if before == nil {
 			r.t.Fatalf("Sandbox %s went before the sweep", r.name)
 		}
-		if s.GetResourceVersion() != version {
-			version, since = s.GetResourceVersion(), time.Now()
+		testwait.Span(r.t, 5*time.Second, "the Agent Sandbox controller's status writes after a launch leave no state that says they are over, and the runtime's informer reports nothing a test can read, "+
+			"so a resourceVersion that holds still over a span is the one sign that both are done")
+		after := r.sandbox()
+		if after == nil {
+			r.t.Fatalf("Sandbox %s went before the sweep", r.name)
 		}
-		return time.Since(since) >= 5*time.Second
-	}) {
-		r.t.Fatalf("Sandbox %s is still being written two minutes after its launch (resourceVersion %s)", r.name, version)
-	}
-	return version
+		return after.GetResourceVersion(), after.GetResourceVersion() == before.GetResourceVersion()
+	})
 }
 
 // sandbox is the controller's Sandbox as the API server holds it now, or nil when it holds none.

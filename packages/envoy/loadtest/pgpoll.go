@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // pollErrorsLogged is how many failed reads of one probe run.log shows; the summary counts them
@@ -45,17 +46,17 @@ func pollPG(ctx context.Context, url string, from, to time.Time, every time.Dura
 		return 1
 	}
 	defer conn.Close(context.Background())
-	return poll(ctx, from, to, every, name, lg, func(ctx context.Context) error { return sample(ctx, conn) })
+	return poll(ctx, clock.Real(), from, to, every, name, lg, func(ctx context.Context) error { return sample(ctx, conn) })
 }
 
-// poll calls sample at from, then at from + k·every while that is not after to. A slot that a slow
-// sample overran is skipped, except the latest one, which runs at once, as a time.Ticker drops
-// ticks. A failed sample is counted and logged as readErrors does; an error once ctx has ended
-// stops the poll uncounted. It returns the failed samples.
-func poll(ctx context.Context, from, to time.Time, every time.Duration, name string, lg *log.Logger, sample func(context.Context) error) int {
+// poll calls sample at from, then at from + k·every while that is not after to, each slot read on
+// c. A slot that a slow sample overran is skipped, except the latest one, which runs at once, as a
+// time.Ticker drops ticks. A failed sample is counted and logged as readErrors does; an error once
+// ctx has ended stops the poll uncounted. It returns the failed samples.
+func poll(ctx context.Context, c clock.Clock, from, to time.Time, every time.Duration, name string, lg *log.Logger, sample func(context.Context) error) int {
 	errs := readErrors{name: name, lg: lg}
 	for next := from; !next.After(to); {
-		if !sleepUntil(ctx, next) {
+		if !sleepUntilOn(ctx, c, next) {
 			break
 		}
 		if err := sample(ctx); err != nil {
@@ -65,7 +66,7 @@ func poll(ctx context.Context, from, to time.Time, every time.Duration, name str
 			errs.add(err)
 		}
 		next = next.Add(every)
-		if behind := time.Since(next); behind > 0 {
+		if behind := c.Now().Sub(next); behind > 0 {
 			next = next.Add(behind.Truncate(every))
 		}
 	}

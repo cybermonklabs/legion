@@ -10,9 +10,9 @@ import (
 	"maps"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -25,8 +25,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
-	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -42,8 +43,11 @@ import (
 
 // installations answers each App's installation on each repository, by "<role> <owner/name>";
 // a repository it does not name is installed for both Apps, fail answers an error for every read
-// and failing an error for the reads it names. delay is how long each read takes, as a GitHub
-// that answers slowly; reads wait it out side by side.
+// and failing an error for the reads it names. delay is how long each read takes on clock, as a
+// GitHub that answers slowly; reads wait it out side by side. A test that times the daemon's
+// bounds against the delay sets clock to the fake the daemon's bounds run on and moves it past the
+// delay; one whose delay must outlast a timer no module clock reaches (NATS's acknowledgement
+// window) leaves clock nil, the wall clock.
 type installations struct {
 	mu      sync.Mutex
 	missing map[string]bool
@@ -51,14 +55,19 @@ type installations struct {
 	failing map[string]error
 	asked   []string
 	delay   time.Duration
+	clock   clock.Clock
 }
 
 func (i *installations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
-	if i.delay > 0 {
-		select {
-		case <-time.After(i.delay):
-		case <-ctx.Done():
-			return false, ctx.Err()
+	i.mu.Lock()
+	delay, clk := i.delay, i.clock
+	i.mu.Unlock()
+	if clk == nil {
+		clk = clock.Real()
+	}
+	if delay > 0 {
+		if err := clk.Sleep(ctx, delay); err != nil {
+			return false, err
 		}
 	}
 	i.mu.Lock()
@@ -215,7 +224,7 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 	}}
 	branches := newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)
 
-	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
+	accepted, refused, _, err := readMapping(context.Background(), clock.Real(), client, "LEGION", installs, ghrepo.Renames{})
 	if err != nil {
 		t.Fatalf("readMapping: %v", err)
 	}
@@ -263,7 +272,7 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFailed(t *testing.T) {
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}}}
 	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true, "review acme/gadgets": true}}
-	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
+	accepted, refused, _, err := readMapping(context.Background(), clock.Real(), client, "LEGION", installs, ghrepo.Renames{})
 	if err != nil || len(accepted) != 0 || len(refused) != 1 || refused[0].Reason != "the implement and review Apps are not installed on acme/gadgets" || refused[0].readErr != nil {
 		t.Fatalf("readMapping = %#v, %#v, %v; want acme/gadgets left out naming both Apps", accepted, refused, err)
 	}
@@ -275,7 +284,7 @@ func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFaile
 		client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}, {Repo: "acme/gadgets", Project: "LEGION"}}}
 		installs := &installations{}
 		installs.setFailing(failure, "review acme/gadgets")
-		accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
+		accepted, refused, _, err := readMapping(context.Background(), clock.Real(), client, "LEGION", installs, ghrepo.Renames{})
 		if err != nil {
 			t.Fatalf("readMapping with %v on acme/gadgets = %v, want acme/gadgets left out and the rest checked", failure, err)
 		}
@@ -298,7 +307,7 @@ func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFaile
 	installs = &installations{missing: map[string]bool{"review acme/gadgets": true}}
 	failure := errors.New("GitHub answered 502")
 	installs.setFailing(failure, "implement acme/gadgets")
-	_, refused, _, err = readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
+	_, refused, _, err = readMapping(context.Background(), clock.Real(), client, "LEGION", installs, ghrepo.Renames{})
 	want := "the review App is not installed on acme/gadgets; the implement App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
 	if err != nil || len(refused) != 1 || refused[0].Reason != want || !errors.Is(refused[0].readErr, failure) || refused[0].apps.answered {
 		t.Fatalf("readMapping = %#v, %v; want acme/gadgets refused for now with %q and no answer of the Apps kept", refused, err, want)
@@ -319,7 +328,7 @@ func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T
 	}}
 	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true}}
 	installs.setFailing(errors.New("GitHub answered 502"), "review acme/tools")
-	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
+	accepted, refused, _, err := readMapping(context.Background(), clock.Real(), client, "LEGION", installs, ghrepo.Renames{})
 	if err != nil {
 		t.Fatalf("readMapping: %v", err)
 	}
@@ -366,25 +375,54 @@ func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T
 // however long the whole check takes, and a read longer than installReadAttempt is a failed read,
 // refused for now. This guards checkMapping's own bound, which the code before this check already
 // had; the removed bound on a refresh as a whole, which cut such a check off, is
-// TestASlowButAnsweringGitHubIsServedOnARefresh's.
+// TestASlowButAnsweringGitHubIsServedOnARefresh's. The reads' slowness and their bounds run on one
+// fake clock, which the test moves through the reads (moveThroughSlowReads).
 func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
-	read := installReadAttempt
-	t.Cleanup(func() { installReadAttempt = read })
 	var mappings []dispatch.RepoProject
 	for i := range 10 {
 		mappings = append(mappings, dispatch.RepoProject{Repo: fmt.Sprintf("acme/repo-%d", i), Project: "LEGION", Default: i == 0})
 	}
-	installReadAttempt = 400 * time.Millisecond
-	accepted, refused, _, err := checkMapping(context.Background(), &mappingDispatch{}, mappings, "LEGION", &installations{delay: 150 * time.Millisecond}, ghrepo.Renames{})
+	clk := clocktest.New(time.Now())
+	slow := installReadAttempt * 2 / 3
+	start := clk.Now()
+	accepted, refused, err := checkMovingThrough(t, clk, mappings, slow)
 	if err != nil || len(accepted) != 10 || len(refused) != 0 {
 		t.Fatalf("checkMapping of 20 slow reads = %d accepted, %#v, %v; want all 10 served", len(accepted), refused, err)
 	}
+	if took := clk.Now().Sub(start); took <= installReadAttempt {
+		t.Fatalf("the check of 20 reads of %s each took %s of the fake clock, want longer than one read's bound (%s), so a bound on the whole check would have cut it", slow, took, installReadAttempt)
+	}
 
-	installReadAttempt = 50 * time.Millisecond
-	accepted, refused, _, err = checkMapping(context.Background(), &mappingDispatch{}, mappings[:1], "LEGION", &installations{delay: 150 * time.Millisecond}, ghrepo.Renames{})
+	accepted, refused, err = checkMovingThrough(t, clk, mappings[:1], installReadAttempt+slow)
 	if err != nil || len(accepted) != 0 || len(refused) != 1 || !errors.Is(refused[0].readErr, context.DeadlineExceeded) {
 		t.Fatalf("checkMapping of a read longer than installReadAttempt = %#v, %#v, %v; want it refused for now as a failed read", accepted, refused, err)
 	}
+}
+
+// checkMovingThrough runs checkMapping of mappings for LEGION on clk, every installation read
+// taking slow on clk, and moves clk through the reads (moveThroughSlowReads) until it returns.
+func checkMovingThrough(t *testing.T, clk *clocktest.Fake, mappings []dispatch.RepoProject, slow time.Duration) ([]mappedRepository, []refusedRepository, error) {
+	t.Helper()
+	type checked struct {
+		accepted []mappedRepository
+		refused  []refusedRepository
+		err      error
+	}
+	result := make(chan checked, 1)
+	go func() {
+		accepted, refused, _, err := checkMapping(context.Background(), clk, &mappingDispatch{}, mappings, "LEGION", &installations{delay: slow, clock: clk}, ghrepo.Renames{})
+		result <- checked{accepted, refused, err}
+	}()
+	var got checked
+	moveThroughSlowReads(t, clk, slow, []time.Duration{installReadAttempt}, "the mapping check to end", func() bool {
+		select {
+		case got = <-result:
+			return true
+		default:
+			return false
+		}
+	})
+	return got.accepted, got.refused, got.err
 }
 
 // The boot refuses only a project with no repository mapped. A mapping whose every repository
@@ -441,21 +479,24 @@ func (d *unreadyDispatch) ListRepoProjects(ctx context.Context) ([]dispatch.Repo
 }
 
 // A Dispatch with no ready endpoint refuses every dial for as long as it has none. The boot's read
-// of the mapping waits that out without limit (readinessRetry), logging each wait, as the boot's
-// listing for admission does: bounded at appMintRetry's attempts, it exited the daemon, whose
-// supervisor restarted it straight back into the same refusal. Here Dispatch refuses two reads more
-// than appMintRetry's budget allows and then answers, and the boot serves the mapped repository.
+// of the mapping waits that out without limit (readinessRetry, on the runtime's clock, which the
+// test moves past each wait), logging each wait, as the boot's listing for admission does: bounded
+// at appMintRetry's attempts, it exited the daemon, whose supervisor restarted it straight back into
+// the same refusal. Here Dispatch refuses two reads more than appMintRetry's budget allows and then
+// answers, and the boot serves the mapped repository.
 // GitHub's installation reads never refuse the boot (TestABootServesTheRepositoriesWhoseInstallationReadsAnswer).
 func TestTheBootWaitsForTheMappingWhileDispatchRefusesEveryDial(t *testing.T) {
-	quickAppMints(t)
-	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	mapped := []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}}
 	refusals := appMintRetry.Attempts + 2
 	client := &unreadyDispatch{mappingDispatch: mappingDispatch{mappings: mapped}, refusals: int64(refusals)}
 	var logged bytes.Buffer
+	clk := clocktest.New(time.Now())
 	w := &workflowRuntime{dispatch: client, dispatchProject: "LEGION", installs: &installations{},
-		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewTextHandler(&logged, nil))}
-	if err := w.loadMapping(context.Background()); err != nil {
+		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewTextHandler(&logged, nil)), clock: clk}
+	loaded := make(chan error, 1)
+	go func() { loaded <- w.loadMapping(context.Background()) }()
+	fireBackoff(t, clk, "the wait before the mapping read's next attempt", readinessRetry, refusals)
+	if err := testwait.Receive(t, "the boot's mapping read to end", loaded); err != nil {
 		t.Fatalf("loadMapping = %v, want it to wait out %d refused dials and serve acme/widgets", err, refusals)
 	}
 	if got := w.repositories.Accepted(); len(got) != 1 || got[0] != ghrepo.MustParse("acme/widgets") {
@@ -586,7 +627,9 @@ func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectIsNotMapped(t *testing.
 // (its default) and zeta/tools to LEGION and answers its webhook App check for each repository
 // installed names, by "owner/name", or with the status and body failing names for it. Without
 // route it is a Dispatch older than the check: the route is not found. asked counts each
-// repository's checks.
+// repository's checks. It is a dispatchBoard, and serve gives the runtime's client its bearer
+// (workflowDispatchToken): a request without it is another process's, answered 404, and counts as
+// no check.
 type webhookDispatch struct {
 	url string
 
@@ -600,7 +643,7 @@ type webhookDispatch struct {
 func newWebhookDispatch(t *testing.T, route bool, installed map[string]bool) *webhookDispatch {
 	t.Helper()
 	d := &webhookDispatch{route: route, installed: installed, failing: map[string]string{}, asked: map[string]int{}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d.url = dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		repo, check := strings.CutPrefix(r.URL.Path, "/api/v1/github/app-installation/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
@@ -625,15 +668,13 @@ func newWebhookDispatch(t *testing.T, route bool, installed map[string]bool) *we
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
 			http.Error(w, "unexpected", http.StatusTeapot)
 		}
-	}))
-	t.Cleanup(server.Close)
-	d.url = server.URL
+	})
 	return d
 }
 
 // serve is the rig option that has the runtime read Dispatch from d, through the real client.
 func (d *webhookDispatch) serve(w *workflowRuntime) {
-	w.dispatch = dispatch.New(d.url, "dispatch-test-token")
+	w.dispatch = dispatch.New(d.url, workflowDispatchToken)
 }
 
 // install has the check answer that Dispatch's GitHub App is installed on repo.
@@ -687,8 +728,10 @@ func TestARepositoryWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
 
 // A webhook App check Dispatch fails is no answer: the state names the repository with the
 // failure, and the repository is served, never left out for it nor read again of the daemon's own.
+// The refresher reads again of its own only while a repository awaits a read or a recovery
+// (refreshOnMappingChange), so with neither it arms no wait for one: that state is what the test
+// reads.
 func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testing.T) {
-	quickInstallReads(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"zeta/tools": true})
 	message := "read the GitHub App's installation on acme/widgets: GET https://api.github.com/repos/acme/widgets/installation: status 500: Server Error"
 	standIn.fail("acme/widgets", `{"code":"GITHUB_UNREADABLE","error":"`+message+`"}`)
@@ -700,12 +743,9 @@ func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testin
 	if got := w.repositories.view(nil).WithoutWebhookApp; !reflect.DeepEqual(got, want) {
 		t.Fatalf("state's withoutWebhookApp = %#v, want %#v", got, want)
 	}
-	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
+	if waiting := w.refreshWaits(); len(waiting) != 0 {
 		t.Fatalf("awaiting a read again = %q, want none: a failed webhook App check asks for none", waiting)
 	}
-	// The refresher reads again within installReadRetry.Max of a failed installation read; ten
-	// of them pass with no read.
-	time.Sleep(10 * installReadRetry.Max)
 	if got := standIn.checks("acme/widgets"); got != 1 {
 		t.Fatalf("Dispatch was asked the webhook App check of acme/widgets %d times, want once", got)
 	}
@@ -819,12 +859,13 @@ func (d *hangingWebhookDispatch) WebhookAppInstalled(ctx context.Context, repo s
 // whole. A Dispatch that never answers costs each repository installReadAttempt, so more
 // repositories than one round of mappingReads are each named with the check's deadline, the
 // repository the mapping serves is asked nothing apart, and every one of them is still served.
+// The bounds run on the runtime's fake clock, which the test moves to each one armed: every bound
+// armed is installReadAttempt from the moment it is armed, and the check of the repositories past
+// the first round's begins only once the clock has passed the first round's bound.
 func TestTheCheckOfTheRepositoriesOnlyARecordNamesIsBoundedPerCheck(t *testing.T) {
-	read := installReadAttempt
-	t.Cleanup(func() { installReadAttempt = read })
-	installReadAttempt = 50 * time.Millisecond
 	client := &hangingWebhookDispatch{}
-	w := &workflowRuntime{dispatch: client, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
+	clk := clocktest.New(time.Now())
+	w := &workflowRuntime{dispatch: client, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(), clock: clk}
 	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
 	live := map[string]ghrepo.Repository{"acme/widgets": ghrepo.MustParse("acme/widgets")}
 	var want []webhookAppGap
@@ -838,9 +879,26 @@ func TestTheCheckOfTheRepositoriesOnlyARecordNamesIsBoundedPerCheck(t *testing.T
 	refreshed := make(chan struct{})
 	go func() { w.refreshOnMappingChange(running); close(refreshed) }()
 	t.Cleanup(func() { stop(); <-refreshed })
+	start, moves := clk.Now(), 0
 	testwait.Eventually(t, "each repository only a record names named with the check's deadline", func() bool {
-		return slices.Equal(w.repositories.WithoutWebhookApp(), want)
+		if slices.Equal(w.repositories.WithoutWebhookApp(), want) {
+			return true
+		}
+		armed := clk.Armed()
+		for _, at := range armed {
+			if !at.Equal(clk.Now().Add(installReadAttempt)) {
+				t.Fatalf("a check armed its bound %s past the clock, want installReadAttempt (%s): each check is bound on its own", at.Sub(clk.Now()), installReadAttempt)
+			}
+		}
+		if len(armed) != 0 {
+			clk.Set(armed[0])
+			moves++
+		}
+		return false
 	})
+	if took := clk.Now().Sub(start); moves < 2 || took < 2*installReadAttempt {
+		t.Fatalf("the check took %d moves, %s of the fake clock, want two bounds at least: %d repositories, %d at once, and nothing bounding the whole", moves, took, mappingReads+2, mappingReads)
+	}
 	if got := len(w.repositories.served()); got != len(live) {
 		t.Fatalf("served %d repositories, want all %d: a check that failed refuses nothing", got, len(live))
 	}
@@ -856,7 +914,7 @@ type namedGitHub struct{ url string }
 
 func newNamedGitHub(t *testing.T, repos map[string]string) *namedGitHub {
 	t.Helper()
-	return &namedGitHub{url: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return &namedGitHub{url: githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/repos/")
 		named, ok := repos[strings.ToLower(path)]
 		if r.Method != http.MethodGet || !ok {
@@ -1199,8 +1257,9 @@ func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
 // the pass had taken its set, or committed, and no pass ever read it or told its architect.
 //
 // The call is held at recoveringMu by holding it here, as the pass's own lock is held while it
-// takes its set. The pause only lets the call reach that lock: with the mapping read under it,
-// there is nothing the call does before it, so the answer does not depend on the pause.
+// takes its set, and the test goes on once the call is parked on that lock, which the goroutines'
+// stacks show (parkedOnALockIn): with the mapping read under it, there is nothing the call does
+// before it, so the answer does not depend on when the call got there.
 func TestAReleaseWaitInFlightAcrossAPublicationIsRefusedRatherThanStranded(t *testing.T) {
 	const repo, tree, filed, inFlight = "zeta/tools", "LEGION-1", "LEGION-2", "LEGION-3"
 	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
@@ -1212,7 +1271,9 @@ func TestAReleaseWaitInFlightAcrossAPublicationIsRefusedRatherThanStranded(t *te
 	w.recoveringMu.Lock()
 	answered := make(chan bool, 1)
 	go func() { answered <- w.awaitRecovery(repo, tree, inFlight, tree) }()
-	time.Sleep(100 * time.Millisecond)
+	testwait.Eventually(t, "the release wait's call in flight to park on recoveringMu", func() bool {
+		return parkedOnALockIn(".(*workflowRuntime).awaitRecovery(")
+	})
 	// While the call waits: a read of the mapping publishes zeta/tools served and marks it to
 	// recover (markRecovered, which takes this lock, so it is written here), and the recovery's
 	// pass takes its set and its waits under the same lock (recoverRepositories).
@@ -1232,6 +1293,29 @@ func TestAReleaseWaitInFlightAcrossAPublicationIsRefusedRatherThanStranded(t *te
 		t.Fatalf("the wait for %s in flight across the publication was held (%v, holding it: %v) though the pass had taken its set %v: no pass will read it, so it must be refused, for the route to retry the child",
 			inFlight, held, stranded, taken)
 	}
+}
+
+// parkedOnALockIn reports whether a goroutine of this process is parked on a sync.Mutex inside
+// function, a frame as a goroutine's stack names it (".(*workflowRuntime).awaitRecovery("): where
+// a call waits while a test holds the lock it takes. A goroutine waiting on a mutex leaves no state
+// of its own to read, and testing/synctest counts none as durably blocked, so its stack is what
+// says it waits there.
+func parkedOnALockIn(function string) bool {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	for _, stack := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(stack, "sync.(*Mutex)") && strings.Contains(stack, function) {
+			return true
+		}
+	}
+	return false
 }
 
 // An issue the workflow does not record, such as an operator's claim, works the project's default

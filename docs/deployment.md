@@ -272,6 +272,13 @@ trusted`. Put a real tmux binary first on the daemon's `PATH`
 (`mise which tmux` prints its install path), as the live proofs do with `real_bin_path`
 (`scripts/e2e/README.md`).
 
+The private server reads no tmux configuration file: the command that starts it carries
+`-f /dev/null`, so the server's start does not run, or wait for, the operator's `~/.tmux.conf`
+or its plugins. An operator who attaches with `tmux -L legion-<project> attach` gets tmux's
+default keys and options. `source-file` in that client is not local to the client: tmux runs the
+file's commands on the daemon's server, so the file's options, key bindings and plugins then
+apply to that server and to the daemon's sessions and windows.
+
 ## What a pane's Dispatch credential is
 
 A pane's Dispatch bearer is the daemon's own. The daemon reads `dispatch_token_file` once at boot

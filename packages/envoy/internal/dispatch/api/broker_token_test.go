@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -885,12 +886,12 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	}
 
 	// Once the broker stops holding the token live, the re-resolution refuses and the connection
-	// closes. The affirmative answer is remembered for a few seconds, so this reads past it.
+	// closes. The affirmative answer is remembered for a few seconds (AffirmativeCacheTTL), so the
+	// refusal comes once that has lapsed.
 	rig.broker.Says(token, brokertoken.Introspection{Active: false})
-	time.Sleep(brokertoken.AffirmativeCacheTTL + 50*time.Millisecond)
-	if err := served.callerStillResolves(admitted); err == nil {
-		t.Fatal("a revoked token kept resolving on an open connection")
-	}
+	testwait.Eventually(t, "a revoked token's re-resolution on an open connection to refuse", func() bool {
+		return served.callerStillResolves(admitted) != nil
+	})
 }
 
 // TestTheRateRefusalCarriesTheWaitInItsHeader: the introspection bucket's refusal tells the

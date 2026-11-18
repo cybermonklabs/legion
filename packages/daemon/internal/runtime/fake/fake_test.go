@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func spec(token claim.Token) runtime.SpawnSpec {
@@ -188,33 +190,25 @@ func TestTheSweepPlaysScriptedObservationsInOrderAndClosesWithItsContext(t *test
 	)
 
 	for _, want := range []runtime.ObservationKind{runtime.Alive, runtime.Uncertain, runtime.Gone} {
-		select {
-		case observation, open := <-sweep:
-			if !open {
-				t.Fatalf("the sweep closed before %q", want)
-			}
-			if observation.Kind != want {
-				t.Fatalf("observation: got %q, want %q", observation.Kind, want)
-			}
-			if observation.Locator != locator {
-				t.Fatalf("observation is about %+v, want %+v", observation.Locator, locator)
-			}
-			if observation.At.IsZero() {
-				t.Fatalf("observation %q carries no time", want)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("the sweep never played %q", want)
+		observation := testwait.Receive(t, fmt.Sprintf("the sweep to play %q", want), sweep)
+		if observation.Kind == "" {
+			t.Fatalf("the sweep closed before %q", want)
+		}
+		if observation.Kind != want {
+			t.Fatalf("observation: got %q, want %q", observation.Kind, want)
+		}
+		if observation.Locator != locator {
+			t.Fatalf("observation is about %+v, want %+v", observation.Locator, locator)
+		}
+		if observation.At.IsZero() {
+			t.Fatalf("observation %q carries no time", want)
 		}
 	}
 
 	cancel()
-	select {
-	case _, open := <-sweep:
-		if open {
-			t.Fatalf("the sweep sent an observation after its context ended")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the sweep did not close when its context ended")
+	// The close gives the zero observation, and nothing the fake sends carries no kind.
+	if observation := testwait.Receive(t, "the sweep to close once its context ended", sweep); observation.Kind != "" {
+		t.Fatalf("the sweep sent an observation after its context ended: %+v", observation)
 	}
 }
 

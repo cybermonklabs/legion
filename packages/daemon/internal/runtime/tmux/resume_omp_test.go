@@ -2,17 +2,16 @@ package tmux
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A role moved back to Oh My Pi from Claude Code resumes the session file its claim recorded, which
@@ -65,9 +64,7 @@ func TestThePinnedOhMyPiRefusesToResumeAClaudeCodeTranscript(t *testing.T) {
 		if err != nil || pairs != nil {
 			t.Fatalf("Launch = %v, %v", pairs, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, shell, "-c", inner)
+		cmd := exec.CommandContext(testwait.Context(t), shell, "-c", inner)
 		cmd.Dir = work
 		cmd.Env = []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
 		// One RPC request, then end of input: a session that started answers it and exits.

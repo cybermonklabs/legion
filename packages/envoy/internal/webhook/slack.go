@@ -1,7 +1,6 @@
 package webhook
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -28,14 +27,16 @@ func stringValue(value any) string {
 // rather than at the bus's own 5 s bound.
 const slackAnswerBudget = 2500 * time.Millisecond
 
-// SlackHandler returns the HTTP handler for Slack webhook events.
-func SlackHandler(secret string, publisher Publisher) http.HandlerFunc {
+// SlackHandler returns the HTTP handler for Slack webhook events. It arms its answer budget on the
+// clock WithClock names, and on the wall clock when none does.
+func SlackHandler(secret string, publisher Publisher, options ...Option) http.HandlerFunc {
+	c := clockOf(options)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), slackAnswerBudget)
+		ctx, cancel := c.WithTimeout(r.Context(), slackAnswerBudget)
 		defer cancel()
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 		if err != nil {

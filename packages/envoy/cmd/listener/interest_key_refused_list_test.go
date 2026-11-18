@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,12 +13,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // GET /v1/sessions lists every live session the session bucket holds, even one whose id the
@@ -99,16 +102,12 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		t.Fatalf("store session %s by a direct bucket write: %v", invalidKey, err)
 	}
 	listed := []string{ordinary, readableLegacy, unreadableLegacy, invalidKey}
-	deadline := time.Now().Add(5 * time.Second)
 	for _, id := range listed {
-		for {
-			if _, err := sessions.Get(id); err == nil {
-				break
-			} else if time.Now().After(deadline) {
-				t.Fatalf("the session cache never held the %d-byte session %.16s: %v", len(id), id, err)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("the session cache to hold the %d-byte session %.16s", len(id), id),
+			func() (error, bool) {
+				_, err := sessions.Get(id)
+				return err, err == nil
+			})
 	}
 	// The listing answers the refilling 503 until the session copy has completed a read of its
 	// bucket, whatever the copy already holds.
@@ -211,7 +210,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		{invalidKey, http.StatusBadRequest},
 	} {
 		t.Run("interests/"+refused.id[:min(len(refused.id), 8)], func(t *testing.T) {
-			recorder := get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+refused.id)
+			recorder := get(adminInterestsHandler(registry, sessions, clock.Real(), nil, logging.New("test")), "/v1/interests/"+refused.id)
 			if recorder.Code != refused.want {
 				t.Fatalf("GET /v1/interests/<the %d-byte id %.16s>: status %d, body %.300s; want %d", len(refused.id), refused.id, recorder.Code, recorder.Body.String(), refused.want)
 			}

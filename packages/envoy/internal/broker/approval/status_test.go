@@ -1,6 +1,7 @@
 package approval_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -266,9 +267,12 @@ func TestSignInStatusWritesNoDecisionWhenThePostDecidedNothing(t *testing.T) {
 		t.Fatalf("after ada's approval the status = %s, want the decision's own time", body)
 	}
 	decided := *status.LastDecisionAt
+	// The row's own version, which no two writes can share whatever their stamps are: an
+	// update of signin_status writes a new row version and so a new xmin, including one that
+	// writes the value it already held. Two decisions inside one microsecond would leave
+	// last_decision_at alone and this changed.
+	wrote := r.statusVersion(t)
 
-	// Far enough apart that two writes cannot share a timestamp.
-	time.Sleep(20 * time.Millisecond)
 	if res := b.FromPage(t, "/approve", brokertest.Decision(form, "approve")); res.Status != http.StatusSeeOther {
 		t.Fatalf("the resend of the same form = %d, want 303:\n%s", res.Status, res.Body)
 	}
@@ -286,4 +290,18 @@ func TestSignInStatusWritesNoDecisionWhenThePostDecidedNothing(t *testing.T) {
 		t.Fatalf("a POST that decided nothing moved the last decision's time from %s to %s: %s",
 			decided.Format(time.RFC3339Nano), status.LastDecisionAt.Format(time.RFC3339Nano), body)
 	}
+	if again := r.statusVersion(t); again != wrote {
+		t.Fatalf("a POST that decided nothing wrote signin_status again: its row version moved from %s to %s", wrote, again)
+	}
+}
+
+// statusVersion is the signin_status row's own version (xmin), which changes on every write of
+// that row and on no read of it.
+func (r *rig) statusVersion(t *testing.T) string {
+	t.Helper()
+	var version string
+	if err := r.st.Pool.QueryRow(context.Background(), `select xmin::text from signin_status where only_row`).Scan(&version); err != nil {
+		t.Fatalf("read the signin_status row's version: %v", err)
+	}
+	return version
 }

@@ -62,6 +62,12 @@ jobs:
     # pull request's run and a merge group's both download the 34 MB release asset rather than
     # restore it, and that download is the 2 s above.
     # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
+    # The sum under the one-guard rule, over the job's 20 newest green merge-group runs up to
+    # 2026-11-15: its other steps at their longest, 98 s, 6 s of its clock over them, and its test
+    # step's longest, 709 s, plus the package script's two guards, 15 s and 300 s, and the 240 s of
+    # the one hook with a guard of its own, rig.test.ts's judge-omp beforeAll, which pulls the
+    # judges' image (package.json's `//` note gives its reading): 1368 s, or 23 minutes, under
+    # the 28.
     timeout-minutes: 28
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.

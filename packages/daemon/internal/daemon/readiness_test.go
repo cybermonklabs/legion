@@ -5,17 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
-
-// fastReadiness overrides readinessRetry for a test's lifetime, restored on cleanup, so a gate
-// that would otherwise wait up to a minute between attempts costs the suite nothing.
-func fastReadiness(t *testing.T, retry bootprobe.Retry) {
-	t.Helper()
-	previous := readinessRetry
-	readinessRetry = retry
-	t.Cleanup(func() { readinessRetry = previous })
-}
 
 // readinessAttempt's three outcomes: passed, retried (bootprobe.Run's retry branch) when its
 // judge recognizes the failure, and refused when it does not.
@@ -47,7 +38,7 @@ func TestReadinessAttempt(t *testing.T) {
 			if !testCase.wantPassed {
 				attemptErr = errors.New("unavailable")
 			}
-			got := readinessAttempt(func(context.Context) error { return attemptErr }, bootTimeout, testCase.unreachable)(context.Background())
+			got := readinessAttempt(clock.Real(), func(context.Context) error { return attemptErr }, bootTimeout, testCase.unreachable)(context.Background())
 			if got.Passed != testCase.wantPassed {
 				t.Fatalf("Outcome.Passed = %t, want %t", got.Passed, testCase.wantPassed)
 			}

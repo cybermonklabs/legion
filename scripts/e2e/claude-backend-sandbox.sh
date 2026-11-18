@@ -241,6 +241,7 @@ providers_secret=legion-$run_label-providers
 # bridge itself is ever stood up.
 bridge_name=bridge-$run_label
 pg_container="legion-e2eccs-pg-$$"
+pg_sockets= # its socket directory (start_postgres_container, lib/containers.sh); cleanup removes it
 nats_container="legion-e2eccs-nats-$$"
 # The run's session database: its container, the image (the pinned Postgres the repository's CI
 # tests against, as Stage 4a's and Stage 4b's), and the providers Secret key its URL reaches every
@@ -282,7 +283,6 @@ pod_service_account=
 daemon_pid=
 dispatch_pid=
 listener_pid=
-port_pg=
 dispatch_base=
 # The proof human's writes carry no session actor: the scratch Dispatch reads the human header.
 dispatch_actor=
@@ -577,7 +577,7 @@ start_dispatch() {
   mkdir -p "$work/dispatch-home"
   chmod 0700 "$work/dispatch-home"
   # HOME and XDG_CONFIG_HOME are the scratch home, so the server reads no envoy.json of the operator's.
-  DATABASE_URL="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
+  DATABASE_URL="postgres://legion:$(cat "$work/postgres-password")@/dispatch?host=$pg_sockets&sslmode=disable" \
     DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" ENVOY_TOKEN="$(cat "$work/envoy-token")" \
     HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
@@ -678,7 +678,7 @@ advertise_host: $host
 port: $port_daemon
 worker_stream_port: $port_worker_stream
 daemon_url: http://$host:$port_daemon
-postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port_pg/legion?sslmode=disable
+postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@/legion?host=$pg_sockets&sslmode=disable
 state_dir: $state
 operator_token_file: $work/operator-token
 envoy_url: http://$host:$port_listener
@@ -772,6 +772,13 @@ daemon_run_args() {
   for mount in "${daemon_mounts[@]}"; do
     daemon_run+=(--mount "type=bind,source=$mount,target=$mount,readonly")
   done
+  # Postgres's socket directory, once it has one, at its own path: it is under $work unless that
+  # path is too long for a unix socket (start_postgres_container), and only then is it a mount of
+  # its own. The daemon connects to the socket in it, which a read-only mount does not refuse.
+  case "${pg_sockets:-$work}/" in
+    "$work"/*) ;;
+    *) daemon_run+=(--mount "type=bind,source=$pg_sockets,target=$pg_sockets,readonly") ;;
+  esac
   daemon_run+=(-e "HOME=$work/daemon-home" -e "PATH=$daemon_path")
   daemon_passed=()
   while IFS= read -r name; do
@@ -1118,6 +1125,7 @@ cleanup() {
   stop_pid "$listener_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets" || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch
   # namespace_clean fails loudly when the namespace differs from its snapshot, and its `fail` is an
@@ -1349,13 +1357,12 @@ chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") ||
   fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
-# Postgres is the daemon's and Dispatch's alone, so it stays on loopback: no pod reads it.
-docker run -d --name "$pg_container" --mount type=tmpfs,destination=/var/lib/postgresql \
+# Postgres is the daemon's and Dispatch's alone, so it stays on this machine: no pod reads it. It
+# publishes no port (lib/containers.sh): it listens on a unix socket in a directory of the run's own.
+start_postgres_container "$pg_container" pg_sockets --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
-port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
-[ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
-until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
+  -- mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+until_true 60 "Postgres to accept connections on its socket" postgres_container_ready "$pg_container"
 docker exec "$pg_container" createdb -U legion legion
 # NATS binds bind_host on the run's port: every pod's agent dials it there, directly or through the
 # bridge.

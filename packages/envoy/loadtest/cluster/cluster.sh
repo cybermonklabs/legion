@@ -910,6 +910,12 @@ step_gone() {
   [ "$(proc_start "$1")" != "$2" ] || [ ! -d "$RUN_DIR" ]
 }
 
+# now_epoch: the seconds since the epoch the lock-age arithmetic reads for "now". It is a real
+# clock read, except that a test pins it with LOADTEST_FAKE_NOW_EPOCH so that an age it asserts is
+# the offset it wrote the heartbeat at, not that offset plus however long a loaded machine took
+# between writing the lock and this read. Production never sets the variable.
+now_epoch() { echo "${LOADTEST_FAKE_NOW_EPOCH:-$(date -u +%s)}"; }
+
 # heartbeat_age RFC3339: seconds since it, or "unknown".
 heartbeat_age() {
   local t
@@ -917,7 +923,7 @@ heartbeat_age() {
     echo unknown
     return
   }
-  echo $(($(date -u +%s) - t))
+  echo $(($(now_epoch) - t))
 }
 
 # refuse_lock JSON: exit 2, naming the lock's holder and its heartbeat's age; past 15 min it is
@@ -960,15 +966,31 @@ kube_lock_take() {
 # ---- background daemons -------------------------------------------------------------------------------
 
 # start_daemon NAME: `cluster.sh _NAME` in a session of its own, so it outlives this command and
-# down stops it with its children by its process group. It writes its pidfile itself.
+# down stops it with its children by its process group. It writes its pidfile itself, and this
+# waits for whichever comes first, that pidfile or the daemon's end, with no count of naps: a
+# daemon a loaded machine is slow to start is still starting, not failed. setsid runs the daemon
+# in place, since this shell's background job leads no process group of its own, so $! is the
+# daemon itself; a daemon that has ended is gone or a zombie (pid_running).
 start_daemon() {
-  local name=$1 i
+  local name=$1 daemon
   setsid bash "$SELF" "_$name" --namespace "$NS" --run "$RUN" >>"$RUN_DIR/logs/$name.log" 2>&1 </dev/null &
-  for ((i = 0; i < 50; i++)); do
-    daemon_alive "$name" && return 0
+  daemon=$!
+  until daemon_alive "$name"; do
+    pid_running "$daemon" || {
+      daemon_alive "$name" && return 0
+      die "the $name daemon ended before this command saw its pidfile name it running; see $RUN_DIR/logs/$name.log"
+    }
     sleep 0.1
   done
-  die "the $name daemon did not start; see $RUN_DIR/logs/$name.log"
+}
+
+# pid_running PID: PID is a process that has not ended. A child that has ended stays a zombie,
+# which kill -0 still finds, until this shell reaps it.
+pid_running() {
+  local stat
+  read -r stat <"/proc/$1/stat" 2>/dev/null || return 1
+  stat=${stat##*) }
+  [ "${stat%% *}" != Z ]
 }
 
 # daemon_alive NAME: NAME's pidfile names a live `cluster.sh _NAME` of this run.

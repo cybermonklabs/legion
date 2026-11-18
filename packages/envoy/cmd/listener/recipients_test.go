@@ -16,11 +16,13 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recipientSender is the session every publish in these tests names as its source: it follows the
@@ -65,8 +67,7 @@ func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []st
 // same, and that state is what the count reads.
 func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
 	}
@@ -105,17 +106,10 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
-			break
-		}
-		if time.Now().After(deadline) {
-			_, state := rig.harness.sessions.Lookup(sessionID)
-			t.Fatalf("%s reads %s in the session cache, want %s", sessionID, state, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, sessionID+" to read "+string(want)+" in the session cache", func() (session.State, bool) {
+		_, state := rig.harness.sessions.Lookup(sessionID)
+		return state, state == want
+	})
 	if record, known := rig.known.Get(sessionID); known {
 		t.Fatalf("%s has the known-session record %#v, so it is not the older listener's session", sessionID, record)
 	}
@@ -181,7 +175,7 @@ type countedCopy interface {
 // (replaceWatcher), as the list rig's are, and both replacements' first reads are waited for, so
 // each copy can be served until the test disconnects it. It runs right after newRecipientRig,
 // before any route has read either store.
-func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[string]countedCopy {
+func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *clocktest.Fake) map[string]countedCopy {
 	t.Helper()
 	unwrapped := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
 	replaceWatcher(t, rig.harness.registry, "interest registry", unwrapped, kvwatch.WithNow(clock.Now))
@@ -194,7 +188,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	testwait.Eventually(t, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false
@@ -348,7 +342,7 @@ func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
 	for _, stale := range []string{"session", "interest"} {
 		t.Run(stale+" copy", func(t *testing.T) {
 			rig := newRecipientRig(t)
-			clock := &listenerClock{now: time.Now()}
+			clock := clocktest.New(time.Now())
 			copies := rig.watchCopiesOn(t, clock)
 			const topic = "notifications.team.servable-count"
 			rig.register(t, recipientSender, []string{topic})
@@ -460,23 +454,15 @@ func watchJetStreamAPI(t *testing.T, uri string, conn *natsgo.Conn, subjects ...
 // connection sent before it has arrived too.
 func (p *jetStreamAPIProbe) awaitCall(t *testing.T, subject string) []string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	return testwait.Until(t, "the probe to see the control call on "+subject+", which says it is watching", func() ([]string, bool) {
 		p.mu.Lock()
+		defer p.mu.Unlock()
 		index := slices.Index(p.observed, subject)
-		var before []string
-		if index >= 0 {
-			before = slices.Clone(p.observed[:index])
+		if index < 0 {
+			return nil, false
 		}
-		p.mu.Unlock()
-		if index >= 0 {
-			return before
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the probe did not see the control call on %s within 5s, so it is watching nothing", subject)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return slices.Clone(p.observed[:index]), true
+	})
 }
 
 // jetStreamInboxPrefix is the prefix every response inbox conn puts on a request carries, which no

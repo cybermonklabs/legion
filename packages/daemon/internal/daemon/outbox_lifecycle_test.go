@@ -841,16 +841,18 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	}
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
-	// takeTask is the agent starting a turn on a task it was sent and has not yet taken.
+	// takeTask is the agent starting a turn on a task it was sent and has not yet taken. A send
+	// starts inside the event that triggers it, on a goroutine the machine counts, so once the
+	// machine's sends have settled (supervise's Machine.Wait) a task sent is delivered, and none
+	// delivered is none sent: the machines' clock (stillClock) fires no timer that could send one
+	// later.
 	takeTask := func() {
 		t.Helper()
 		machine, _ := sup.Machine(token)
-		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-			if p := machine.Claim().Pending; p != nil && !p.DeliveredAt.IsZero() && p.ConfirmedAt.IsZero() {
-				if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token, DeliveryID: p.ID}); err != nil {
-					t.Fatalf("start the turn: %v", err)
-				}
-				return
+		machine.Wait()
+		if p := machine.Claim().Pending; p != nil && !p.DeliveredAt.IsZero() && p.ConfirmedAt.IsZero() {
+			if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token, DeliveryID: p.ID}); err != nil {
+				t.Fatalf("start the turn: %v", err)
 			}
 		}
 	}

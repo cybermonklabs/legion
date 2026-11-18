@@ -11,7 +11,14 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// heldStopQuiet is why a Rewatch under a live run is held quiet for a span while the replaced
+// watcher's Stop is held: the Rewatch's wait for that Stop leaves no state this test can read, the
+// watch does real network I/O to the test server, so synctest does not reach it, and the only later
+// action whose effect would show it is the Stop's release, the event the Rewatch is to wait for.
+const heldStopQuiet = "no state shows the Rewatch waiting on the held Stop, it does real network I/O so synctest cannot reach it, and the one later action is the Stop's release it must wait for"
 
 // heldStopKV hands out watchers whose Stop is held until release closes, standing in for the
 // delete of the consumer nats.go created for a watcher, a request that takes no context and goes
@@ -74,7 +81,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			// Cleanups run last-in first-out: the held Stop is released before the watcher stops.
 			t.Cleanup(release)
 			w.Start()
-			eventually(t, "the first read's completion", w.Following)
+			testwait.Eventually(t, "the first read's completion", w.Following)
 
 			conn := testnats.Connect(t, uri)
 			t.Cleanup(conn.Close)
@@ -82,27 +89,16 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			t.Cleanup(end)
 			rewatched := make(chan error, 1)
 			go func() { rewatched <- w.Rewatch(run, conn) }()
-			select {
-			case <-held.entered:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the Rewatch never stopped the watcher it replaced")
-			}
+			testwait.Receive(t, "the Rewatch to stop the watcher it replaced", held.entered)
 			// While the run is live the watch waits for the stop.
-			select {
-			case err := <-rewatched:
-				t.Fatalf("a Rewatch under a live run returned (%v) while the replaced watcher's Stop was still held", err)
-			case <-time.After(100 * time.Millisecond):
-			}
+			testwait.Quiet(t, "a Rewatch under a live run, while the replaced watcher's Stop is held", rewatched, 100*time.Millisecond, heldStopQuiet)
 
 			if tc.ends {
 				end()
-				select {
-				case err := <-rewatched:
-					if err != nil {
-						t.Fatalf("rewatch: %v", err)
-					}
-				case <-time.After(time.Second):
-					t.Fatal("the Rewatch did not return within 1s of its run ending: it waited out the replaced watcher's Stop")
+				// The replaced watcher's Stop stays held until the test's cleanup, so a Rewatch that
+				// waited it out would not return before then, and this wait would give up naming it.
+				if err := testwait.Receive(t, "the Rewatch to return once its run ended, with the replaced watcher's Stop still held", rewatched); err != nil {
+					t.Fatalf("rewatch: %v", err)
 				}
 				select {
 				case <-held.returned:
@@ -110,19 +106,10 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 				default:
 				}
 			} else {
-				select {
-				case err := <-rewatched:
-					t.Fatalf("a Rewatch under a live run returned (%v) while the replaced watcher's Stop was still held", err)
-				case <-time.After(300 * time.Millisecond):
-				}
+				testwait.Quiet(t, "a Rewatch under a live run, while the replaced watcher's Stop is held", rewatched, 300*time.Millisecond, heldStopQuiet)
 				release()
-				select {
-				case err := <-rewatched:
-					if err != nil {
-						t.Fatalf("rewatch: %v", err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the Rewatch did not return within 10s of the replaced watcher's Stop returning")
+				if err := testwait.Receive(t, "the Rewatch to return once the replaced watcher's Stop returned", rewatched); err != nil {
+					t.Fatalf("rewatch: %v", err)
 				}
 				select {
 				case <-held.returned:
@@ -137,7 +124,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			if _, err := w.KV().Put("after-the-rewatch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
-			eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-the-rewatch") })
+			testwait.Eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-the-rewatch") })
 		})
 	}
 }

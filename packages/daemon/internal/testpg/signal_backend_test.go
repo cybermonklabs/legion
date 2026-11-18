@@ -1,10 +1,11 @@
 package testpg_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // Every test of this module that makes a database of its own drops it with `with (force)`, which
@@ -17,15 +18,13 @@ import (
 // `permission denied to terminate process` (SQLSTATE 42501), at a different handful of tests each
 // run, and only where that server is: CI's login is a superuser, so CI stays green while every
 // Legion issue pod goes red. This holds the right the drop needs on whatever server
-// LEGION_TEST_PG_DSN names, which is the one the tests will use.
+// LEGION_TEST_PG_DSN names, which is the one the tests will use. It reads the right in a database
+// of its own on that server (testdb.Database), whose URL keeps the DSN's login, so the login it
+// reads is the one every test's drop runs as and no read reaches the DSN's own database.
 func TestTheDSNRoleMayTerminateAnotherRolesBackend(t *testing.T) {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no server whose login to read")
-	}
-	conn, err := pgx.Connect(t.Context(), dsn)
+	conn, err := pgx.Connect(t.Context(), testdb.Database(t, "legion_signal_backend_test"))
 	if err != nil {
-		t.Fatalf("connect to the test server: %v", err)
+		t.Fatalf("connect to a database of the test's own on the test server: %v", err)
 	}
 	defer conn.Close(t.Context())
 

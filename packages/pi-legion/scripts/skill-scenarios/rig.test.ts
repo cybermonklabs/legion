@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   appendFileSync,
   cpSync,
@@ -9,14 +9,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
-// takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute.
-setDefaultTimeout(60_000);
+// takes longer than bun's 5 s default (the eight-turn conversation took 11 s), which the command's
+// one guard covers.
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
@@ -51,6 +51,7 @@ const miseData =
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
 const childEnv = {
+  ...bunCacheOff,
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
   ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
@@ -928,6 +929,31 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
   const judgedCleanly = { code: 0, refused: false, stderr: "" };
 
+  // The judges' image, pulled once for the file, by rig.sh's own pull and its three tries
+  // (`rig.sh judge-image`), so that a failed pull names itself here and no row waits for it. The
+  // first row paid for it alone: 119,329.07 ms on a runner whose pull was slow, while no other
+  // judge-omp row took more than 3.4 s on CI. So this hook alone has a guard of its own, at least
+  // twice the slowest pull CI read; package.json's `//` note gives the readings and their runs.
+  // Its one line of output is the pull's time, so each CI log records one more reading. A host
+  // that skips the rows skips the pull.
+  beforeAll(() => {
+    if (skip) return;
+    const start = performance.now();
+    const result = Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "judge-image"], {
+      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+    });
+    console.log(`judge-omp: rig.sh judge-image took ${(performance.now() - start).toFixed(2)} ms`);
+    expect(judged(result)).toEqual(judgedCleanly);
+  }, 240_000);
+
+  // Each row below that runs a judge holds that judge's docker run, past the command's 15,000 ms on
+  // a loaded dev box, a machine that runs this suite. So those rows have a guard of their own, at
+  // least twice the slowest of five dev-box runs at 70978a40 with no row limit, each started at a
+  // 1-minute load of 1,011 to 3,003 (INFRA-3904's lanes, 2026-11-17 21:56-22:00Z, logs under
+  // /mnt/scratch/sami/TriageBunLoopStall.lJ5iY6/runs/judge-load.aWJXXI/ on the dev box): the
+  // gateway row, 31,374.69 ms, in run 1 at a load of 3,003 to 2,405.
+  const judgeRow = 90_000;
+
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
   test.skipIf(skip)(
@@ -969,7 +995,8 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
           "utf8"
         )
       ).toContain("https://api.anthropic.com");
-    }
+    },
+    judgeRow
   );
 
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
@@ -995,39 +1022,50 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         "dbus-set": "denied",
       });
       expect(existsSync(path.join(dir, "new.txt"))).toBe(false);
-    }
+    },
+    judgeRow
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
-  test.skipIf(skip)("bare loads no skill, and judge-omp exits with omp's status", () => {
-    const dir = judgeDir();
-    writeFileSync(path.join(dir, "exit-status"), "3\n");
-    const result = judge("bare", dir);
-    expect(result.exitCode).toBe(3);
-    expect(recorded(dir, "argv")).toContain("--no-skills");
-    expect(recorded(dir, "argv")).not.toContain("--skills");
-    expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
-    expect(recorded(dir, "probe")).toContain("read-skill denied");
-    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
-    expect(
-      existsSync(path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills"))
-    ).toBe(false);
-  });
+  test.skipIf(skip)(
+    "bare loads no skill, and judge-omp exits with omp's status",
+    () => {
+      const dir = judgeDir();
+      writeFileSync(path.join(dir, "exit-status"), "3\n");
+      const result = judge("bare", dir);
+      expect(result.exitCode).toBe(3);
+      expect(recorded(dir, "argv")).toContain("--no-skills");
+      expect(recorded(dir, "argv")).not.toContain("--skills");
+      expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
+      expect(recorded(dir, "probe")).toContain("read-skill denied");
+      expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
+      expect(
+        existsSync(
+          path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills")
+        )
+      ).toBe(false);
+    },
+    judgeRow
+  );
 
   // Catches: a mount two judges share that one can write and the next can read, such as the key
   // command's call record, a path one judge could leave its private input in for another to read.
   // The first judge writes a marker into every directory it can write outside its own directory;
   // the second, of the same kind, looks for one anywhere it can read.
-  test.skipIf(skip)("one judge cannot leave a file that a second judge can read", () => {
-    const first = judgeDir();
-    const env = (word: string) => ({
-      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
-    });
-    expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
-    const second = judgeDir();
-    expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
-    expect(recorded(second, "seek")).toEqual([""]);
-  });
+  test.skipIf(skip)(
+    "one judge cannot leave a file that a second judge can read",
+    () => {
+      const first = judgeDir();
+      const env = (word: string) => ({
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
+      });
+      expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
+      const second = judgeDir();
+      expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
+      expect(recorded(second, "seek")).toEqual([""]);
+    },
+    judgeRow
+  );
 
   // Catches: a judge kind the rig has no profile for, a directory with no prompt, and an answer
   // file name that escapes the judge's directory or names another of its files.
@@ -1122,7 +1160,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         });
         expect(existsSync(`${dir}.key`)).toBe(false);
         expect(readFileSync(path.join(dir, "answer.json"), "utf8")).not.toMatch(/eyJ[\w-]*\./);
-      }
+      },
+      judgeRow
     );
 
     // Catches: a token directory or file that others can read while the judge runs. The modes
@@ -1130,13 +1169,17 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
     // for nothing now, so there is no window for a watcher to look through, and a row that
     // waited for one would be waiting on a sleep.
-    test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
-      const dir = gatewayDir();
-      const result = gatewayJudge("bare", dir);
-      expect(judged(result)).toEqual(judgedCleanly);
-      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
-      expect(existsSync(`${dir}.key`)).toBe(false);
-    });
+    test.skipIf(skip)(
+      "the token file is the owner's alone while the judge runs",
+      () => {
+        const dir = gatewayDir();
+        const result = gatewayJudge("bare", dir);
+        expect(judged(result)).toEqual(judgedCleanly);
+        expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
+        expect(existsSync(`${dir}.key`)).toBe(false);
+      },
+      judgeRow
+    );
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
@@ -1164,44 +1207,52 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
           "judge-omp: the gateway's key command gave no key"
         );
         expect(existsSync(path.join(refused, "answer.json"))).toBe(false);
-      }
+      },
+      judgeRow
     );
   });
 
   // Catches: a judge profile whose built-from records an empty commit line when the rig's root is
   // no checkout, so a judge's model run cannot be traced to the code that built it.
-  test.skipIf(skip)("fails, naming the rig's root, when the root is no checkout", () => {
-    const top = freshDir("judge-root");
-    const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
-    mkdirSync(scripts, { recursive: true });
-    writeFileSync(path.join(scripts, "rig.sh"), readFileSync(path.join(import.meta.dir, "rig.sh")));
-    for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
-      mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
-      writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
-    }
-    mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
-    cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
-      recursive: true,
-    });
-    const rootWork = freshDir("judge-root-work");
-    const result = Bun.spawnSync(
-      ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
-      {
-        env: {
-          ...childEnv,
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: rootWork,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          GIT_CEILING_DIRECTORIES: path.dirname(top),
-        },
+  test.skipIf(skip)(
+    "fails, naming the rig's root, when the root is no checkout",
+    () => {
+      const top = freshDir("judge-root");
+      const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
+      mkdirSync(scripts, { recursive: true });
+      writeFileSync(
+        path.join(scripts, "rig.sh"),
+        readFileSync(path.join(import.meta.dir, "rig.sh"))
+      );
+      for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
+        mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
+        writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
       }
-    );
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
-    expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
-  });
+      mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
+      cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
+        recursive: true,
+      });
+      const rootWork = freshDir("judge-root-work");
+      const result = Bun.spawnSync(
+        ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
+        {
+          env: {
+            ...childEnv,
+            USER: "rig",
+            SKILL_SCENARIOS_WORK: rootWork,
+            SKILL_SCENARIOS_JUDGE_OMP: omp,
+            LEGION_E2E_MODEL_ROUTE: "key-file",
+            LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+            GIT_CEILING_DIRECTORIES: path.dirname(top),
+          },
+        }
+      );
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
+      expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
+    },
+    judgeRow
+  );
 });
 
 // A spec run's plan row reads skill://writing-plans, which only a label built with

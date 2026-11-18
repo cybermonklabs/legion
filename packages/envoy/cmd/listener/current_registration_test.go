@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // consumerRegistrationIn is consumerRegistration with a directory: the body a session in consumer
@@ -71,23 +72,21 @@ func captureLaneForwards(t *testing.T, url, sessionID string) <-chan contracts.E
 	return forwards
 }
 
-// requireOneForward fails the test unless exactly one forward, on topic, arrived within the window.
-func requireOneForward(t *testing.T, forwards <-chan contracts.Envelope, topic string, within time.Duration) contracts.Envelope {
+// oneForwardOnly is the span requireOneForward holds for a second forward it wants none of: the
+// forwards are a core subscription's of a session's own agent subject, which neither this test's
+// state nor a later action of its own reaches, since a publisher of its own cannot order a
+// message of this test's behind one the listener sends on a connection of the listener's.
+const oneForwardOnly = 500 * time.Millisecond
+
+// requireOneForward fails the test unless exactly one forward, on topic, reached the session.
+func requireOneForward(t *testing.T, forwards <-chan contracts.Envelope, topic string) contracts.Envelope {
 	t.Helper()
-	var first contracts.Envelope
-	select {
-	case first = <-forwards:
-	case <-time.After(within):
-		t.Fatalf("no forward on %s reached the session within %s", topic, within)
-	}
+	first := testwait.Receive(t, "the forward on "+topic+" reaching the session", forwards)
 	if first.Topic != topic {
 		t.Fatalf("the forward carries topic %s, want %s", first.Topic, topic)
 	}
-	select {
-	case again := <-forwards:
-		t.Fatalf("a second forward reached the session: %s on %s", again.EventID, again.Topic)
-	case <-time.After(500 * time.Millisecond):
-	}
+	testwait.Quiet(t, "a second forward reaching the session", forwards, oneForwardOnly,
+		"the forwards are a core subscription's of the session's agent subject, which neither this test's state nor a later action of its own reaches")
 	return first
 }
 
@@ -151,7 +150,7 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 	postListener(t, first.port, "/v1/interests/subscribe", consumerRegistrationIn(t, sessionID, "epoch-1", firstDir, followed))
 	through := newEnvelope("agent", agent, "through the first listener")
 	publish(t, publisher, through)
-	frames := standIn.collect(t, 1, 10*time.Second)
+	frames := standIn.collect(t, 1)
 	requireFrames(t, frames, through)
 	// The session wrote it, so the relay the second listener starts, at the ack floor, sends it no
 	// second time.
@@ -168,12 +167,12 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 
 	followedItem := newEnvelope("dispatch", comment, "a comment on the issue the session follows")
 	publish(t, publisher, followedItem)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), followedItem)
+	requireFrames(t, standIn.collect(t, 1), followedItem)
 
 	postListener(t, second.port, "/v1/messages/publish",
 		`{"topic":"`+roleTopic+`","message":"a message for the role's holder","source":"agent","source_session":"ses_role_sender_`+run+`"}`)
-	forwarded := requireOneForward(t, forwards, roleTopic, 10*time.Second)
-	roleFrame := standIn.collect(t, 1, 15*time.Second)[0]
+	forwarded := requireOneForward(t, forwards, roleTopic)
+	roleFrame := standIn.collect(t, 1)[0]
 	if roleFrame.item.EventID != forwarded.EventID || roleFrame.item.Topic != roleTopic {
 		t.Fatalf("the frame after the role message is %s on %s, want the forwarded %s on %s",
 			roleFrame.item.EventID, roleFrame.item.Topic, forwarded.EventID, roleTopic)
@@ -181,8 +180,8 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 
 	inbox := newEnvelope("agent", agent, "a message for this session alone")
 	publish(t, publisher, inbox)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), inbox)
-	standIn.none(t, 2*time.Second)
+	requireFrames(t, standIn.collect(t, 1), inbox)
+	standIn.none(t)
 
 	status, answer := callListener(t, second.port, http.MethodPost, "/v1/messages/publish",
 		`{"topic":"`+ownTopic+`","message":"a message the session sends","source":"agent","source_session":"`+sessionID+`"}`)

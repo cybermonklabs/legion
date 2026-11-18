@@ -197,7 +197,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		if read == len(stored)+20 {
 			t.Fatalf("the event feed's replay held %d of %d inserted events after %d frames", len(frames), len(stored), read)
 		}
-		frame := client.event(t, eventFeedWait, "events")
+		frame := client.event(t, "events")
 		var event servedEvent
 		if err := json.Unmarshal(frame.Event, &event); err != nil {
 			t.Fatalf("decode event frame %+v: %v", frame, err)

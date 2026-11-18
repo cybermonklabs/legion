@@ -86,7 +86,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		return reconciled{}, nil
 	}
 	see(&r.seenRows, row)
-	if held, absent := r.absent[row]; absent && r.clock().Before(held.until) {
+	if held, absent := r.absent[row]; absent && r.clock().Now().Before(held.until) {
 		// GitHub said the App is not installed here less than AbsentAppRecheck ago, so this
 		// pass asks it nothing about the repository.
 		r.appAbsent(row, mapped, held.err, false, c)
@@ -105,7 +105,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 			// githubapp keeps only an installation it found, so this answer is held here:
 			// without it every pass would ask GitHub again, with the App's own JWT, about a
 			// repository whose answer changes only when a person installs the App.
-			remember(&r.absent, row, absentApp{err: err, until: r.clock().Add(AbsentAppRecheck)})
+			remember(&r.absent, row, absentApp{err: err, until: r.clock().Now().Add(AbsentAppRecheck)})
 			r.appAbsent(row, mapped, err, true, c)
 			return reconciled{}, nil
 		}

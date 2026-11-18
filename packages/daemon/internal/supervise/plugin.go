@@ -127,24 +127,15 @@ const PodUpdateContract = 46
 // that kind alone (dispatch://INFRA-2712 R4). The other caller of relaunchStale passes the
 // launch kind instead, because it is one claim's own launch (staleRegistration).
 //
-// admitted is whether a credit of the refresh gate was taken for this claim before this decision
-// was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
-// claim it posts and hands it over on the event (StalePlugin.Admitted). The machine holds it
-// from here until the decision that raises the relaunch ends with no refresh wake of this
-// claim's waiting, which is where every credit of this lane goes back (refreshCredit,
-// endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
-// gave up nothing by it and the next sweep will decide this claim again: the contract already
-// current, a wake already held, no process to replace, and the turn this relaunch waits out,
-// whose own end runs the relaunch back through here.
-//
-// A post that arrives carrying a credit over a machine that already holds one gives the new
-// credit straight back to the gate, keeping the flag for the wake the held one was taken for.
-// The pass reads the views the machines last published, so a wake parked a moment before it
-// counted is one its reading misses (internal/daemon's parkedWakes), and the post that reading
-// raises reaches a machine whose refresh is already waiting. The flag is one bit and says only
-// that a credit is held, so taking the second onto it would lose it: the decision would return
-// at the guard below over the wake already waiting, the end of it would keep one flag for the
-// two credits, and that wake's turn would give back one credit for two admissions.
+// The credit a post of the daemon's pass carries is already this machine's when this runs: the
+// decision took it as it began (takeRefreshCredit, Machine.Handle, StalePlugin.Admitted), which
+// is also where a second credit over one already held goes straight back. The machine holds it
+// until the decision that raises the relaunch ends with no refresh wake of this claim's waiting,
+// which is where every credit of this lane goes back (refreshCredit, endRefreshLane). Every
+// return below that raises no relaunch is such an end, because the lane gave up nothing by it and
+// the next sweep will decide this claim again: the contract already current, a wake already held,
+// no process to replace, and the turn this relaunch waits out, whose own end runs the relaunch
+// back through here.
 //
 // A decision reached with no credit asks the gate itself, at the guard below, which is the
 // machine's one ask of it (admitRefresh). Three roads reach that guard holding none, and the
@@ -156,17 +147,7 @@ const PodUpdateContract = 46
 // end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
 // comes back through here at the turn's end, with no credit of its own and the claim in whatever
 // state that end left it (afterTurn).
-func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
-	if admitted {
-		if m.refreshCredit {
-			// This machine's wake already holds a credit, and one flag holds one credit: the
-			// post's own goes back to the gate here, where losing it would cost the lane a
-			// credit nothing ever waits for (the doc above, RefreshGate.Release).
-			m.deps.RefreshGate.Release()
-		} else {
-			m.refreshCredit = true
-		}
-	}
+func (m *Machine) refreshPlugin(ctx context.Context, trigger string) error {
 	if m.claim.PluginContract == m.deps.PluginContract {
 		return nil
 	}
@@ -379,12 +360,12 @@ func (m *Machine) commitPluginRelaunch() {
 }
 
 // refreshStalePlugin is the StalePlugin event's row, for the four states a claim's relaunched
-// process can run in: the event's own Trigger (boot or sweep) names the pass that posted it, and
-// its Admitted says whether that pass took a credit of the refresh gate for this claim, which
-// the machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
+// process can run in: the event's own Trigger (boot or sweep) names the pass that posted it. The
+// credit an admitted post carries is already the machine's by the time this row runs, taken as
+// the decision began, so the relaunch it raises holds it and a row that raises none gives it back
+// at the decision's end (takeRefreshCredit, refreshPlugin, endRefreshLane).
 func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
-	stale := ev.(StalePlugin)
-	return m.refreshPlugin(ctx, stale.Trigger, stale.Admitted)
+	return m.refreshPlugin(ctx, ev.(StalePlugin).Trigger)
 }
 
 // refreshOverturned is the fact the lane's relaunch was raised for, read again at the wake's own

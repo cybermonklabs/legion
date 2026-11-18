@@ -298,7 +298,7 @@ func (r *Registry) writeRowAt(ctx context.Context, cur Interest, revision uint64
 // read the write is fenced on, so the decision not to write is made against the row the fence
 // would judge.
 func (r *Registry) interestRow(cur Interest, getErr error, item Interest, plan InterestPlan) (merged Interest, buf []byte, unchanged bool, err error) {
-	now := r.now().UnixMilli()
+	now := r.clock.Now().UnixMilli()
 	merged, err = mergeForUpsert(cur, getErr, item, now, plan)
 	if err != nil {
 		return Interest{}, nil, false, err
@@ -680,7 +680,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 			}
 			continue
 		}
-		item.UpdatedAt = r.now().UnixMilli()
+		item.UpdatedAt = r.clock.Now().UnixMilli()
 		buf, err := json.Marshal(item)
 		if err != nil {
 			return err

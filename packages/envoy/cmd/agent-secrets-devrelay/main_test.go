@@ -43,6 +43,9 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// TestMain drops the databases the package's tests clone (storetest.Main).
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
+
 const (
 	// dispatchAccount is the ServiceAccount the test broker's BROKER_API_ACCOUNTS names as the
 	// caller "dispatch", and dispatchAudience the audience its projected token carries: devrelay

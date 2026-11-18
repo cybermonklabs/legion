@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session reaper a started listener runs deletes the consumer of every record it reaps. A
@@ -43,8 +43,7 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 
 	const sessionID = "ses_reap_wiring"
 	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "e"))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := consumers.Info(ctx, sessionID); err != nil {
 		t.Fatalf("the consumer of %s after its registration: %v; want the stream holding it", sessionID, err)
 	}
@@ -56,16 +55,11 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	if output := listener.Output.String(); !strings.Contains(output, `"session_id":"`+sessionID+`"`) {
 		t.Fatalf("the pass the listener ran names no record of %s:\n%s", sessionID, output)
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	testwait.Until(t, "the consumer of "+sessionID+" to go from the stream with the record the pass deleted, the reaper the listener itself starts deleting it with the record", func() (string, bool) {
 		info, err := consumers.Info(ctx, sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return
+			return "", true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s is still on the stream after the pass deleted its record: %+v, %v; want the reaper the listener itself starts deleting it with the record",
-				sessionID, info, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprintf("%+v, %v", info, err), false
+	})
 }

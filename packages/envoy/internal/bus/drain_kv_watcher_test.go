@@ -6,12 +6,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A drain ends the KV watchers, deleting the ordered consumers nats.go created for them, before it
@@ -49,15 +49,13 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			}
 			watcher := kvwatch.New("drain-test", kv, discardingCache{})
 			watcher.Start()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := watcher.WaitReady(ctx); err != nil {
+			if err := watcher.WaitReady(testwait.Context(t)); err != nil {
 				t.Fatalf("wait for the watcher: %v", err)
 			}
 			client.AddDrainHook(watcher.End)
 
 			admin := testnats.Connect(t, uri)
-			adminJS, err := admin.JetStream()
+			adminJS, err := admin.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("admin JetStream: %v", err)
 			}
@@ -75,12 +73,12 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			}
 
 			watcher.Stop()
-			if err := client.Drain(10 * time.Second); err != nil {
+			if err := client.Drain(listenerDrain); err != nil {
 				t.Fatalf("drain: %v", err)
 			}
 			// nats.go runs an async error report after the drain's close only if it queued it before
-			// closing its callback queue; the wait gives one queued in time the moment to log.
-			time.Sleep(200 * time.Millisecond)
+			// closing its callback queue, ahead of the closed callback, whose record is waited for.
+			awaitClosedRecord(t, logs, name)
 			if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != test.want {
 				t.Fatalf("the drain logged %q, want %q", got, test.want)
 			}
@@ -92,7 +90,9 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 }
 
 // A drain runs its hooks once the delivery subscriptions have drained and before the connection's
-// own drain, within the drain's deadline, so a hook's requests still reach the server.
+// own drain, within the drain's deadline, so a hook's requests still reach the server. The delivery
+// is held until the drain has begun draining its subscription, so the drain has a delivery to wait
+// for when it reaches its hooks.
 func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -101,22 +101,20 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	started := make(chan struct{})
+	finish := make(chan struct{})
 	var delivered atomic.Bool
-	if _, err := client.SubscribeCore("notifications.role.drain-hook", func(*natsgo.Msg) {
+	lane, err := client.SubscribeCore("notifications.role.drain-hook", func(*natsgo.Msg) {
 		close(started)
-		time.Sleep(300 * time.Millisecond)
+		<-finish
 		delivered.Store(true)
-	}, "drain-hook"); err != nil {
+	}, "drain-hook")
+	if err != nil {
 		t.Fatalf("subscribe the role lane: %v", err)
 	}
 	if err := client.Conn.Publish("notifications.role.drain-hook", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	type observed struct {
 		delivered, draining, deadline bool
 		flush                         error
@@ -131,7 +129,10 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 			flush:     client.Conn.FlushWithContext(ctx),
 		}
 	})
-	if err := client.Drain(5 * time.Second); err != nil {
+	drained := drainOn(client, listenerDrain)
+	testwait.Eventually(t, "Drain to drain the delivery subscription", lane.IsDraining)
+	close(finish)
+	if err := testwait.Receive(t, "the drain to end", drained); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	close(ran)

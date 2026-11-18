@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -53,8 +53,6 @@ const (
 	drainLegion       = drainLegionIssues * drainLegionSteps
 	// drainRoundTrip is the network between the daemon and its Postgres.
 	drainRoundTrip = 3 * time.Millisecond
-	// drainBound is how long the backlog may take to drain when the drain is measured.
-	drainBound = 60 * time.Second
 )
 
 func drainRoot(i int) string  { return fmt.Sprintf("LEGION-%d", 1000+i) }
@@ -93,8 +91,8 @@ type warnings = testlog.Buffer
 // Here a project runs 350 trees and keeps 10,000 records, its Postgres is a 3 ms round trip away,
 // and 5,000 events that are not Legion's wait on the stream with 50 of Legion's among them. The
 // daemon's consumer, with the handlers the daemon runs, drains them: every Legion event is applied
-// and every other one is acknowledged with no transaction. With LEGION_TEST_DRAIN_MEASURE=1 the
-// drain must also take under a minute from the first publish; the time is logged either way.
+// and every other one is acknowledged with no transaction. The work is bounded by its count, one
+// transaction for each Legion event and none for any other; the time the drain took is logged.
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
 	ctx := context.Background()
 	dsn := testpg.Clone(t, "legion_intake_drain_test")
@@ -124,9 +122,14 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// GitHub answers that the approver can write to the repository; the count is every review the
 	// consumer asked GitHub about.
 	var asked atomic.Int64
+	// The consumers' clock is the row's: it stands where the row sets it below and nothing moves it,
+	// so no bound of Lag's reads and no handling's limit runs out on a slow machine, and the
+	// consumer-lag warning (lagWatch) reads this clock against the time the stream stored each
+	// message.
+	consumersClock := clocktest.New(time.Now())
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
 		Project: drainProject, Repositories: []ghrepo.Repository{repository},
-		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log,
+		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log, Clock: consumersClock,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) {
 			asked.Add(1)
 			return true, nil
@@ -139,17 +142,41 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 
 	backlog := drainBacklog()
 	started := time.Now()
-	var last uint64
-	for _, event := range backlog {
+	var first, last uint64
+	for i, event := range backlog {
 		ack, err := js.Publish(ctx, event.subject, event.data)
 		if err != nil {
 			t.Fatalf("publish %s: %v", event.subject, err)
 		}
+		if i == 0 {
+			first = ack.Sequence
+		}
 		last = ack.Sequence
 	}
-	if waiting := githubWaiting(t, consumers); waiting != uint64(len(backlog)) {
-		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d", waiting, len(backlog))
+	// The consumers' clock stands at the moment the stream stored the backlog's first message, so
+	// by that clock every message reaches its consumer no later than it was stored, however long
+	// the machine takes over the drain. How long the drain took is this row's log line and no
+	// verdict of it: the bound on the work is its count, below, and a consumer-lag warning about a
+	// message no older than the consumer's clock says is a defect the warn check below still fails.
+	stored, err := stream.GetMsg(ctx, first)
+	if err != nil {
+		t.Fatalf("read the backlog's first message back: %v", err)
 	}
+	consumersClock.Set(stored.Time)
+	// The consumer has not been started, so nothing takes a message off the backlog, and its
+	// waiting count can only rise to the backlog's size and stay there. A publish's ack says the
+	// stream holds the message; the consumer's waiting count is the server's own computed state,
+	// which nats-server 2.15.1 brings up to date after a burst, so a read the instant the last
+	// publish returns can see it on its way up: 5033 of 5050 in CI (cybermonklabs/legion#2948, run
+	// 42761624780). The wait holds what the test means, that the consumer holds the whole backlog
+	// before it runs; a count past the backlog is a message from outside it, and fails at once.
+	testwait.Until(t, fmt.Sprintf("the GitHub consumer to hold the backlog's %d messages waiting before it runs", len(backlog)), func() (uint64, bool) {
+		waiting := githubWaiting(t, consumers)
+		if waiting > uint64(len(backlog)) {
+			t.Fatalf("the GitHub consumer has %d messages waiting before it runs, more than the backlog's %d", waiting, len(backlog))
+		}
+		return waiting, waiting == uint64(len(backlog))
+	})
 
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -164,24 +191,20 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	})
 	defer stop()
 
-	if !testwait.Holds(testwait.Bounded(t, 10*time.Minute, 5*time.Second), 20*time.Millisecond, func() bool {
-		if githubWaiting(t, consumers) == 0 {
-			return true
+	testwait.Until(t, fmt.Sprintf("the backlog of %d events drained", len(backlog)), func() (string, bool) {
+		waiting := githubWaiting(t, consumers)
+		if waiting == 0 {
+			return "", true
 		}
 		if begun := counter.begun.Load(); begun > drainLegion {
 			t.Fatalf("%d transactions begun with %d messages still waiting, want one for each of the %d Legion events and none for any other",
-				begun, githubWaiting(t, consumers), drainLegion)
+				begun, waiting, drainLegion)
 		}
-		return false
-	}) {
-		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, consumers))
-	}
+		return fmt.Sprintf("%d still wait", waiting), false
+	})
 	drained := time.Since(started)
 	stop()
 	t.Logf("a backlog of %d events, %d of them Legion's, drained in %s with Postgres %s away", len(backlog), drainLegion, drained.Round(time.Millisecond), drainRoundTrip)
-	if os.Getenv("LEGION_TEST_DRAIN_MEASURE") == "1" && drained >= drainBound {
-		t.Errorf("the backlog drained in %s, want under %s", drained.Round(time.Millisecond), drainBound)
-	}
 
 	// Every message was delivered once, so none was nacked or redelivered, and nothing was logged at
 	// warn or above, so none was poison or failed. The 30 second window the ConsumerSpec above takes

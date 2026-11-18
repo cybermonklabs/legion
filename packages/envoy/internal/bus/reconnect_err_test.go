@@ -3,31 +3,45 @@ package bus_test
 import (
 	"encoding/json"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// reconnectErrClock is a clock a test moves itself, so a minute of the throttle's clock passes
-// without the test waiting one. nats.go's reconnect loop reads it while the test advances it.
+// reconnectErrClock is the clock a client reads for its reconnect reporting
+// (bus.WithReconnectErrClock): a clocktest.Fake that stands still until the test moves it, so a
+// minute of the throttle's clock passes without the test waiting one, with a count of its reads.
+// While a client has no connection, only the throttle reads it, once for each failed attempt it
+// judges, so the count says how many failures the throttle has judged.
 type reconnectErrClock struct {
-	mu  sync.Mutex
-	now time.Time
+	*clocktest.Fake
+	reads atomic.Int64
 }
 
+func newReconnectErrClock() *reconnectErrClock {
+	return &reconnectErrClock{Fake: clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))}
+}
+
+// Now reads the fake, and counts the read.
 func (c *reconnectErrClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
+	c.reads.Add(1)
+	return c.Fake.Now()
 }
 
-func (c *reconnectErrClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
+// awaitJudged waits until the throttle has judged n more failed attempts than the from reads it
+// had made, every one of them through to the line it logs or does not: one goroutine judges and
+// logs the failures one after another (nats.go's callback dispatcher, or the refusal reader of a
+// connection that has never connected), so the read after the n'th says the n'th is done.
+func (c *reconnectErrClock) awaitJudged(t *testing.T, what string, from int64, n int64) {
+	t.Helper()
+	testwait.Eventually(t, fmt.Sprintf("the throttle to judge %s", what), func() bool {
+		return c.reads.Load() > from+n
+	})
 }
 
 // TestAFailedReconnectAttemptLogsOneWarnAMinute holds that a broker that is down is never silent
@@ -52,7 +66,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	logs := captureBusLogs(t)
 	const reconnectFailed = "envoy nats reconnect attempt failed"
 
-	clock := &reconnectErrClock{now: time.Now()}
+	clock := newReconnectErrClock()
 	name := "reconnect-err-test-" + t.Name()
 	client, err := bus.ConnectOwningStream([]string{uri},
 		bus.WithName(name),
@@ -70,7 +84,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 
 	awaitWarnings := func(want int) {
 		t.Helper()
-		waitFor(t, 30*time.Second, fmt.Sprintf("%d reconnect failures of %s", want, name), func() bool {
+		testwait.Eventually(t, fmt.Sprintf("%d reconnect failures of %s", want, name), func() bool {
 			return logs.count(name, reconnectFailed) >= want
 		})
 		if got := logs.count(name, reconnectFailed); got != want {
@@ -88,7 +102,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 		if i == 4 {
 			// The throttle: several more attempts (ReconnectWait is a second) add no line while
 			// the clock stands still.
-			time.Sleep(5 * time.Second)
+			clock.awaitJudged(t, "five more failed attempts", clock.reads.Load(), 5)
 			if got := logs.count(name, reconnectFailed); got != 2+i {
 				t.Fatalf("%d reconnect failures logged while the clock stood still, want %d", got, 2+i)
 			}
@@ -137,7 +151,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 
 	srv.Start(t)
 	gate.Open()
-	waitFor(t, 60*time.Second, "the client to reconnect", func() bool { return client.Conn.IsConnected() })
+	testwait.Eventually(t, "the client to reconnect", func() bool { return client.Conn.IsConnected() })
 	if got := logs.count(name, reconnectFailed); got != 11 {
 		t.Fatalf("%d reconnect failures logged across a successful reconnect, want 11", got)
 	}

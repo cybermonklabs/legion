@@ -1,11 +1,13 @@
 # shellcheck shell=bash
-# The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with: which host
-# libpq reads from that DSN, and the connection string that gives the run its own database on
-# that host. lib/loopback-dsn.py answers both, and this file addresses it beside itself, so it
-# needs nothing of its caller's. A third helper, empty_public_schema, empties the database a run
-# was given, so that a server migrates it from nothing. lib/rig.sh sources this file, and so does
-# scripts/e2e/envoy-session-delivery.sh, which sources no rig: that proof keeps an await_port_file
-# and a keep_port of its own, written for its own pid map.
+# The helpers a proof that writes a PostgreSQL server reads its caller's DSN with: which host
+# libpq reads from that DSN, whether the run can have a database of its own on that host, and
+# the start of a command that is handed that database and nothing else of the DSN. None of them
+# assigns a variable of the caller's the connection string, which carries the DSN's password.
+# lib/loopback-dsn.py answers each, and this file addresses it beside itself, so it needs nothing
+# of its caller's. A fourth helper, empty_public_schema, empties the database a run was given, so
+# that a server migrates it from nothing. lib/rig.sh sources this file, and so does
+# scripts/e2e/envoy-session-delivery.sh, which sources no rig: that proof keeps an
+# await_port_file and a keep_port of its own, written for its own pid map.
 # Sourced, never run.
 
 # require_loopback_dsn VAR NAME DSN WHAT assigns VAR the host libpq reads from DSN, which is
@@ -18,20 +20,20 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Ten call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
+# Eleven call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's. Eight are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
-# envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
-# eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
-# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
-# lib/live-daemon-proof.sh, whose prerequisites check
+# envoy-session-states.sh, envoy-session-delivery.sh, dispatch-session-settings.sh and
+# stage1-skeleton.sh. The ninth is lib/two-builds.sh, the harness the two two-builds proofs
+# share, which reads DATABASE_URL once for dispatch-two-builds.sh and
+# dispatch-search-two-builds.sh. The tenth is lib/live-daemon-proof.sh, whose prerequisites check
 # reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
-# sources it. The tenth call site is busy-relaunch-delivery.sh's negative control, which reads
+# sources it. The eleventh call site is busy-relaunch-delivery.sh's negative control, which reads
 # LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
-# lib/live-daemon-proof.sh sources. Eight of the ten call sites call this function.
-# envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
-# run_database_url alone, which begins with this guard's own check. Every proof that writes a
-# server its caller's DSN names reads that DSN with this guard before it starts anything.
+# lib/live-daemon-proof.sh sources. Eight of the eleven call sites call this function.
+# envoy-session-delivery.sh, dispatch-session-settings.sh and stage1-skeleton.sh read their DSN
+# with require_run_database alone, which begins with this guard's own check. Every proof that
+# writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query
@@ -44,20 +46,18 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# nine proofs those eight call sites serve reaches that server with psql, which is libpq. Five
-# of them give every server
-# they start the connection string run_database_url below rebuilds, which libpq read back inside
-# the helper.
+# ten proofs those nine call sites serve reaches that server with psql, which is libpq. Eight of
+# them give every server they start a database of the run's own through exec_run_database below,
+# in the connection string the helper rebuilds and libpq reads back inside it.
 #
-# The other four read the DSN a second time, with pgx. lib/two-builds.sh:284, which starts both
-# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh,
-# verification-results.sh:252 and dispatch-claimant-delivery.sh:169 give Dispatch the caller's
-# raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
-# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those four safe. The
+# The other two read the DSN a second time, with pgx. lib/two-builds.sh:284, which starts both
+# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh, gives Dispatch the
+# caller's raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
+# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
-# written to match libpq's URI parser and says so in its first comment. And all four run
-# Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one
-# that is not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
+# written to match libpq's URI parser and says so in its first comment. And both run Dispatch
+# with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one that is
+# not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
 #
 # Nothing enforces that pin. The pin is `github.com/jackc/pgx/v5 v5.11.0` in
 # packages/envoy/go.mod:31 and packages/daemon/go.mod:13, with its checksum in each go.sum.
@@ -66,12 +66,12 @@
 # version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
 # scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
-# rather than write it again. Whoever raises pgx moves the safety of those four proofs, and of
+# rather than write it again. Whoever raises pgx moves the safety of those two proofs, and of
 # the rewrite check the next paragraph names, and must drive this guard's own cases
 # (lib/loopback-dsn.test.ts) and that check's own cases
 # (packages/daemon/internal/testpg/testdb/testdb_test.go) again.
 #
-# The ninth call site's binary rewrites that DSN itself, and this guard reaches no further than
+# The tenth call site's binary rewrites that DSN itself, and this guard reaches no further than
 # the shell. That rewrite, and the check that keeps it on the host this guard read, are written
 # once, on DatabaseURL in packages/daemon/internal/testpg/testdb/testdb.go. The two frames divide
 # this way: this guard reads the caller's DSN with libpq in the shell, before anything starts,
@@ -87,24 +87,26 @@ require_loopback_dsn() {
   _loopback_dsn "$1" "$2" "$3" "$4"
 }
 
-# run_database_url VAR NAME DSN DATABASE WHAT assigns VAR the connection string that names the
-# run's own database DATABASE on the server DSN names, so nothing the run starts writes the
-# database the caller's DSN itself names, and returns 0. For a DSN the helper refuses it assigns
-# VAR the helper's own refusal line and returns 1, the contract require_loopback_dsn above has,
-# so the caller chooses how the run ends:
+# require_run_database VAR NAME DSN DATABASE WHAT [--uri | --libpq-env] runs every check
+# exec_run_database below runs before it hands a command the run's own database DATABASE on the
+# server DSN names in that form, assigns VAR the empty string, and returns 0. For a DSN the helper
+# refuses it assigns VAR the helper's own refusal line and returns 1, the contract
+# require_loopback_dsn above has, so the caller chooses how the run ends:
 #
-#   run_database_url database_url NAME "$dsn" "$database" "this run creates and drops a database
-#     there" || fail "$database_url"
+#   require_run_database refusal NAME "$dsn" "$database" "this run creates and drops a database
+#     there" || fail "$refusal"
 #
 # NAME is the environment variable the caller read DSN from, and it starts the refusal. WHAT is
-# what the run does on that server, in a few words.
+# what the run does on that server, in a few words. The form is the one the caller's
+# exec_run_database hands the database over in, and a caller that hands it over in two forms
+# checks both.
 #
-# This mode refuses every DSN the guard refuses, and a value the rebuilt string cannot carry as
-# well. envoy-session-delivery.sh and dispatch-session-settings.sh therefore call it in their
+# This check refuses every DSN the guard refuses, and a value the run's command cannot be handed
+# as well. envoy-session-delivery.sh and dispatch-session-settings.sh therefore call it in their
 # setup step as their one read of the DSN, before the builds, the services and the `create
 # database`, so a refused input ends the run where the run's other refusals are. The database's
-# name is only the shell's pid and random bytes, so each has it that early. The three other
-# callers name a database per run or per attempt, and call this where that name is made.
+# name is only the shell's pid and random bytes, so each has it that early. The other callers
+# name a database per run or per attempt, and call this where that name is made.
 #
 # lib/loopback-dsn.py does the work: it rebuilds the connection string from the keywords libpq
 # reads of DSN, rather than appending a `?dbname=` to the DSN's own text. Its docstring and
@@ -115,9 +117,52 @@ require_loopback_dsn() {
 #
 # require_loopback_dsn above says why the caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE
 # first. The refusal line names the host, the hostaddr or the service libpq read, or the keyword
-# whose value the string cannot carry, and no other part of the DSN.
-run_database_url() {
-  _loopback_dsn "$1" "$2" "$3" "$5" --dbname "$4"
+# whose value the command cannot be handed, and no other part of the DSN.
+require_run_database() {
+  _loopback_dsn "$1" "$2" "$3" "$5" --dbname "$4" "${@:6}" --check
+}
+
+# exec_run_database NAME DSN DATABASE WHAT FORM -- COMMAND... runs COMMAND in place of the shell
+# that calls it, as `exec` does, handed the run's own database DATABASE on the server DSN names and
+# nothing else of DSN. FORM is one of
+#
+#   [--uri] --env VAR       VAR holds the connection string, or with --uri the connection URI, in
+#                           COMMAND's environment, which is otherwise this shell's without NAME
+#   [--uri] --env-only VAR  VAR alone is COMMAND's environment, as under `env -i`, and a COMMAND
+#                           of `env K=V… PROGRAM` names the rest
+#   --libpq-env             each keyword is the variable libpq reads it from (PGHOST, PGPORT,
+#                           PGUSER, PGPASSWORD, PGDATABASE and the rest), for psql, which then
+#                           takes no connection string; PGSERVICE goes, as NAME does
+#
+# lib/loopback-dsn.py's docstring says what each form hands over and why NAME goes. It runs every
+# check require_run_database runs first, and for a DSN it refuses COMMAND never runs: the helper
+# prints the one refusal line on stderr and exits 1 in the shell's place. No variable of the
+# caller's ever holds the connection string, so the caller's xtrace never prints it and no other
+# command the caller runs is handed it.
+#
+# Since it replaces the shell, a caller runs it as the last command of a subshell of its own: in
+# the background, where COMMAND keeps the subshell's pid, so `$!`, or the <NAME>_pid lib/rig.sh's
+# start_process sets, names COMMAND itself and a signal to that pid reaches it,
+#
+#   exec_run_database NAME "$dsn" "$database" "$what" --env DATABASE_URL -- "$server" &
+#   server_pid=$!
+#
+# or in `( … )` for a command the caller waits for:
+#
+#   (exec_run_database NAME "$dsn" "$database" "$what" --libpq-env -- psql -X -c 'select 1')
+#
+# Assignments before it reach COMMAND, as they reach any command (`K=V exec_run_database …`).
+# Called in the script's own shell, it replaces nothing: it says so on stderr and returns 2.
+#
+# The DSN goes to the helper in that subshell's own environment, as NAME, and never in an argument
+# list (_loopback_dsn below says why).
+exec_run_database() {
+  if [ "$BASHPID" = "$$" ]; then
+    echo "exec_run_database runs its command in place of the shell that calls it, and this is the script's own shell: call it in ( … ) or with &" >&2
+    return 2
+  fi
+  export "$1=$2"
+  exec python3 "${BASH_SOURCE[0]%/*}/loopback-dsn.py" "$1" "$4" --dbname "$3" "${@:5}"
 }
 
 # empty_public_schema URL empties the public schema of the database URL names, so that a server
@@ -130,8 +175,9 @@ run_database_url() {
 # takes it as given with `create extension if not exists`), which the role a run connects as need
 # not be, so dropping the schema would leave a database no build can migrate. A Legion pod's test
 # server is one such case: every database made from its template1 holds `vector`, and its login
-# may not create it again. Three callers run it: lib/two-builds.sh's two_builds_reset_database,
-# verification-results.sh and dispatch-claimant-delivery.sh.
+# may not create it again. One caller runs it, lib/two-builds.sh's two_builds_reset_database:
+# verification-results.sh and dispatch-claimant-delivery.sh make a database of their own instead
+# (exec_run_database above), which `create database` copies from template1 with its extensions.
 empty_public_schema() {
   local reset_sql="do \$\$
 declare object record;
@@ -163,11 +209,11 @@ end
     -c "$reset_sql" >/dev/null
 }
 
-# _loopback_dsn VAR NAME DSN WHAT [--dbname DATABASE] assigns VAR what lib/loopback-dsn.py
-# printed for the DSN, which is the host, the rebuilt connection string or the one refusal line,
-# and returns that helper's own status. require_loopback_dsn and run_database_url share this one
-# call to it. The locals' names are ones no caller passes: printf -v would otherwise assign the
-# local.
+# _loopback_dsn VAR NAME DSN WHAT [--dbname DATABASE [--uri | --libpq-env] --check] assigns VAR
+# what lib/loopback-dsn.py printed for the DSN, which is the host, nothing, or the one refusal
+# line, and returns that helper's own status. require_loopback_dsn and require_run_database share
+# this one call to it, and neither form it runs prints a connection string. The locals' names are
+# ones no caller passes: printf -v would otherwise assign the local.
 #
 # The DSN goes to the helper through the environment of this command substitution's own subshell.
 # `env NAME=$DSN python3 …` would put the password in env(1)'s argument list, which

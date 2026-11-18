@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // The two writers of these tests: a person and a session, the two shapes an actor is recorded in.
 var (

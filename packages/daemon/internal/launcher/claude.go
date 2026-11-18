@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -41,34 +42,38 @@ const saveTimeout = 10 * time.Second
 // record by a rename, so anything else is a file the keeper rewrites whole.
 const tailWindow = 4096
 
-// resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included;
-// a test shortens it. A start's whole budget is the proof dial, at most proofTimeout (StopGrace/2),
-// then this lookup: 35 s at the daemon's defaults, inside its wait on the start, its boot timeout
-// plus its stop grace (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected
-// as that wait begins, which is every relaunch into a running pod. Only a launcher that connects late
-// in a new pod's boot window has less: at least the grace remains, and the proof's half of it is
-// still inside.
-var resumeLookupTimeout = 30 * time.Second
+// resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included,
+// on the launcher's clock (sessionDial). A start's whole budget is the proof dial, at most
+// proofTimeout (StopGrace/2), then this lookup: 35 s at the daemon's defaults, inside its wait on
+// the start, its boot timeout plus its stop grace (120 s + 10 s: runtime/sandbox's relaunch),
+// whenever the launcher is connected as that wait begins, which is every relaunch into a running
+// pod. Only a launcher that connects late in a new pod's boot window has less: at least the grace
+// remains, and the proof's half of it is still inside.
+const resumeLookupTimeout = 30 * time.Second
 
 // resumeLookupBackoff is the wait before each retry of a session table lookup that could not reach
-// the database, doubling up to its last value until resumeLookupTimeout; a test shortens it.
+// the database, doubling up to its last value until resumeLookupTimeout.
 var resumeLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
 // sessionDial is how the launcher reaches a generation's session database, for a resume's lookup
 // (sessionWritten) and for the keeper alike: through clientURL, the generation's own database
 // through the socket its proxy has already bound, or with none through the URL file the child's
 // environment names (DSNFileVariable), read afresh at each connection, since that file is a
-// projection something else may replace.
-type sessionDial struct{ clientURL, dsnFile string }
+// projection something else may replace. clock is the launcher's (Config.Clock), which a lookup's
+// timeout and its backoff waits read.
+type sessionDial struct {
+	clientURL, dsnFile string
+	clock              clock.Clock
+}
 
 // newSessionDial is the session database a generation's environment names, refused when it has no
 // database of its own and names no URL file.
-func newSessionDial(env []string, clientURL string) (sessionDial, error) {
+func newSessionDial(env []string, clientURL string, clk clock.Clock) (sessionDial, error) {
 	if clientURL != "" {
-		return sessionDial{clientURL: clientURL}, nil
+		return sessionDial{clientURL: clientURL, clock: clk}, nil
 	}
 	if file := strings.TrimSpace(envValue(env, ompsessions.DSNFileVariable)); file != "" {
-		return sessionDial{dsnFile: file}, nil
+		return sessionDial{dsnFile: file, clock: clk}, nil
 	}
 	return sessionDial{}, fmt.Errorf("%s names no file", ompsessions.DSNFileVariable)
 }
@@ -96,7 +101,7 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 // file that is missing or empty is refused at once. parent's end (the container's stop) ends the
 // wait as the timeout does.
 func (d sessionDial) dial(parent context.Context, ready func(context.Context, *pgx.Conn) error) (*pgx.Conn, error) {
-	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
+	ctx, cancel := d.clock.WithTimeout(parent, resumeLookupTimeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {
 		dsn, err := d.url()
@@ -110,10 +115,12 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 			}
 			closeSessions(conn)
 		}
+		backoff := d.clock.NewTimer(resumeLookupBackoff[min(attempt, len(resumeLookupBackoff)-1)])
 		select {
 		case <-ctx.Done():
+			backoff.Stop()
 			return nil, fmt.Errorf("%v (after %d attempts in %s)", err, attempt+1, resumeLookupTimeout)
-		case <-time.After(resumeLookupBackoff[min(attempt, len(resumeLookupBackoff)-1)]):
+		case <-backoff.C():
 		}
 	}
 }
@@ -143,6 +150,9 @@ type claudeKeeper struct {
 	configDir string
 	session   string
 	conn      *pgx.Conn
+	// clock is the launcher's (Config.Clock): the periodic saves' interval and bound and the last
+	// save's deadline read it.
+	clock clock.Clock
 	// transcript and record are the two kept files: the transcript and the phase-reminder record.
 	transcript, record *keptFile
 	// appendRow and replaceRow write a kept file's row: ompsessions.Append and Replace, which a
@@ -208,7 +218,7 @@ type keptState struct {
 // not in a database. It checks the session's paths and connects nothing: a resume's transcript is
 // resume, which must be `<CLAUDE_CONFIG_DIR>/projects/<dir>/<id>.jsonl` for the session's own id
 // (claudelaunch.ResumeSession), and a fresh one is found once Claude Code writes it (find).
-func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*claudeKeeper, error) {
+func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer, clk clock.Clock) (*claudeKeeper, error) {
 	session := envValue(env, claudelaunch.SessionVariable)
 	if session == "" || envValue(env, ompsessions.StorageVariable) != ompsessions.SQLStorage {
 		return nil, nil
@@ -226,11 +236,11 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 	if !claudelaunch.IsSessionID(session) {
 		return nil, refuse("%s is no Claude Code session id", claudelaunch.SessionVariable)
 	}
-	sessions, err := newSessionDial(env, clientURL)
+	sessions, err := newSessionDial(env, clientURL, clk)
 	if err != nil {
 		return nil, refuse("%v", err)
 	}
-	k := &claudeKeeper{log: log, sessions: sessions, configDir: configDir, session: session,
+	k := &claudeKeeper{log: log, sessions: sessions, configDir: configDir, session: session, clock: clk,
 		appendRow: ompsessions.Append, replaceRow: ompsessions.Replace, quit: make(chan struct{}), done: make(chan struct{}),
 		transcript: &keptFile{lines: true, marker: resume == "", keptState: keptState{saved: ompsessions.Absent}},
 		record:     &keptFile{path: filepath.Join(configDir, "legion-phase-stall-"+session+".json"), keptState: keptState{saved: ompsessions.Absent}}}
@@ -260,7 +270,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 		closeSessions(conn)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
+	ctx, cancel := k.clock.WithTimeout(parent, resumeLookupTimeout)
 	defer cancel()
 	if conn != nil && ompsessions.CreateTables(ctx, conn) != nil {
 		closeSessions(conn)
@@ -331,43 +341,52 @@ func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	return nil
 }
 
-// run saves the session's files every saveInterval until finish. A nil keeper saves nothing.
+// run saves the session's files every saveInterval on the keeper's clock until finish, the next
+// interval counted from the end of the save before it. A nil keeper saves nothing.
 func (k *claudeKeeper) run() {
 	if k == nil {
 		return
 	}
 	defer close(k.done)
-	ticker := time.NewTicker(saveInterval)
-	defer ticker.Stop()
 	for {
+		tick := k.clock.NewTimer(saveInterval)
 		select {
 		case <-k.quit:
+			tick.Stop()
 			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(k.ctx, saveTimeout)
-			k.save(ctx)
-			cancel()
+		case <-tick.C():
+			k.periodicSave()
 		}
 	}
+}
+
+// periodicSave is one of run's saves, bounded by saveTimeout on the keeper's clock and ended
+// sooner by finish.
+func (k *claudeKeeper) periodicSave() {
+	ctx, cancel := k.clock.WithTimeout(k.ctx, saveTimeout)
+	defer cancel()
+	k.save(ctx)
 }
 
 // finish ends the keeping once the child has exited: the periodic saves stop, one last save runs
 // until deadline, and the connection closes. A periodic save still under way at deadline is ended,
 // and the last committed one stands. Best effort: a deadline already past saves nothing more. A nil
-// keeper has nothing to finish.
+// keeper has nothing to finish. deadline is a moment of the keeper's clock.
 func (k *claudeKeeper) finish(deadline time.Time) {
 	if k == nil {
 		return
 	}
 	close(k.quit)
+	late := k.clock.NewTimer(deadline.Sub(k.clock.Now()))
 	select {
 	case <-k.done:
-	case <-time.After(time.Until(deadline)):
+	case <-late.C():
 		k.interrupt()
 		<-k.done
 	}
-	if time.Now().Before(deadline) {
-		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	late.Stop()
+	if k.clock.Now().Before(deadline) {
+		ctx, cancel := k.clock.WithDeadline(context.Background(), deadline)
 		k.save(ctx)
 		cancel()
 	}

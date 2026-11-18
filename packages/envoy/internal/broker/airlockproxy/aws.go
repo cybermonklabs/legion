@@ -201,7 +201,7 @@ func (s *Server) signAWS(ctx context.Context, r *http.Request, host string, plac
 		// rest, and the signer carries it as this switch.
 		o.DisableURIPathEscaping = service == "s3"
 	})
-	if err := signer.SignHTTP(ctx, credentials, signed, payload, service, region, s.now().UTC()); err != nil {
+	if err := signer.SignHTTP(ctx, credentials, signed, payload, service, region, s.clock.Now().UTC()); err != nil {
 		release()
 		return nil, "", nil, "signing this request again with the real key: " + err.Error()
 	}

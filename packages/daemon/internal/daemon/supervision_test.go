@@ -24,6 +24,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -35,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -111,6 +114,11 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)
+			// A database of this case's own, carrying the schema (testpg.Clone), rather than the
+			// package's one run database: boots below reads what a refused start recorded, and it
+			// is the only read here that waits on anything another test of this binary is doing
+			// to that one database.
+			cfg.PostgresDSN = testpg.Clone(t, "legion_supervision_test")
 			o := fakeRuntime(fake.NewRuntime(), &built{})
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
@@ -356,14 +364,26 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 }
 
 // heldClock is the machines' and the outbox's time held still until the test fires the timers
-// armed for one wait, so a daemon test sees the deadline it fires and nothing else. Its time is the
-// wall clock, or at when set, so a deadline the daemon names as a time is armed as an exact wait
-// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses.
+// armed for one wait, so a daemon test sees the deadline it fires and nothing else. Its time is a
+// clocktest.Fake, at the moment heldClockAt gives or on the wall clock (newHeldClock), so a
+// deadline the daemon names as a time is armed as an exact wait from that moment; advance moves
+// the fake, so a lease or a backoff the daemon measured from it lapses. The timers armed through
+// AfterFunc are kept here by the wait each was armed for rather than on the fake, because a test
+// fires the timers of one wait (fire) and no other: the fake fires every timer due by the moment
+// it moves to, and an outbox test proves a row ran by its lane's timer with no sweep in between.
+// Every other timer — a periodic loop's, armed through NewTimer or After (passTimer) — is the
+// fake's own, so advance runs the passes its move reaches, as the production clock would.
 type heldClock struct {
+	fake   *clocktest.Fake
 	mu     sync.Mutex
-	at     time.Time
 	timers []*heldTimer
 }
+
+// newHeldClock is a heldClock on the wall clock.
+func newHeldClock() *heldClock { return &heldClock{fake: clocktest.Held()} }
+
+// heldClockAt is a heldClock standing at at.
+func heldClockAt(at time.Time) *heldClock { return &heldClock{fake: clocktest.New(at)} }
 
 type heldTimer struct {
 	clock *heldClock
@@ -372,24 +392,10 @@ type heldTimer struct {
 	done  bool
 }
 
-func (c *heldClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.at.IsZero() {
-		return c.at
-	}
-	return time.Now()
-}
+func (c *heldClock) Now() time.Time { return c.fake.Now() }
 
-// advance moves the held time forward by d; a clock still on the wall clock holds it first.
-func (c *heldClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.at.IsZero() {
-		c.at = time.Now()
-	}
-	c.at = c.at.Add(d)
-}
+// advance moves the held time forward by d, firing nothing.
+func (c *heldClock) advance(d time.Duration) { c.fake.Advance(d) }
 
 // armed counts the timers armed for after: those still armed, and every one armed so far, the
 // fired and the stopped included, so a test can tell a timer re-armed from one left alone.
@@ -410,13 +416,30 @@ func (c *heldClock) armed(after time.Duration) (live, total int) {
 
 func (c *heldClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
-func (c *heldClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
+// After and NewTimer are the fake's own, as the comment on heldClock says: a periodic loop's
+// timer fires when the test moves the fake past it (advance), and never on fire.
+func (c *heldClock) After(d time.Duration) <-chan time.Time { return c.fake.After(d) }
+
+func (c *heldClock) NewTimer(d time.Duration) clock.Timer { return c.fake.NewTimer(d) }
+
+func (c *heldClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return c.fake.WithTimeout(ctx, d)
+}
+
+func (c *heldClock) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {
+	return c.fake.WithDeadline(ctx, at)
+}
+
+func (c *heldClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	timer := &heldTimer{clock: c, after: d, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
+
+// C is nil, as an AfterFunc timer's is.
+func (t *heldTimer) C() <-chan time.Time { return nil }
 
 func (t *heldTimer) Stop() bool {
 	t.clock.mu.Lock()
@@ -426,6 +449,15 @@ func (t *heldTimer) Stop() bool {
 	}
 	t.done = true
 	return true
+}
+
+// Reset arms the timer again for the wait d, which is what armed and fire then count it under.
+func (t *heldTimer) Reset(d time.Duration) bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	was := !t.done
+	t.after, t.done = d, false
+	return was
 }
 
 // fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
@@ -455,7 +487,7 @@ func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) 
 	rt := fake.NewRuntime()
 	var record built
 	o := fakeRuntime(rt, &record)
-	clock := &heldClock{}
+	clock := newHeldClock()
 	o.clock = clock
 	d := startDaemon(t, cfg, o)
 	spawn := architect()
@@ -573,10 +605,21 @@ func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
 		t.Fatalf("boots = %d, want 2", boots)
 	}
 
+	// The reconnect's hello is accepted for the claim's own generation as the listener writes its
+	// hello_ack (stream's register), which dialShim reads, and a ready claim's hello sends what is
+	// pending, here nothing. The sweep's live report goes behind it with a marker of the test's: the
+	// runtime's reports reach a claim in the order the runtime made them (one pump, one inbox for
+	// each claim), so once the marker's effect shows — an uncertain verdict counts the claim's
+	// uncertain streak, and arms a reprobe on the daemon's still clock, which never fires — the
+	// live report before it has been judged too.
 	dialShim(t, again.address, launch.BootToken)
-	second.Emit(runtime.Observation{Locator: *before.Locator, Kind: runtime.Alive})
-	time.Sleep(100 * time.Millisecond)
-	if c := restarted.claim(token); c.State != string(supervise.StateReady) || c.Generation != 1 {
+	second.Emit(runtime.Observation{Locator: *before.Locator, Kind: runtime.Alive},
+		runtime.Observation{Locator: *before.Locator, Kind: runtime.Uncertain, Detail: "the test's marker behind the live report"})
+	c := testwait.Until(t, "the live report, and the marker behind it, judged", func() (api.OperatorClaim, bool) {
+		c := restarted.claim(token)
+		return c, c.UncertainStreak == 1
+	})
+	if c.State != string(supervise.StateReady) || c.Generation != 1 {
 		t.Fatalf("after the reconnect and a live sweep the claim is %s at generation %d, want ready at 1", c.State, c.Generation)
 	}
 }
@@ -673,7 +716,7 @@ func TestRunRetriesAReleaseTheStoreRefusedAtTheNextOrphanSweep(t *testing.T) {
 	rt := fake.NewRuntime()
 	logs := &syncBuffer{}
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
 
 	testwait.Eventually(t, "the store to refuse the release", func() bool {
@@ -687,7 +730,7 @@ func TestRunRetriesAReleaseTheStoreRefusedAtTheNextOrphanSweep(t *testing.T) {
 	}
 	letRelease()
 
-	testwait.Eventually(t, "the claim to be launched again without a restart", func() bool {
+	passes.until(t, passUnfinished, "the claim to be launched again without a restart", func() bool {
 		c := d.claim(token)
 		return c.State == string(supervise.StateLaunching) && c.Locator != nil
 	})
@@ -719,7 +762,6 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	rt.FailReconcileOrphans(errors.New("tmux list-panes timed out"))
 	var record built
 	o := fakeRuntime(rt, &record)
-	o.orphanSweep = 20 * time.Millisecond
 	d := startDaemon(t, cfg, o)
 
 	testwait.Eventually(t, "the failed boot reconciliation", func() bool { return len(rt.CallsOf("ReconcileOrphans")) >= 1 })
@@ -765,7 +807,6 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	second := fake.NewRuntime()
 	second.FailReconcileOrphans(errors.New("tmux list-panes timed out again"))
 	secondOverrides := fakeRuntime(second, &built{})
-	secondOverrides.orphanSweep = 20 * time.Millisecond
 	restarted := startDaemon(t, cfg, secondOverrides)
 	testwait.Eventually(t, "the second boot's failed reconciliation", func() bool { return len(second.CallsOf("ReconcileOrphans")) >= 1 })
 	if c := restarted.claim(token); c.State != "launch_uncertain" || c.Locator != nil {
@@ -785,7 +826,6 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	rebindHeldPorts(t, &cfg)
 	third := fake.NewRuntime()
 	thirdOverrides := fakeRuntime(third, &built{})
-	thirdOverrides.orphanSweep = 20 * time.Millisecond
 	final := startDaemon(t, cfg, thirdOverrides)
 	testwait.Eventually(t, "the third boot to launch after reconciliation succeeds", func() bool { return len(third.CallsOf("Spawn")) == 1 })
 	if spawned := third.CallsOf("Spawn")[0]; spawned.Spec.Generation != 2 {
@@ -814,7 +854,6 @@ func TestRunBootRepairRevokesAStaleSecretBeforeItMintsAGrant(t *testing.T) {
 	rt := fake.NewRuntime()
 	rt.FailReconcileOrphans(errors.New("tmux list-panes timed out"))
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
 	d := startDaemon(t, cfg, o)
 
 	testwait.Eventually(t, "the failed boot reconciliation", func() bool { return len(rt.CallsOf("ReconcileOrphans")) >= 1 })
@@ -874,7 +913,7 @@ func TestRunRetriesTheBootReconciliationWithTheClaimsAsTheyAreNow(t *testing.T) 
 	writePrompt(t, cfg, unfinished)
 	rt := &reconcileHold{Runtime: fake.NewRuntime()}
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	testwait.Eventually(t, "the failed boot reconciliation", func() bool { return len(rt.CallsOf("ReconcileOrphans")) >= 1 })
 
@@ -890,7 +929,7 @@ func TestRunRetriesTheBootReconciliationWithTheClaimsAsTheyAreNow(t *testing.T) 
 	}
 	rt.release()
 
-	testwait.Eventually(t, "the unfinished launch to be released by a successful retry", func() bool { return len(rt.CallsOf("Spawn")) == 2 })
+	passes.until(t, passUnfinished, "the unfinished launch to be released by a successful retry", func() bool { return len(rt.CallsOf("Spawn")) == 2 })
 	// The attempt that succeeded is the last boot reconciliation (grace 0; the sweep's is two
 	// minutes) before the unfinished launch's Spawn, which waited on it.
 	var retry *fake.Call
@@ -1017,12 +1056,12 @@ func TestRunReconcilesOrphansWhileItRuns(t *testing.T) {
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	token := d.spawn(architect())
 	loc := d.claim(token).Locator
 
-	testwait.Eventually(t, "a reconciliation that knows the claim's process", func() bool {
+	passes.until(t, passOrphans, "a reconciliation that knows the claim's process", func() bool {
 		for _, call := range rt.CallsOf("ReconcileOrphans") {
 			if call.Grace == orphanGrace && slices.ContainsFunc(call.Known, func(known runtime.Known) bool {
 				return known.Claim == token && known.Locator != nil && reflect.DeepEqual(*known.Locator, *loc)
@@ -1046,7 +1085,7 @@ func TestRunKnowsEverySuspendedClaimToTheOrphanSweep(t *testing.T) {
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 	// The tree's root first: its spawn opens the operator tree its workers bind to.
 	root := d.spawn(architect())
@@ -1088,7 +1127,7 @@ func TestRunKnowsEverySuspendedClaimToTheOrphanSweep(t *testing.T) {
 	}
 	sweeps := len(rt.CallsOf("ReconcileOrphans"))
 
-	testwait.Eventually(t, "a sweep that knows the suspended and failed claims and not the retired one", func() bool {
+	passes.until(t, passOrphans, "a sweep that knows the suspended and failed claims and not the retired one", func() bool {
 		for _, call := range rt.CallsOf("ReconcileOrphans")[sweeps:] {
 			locators := map[claim.Token]*runtime.Locator{}
 			for _, known := range call.Known {

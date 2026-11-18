@@ -420,7 +420,9 @@ func (DispatchClaim) isFact() {}
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
 // redeliveries and naks included — and whether it is idle, nothing pending or unacknowledged at
-// all. The daemon's boot-owned poll reads one (Consumers.DispatchPosition) for Reconcile, and
+// all, which DispatchPosition confirms against the stream's store rather than the consumer's own
+// count of pending messages, since that count trails a message just stored. The daemon's
+// boot-owned poll reads one (Consumers.DispatchPosition) for Reconcile, and
 // again on a ticker while admission holds anything back, applying each changed reading through
 // ApplyFact as a synthetic fact — never decoded from a real Dispatch event. Admission is the only
 // handler that acts on it: it releases every hold whose target the position has Reached, applies

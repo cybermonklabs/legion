@@ -53,11 +53,11 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
       startNatsServer(serverDirectory),
       startNatsServer(serverDirectory, user.publicKey),
     ]);
-  }, 120_000);
+  });
   afterAll(() => {
     open?.stop();
     authorized?.stop();
-  }, 60_000);
+  });
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});

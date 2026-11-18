@@ -398,7 +398,14 @@ func TestLiveSetupIgnoresARepositoryAboveItsDirectory(t *testing.T) {
 			clean := r.probe(r.start)
 
 			var requests atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// git sends this server no credential, so it counts only a request of the shape an
+			// ls-remote sends, its ref discovery (…/info/refs); any other is another process's,
+			// answered 404 and counted as nothing.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/info/refs") {
+					http.NotFound(w, r)
+					return
+				}
 				if requests.Add(1) == 1 {
 					w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
 					_, _ = io.WriteString(w, pktLine("# service=git-upload-pack\n")+"0000"+

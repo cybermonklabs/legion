@@ -3,7 +3,6 @@ package sandbox
 import (
 	"archive/tar"
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -36,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -483,9 +483,7 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	command := exec.CommandContext(testwait.Context(rig.t), argv[0], argv[1:]...)
 	command.Env = env
 	command.Dir = remap(c.WorkingDir)
 	output, err := command.CombinedOutput()
@@ -1045,16 +1043,19 @@ func (h *recordingHost) credentials() []string {
 	return slices.Clone(h.creds)
 }
 
-// tlsTerminatingProxy is an HTTP proxy that answers every CONNECT itself: it terminates TLS with
-// certificate and serves handler on the tunnel. onConnect, when set, runs for each CONNECT.
+// tlsTerminatingProxy is an HTTP proxy that answers every CONNECT github.com:443 itself: it
+// terminates TLS with certificate and serves handler on the tunnel. onConnect, when set, runs for
+// each such CONNECT. git sends a pod's every request to github.com, so a request of any other
+// shape is another process's: it is answered 404 and tunnels nothing, so neither handler nor
+// onConnect records it.
 func tlsTerminatingProxy(t *testing.T, certificate tls.Certificate, handler http.HandlerFunc, onConnect func()) *httptest.Server {
 	t.Helper()
 	tunnels := &tunnelListener{conns: make(chan net.Conn), done: make(chan struct{})}
 	inner := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
 	go func() { _ = inner.Serve(tunnels) }()
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+		if r.Method != http.MethodConnect || r.Host != "github.com:443" {
+			http.NotFound(w, r)
 			return
 		}
 		if onConnect != nil {

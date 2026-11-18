@@ -1,17 +1,16 @@
 package sandbox
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // importMarker is a module whose top-level code writes name into the test's marker directory, so
@@ -78,9 +77,7 @@ func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.
 	}
 
 	marks := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, pod[0], pod[1:]...)
+	cmd := exec.CommandContext(testwait.Context(t), pod[0], pod[1:]...)
 	cmd.Dir = repo
 	cmd.Env = append(slices.Clone(environ), "LEGION_TEST_MARKS="+marks)
 	// One RPC request, then end of input: Oh My Pi answers it after its session has loaded every

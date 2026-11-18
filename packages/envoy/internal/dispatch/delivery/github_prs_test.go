@@ -49,16 +49,24 @@ type fakeGitHub struct {
 	// installations' tokens at once, so tokenMints is atomic rather than a bare int.
 	installations []fakeInstallation
 	// tokenLifetime is how long a minted installation token lives, as expires_at tells the client;
-	// zero is GitHub's hour. tokenExpiry records each minted token's expiry for tokenExpired.
+	// zero is GitHub's hour. expiredTokens holds each token a handler has expired (expire), which
+	// tokenExpired refuses.
 	tokenLifetime time.Duration
-	tokenExpiry   sync.Map
+	expiredTokens sync.Map
 }
 
-// tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
-// has passed: GitHub answers such a request 401 Bad credentials.
+// tokenExpired reports whether r's bearer is an installation token a handler has expired: GitHub
+// answers such a request 401 Bad credentials.
 func (f *fakeGitHub) tokenExpired(r *http.Request) bool {
-	expires, ok := f.tokenExpiry.Load(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	return ok && !time.Now().Before(expires.(time.Time))
+	_, expired := f.expiredTokens.Load(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	return expired
+}
+
+// expire ends the life of the installation token r carries, as its expiry passing does on GitHub,
+// so every later request that carries it is refused. A handler that expires the token of the page
+// it answers stands for a walk that outlasts its token, with no clock for the test to wait on.
+func (f *fakeGitHub) expire(r *http.Request) {
+	f.expiredTokens.Store(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), true)
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -116,7 +124,6 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 			lifetime = time.Hour
 		}
 		token, expires := fmt.Sprintf("ghs_fake_%s_%d", r.PathValue("id"), mints), time.Now().Add(lifetime)
-		f.tokenExpiry.Store(token, expires)
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{"token": token, "expires_at": expires.Format(time.RFC3339Nano)}); err != nil {
 			f.t.Errorf("encode token: %v", err)
@@ -487,7 +494,7 @@ func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
 		}
 		count := 100
 		if r.URL.Query().Get("page") == "1" {
-			time.Sleep(400 * time.Millisecond)
+			fake.expire(r)
 		} else {
 			count = 5
 		}
@@ -519,7 +526,7 @@ func TestSearchMergedPullRequestsAcrossInstallationAsksForATokenPerPage(t *testi
 		}
 		_, variables := decodeGraphQLRequest(t, r)
 		if after, _ := variables["after"].(string); after == "" {
-			time.Sleep(400 * time.Millisecond)
+			fake.expire(r)
 			mustEncode(t, w, searchResponseJSON(150, repeatSearchNodes(100, 1), true, "cursor-100"))
 			return
 		}

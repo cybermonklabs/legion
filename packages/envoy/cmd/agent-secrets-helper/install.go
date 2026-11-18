@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -259,13 +260,18 @@ WantedBy=default.target
 }
 
 // restartTimeout bounds install's `systemctl --user restart` of the helper
-// (helper.InstallRestartTimeout, which says why 30 s). A variable only so a test can shorten it.
-var restartTimeout = helper.InstallRestartTimeout
+// (helper.InstallRestartTimeout, which says why 30 s), on restartClock.
+const restartTimeout = helper.InstallRestartTimeout
+
+// restartClock is the clock restartTimeout runs on: the wall clock, and in a test a fake that the
+// test moves past the timeout once install has armed it, so install's give-up is a fact the test
+// brings about rather than a span of the machine's clock.
+var restartClock = clock.Real()
 
 // restartHelper runs `systemctl --user restart` on the helper's unit, and stops waiting for it at
-// restartTimeout.
+// restartTimeout on restartClock, ending the systemctl it runs.
 func restartHelper() error {
-	ctx, cancel := context.WithTimeout(context.Background(), restartTimeout)
+	ctx, cancel := restartClock.WithTimeout(context.Background(), restartTimeout)
 	defer cancel()
 	err := systemctlContext(ctx, "restart", helper.UnitName)
 	if err != nil && ctx.Err() != nil {

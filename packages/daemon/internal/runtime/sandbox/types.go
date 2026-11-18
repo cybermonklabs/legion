@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -388,6 +389,11 @@ type Options struct {
 	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
+	// Clock is what the runtime's bounded waits are measured on: each wait the boot timeout or the
+	// termination grace bounds, a launch's resend of an overloaded request within its deadline, and
+	// the push of the shared public leak check to a launcher (leakCheckHopBound).
+	// The wall clock (clock.Real) when nil. A test hands it a clocktest.Fake and moves it.
+	Clock clock.Clock
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
 	Log *slog.Logger
 }

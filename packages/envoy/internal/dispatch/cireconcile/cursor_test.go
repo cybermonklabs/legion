@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -26,11 +25,10 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 	for _, pull := range all {
 		h.github.refuseChecks(gitHubRepository, pull.sha)
 	}
-	h.reconciler.PassTimeout = 3 * time.Second
 	// GitHub is slower than the first pass has left at the second head of the second page.
-	h.github.stall(runsOf(head(22)), time.Minute)
+	h.github.hold(runsOf(head(22)))
 
-	h.pass()
+	h.passCutByItsBound()
 
 	first := h.passLine()
 	if first["deadline_reached"] != true {
@@ -41,8 +39,7 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 			got, len(all), first)
 	}
 
-	h.github.stall(runsOf(head(22)), 0)
-	h.reconciler.PassTimeout = 0
+	h.github.release(runsOf(head(22)))
 
 	h.pass()
 
@@ -84,11 +81,10 @@ func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 	// after a refused one comes only in the answer the pass did not get, so every page from
 	// there on is the listing's, this pass's and the next pass's alike.
 	h.github.refusePage(gitHubRepository, 1)
-	h.reconciler.PassTimeout = 3 * time.Second
 	// GitHub is slower than the first pass has left at the second head of the second page.
-	h.github.stall(runsOf(head(22)), time.Minute)
+	h.github.hold(runsOf(head(22)))
 
-	h.pass()
+	h.passCutByItsBound()
 
 	first := h.passLine()
 	if first["deadline_reached"] != true {
@@ -106,10 +102,9 @@ func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 			got, want, first)
 	}
 
-	// Nothing stalls now, so the pass after the bound reads the repository out from the page
+	// Nothing is held now, so the pass after the bound reads the repository out from the page
 	// the cursor left it at, which is the listing's for as long as this cycle lasts.
-	h.github.stall(runsOf(head(22)), 0)
-	h.reconciler.PassTimeout = 0
+	h.github.release(runsOf(head(22)))
 
 	h.pass()
 
@@ -156,11 +151,10 @@ func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T)
 	// GitHub answers no query for this repository's first page, so every page of it is read
 	// from the REST listing, by this pass and by the pass that takes its cursor up.
 	h.github.refusePage(gitHubRepository, 0)
-	h.reconciler.PassTimeout = 3 * time.Second
 	// GitHub is slower than the first pass has left at the second head of the second window.
-	h.github.stall(runsOf(head(22)), time.Minute)
+	h.github.hold(runsOf(head(22)))
 
-	h.pass()
+	h.passCutByItsBound()
 
 	first := h.passLine()
 	if first["deadline_reached"] != true {
@@ -174,9 +168,8 @@ func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T)
 	// Five pull requests below the cursor are merged between the two passes, so every head the
 	// second pass has left to read sits five places earlier in the listing than it did. The
 	// head the cursor names is the number it was and five places from where it was.
-	h.github.stall(runsOf(head(22)), 0)
+	h.github.release(runsOf(head(22)))
 	h.listHeads(all[5:]...)
-	h.reconciler.PassTimeout = 0
 	askedBefore := len(h.github.received())
 
 	h.pass()

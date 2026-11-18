@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,9 +23,10 @@ const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 
 // github is a repository's REST API as Create and DefaultBranch call it: the repository itself,
 // naming defaultBranch, each branch of refs by its exact name, and a create of a ref answered with
-// create's status and body. It records each read and each create; any other request fails the
-// test, so a Create that reads the base's tree, or posts a tree or a commit of its own, is caught
-// by name.
+// create's status and body. It records each read and each create; any other request under the
+// installation token fails the test, so a Create that reads the base's tree, or posts a tree or a
+// commit of its own, is caught by name. A request without the token (installationToken) is
+// another process's: it is answered 404 and logged, and is recorded as nothing.
 type github struct {
 	refs          map[string]string
 	defaultBranch string
@@ -35,16 +35,11 @@ type github struct {
 	mu            sync.Mutex
 	read          []string
 	creates       []map[string]string
-	authorized    []string
 }
 
-func (g *github) serve(t *testing.T) string {
+func (g *github) serve(t testing.TB) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Record: func(r *http.Request) {
-		g.mu.Lock()
-		g.authorized = append(g.authorized, r.Header.Get("Authorization"))
-		g.mu.Unlock()
-	}, Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: installationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 		branch, isRef := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
@@ -180,10 +175,10 @@ func TestReadIsTheRepositoryAsGitHubNamesIt(t *testing.T) {
 
 // A repository GitHub does not show is refused naming it and GitHub's answer.
 func TestDefaultBranchRefusesARepositoryItCannotRead(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: installationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found","status":"404"}`+"\n")
-	}))
+	}})
 	t.Cleanup(server.Close)
 	_, err := DefaultBranch(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"))
 	if want := `read the default branch of acme/widgets: GitHub answered GET /repos/acme/widgets with 404: {"message":"Not Found","status":"404"}`; errorText(err) != want {
@@ -197,13 +192,13 @@ func TestDefaultBranchRefusesARepositoryItCannotRead(t *testing.T) {
 func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
 	// Ten minutes out, so no scheduling delay can carry the clock past it before the answer is read.
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: installationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "15000")
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("X-RateLimit-Reset", reset)
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = io.WriteString(w, `{"message":"API rate limit exceeded for installation ID 7.","status":"403"}`)
-	}))
+	}})
 	t.Cleanup(server.Close)
 	_, err := Read(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"))
 	var answer *githubrest.Answer
@@ -258,24 +253,19 @@ func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 			if len(g.creates) != 1 || len(g.creates[0]) != 2 || g.creates[0]["ref"] != want["ref"] || g.creates[0]["sha"] != want["sha"] {
 				t.Fatalf("creates = %v, want one of %v", g.creates, want)
 			}
-			for _, authorization := range g.authorized {
-				if authorization != "Bearer installation-token" {
-					t.Fatalf("a request authorized as %q, want the installation token", authorization)
-				}
-			}
 		})
 	}
 }
 
 // A base GitHub does not show is refused before anything is created, naming its answer.
 func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: installationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("unexpected %s %s after the base could not be read", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found","status":"404"}`+"\n")
-	}))
+	}})
 	t.Cleanup(server.Close)
 
 	err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1")
@@ -288,6 +278,13 @@ func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
 // widgets is acme/widgets's REST API under api, called with the installation token.
 func widgets(api string) githubrest.Client {
 	return githubrest.Client{Token: "installation-token", API: githubrest.RepositoryAPI(api, ghrepo.MustParse("acme/widgets"))}
+}
+
+// installationToken is the githubtest.Spec.Credential of this package's stand-ins: the bearer
+// widgets' client presents. A request without it is another process's, answered 404, and fails
+// nothing; a Create that sent another token is answered 404 too, and its test fails on the error.
+func installationToken(r *http.Request) bool {
+	return r.Header.Get("Authorization") == "Bearer installation-token"
 }
 
 func errorText(err error) string {

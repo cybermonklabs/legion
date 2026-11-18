@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -220,6 +221,13 @@ func handshaking(nc *nats.Conn) bool {
 	return status == nats.CONNECTING || status == nats.RECONNECTING
 }
 
+// readTimedOut says whether err is a network read that ran out of its deadline (net.Error's
+// Timeout), as nats.go reports a reconnect handshake the server did not answer in time.
+func readTimedOut(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // serverList is urls as a log line names them: comma-separated, each without its userinfo
 // (natsURLWithoutUserinfo).
 func serverList(urls []string) string {
@@ -317,16 +325,19 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		}
 	}
 	opts.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
-		if sub == nil && errors.Is(err, io.EOF) && handshaking(nc) {
+		if sub == nil && (errors.Is(err, io.EOF) || readTimedOut(err)) && handshaking(nc) {
 			// A server that closes the connection during a reconnect's CONNECT and PING handshake
 			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
 			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
 			// tries again without calling ReconnectErrCB (nats.go v1.50.0 nats.go:2930-2938,
-			// 3251-3258). It is a failed reconnect attempt, so it is logged as one, on the same
-			// throttle. Only that report is: the connection is still in that handshake
-			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
-			// and every other async error, an EOF on a connected connection included, stays an
-			// ERROR.
+			// 3251-3258). A server that does not answer that handshake in time does the same with
+			// the read's timeout: the handshake's is the one read nats.go gives a deadline once the
+			// first connect is made (processConnectInit's Opts.Timeout), so on a loaded machine a
+			// slow reconnect reports it. Either is a failed reconnect attempt, so it is logged as
+			// one, on the same throttle. Only that report is: the connection is still in that
+			// handshake (CONNECTING) or waiting for the next attempt (RECONNECTING) when the
+			// callback runs, and every other async error, an EOF or a timeout on a connected
+			// connection included, stays an ERROR.
 			reconnectAttemptFailed(err)
 			if asyncErrCB != nil {
 				asyncErrCB(nc, err)
@@ -396,8 +407,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 			}
 		}
 		attemptDialer := dialer
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := time.Until(deadline)
+		if remaining, ok := timeLeft(ctx); ok {
 			if remaining <= 0 {
 				// Not ctx.Err(): the deadline can pass before the context's timer marks it done,
 				// and a nil error here would hand the caller a nil connection to use.

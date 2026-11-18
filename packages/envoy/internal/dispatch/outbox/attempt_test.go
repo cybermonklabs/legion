@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingPublisher records every topic it is asked to publish, answering each with its entry in
@@ -86,19 +88,24 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	})
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
-	stop := run(t, database, publisher, broker)
+	outbox := New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+	// The holder's timers are armed on a fake clock the row never moves, so the row can read
+	// whether any is armed.
+	timers := clocktest.New(time.Now())
+	outbox.clock = timers
+	rest := watchRest(outbox)
+	stop := runOn(t, outbox)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
+	testwait.Eventually(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
-	// nothing does.
-	time.Sleep(500 * time.Millisecond)
-	settled := len(publisher.attempted())
-	time.Sleep(time.Second)
-	topics := publisher.attempted()
-	if len(topics) != settled {
-		t.Fatalf("sent %d more envelopes with no wake while NATS was unreachable", len(topics)-settled)
+	// nothing does. A holder at rest with no timer armed scans again only on a wake: an event, a
+	// connection change (this publisher reports none), or a retry timer.
+	rest.await(t, "the holder resting after its first scan and the LISTEN connection's catch-up")
+	if armed := timers.Armed(); len(armed) != 0 {
+		t.Fatalf("the holder armed %v after NATS was unreachable, want nothing armed: the released events wait for a wake", armed)
 	}
+	topics := publisher.attempted()
 	firstHeads := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
 	for index, topic := range topics {
 		if topic != firstHeads[index%len(firstHeads)] {
@@ -133,7 +140,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
+	testwait.Eventually(t, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if len(destinations) != 0 || attempts != 0 || publishedAt(t, database, event.ID) != nil {
 		t.Fatalf("published_destinations = %v, attempt_count = %d, published = %v, though the record write failed",
@@ -152,7 +159,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 		t.Fatalf("let the record write succeed: %v", err)
 	}
 	broker.Publish(model.Event{})
-	waitFor(t, 5*time.Second, "the event published once the store records again", func() bool {
+	testwait.Eventually(t, "the event published once the store records again", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if destinations, attempts := publishedDestinations(t, database, event.ID); len(destinations) != 3 || attempts != 0 {

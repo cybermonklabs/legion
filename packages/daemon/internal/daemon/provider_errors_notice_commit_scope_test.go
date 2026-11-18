@@ -55,6 +55,9 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var seenAtWake []int
+	// woken carries the first wake to the test: the wake is the lane being told of the row, which
+	// is the report this test waits on, since no outbox runs here to settle it.
+	woken := make(chan struct{}, 1)
 	log := slog.New(slog.DiscardHandler)
 	records := projectRecords{Store: record.NewStore(), project: "CAPTURE", log: log, wake: func(string, record.OutboxKind) {
 		// What the woken lane would find: the notices committed by the moment of the wake.
@@ -62,6 +65,10 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 		mu.Lock()
 		seenAtWake = append(seenAtWake, visible)
 		mu.Unlock()
+		select {
+		case woken <- struct{}{}:
+		default:
+		}
 	}}
 	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 1, "CAPTURE", log)
@@ -75,11 +82,10 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	w.providerErrorRunReached(supervise.Claim{Token: implementer, Project: token, Tree: "CAPTURE-7", Issue: "CAPTURE-7",
 		Role: claim.RoleImplementer, Generation: 1}, "three provider errors in a row")
 
-	testwait.Eventually(t, "the provider-errors notice to commit and wake its lane", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(seenAtWake) > 0 && notices() == 1
-	})
+	testwait.Receive(t, "the provider-errors notice's wake of its lane", woken)
+	if committed := notices(); committed != 1 {
+		t.Fatalf("%d controller notices are committed once the lane was woken, want the one", committed)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(seenAtWake) != 1 || seenAtWake[0] != 1 {

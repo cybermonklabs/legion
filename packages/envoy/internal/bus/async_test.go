@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -64,17 +64,12 @@ func TestPublishAsyncKeepsSendOrder(t *testing.T) {
 		answers = append(answers, window.PublishAsync(numberedEnvelope(orderedStreamTopic, index)))
 	}
 	for index, answer := range answers {
-		select {
-		case err := <-answer:
-			if err != nil {
-				t.Fatalf("publish %d was answered %v, want accepted", index, err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("publish %d was never answered", index)
+		if err := testwait.Receive(t, fmt.Sprintf("the answer to publish %d", index), answer); err != nil {
+			t.Fatalf("publish %d was answered %v, want accepted", index, err)
 		}
 	}
 
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -128,8 +123,14 @@ func TestAWindowAnswersATopicTheStreamDoesNotCaptureAsNotCaptured(t *testing.T) 
 	default:
 		t.Fatalf("a publish to %s returned with no answer, as if it had sent something", uncapturedTopic)
 	}
-	if message, err := received.NextMsg(300 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the uncaptured topic's subscriber received %v, %v; want nothing sent", message, err)
+	// A marker the client's own connection publishes after the refusal reaches the subscriber
+	// behind anything that connection sent before it, so the subscriber's first message being the
+	// marker shows the window sent nothing.
+	if err := client.Conn.Publish(uncapturedTopic, []byte("marker")); err != nil {
+		t.Fatalf("publish the marker: %v", err)
+	}
+	if message, err := received.NextMsgWithContext(testwait.Context(t)); err != nil || string(message.Data) != "marker" {
+		t.Fatalf("the uncaptured topic's subscriber received %v, %v first; want the marker, nothing sent before it", message, err)
 	}
 }
 
@@ -148,10 +149,7 @@ func TestAWindowWhoseConnectionIsLostAnswersUnavailableBeforeSending(t *testing.
 		t.Fatalf("first publish answered %v", err)
 	}
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the client to see its server gone", func() bool { return !client.Connected() })
 
 	answer := window.PublishAsync(numberedEnvelope(orderedStreamTopic, 1))
 	select {
@@ -179,13 +177,9 @@ func TestAWindowAnswersNoRespondersOnACurrentConnectionAsNotAcknowledged(t *test
 		t.Fatalf("delete the stream: %v", err)
 	}
 
-	select {
-	case err := <-client.WindowUntil(nil).PublishAsync(numberedEnvelope(orderedStreamTopic, 0)):
-		if !errors.Is(err, bus.ErrNotAcknowledged) || !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, bus.ErrUnavailable) {
-			t.Fatalf("a publish answered with no responders on a current connection answered %v, want ErrNotAcknowledged wrapping nats.ErrNoResponders, not ErrUnavailable", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the publish was never answered")
+	err = testwait.Receive(t, "the answer to the publish whose stream is deleted", client.WindowUntil(nil).PublishAsync(numberedEnvelope(orderedStreamTopic, 0)))
+	if !errors.Is(err, bus.ErrNotAcknowledged) || !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, bus.ErrUnavailable) {
+		t.Fatalf("a publish answered with no responders on a current connection answered %v, want ErrNotAcknowledged wrapping nats.ErrNoResponders, not ErrUnavailable", err)
 	}
 	if !client.Connected() {
 		t.Fatal("the client lost its connection; the test proves nothing about a current one")
@@ -209,13 +203,11 @@ func TestAWindowAnswersAnUnacknowledgedPublishOnACurrentConnectionAsNotAcknowled
 
 	thaw := server.Freeze(t)
 	defer thaw()
-	select {
-	case err := <-window.PublishAsync(numberedEnvelope(orderedStreamTopic, 1)):
-		if !errors.Is(err, bus.ErrNotAcknowledged) || !errors.Is(err, natsgo.ErrAsyncPublishTimeout) || errors.Is(err, bus.ErrUnavailable) {
-			t.Fatalf("a publish never acknowledged on a current connection answered %v, want ErrNotAcknowledged wrapping nats.ErrAsyncPublishTimeout, not ErrUnavailable", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish was never answered")
+	// The acknowledgement's 5 s are nats.go's own PublishAsyncTimeout, which no clock of the test
+	// reaches, so the wait is for the answer itself.
+	err = testwait.Receive(t, "the answer to the publish the frozen server never acknowledges", window.PublishAsync(numberedEnvelope(orderedStreamTopic, 1)))
+	if !errors.Is(err, bus.ErrNotAcknowledged) || !errors.Is(err, natsgo.ErrAsyncPublishTimeout) || errors.Is(err, bus.ErrUnavailable) {
+		t.Fatalf("a publish never acknowledged on a current connection answered %v, want ErrNotAcknowledged wrapping nats.ErrAsyncPublishTimeout, not ErrUnavailable", err)
 	}
 	if !client.Connected() {
 		t.Fatal("the client lost its connection while frozen; the test proves nothing about a current one")

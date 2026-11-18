@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // servedSockets lets a test wait until the document server is done with one of its
@@ -111,22 +111,30 @@ func (p *syncedPeer) barrier(t *testing.T) {
 	for len(conn.Answers) > 0 {
 		<-conn.Answers
 	}
-	deadline := time.After(5 * time.Second)
-	for {
+	ask := func() {
+		t.Helper()
 		if err := conn.AskForDocument(); err != nil {
 			t.Fatalf("send browser peer sync step 1: %v", err)
 		}
-		select {
-		case state := <-conn.Answers:
-			if p.roomHolds(t, state) {
-				return
-			}
-		case <-conn.Ended:
-			t.Fatal("browser peer connection closed before the room answered its sync")
-		case <-deadline:
-			t.Fatal("the room never answered with a state holding everything the browser peer sent")
-		}
 	}
+	ask()
+	testwait.Until(t, "the room to answer with a state holding everything the browser peer sent", func() (int, bool) {
+		answered := 0
+		for {
+			select {
+			case state := <-conn.Answers:
+				if p.roomHolds(t, state) {
+					return answered, true
+				}
+				answered++
+				ask()
+			case <-conn.Ended:
+				t.Fatal("browser peer connection closed before the room answered its sync")
+			default:
+				return answered, false
+			}
+		}
+	})
 }
 
 // roomHolds reports whether state, the content of a sync step 2, holds everything in the peer's
@@ -161,11 +169,7 @@ func (p *syncedPeer) closeAndWait(t *testing.T) {
 	socketID := p.socketID
 	p.mu.Unlock()
 	p.close()
-	select {
-	case <-p.sockets.done(socketID):
-	case <-time.After(30 * time.Second):
-		t.Fatal("the document server did not let go of the browser peer's closed connection")
-	}
+	testwait.Receive(t, "the document server to let go of the browser peer's closed connection", p.sockets.done(socketID))
 }
 
 func (p *syncedPeer) close() {

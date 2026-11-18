@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -202,36 +201,25 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // TestCitedIssuesCostsNoMoreForACitationFarFromASpace is the cost test, written so that it fails
 // on the shape it guards against rather than on a clock. Two bodies of the same length carry the
 // same 200 citations and differ only in what separates them: spaces, which end a word at once,
-// and commas, which do not. A reader that walks back to the nearest space pays the body's length
-// for every match and the comma body costs many times the space one; a reader that reads a
-// bounded run pays the same for both.
-//
-// The two bodies are timed in turn, three times each, and each keeps its quickest: the machine's
-// load only ever adds to a time, and in turn it reaches both bodies over the same stretch of the
-// run, where all three runs of one body and then all three of the other put whatever the load did
-// between them into the ratio.
-//
-// Measured in this pod at this head, best of three each: 5.83 ms and 5.05 ms, a ratio under one.
-// The same bodies against the walk this change replaced (ebb65528's reader): 5.74 ms and
-// 134.77 ms, a ratio of 23. The bound below is 8, which no linear reader approaches and no
-// walking one meets.
+// and commas, which do not. A reader that walks back to the nearest space reads the body's
+// length back for every match of the comma body; a reader that reads a bounded run reads the same
+// bytes back for both, since neither a space nor a comma is a host byte. The row counts the bytes
+// read back (AuthorityReads), so a reading that differs between the two bodies by a single byte
+// fails it.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
 	one := "github.com/acme/widgets/issues/7"
 	prose := strings.Repeat("a", 65536)
 	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
 	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
-	timed := func(body string) time.Duration {
-		started := time.Now()
+	readBack := func(body string) uint64 {
+		before := AuthorityReads()
 		citedIssues(repo, body)
-		return time.Since(started)
+		return AuthorityReads() - before
 	}
-	space, comma := timed(bySpace), timed(byComma)
-	for range 2 {
-		space, comma = min(space, timed(bySpace)), min(comma, timed(byComma))
-	}
-	if comma > 8*space {
-		t.Errorf("citing %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space)
+	space, comma := readBack(bySpace), readBack(byComma)
+	if comma != space || space > 200*2*maxHostName {
+		t.Errorf("citing %d bytes read back %d bytes before the paths separated by commas and %d separated by spaces, want the same, and at most %d digits and %d host bytes for each of the 200: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space, maxHostName, maxHostName)
 	}
 }
 

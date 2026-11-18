@@ -10,12 +10,13 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func waitUntil(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
+func waitUntil(t *testing.T, desc string, fn func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, testwait.Poll, desc, fn)
+	testwait.Eventually(t, desc, fn)
 }
 
 func TestE2E_InterestReaperCleanup(t *testing.T) {
@@ -33,7 +34,7 @@ func TestE2E_InterestReaperCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stale interest: %v", err)
 	}
-	js, err := env.client.Conn.JetStream(natsgo.MaxWait(5 * time.Second))
+	js, err := env.client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestE2E_InterestReaperCleanup(t *testing.T) {
 	if _, err := kv.Put("ses_stale", data); err != nil {
 		t.Fatalf("put stale interest: %v", err)
 	}
-	waitUntil(t, 5*time.Second, "stale cache update", func() bool {
+	waitUntil(t, "stale cache update", func() bool {
 		current, getErr := env.registry.Get(context.Background(), "ses_stale")
 		return getErr == nil && current.UpdatedAt == interest.UpdatedAt
 	})
@@ -56,7 +57,7 @@ func TestE2E_InterestReaperCleanup(t *testing.T) {
 	if reaped != 1 {
 		t.Fatalf("expected 1 reaped interest, got %d", reaped)
 	}
-	waitUntil(t, 5*time.Second, "stale interest deletion", func() bool {
+	waitUntil(t, "stale interest deletion", func() bool {
 		_, getErr := env.registry.Get(context.Background(), "ses_stale")
 		return getErr != nil && errors.Is(getErr, natsgo.ErrKeyNotFound)
 	})

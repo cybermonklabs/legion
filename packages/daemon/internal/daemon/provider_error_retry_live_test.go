@@ -6,7 +6,7 @@
 // owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go),
+// own whole-daemon harness (startDaemonLogging) over the live-proof fixture (live_proof_test.go),
 // so the proof exercises the real configuration, the real store and its migrations, the real HTTP
 // API, the real claim supervision and its worker stream, and the real workflow. Each worker is a
 // real `omp --mode rpc` under the real `legion worker-shim`, started by localruntime_live_test.go
@@ -41,8 +41,9 @@
 //
 // How long it takes. The ladder's first ladderWaitedOut rungs are waited out where they are real:
 // 30 s, 60 s and 120 s of wall clock, measured between the daemon's sends. Every rung above them
-// is driven on the daemon's own clock (ladderDriven, ladderClock), because waiting the fourth and
-// fifth out would add twelve minutes and measure the same ladder twice. With the pod's Oh My Pi
+// is driven on a fake clock of the machines' (ladderDriven, ladderClock), which the step moves past
+// each once the daemon has armed it, because waiting the fourth and fifth out would add twelve
+// minutes and measure the same ladder twice. With the pod's Oh My Pi
 // the whole driver runs in about eight minutes, inside the twenty-minute bound
 // scripts/e2e/lib/live-daemon-proof.sh gives it.
 //
@@ -88,6 +89,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -116,20 +119,13 @@ const ladderSends = 6
 // first three. Every rung above them is driven (ladderDriven).
 const ladderWaitedOut = 3
 
-// ladderDrivenSpan is what a driven rung is armed for instead: short enough that the two rungs
-// cost seconds rather than twelve minutes, long enough that the send is the timer's and not a
-// race with the turn that armed it.
-const ladderDrivenSpan = 2 * time.Second
-
-// ladderDriven says whether wait is a rung of the ladder the proof drives on the daemon's clock
-// rather than waits out, and the span it is armed for instead. The rungs are read off ladderDelays
-// (live_agent_proof_test.go), so a ladder that grows a step or changes one is still shortened
-// above ladderWaitedOut rather than leaving a literal duration behind that matches nothing.
-func ladderDriven(wait time.Duration) (time.Duration, bool) {
-	if slices.Contains(ladderDelays[ladderWaitedOut:], wait) {
-		return ladderDrivenSpan, true
-	}
-	return 0, false
+// ladderDriven says whether wait is a rung of the ladder the proof drives on a fake clock of the
+// machines' (ladderClock) rather than waits out: armed there, it fires only when the step moves
+// that clock past it, so the two rungs cost no wait at all. The rungs are read off ladderDelays
+// (live_agent_proof_test.go), so a ladder that grows a step or changes one is still driven above
+// ladderWaitedOut rather than leaving a literal duration behind that matches nothing.
+func ladderDriven(wait time.Duration) bool {
+	return slices.Contains(ladderDelays[ladderWaitedOut:], wait)
 }
 
 // ladderTolerance is how much longer than its armed wait a send-to-send gap may be: the turn whose
@@ -180,11 +176,10 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/provider-error-retry.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{}, clock: &ladderClock{},
+		built:          &built{}, clock: &ladderClock{Clock: clock.Real(), driven: clocktest.New(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))},
 		ladder: proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
 		stands: map[string]*providerStandin{},
 	}
@@ -225,7 +220,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.registerController()
 	return r
 }
@@ -397,30 +392,30 @@ func (r *providerErrorLive) ladderWalks() {
 
 	for attempt := 1; attempt < ladderSends; attempt++ {
 		delay := ladderDelays[attempt-1]
-		within := delay + ladderTolerance
-		if driven, ok := ladderDriven(delay); ok {
-			within = driven + ladderTolerance
-		}
-		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
-			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
-				record.at.After(sent[attempt-1])
-		})
-		armed := r.lastLog(func(record loggedRecord) bool {
+		armed := r.awaitLog("the ladder's wait before send "+strconv.Itoa(attempt+1), func(record loggedRecord) bool {
 			return record.Message == "supervise: this provider error can clear; the task goes to the same session again after a wait" &&
-				record.Attrs["attempt"] == float64(attempt)
+				record.Attrs["claim"] == string(token) && record.Attrs["attempt"] == float64(attempt)
 		})
-		if armed == nil {
-			t.Fatalf("the daemon armed no wait for send %d of the ladder", attempt+1)
-		}
 		if wait, want := armed.Attrs["wait"], delay.String(); wait != want {
 			t.Fatalf("the ladder armed %v before send %d, want %s", wait, attempt+1, want)
 		}
-		now := time.Now()
-		gap := now.Sub(sent[attempt-1])
-		sent = append(sent, now)
-		if driven, ok := ladderDriven(delay); ok {
-			r.note("send %d came %s after send %d; its %s wait was driven on the daemon's clock to %s",
-				attempt+1, gap.Round(time.Second), attempt, delay, driven)
+		driven := ladderDriven(delay)
+		if driven {
+			// The rung is armed on the driven clock, and only this move fires it.
+			r.clock.driven.AwaitArmed(t, fmt.Sprintf("the ladder's %s rung before send %d", delay, attempt+1), 1)
+			r.clock.driven.Advance(delay)
+		}
+		// Each gap is read off the daemon's own records: the moment its log says the wait was over
+		// and the task went again, against the previous send's.
+		again := r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), func(record loggedRecord) bool {
+			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+				record.at.After(sent[attempt-1])
+		})
+		gap := again.at.Sub(sent[attempt-1])
+		sent = append(sent, again.at)
+		if driven {
+			r.note("send %d came %s after send %d; its %s wait was armed on the driven clock and went when the step moved it past",
+				attempt+1, gap.Round(time.Second), attempt, delay)
 			continue
 		}
 		if gap < delay || gap > delay+ladderTolerance {
@@ -466,7 +461,7 @@ func (r *providerErrorLive) controllerIsTold() {
 	t := r.t
 	topic := notify.ControllerTopic(r.project)
 	var told []listenerPublish
-	r.await("the controller's notice of a run of provider errors", 3*time.Minute, func() bool {
+	r.await("the controller's notice of a run of provider errors", func() bool {
 		told = nil
 		for _, published := range r.notices.acceptedOn(topic) {
 			var payload struct {
@@ -518,8 +513,8 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	if status != http.StatusOK {
 		t.Fatalf("deliver the refused task = %d %s, want 200", status, body)
 	}
-	sent := time.Now()
-	errored := r.awaitLogFrom("the turn a content filter ended", from, 4*time.Minute, func(record loggedRecord) bool {
+	// The gap below is read off the daemon's own records, from its arming of the wait to its send.
+	errored := r.awaitLogFrom("the turn a content filter ended", from, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage &&
 			record.Attrs["claim"] == string(token)
 	})
@@ -529,7 +524,7 @@ func (r *providerErrorLive) refusalGoesAgain() {
 		t.Fatalf("the refused turn was reported retryable=%v httpStatus=%v, want a plain refusal",
 			errored.Attrs["retryable"], errored.Attrs["httpStatus"])
 	}
-	armed := r.awaitLogFrom("the refusal's wait", from, time.Minute, func(record loggedRecord) bool {
+	armed := r.awaitLogFrom("the refusal's wait", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: this provider error can clear; the task goes to the same session again after a wait" &&
 			record.Attrs["claim"] == string(token)
 	})
@@ -545,13 +540,13 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	r.note("the content filter ended the turn with no HTTP status and the daemon armed %v: %q",
 		armed.Attrs["wait"], cause)
 
-	r.awaitLogFrom("the refused task sent again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
+	again := r.awaitLogFrom("the refused task sent again", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
 			record.Attrs["claim"] == string(token)
 	})
-	gap := time.Since(sent)
+	gap := again.at.Sub(armed.at)
 	if gap < ladderDelays[0] {
-		t.Fatalf("the refused task went again %s after it was first sent, want at least %s", gap.Round(time.Second), ladderDelays[0])
+		t.Fatalf("the refused task went again %s after the daemon armed its wait, want at least %s", gap.Round(time.Second), ladderDelays[0])
 	}
 	held := r.claim(token)
 	if held.Pending == nil || held.Pending.Task != task {
@@ -587,7 +582,7 @@ func (r *providerErrorLive) cannotClearFails() {
 	if status != http.StatusOK {
 		t.Fatalf("deliver the malformed task = %d %s, want 200", status, body)
 	}
-	errored := r.awaitLogFrom("the turn a malformed request ended", from, 4*time.Minute, func(record loggedRecord) bool {
+	errored := r.awaitLogFrom("the turn a malformed request ended", from, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage &&
 			record.Attrs["claim"] == string(token)
 	})
@@ -596,13 +591,13 @@ func (r *providerErrorLive) cannotClearFails() {
 			errored.Attrs["retryable"], errored.Attrs["httpStatus"])
 	}
 	var failed api.OperatorClaim
-	r.await("the claim to fail", 4*time.Minute, func() bool {
+	r.await("the claim to fail", func() bool {
 		failed = r.claim(token)
 		return failed.State == string(supervise.StateFailed)
 	})
 	r.note("the turn ended in HTTP 400 and %s is %s", token, failed.State)
 	var issue api.Issue
-	r.await(r.failing+" to be held for its architect", 2*time.Minute, func() bool {
+	r.await(r.failing+" to be held for its architect", func() bool {
 		issue = r.issue(r.failing)
 		return issue.Phase == phase.Held
 	})
@@ -619,7 +614,7 @@ func (r *providerErrorLive) operatorDrivesTheClaims() {
 	before := r.claim(planner)
 	r.note("`legion claims stop` on %s, which is %s in session %s", planner, before.State, before.Session)
 	r.note("%s", r.legionClaims("stop", "--claim", string(planner)))
-	r.await(string(planner)+" to retire", 2*time.Minute, func() bool {
+	r.await(string(planner)+" to retire", func() bool {
 		return r.claim(planner).State == string(supervise.StateRetired)
 	})
 	r.note("`legion claims list` now reads:\n%s", indentOutput(r.legionClaims("list")))
@@ -652,7 +647,7 @@ func (r *providerErrorLive) awaitFreshSession(token claim.Token, old string) str
 	t := r.t
 	t.Helper()
 	var now api.OperatorClaim
-	r.await(string(token)+" to run in a session of its own", paneReady, func() bool {
+	r.await(string(token)+" to run in a session of its own", func() bool {
 		now = r.claim(token)
 		return now.Session != "" && now.Session != old &&
 			(now.State == string(supervise.StateReady) || now.State == string(supervise.StateIdle) ||
@@ -664,7 +659,7 @@ func (r *providerErrorLive) awaitFreshSession(token claim.Token, old string) str
 		t.Fatalf("the retry of %s resumed %s, and --fresh-session asked for a new session", token, last.ResumeSessionFile)
 	}
 	var sent string
-	r.await("the task "+string(token)+"'s new session was sent", 2*time.Minute, func() bool {
+	r.await("the task "+string(token)+"'s new session was sent", func() bool {
 		held := r.claim(token)
 		if held.Pending == nil {
 			return false
@@ -685,7 +680,7 @@ func (r *providerErrorLive) awaitFreshSession(token claim.Token, old string) str
 func (r *providerErrorLive) awaitFirstSend(token claim.Token, task string) time.Time {
 	r.t.Helper()
 	var at time.Time
-	r.await(string(token)+" to be sent the task its start left pending", paneReady, func() bool {
+	r.await(string(token)+" to be sent the task its start left pending", func() bool {
 		held := r.claim(token)
 		if held.Pending == nil || held.Pending.Task != task || held.Pending.DeliveredAt == nil {
 			return false
@@ -705,7 +700,7 @@ func (r *providerErrorLive) awaitWarmedUp(issue string) {
 	r.t.Helper()
 	seeded := r.seededFor(issue)
 	token := r.token(seeded.key, seeded.role)
-	r.await(string(token)+" to answer the warm-up task its start left pending", paneReady, func() bool {
+	r.await(string(token)+" to answer the warm-up task its start left pending", func() bool {
 		held := r.claim(token)
 		return held.Pending == nil && held.State != string(supervise.StateWorking)
 	})
@@ -882,19 +877,21 @@ func (s *providerStandin) streamCompletion(w http.ResponseWriter, finish string)
 
 // ---- the daemon's clock --------------------------------------------------------------------------
 
-// ladderClock is the wall clock with the ladder's driven rungs shortened: a timer armed for one
-// of them (ladderDriven, read off ladderDelays) fires after ladderDrivenSpan instead, because
-// waiting the fourth and fifth rungs out would add twelve minutes and prove the same doubling the
-// first three do. Every other duration the daemon arms — its probe interval, its registration
-// deadline, and the ladder's own waited-out rungs — passes through untouched, so what the proof
-// measures is measured where it is real.
+// ladderClock is the wall clock (clock.Real) with the ladder's driven rungs on a fake: a timer
+// armed for one of them (ladderDriven, read off ladderDelays) is armed on driven, which fires it
+// only when the step moves it past (ladderWalks), because waiting the fourth and fifth rungs out
+// would add twelve minutes and prove the same doubling the first three do. Every other duration
+// the daemon arms — its probe interval, its registration deadline, and the ladder's own waited-out
+// rungs — passes through to the wall clock untouched, so what the proof measures is measured where
+// it is real: this proof times real panes' sends against it.
 type ladderClock struct {
-	supervise.RealClock
+	clock.Clock
+	driven *clocktest.Fake
 }
 
-func (c *ladderClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
-	if driven, ok := ladderDriven(d); ok {
-		d = driven
+func (c *ladderClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	if ladderDriven(d) {
+		return c.driven.AfterFunc(d, f)
 	}
-	return c.RealClock.AfterFunc(d, f)
+	return c.Clock.AfterFunc(d, f)
 }

@@ -16,10 +16,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relatedOwnerKeys is the issue each related item stands for, in order.
@@ -164,67 +166,33 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	return handler, database, directServer(deps)
 }
 
-// binaryDeadlineMargin is what binaryDeadlineGuard leaves of the test binary's deadline for the
-// failed case's cleanups - releasing a held read, closing its servers and dropping its database
-// - and for the binary's own end: the margin throughputWait leaves for the socket rig's.
-const binaryDeadlineMargin = 30 * time.Second
-
-// binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline, and never
-// when the binary runs without one (-timeout 0). A case that waits on something only the code
-// under test ends - the related-item check's answer, a leg's read - selects on it, so code that
-// never ends the wait fails that case by name, and leaves the binary's timeout to the package's
-// later tests. It bounds no measurement: it fires only where the wait would otherwise last as
-// long as the binary. A deadline that leaves no more than the margin to begin with fails at once,
-// by name, as throughputWait's does.
-func binaryDeadlineGuard(t *testing.T) <-chan time.Time {
-	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return nil
-	}
-	left := time.Until(deadline) - binaryDeadlineMargin
-	if left <= 0 {
-		t.Fatalf("the test binary's deadline leaves %s, not more than binaryDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout",
-			time.Until(deadline).Round(time.Millisecond), binaryDeadlineMargin)
-	}
-	timer := time.NewTimer(left)
-	t.Cleanup(func() { timer.Stop() })
-	return timer.C
-}
-
 // answeredBeforeTheBinaryDeadline runs run on a goroutine of its own and answers what it answers,
-// failing the case by name when it has not answered by binaryDeadlineGuard. run must not call t's
-// FailNow family, which only the case's own goroutine may.
+// through the shared wait: code that never ends what run waits on fails the case by name at the
+// test binary's deadline (testwait.Receive). run must not call t's FailNow family, which only the
+// case's own goroutine may.
 func answeredBeforeTheBinaryDeadline[T any](t *testing.T, what string, run func() T) T {
 	t.Helper()
-	guard := binaryDeadlineGuard(t)
 	answered := make(chan T, 1)
 	go func() { answered <- run() }()
-	select {
-	case answer := <-answered:
-		return answer
-	case <-guard:
-		t.Fatalf("%s had not answered %s before the test binary's deadline: nothing ended what it waits on", what, binaryDeadlineMargin)
-		var none T
-		return none
-	}
+	return testwait.Receive(t, what+" to answer", answered)
 }
 
-// deadlineEmbedder is fakeEmbedder recording the deadline of each call's context: what bounds the
-// check's embedding, which is the meaning deadline (embedQuery's own bound is no earlier).
-type deadlineEmbedder struct {
+// contextEmbedder is fakeEmbedder recording the context of each call: what bounds the check's
+// embedding, which is the meaning deadline (embedQuery's own bound is no earlier). On a fake clock
+// that context's Deadline is no witness - clocktest's deadline contexts report their parent's - so
+// a case reads whether it has ended on either side of the moment it moves the clock to.
+type contextEmbedder struct {
 	*fakeEmbedder
-	deadlines chan time.Time
+	contexts chan context.Context
 }
 
-func newDeadlineEmbedder(embedder *fakeEmbedder) *deadlineEmbedder {
-	return &deadlineEmbedder{fakeEmbedder: embedder, deadlines: make(chan time.Time, 16)}
+func newContextEmbedder(embedder *fakeEmbedder) *contextEmbedder {
+	return &contextEmbedder{fakeEmbedder: embedder, contexts: make(chan context.Context, 16)}
 }
 
-func (e *deadlineEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
-	deadline, _ := ctx.Deadline()
+func (e *contextEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
 	select {
-	case e.deadlines <- deadline:
+	case e.contexts <- ctx:
 	default:
 	}
 	return e.fakeEmbedder.Embed(ctx, texts, inputType)
@@ -367,29 +335,41 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 }
 
 // An embedder slower than the meaning allowance costs the check three seconds, not five: it
-// answers its keyword search's result then, saying meaning search did not answer in time.
-//
-// The check's own allowance is an hour here (server.suggestionTimeout), so it answers only
-// because the meaning allowance ended its meaning search, never because its own allowance ran
-// out: a check that waited for that fails by name before the binary's deadline. The case starts
-// the check at a moment it reads, and the embedder records its context's deadline, so that the
-// meaning search ran to the meaning allowance from the check's start is a value the case
-// compares rather than a time it measures.
+// answers its keyword search's result when its meaning deadline passes, saying meaning search did
+// not answer in time. The check runs on a clock the case moves to that deadline, and the embedder
+// records the context it was called with, so that the meaning deadline is what ended the meaning
+// search is a state the case reads on either side of that move rather than a time it measures.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
-	embedder := &fakeEmbedder{delay: time.Minute}
+	embedder := &fakeEmbedder{delay: time.Hour}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
 	key := createSearchIssue(t, handler, "MSLOW", "Nightly backups overrun their window", "")
-	recorded := newDeadlineEmbedder(embedder)
+	recorded := newContextEmbedder(embedder)
 	srv.deps.Embedder = recorded
-	srv.suggestionTimeout = time.Hour
 
-	started := time.Now()
-	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
-		answer, _ := srv.runRelatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"}, started)
-		return answer
-	})
-	elapsed := time.Since(started)
+	clock := clocktest.New(checkStart)
+	srv.clock = clock
+	answered := make(chan *model.Suggestions, 1)
+	go func() {
+		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"})
+	}()
+	armed := clock.AwaitArmed(t, "the check's meaning deadline and its allowance", 2)
+	meaning := checkStart.Add(relatedMeaningAllowance)
+	if !armed[0].Equal(meaning) || !armed[1].Equal(checkStart.Add(relatedCheckAllowance)) {
+		t.Fatalf("the check armed %v, want its meaning deadline at %v and its allowance at %v", armed, meaning, checkStart.Add(relatedCheckAllowance))
+	}
+	select {
+	case early := <-answered:
+		t.Fatalf("the check answered %+v before its meaning deadline, the embedder still held", early)
+	default:
+	}
+	// The stage's goroutine embeds; the check does not wait for that goroutine to have started.
+	embedding := testwait.Receive(t, "the check's meaning stage to call the embedder", recorded.contexts)
+	if err := embedding.Err(); err != nil {
+		t.Fatalf("the embedding's context ended (%v) before the clock reached the meaning deadline", err)
+	}
+	clock.Set(meaning)
+	suggestions := testwait.Receive(t, "the check's answer once its meaning deadline passed", answered)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, meaning search having run out of time", suggestions)
@@ -397,20 +377,34 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
 	}
-	if elapsed < relatedMeaningAllowance {
-		t.Fatalf("the check answered in %s, before the %s meaning allowance ended", elapsed, relatedMeaningAllowance)
+	// The embedding's context is a child of the meaning context, and the context package ends a
+	// child of a context it did not make from a goroutine of its own, so the case waits for it.
+	testwait.Receive(t, "the embedding's context to end once the clock reached the meaning deadline", embedding.Done())
+	if err := embedding.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the embedding's context read %v once the clock reached the meaning deadline, want %v: the meaning search is not bounded by the meaning allowance",
+			err, context.DeadlineExceeded)
 	}
-	// The stage's goroutine embeds; the check does not wait for that goroutine to have started.
-	var deadline time.Time
-	select {
-	case deadline = <-recorded.deadlines:
-	case <-binaryDeadlineGuard(t):
-		t.Fatalf("the check's meaning stage had not called the embedder %s before the test binary's deadline", binaryDeadlineMargin)
-	}
-	if want := started.Add(relatedMeaningAllowance); !deadline.Equal(want) {
-		t.Fatalf("the embedding ran to %v, want %v, the %s meaning allowance from the check's start: the meaning search is not bounded by the meaning allowance",
-			deadline, want, relatedMeaningAllowance)
-	}
+}
+
+// awaitLockWait waits until a statement waits for the lock a case holds on table.
+func awaitLockWait(t *testing.T, database *store.Store, table string) {
+	t.Helper()
+	testwait.Eventually(t, "a statement to wait on the lock held on "+table, func() bool {
+		var waiting int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from pg_locks where relation = $1::regclass and not granted`, table).Scan(&waiting); err != nil {
+			t.Fatalf("read the lock waits on %s: %v", table, err)
+		}
+		return waiting > 0
+	})
+}
+
+// checkOnTheSide runs srv's check of input under ctx on a goroutine of its own, so the case can
+// move the check's clock or release a lock while it waits, and hands back its answer.
+func checkOnTheSide(srv *server, ctx context.Context, input relatedInput) <-chan *model.Suggestions {
+	answered := make(chan *model.Suggestions, 1)
+	go func() { answered <- srv.relatedCheck(ctx, input) }()
+	return answered
 }
 
 // pgvector's HNSW index hands back hnsw.ef_search nearest vectors (40 by default) before the
@@ -463,13 +457,15 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 	}
 }
 
-// A keyword stage held a second, well past the old 300 ms bound, still answers within the
-// check's allowance.
+// A keyword stage held behind a lock, well past the old 300 ms bound, still answers within the
+// check's allowance once the lock goes. The check runs on a clock that never moves, so its
+// allowance cannot end first.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SLOW")
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
 	srv := directServer(deps)
+	srv.clock = clocktest.New(checkStart)
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -479,19 +475,17 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
 		t.Fatalf("lock search_term_stats: %v", err)
 	}
-	started := time.Now()
-	answered := make(chan *model.Suggestions, 1)
-	go func() {
-		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "SLOW", text: "Zymurgy ledger totals drift"})
-	}()
-	time.Sleep(time.Second)
+	answered := checkOnTheSide(srv, context.Background(), relatedInput{project: "SLOW", text: "Zymurgy ledger totals drift"})
+	awaitLockWait(t, database, "search_term_stats")
+	select {
+	case early := <-answered:
+		t.Fatalf("the check answered %+v before the lock it reads behind was released", early)
+	default:
+	}
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	suggestions := <-answered
-	if elapsed := time.Since(started); elapsed < time.Second {
-		t.Fatalf("the check answered in %s, before the lock it reads behind was released", elapsed)
-	}
+	suggestions := testwait.Receive(t, "the check's answer once the lock was released", answered)
 	if suggestions.Outcome != "found" || !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("suggestions = %+v, want %s found once the lock was released", suggestions, key)
 	}
@@ -510,6 +504,8 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 	refreshTermStats(t, database, "STUCK")
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
+	clock := clocktest.New(checkStart)
+	srv.clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -519,11 +515,18 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
 		t.Fatalf("lock search_term_stats: %v", err)
 	}
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{
+	answered := checkOnTheSide(srv, context.Background(), relatedInput{
 		project: "STUCK", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
+	awaitLockWait(t, database, "search_term_stats")
+	// The check's own allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the check ran out of its allowance.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
+	suggestions := testwait.Receive(t, "the check's answer once its allowance ran out", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -560,7 +563,8 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	awaitTermStatsRefresh(t, served, "GONE")
 	refreshTermStats(t, database, "GONE")
 	srv := directServer(deps)
-	srv.suggestionTimeout = time.Minute
+	// A clock that never moves: the check's allowance cannot end before its request does.
+	srv.clock = clocktest.New(checkStart)
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -580,27 +584,9 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 			record: true,
 		})
 	}()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read lock waits: %v", err)
-		}
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the check's pick never waited on the term statistics")
-		}
-	}
+	awaitLockWait(t, database, "search_term_stats")
 	endRequest()
-	var suggestions *model.Suggestions
-	select {
-	case suggestions = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the check did not answer within 10s of its request ending")
-	}
+	suggestions := testwait.Receive(t, "the check's answer once its request ended", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -634,6 +620,8 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	refreshTermStats(t, database, "DBTO")
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
+	clock := clocktest.New(checkStart)
+	srv.clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -648,8 +636,17 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 		{ID: "window", Question: "Which zymurgy ledger drift closes the quarter?"},
 	}
 	artifact := model.Artifact{ID: issue.PrimaryArtifactID, IssueKey: &issue.Key, Project: "DBTO"}
-	checks := srv.decisionBlockChecks(context.Background(), artifact, blocks,
-		model.Actor{Kind: "user", ID: "alice"}, false)
+	done := make(chan []decisionBlockCheck, 1)
+	go func() {
+		done <- srv.decisionBlockChecks(context.Background(), artifact, blocks, model.Actor{Kind: "user", ID: "alice"}, false)
+	}()
+	awaitLockWait(t, database, "search_term_stats")
+	// The edit's one allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the blocks' checks ran out of it.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the edit's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
+	checks := testwait.Receive(t, "the blocks' checks once the edit's allowance ran out", done)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -698,6 +695,8 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	source := createSearchIssue(t, handler, "MIGR", "Zymurgy ledger totals drift", "")
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
+	clock := clocktest.New(checkStart)
+	srv.clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -707,11 +706,18 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	if _, err := lockTx.Exec(context.Background(), "lock table asks in access exclusive mode"); err != nil {
 		t.Fatalf("lock asks: %v", err)
 	}
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{
+	checked := checkOnTheSide(srv, context.Background(), relatedInput{
 		project: "MIGR", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
+	awaitLockWait(t, database, "asks")
+	// The check's own allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the check ran out of its allowance.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
+	suggestions := testwait.Receive(t, "the check's answer once its allowance ran out", checked)
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the search behind it did not answer within 500ms" {
 		t.Fatalf("suggestions = %+v, want not made, the search not having answered within the allowance", suggestions)
 	}
@@ -719,27 +725,17 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	// Hold the lock until the cancel pgx sends after the record's first attempt has landed: that
 	// attempt started its insert relatedRecordTimeout before the check answered, any retry's
 	// only once it had failed, so an insert started more than half that before is the first.
-	poll := func(what string, done func() bool) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for !done() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 5s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	var answered time.Time
-	if err := database.Pool.QueryRow(context.Background(), "select clock_timestamp()").Scan(&answered); err != nil {
+	var answeredAt time.Time
+	if err := database.Pool.QueryRow(context.Background(), "select clock_timestamp()").Scan(&answeredAt); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
-	poll("the first attempt's insert cancelled", func() bool {
+	testwait.Eventually(t, "the first attempt's insert cancelled", func() bool {
 		var waiting bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select exists (select from pg_stat_activity
 			 where datname = current_database() and state = 'active' and pid <> pg_backend_pid()
 			   and query like '%insert into related_checks%' and query_start < $1)
-		`, answered.Add(-relatedRecordTimeout/2)).Scan(&waiting); err != nil {
+		`, answeredAt.Add(-relatedRecordTimeout/2)).Scan(&waiting); err != nil {
 			t.Fatalf("read the waiting inserts: %v", err)
 		}
 		return !waiting
@@ -749,7 +745,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	}
 
 	var rows []relatedCheckRow
-	poll("the check's related_checks row written after the lock's release", func() bool {
+	testwait.Eventually(t, "the check's related_checks row written after the lock's release", func() bool {
 		rows = readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 		return len(rows) > 0
 	})
@@ -766,7 +762,8 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 // wait open. The retry is counted with that work: the wait neither returns while the retry still
 // holds its row nor panics, and the row is written once the lock holding it up is released.
 func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.T) {
-	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{})
+	clock := clocktest.New(checkStart)
+	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{clock: clock})
 	createSuggestionProject(t, handler, "SHUT")
 	createSearchIssue(t, handler, "SHUT", "Quarterly zymurgy ledger drifts", "")
 	source := createSearchIssue(t, handler, "SHUT", "Zymurgy ledger totals drift", "")
@@ -791,31 +788,30 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 		srv.waitBackground()
 	}()
 
-	srv.relatedCheck(context.Background(), relatedInput{
+	answered := checkOnTheSide(srv, context.Background(), relatedInput{
 		project: "SHUT", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
+	awaitLockWait(t, database, "asks")
+	// The check's own allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the check ran out of its allowance.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
+	testwait.Receive(t, "the check's answer once its allowance ran out", answered)
 	if got := srv.relatedRecordRetrying.Load(); got != 1 {
 		t.Fatalf("records being retried after the check answered = %d, want 1 (its first attempt held up by the lock)", got)
 	}
 	handlerDone()
-	select {
-	case recovered := <-waited:
-		t.Fatalf("the shutdown wait returned (panic %v) while the record's retry still held its row", recovered)
-	case <-time.After(300 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the shutdown wait", waited, 300*time.Millisecond,
+		"the wait returns once a wait group inside waitBackground drains, which no state of the server shows; the record's retry, which holds that group, is still blocked by the lock, and no later action of the test reaches the group before the lock is released")
 
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	select {
-	case recovered := <-waited:
-		if recovered != nil {
-			t.Fatalf("the shutdown wait panicked: %v", recovered)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown wait did not return within 10s of the lock's release")
+	if recovered := testwait.Receive(t, "the shutdown wait to return once the lock was released", waited); recovered != nil {
+		t.Fatalf("the shutdown wait panicked: %v", recovered)
 	}
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)
 	if len(rows) != 1 || deref(rows[0].Reason) != "timeout" {
@@ -846,15 +842,15 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // runs before the write under a bound of its own, the check after it. A lock would stop both,
 // since the gate prices the text's words through the check's own picker, and that case is the
 // third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList). The gate's
-// bound here is the case's (nearCopyVerdictBound), so the title matches are the gate's verdict
-// and not the machine's having answered inside production's 500 ms.
+// bound here is every test server's (gateBoundPastEveryRead), so the title matches are the gate's
+// verdict and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
 
-	served.suggestionTimeout = time.Nanosecond
+	served.suggestionTimeout = spentRelatedAllowance
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "FORCE", "title": title, "force": true,
 	}, "alice")
@@ -864,7 +860,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	created := decodeBody[testIssueWithSuggestions](t, response)
 	suggestions := issueSuggestions(t, "the forced create", response)
 	if suggestions.Outcome != "not_made" || suggestions.Missing == "" {
-		t.Fatalf("suggestions = %+v, want the check not made while asks is locked", suggestions)
+		t.Fatalf("suggestions = %+v, want the check not made, its allowance spent before its first read", suggestions)
 	}
 	if len(suggestions.TitleMatches) == 0 || suggestions.TitleMatches[0].Key != existing {
 		t.Fatalf("title_matches = %+v, want %s, whose title the create forced past", suggestions.TitleMatches, existing)
@@ -1120,9 +1116,22 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 		if _, err := lockTx.Exec(context.Background(), "lock table events in access exclusive mode"); err != nil {
 			t.Fatalf("lock events: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		suggestions, wire := fill(ctx)
+		type filled struct {
+			suggestions model.Suggestions
+			wire        map[string]map[string]json.RawMessage
+		}
+		read := make(chan filled, 1)
+		go func() {
+			suggestions, wire := fill(ctx)
+			read <- filled{suggestions, wire}
+		}()
+		// The answers' read waits on the lock; the case ends its context there.
+		awaitLockWait(t, fixture.database, "events")
+		cancel()
+		got := testwait.Receive(t, "the related items once the answers' read was given up", read)
+		suggestions, wire := got.suggestions, got.wire
 		if len(suggestions.Related) != 2 {
 			t.Fatalf("related = %+v, want both asks listed", suggestions.Related)
 		}

@@ -1,19 +1,18 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestHeartbeatKVWritesPerHeartbeat counts the KV writes one heartbeat costs. N sessions, each
@@ -44,8 +43,7 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	sessionOf := func(index int) string { return fmt.Sprintf("ses_heartbeat_%02d", index) }
 	roleOf := func(index int) string { return fmt.Sprintf("heartbeat-role-%02d", index) }
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := registry.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("interest cache not ready: %v", err)
 	}
@@ -61,7 +59,7 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

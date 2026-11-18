@@ -15,35 +15,40 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown: the broker makes the enrollment
-// at once, and its answer would reach the helper 5 s later, past the op's 2 s bound. `enroll
-// --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying the outcome is unknown, and writes
-// no enrollment file, while the broker holds the row. The answer is the one the bound's end of the
-// request gives (requestReach.settle): its cause says the request may have reached the broker, and
-// it comes before the bound plus 1 s, where the helper's timer would answer with a cause of its
-// own. The same command again, answered at once, exits 0 with that row's id, and the broker still
-// holds that one live row.
+// at once, and the helper's transport holds its answer until the op's bound ends the request.
+// `enroll --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying the outcome is unknown, and
+// writes no enrollment file, while the broker holds the row. The answer is the one the bound's end
+// of the request gives (requestReach.settle): its cause says the request may have reached the
+// broker, and it comes once the helper's clock reaches the bound, while the helper's timer, a
+// second later on that clock, has not fired and so cannot answer with a cause of its own. The same
+// command again, answered at once, exits 0 with that row's id, and the broker still holds that one
+// live row.
 func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	binary := buildAgentSecrets(t)
-	slow := &slowEnrollments{base: http.DefaultTransport, hold: 5 * time.Second}
+	slow := &slowEnrollments{base: http.DefaultTransport}
 	srv, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow})
 	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
 		t.Fatalf("approved machine login (code %s): exit %d, stderr %q; want 0", code, exit, stderr)
 	}
-	// The helper reads the bound at each op. The enroll comes from another process, so this
+	// The helper reads its clock at each op. The enroll comes from another process, so this
 	// process's own call on the socket is what orders the write before the helper reads it.
-	const bound = 2 * time.Second
-	srv.BrokerCallBound = bound
+	clock := clocktest.New(time.Now())
+	srv.Clock = clock
 	if status, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second); err != nil || status.LoginState != "issued" {
 		t.Fatalf("login-status after the approved login: %+v %v; want issued", status, err)
 	}
@@ -53,9 +58,40 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	args := []string{"enroll", "--helper", "--runtime-id", runtimeID, "--thumbprint", freshThumbprint(t)}
 
 	slow.holds.Store(1)
-	start := time.Now()
-	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	elapsed := time.Since(start)
+	cmd := exec.Command(binary, args...)
+	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+rig.URL, "AGENT_SECRETS_KEY_DIR="+keyDir), env...)
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdoutBuf, &stderrBuf
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start agent-secrets %v: %v", args, err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	// The op arms its bound and the timer that answers it a second later, both on the helper's
+	// clock, and nothing answers it before that clock moves.
+	now := clock.Now()
+	want := []time.Time{now.Add(helper.BrokerCallBound), now.Add(helper.BrokerCallBound + time.Second)}
+	if armed := clock.AwaitArmed(t, "the enroll's bound and the helper's timer", 2); !slices.EqualFunc(armed, want, time.Time.Equal) {
+		t.Fatalf("the helper armed %v for the enroll; want its bound at %v and its timer at %v", armed, want[0], want[1])
+	}
+	// The broker has made the row and answered, and the transport holds that answer.
+	testwait.Eventually(t, "the transport to hold the broker's answer to POST /v1/enrollments", func() bool { return slow.held.Load() == 1 })
+	select {
+	case err := <-exited:
+		t.Fatalf("enroll --helper ended (%v) before the helper's clock reached its bound: stdout %q, stderr %q", err, stdoutBuf.String(), stderrBuf.String())
+	default:
+	}
+	clock.Advance(helper.BrokerCallBound)
+	err := testwait.Receive(t, "enroll --helper to exit once the helper's clock reached its bound", exited)
+	exit := 0
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(err, &exitErr):
+		exit = exitErr.ExitCode()
+	case err != nil:
+		t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, err, stdoutBuf.String(), stderrBuf.String())
+	}
+	stdout, stderr := stdoutBuf.String(), stderrBuf.String()
 	rows := enrollmentsOf(t, rig, runtimeID)
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 	if n := slow.held.Load(); n != 1 {
@@ -68,9 +104,6 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	const settleCause = "the request may have reached the broker, but the helper did not get its result ("
 	if !strings.Contains(stderr, settleCause) || strings.Contains(stderr, "did not end in") {
 		t.Errorf("enroll --helper past the helper's bound: %s; want settle's cause %q, not the timer's \"did not end in\"", outcome, settleCause)
-	}
-	if elapsed >= bound+time.Second {
-		t.Errorf("enroll --helper past the helper's bound took %s; want settle's answer, before the %s bound plus 1 s, where the helper's timer answers", elapsed, bound)
 	}
 	if _, err := os.Stat(filepath.Join(keyDir, "enrollment")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("enroll --helper past the helper's bound wrote an enrollment file (%v): %s", err, outcome)

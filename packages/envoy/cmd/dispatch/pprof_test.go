@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // defaultMuxSentinel is a route on http.DefaultServeMux that the pprof listener must not serve.
@@ -92,18 +94,14 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	}
 
 	cancel()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.Eventually(t, "the pprof listener to stop accepting connections once the shutdown context ended", func() bool {
 		conn, err := net.DialTimeout("tcp", bound.String(), 100*time.Millisecond)
 		if err != nil {
-			break
+			return true
 		}
 		conn.Close()
-		if time.Now().After(deadline) {
-			t.Fatal("the pprof listener still accepts connections after the shutdown context ended")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	})
 }
 
 // A port another process holds is a startup error naming the variable, never a silent skip.

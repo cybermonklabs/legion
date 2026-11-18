@@ -23,7 +23,9 @@ type standIn struct {
 }
 
 // reply is one response a stand-in gives: an SSE stream, or an error status with a body, after a
-// delay.
+// delay. The delay is the stand-in's own, standing for the time the Anthropic API takes to answer
+// (the latency the loop's own timeouts are set against); it stays on the real clock, since the
+// code under test reaches it only through a real HTTP round trip.
 type reply struct {
 	status  int
 	body    []byte

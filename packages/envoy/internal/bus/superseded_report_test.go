@@ -98,7 +98,7 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 				caller.run(t, srv, client)
 				// The superseded run ends in one of its report's lines, and the wait takes whichever
 				// comes.
-				testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the report of the superseded run", func() bool {
+				testwait.Eventually(t, "the report of the superseded run", func() bool {
 					return calls.Load() >= 1 && logs.Lines(supersededLine)+logs.Lines(warnLine)+logs.Lines(errorLine) != ""
 				})
 				if calls.Load() != 1 {
@@ -127,7 +127,7 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 				}
 
 				srv.Start(t)
-				testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "a run that covers the reconnect", func() bool {
+				testwait.Eventually(t, "a run that covers the reconnect", func() bool {
 					return calls.Load() >= 2 && !client.hooksDue()
 				})
 			})
@@ -158,9 +158,10 @@ func TestARunWhoseConnectionLeftConnectedIsSuperseded(t *testing.T) {
 	}
 
 	srv.Stop(t)
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return conn.Status() == nats.RECONNECTING }) {
-		t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", conn.Status())
-	}
+	testwait.Until(t, "the connection to read RECONNECTING once its server stopped", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.RECONNECTING
+	})
 	err = runSuperseded(context.Background(), conn)
 	if !errors.Is(err, errRunSuperseded) || !errors.Is(err, errRunConnectionLost) {
 		t.Fatalf("a live run on a RECONNECTING connection reads %v, want errRunSuperseded for the lost connection", err)

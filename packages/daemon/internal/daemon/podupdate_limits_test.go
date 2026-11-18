@@ -191,11 +191,12 @@ func (r *fleetRig) replacedOnce(issues ...string) {
 // Both are read as the operator's route serves them (api.PodUpdateRounds.MarshalJSON), which is
 // where the two differences that are no difference go away: a limit is the number it holds rather
 // than the address of a pointer, and a list nothing filled reads as the empty list the wire
-// carries.
+// carries. A record that differs ends the test: the sweep opened or held back the wrong issue,
+// and a wait on the claims after it would wait for ever for a round set that sweep has ruled out.
 func (r *fleetRig) wantPodUpdateRecord(what string, want api.PodUpdateRounds) {
 	r.t.Helper()
 	if got := r.recordAsServed(r.s.podUpdateRoundsView()); got != r.recordAsServed(want) {
-		r.t.Errorf("the record after %s is %s, want %s", what, got, r.recordAsServed(want))
+		r.t.Fatalf("the record after %s is %s, want %s", what, got, r.recordAsServed(want))
 	}
 }
 
@@ -559,11 +560,7 @@ func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *t
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the architect's machine never reached the Resume this test holds it in")
-	}
+	testwait.Receive(t, "the architect's machine to reach the Resume this test holds it in", entered)
 
 	// The first sweep opens the round of the held issue and spends the minute's budget on it.
 	// Nothing of it reaches any claim's record: the one machine it was posted to is relaunching.
@@ -661,11 +658,7 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 			Observation: runtime.Observation{Locator: died, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the architect's machine never reached the Resume this test holds it in")
-	}
+	testwait.Receive(t, "the architect's machine to reach the Resume this test holds it in", entered)
 
 	// The sweep opens the round over the pod the implementer records and charges the project's
 	// one slot for it, which leaves the issue behind it waiting for that slot.
@@ -900,29 +893,48 @@ func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 	rig.answer("INFRA-1")
 
 	// The sweep a minute later has a pod to replace as well as a round to open, and the
-	// replacement waits that pod out for seventy seconds. One hold only: the sweeps after it
+	// replacement waits that pod out for fifty-five seconds: past the gap the limit holds after
+	// an opening (podUpdateOpeningGap), so a gap read from the end of the call would shut out the
+	// sweep that follows it, and inside the minute a replacement is given (podReplaceBudget),
+	// which a longer wait would end with nothing replaced. One hold only: the sweeps after it
 	// find the runtime as this one left it.
 	rig.rt.HoldReplacePod(func() {
 		rig.rt.HoldReplacePod(nil)
-		rig.clock.advance(70 * time.Second)
+		rig.clock.advance(55 * time.Second)
 	})
 	rig.clock.advance(time.Minute)
 	rig.tick()
-	rig.sweepUntilReplaced("INFRA-1")
-	rig.drifts("INFRA-1")
-	if got, want := rig.clock.Now().Sub(start), 130*time.Second; got != want {
-		t.Fatalf("the sweep's replacement held the clock for %s, want the minute to the sweep and the pod's seventy seconds, %s", got, want)
+	// The replacement is the slow sweep's own, or the sweep that opened INFRA-2 was not slow. The
+	// sweep calls the runtime before it returns, so what the runtime recorded is read at once.
+	if calls := rig.replacementsOf(rig.pods["INFRA-1"]); len(calls) != 1 {
+		t.Fatalf("the slow sweep replaced the pod of INFRA-1 %d times, %d of its calls refused as no longer due, want one replacement",
+			len(calls), len(rig.rt.CallsOf("ReplacePodNotDue")))
 	}
-	rig.sweepUntilRounds("the slow sweep opened one and held the rest back", "INFRA-2")
+	rig.drifts("INFRA-1")
+	if got, want := rig.clock.Now().Sub(start), 115*time.Second; got != want {
+		t.Fatalf("the sweep's replacement held the clock for %s, want the minute to the sweep and the pod's fifty-five seconds, %s", got, want)
+	}
+	// The end of INFRA-1's round and the opening of INFRA-2 reach their claims through each
+	// machine's own queue, and the test waits for them without a sweep: a sweep at this clock is
+	// the next sweep below, and it opens INFRA-3.
+	rig.awaitRounds("the slow sweep opened one and held the rest back", "INFRA-2")
 
-	// Seventy seconds after the opening that slow sweep recorded, the next sweep opens one.
+	// Fifty-five seconds after the opening that slow sweep recorded, the next sweep opens one.
 	rig.tick()
-	rig.awaitRounds("the sweep seventy seconds after the slow sweep's opening", "INFRA-2", "INFRA-3")
+	rig.awaitRounds("the sweep fifty-five seconds after the slow sweep's opening", "INFRA-2", "INFRA-3")
 
-	// Fifty seconds after that opening, no sweep opens anything.
+	// Fifty seconds after that opening, no sweep opens anything. Each sweep's own record says so
+	// when the sweep returns: an opening for INFRA-4 is in a round there at once, and on the
+	// claims only once its post has landed.
 	rig.clock.advance(50 * time.Second)
-	rig.tick()
-	rig.tick()
+	for _, sweep := range []string{"the first", "the second"} {
+		rig.tick()
+		rig.wantPodUpdateRecord(sweep+" of two sweeps fifty seconds after the last opening", api.PodUpdateRounds{
+			Swept: true, RoundsPerMinute: new(1),
+			InRound:                  []string{"INFRA-2", "INFRA-3"},
+			WaitingOnRoundsPerMinute: []string{"INFRA-4"},
+		})
+	}
 	rig.awaitRounds("two sweeps fifty seconds after the last opening", "INFRA-2", "INFRA-3")
 
 	// A daemon that boots knows nothing of what the one before it opened, and opens one.

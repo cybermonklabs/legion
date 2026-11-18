@@ -10,11 +10,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -137,39 +137,55 @@ func TestChatRereadsTheTokenFileOnEveryCall(t *testing.T) {
 }
 
 // TestChatHandsEachDeltaOnAsItArrives: the content reaches onText in the model's own order, in
-// the pieces the model streamed, and the first piece arrives a pause before the turn ends, which
-// is what lets a reader see the answer while the model is still writing it.
+// the pieces the model streamed, and the first piece reaches its reader while the model is still
+// holding the rest, which is what lets a reader see the answer while the model is writing it.
 func TestChatHandsEachDeltaOnAsItArrives(t *testing.T) {
 	const answer = "Dispatch keeps the broadcast order on the issue itself."
-	const pause = 20 * time.Millisecond
-	model := goingtest.NewModel(t, goingtest.Reply{Text: answer, Chunk: 8, Pause: pause})
+	rest := make(chan struct{})
+	model := goingtest.NewModel(t, goingtest.Reply{Text: answer, Chunk: 8, HoldAfterFirstFrame: rest})
 	client := testClient(t, model, going.HTTPConfig{})
-	var deltas []string
-	var firstAt time.Duration
-	start := time.Now()
-	calls, err := client.Chat(t.Context(), testRequest(), func(delta string) error {
-		if len(deltas) == 0 {
-			firstAt = time.Since(start)
-		}
-		deltas = append(deltas, delta)
-		return nil
-	})
-	finishedAt := time.Since(start)
-	if err != nil {
-		t.Fatalf("Chat: %v", err)
+
+	deltas := make(chan string, 64)
+	type outcome struct {
+		calls []going.ToolCall
+		err   error
 	}
-	if len(calls) != 0 {
-		t.Errorf("tool calls = %+v, want none for a turn that answered", calls)
+	turn := make(chan outcome, 1)
+	go func() {
+		calls, err := client.Chat(t.Context(), testRequest(), func(delta string) error {
+			deltas <- delta
+			return nil
+		})
+		turn <- outcome{calls: calls, err: err}
+	}()
+
+	first := testwait.Receive(t, "the first delta, while the model holds the rest of the answer", deltas)
+	// The model is held after its first frame, so the turn is still open: a client that handed
+	// its reader the content only once the turn had ended would have returned nothing yet.
+	select {
+	case done := <-turn:
+		t.Fatalf("the turn ended (%+v, %v) before the model had written the rest of the answer", done.calls, done.err)
+	default:
 	}
-	if len(deltas) < 2 {
-		t.Fatalf("deltas = %q, want the answer in several pieces", deltas)
+	close(rest)
+
+	done := testwait.Receive(t, "the turn to end once the model wrote the rest", turn)
+	if done.err != nil {
+		t.Fatalf("Chat: %v", done.err)
 	}
-	if got := strings.Join(deltas, ""); got != answer {
+	if len(done.calls) != 0 {
+		t.Errorf("tool calls = %+v, want none for a turn that answered", done.calls)
+	}
+	close(deltas)
+	pieces := []string{first}
+	for delta := range deltas {
+		pieces = append(pieces, delta)
+	}
+	if len(pieces) < 2 {
+		t.Fatalf("deltas = %q, want the answer in several pieces", pieces)
+	}
+	if got := strings.Join(pieces, ""); got != answer {
 		t.Errorf("joined deltas = %q, want %q", got, answer)
-	}
-	if finishedAt-firstAt < pause {
-		t.Errorf("first delta arrived %s in, the turn ended %s in; want the first at least one %s pause before the end",
-			firstAt, finishedAt, pause)
 	}
 }
 
@@ -223,14 +239,23 @@ func TestChatRefusesANonSuccessStatus(t *testing.T) {
 }
 
 // TestChatEndsWithTheCallersContext: a model that never answers holds the response open, and the
-// call ends when the caller's own deadline does rather than waiting out the client's.
+// call ends when the caller's own context does rather than waiting out the client's.
 func TestChatEndsWithTheCallersContext(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
 	client := testClient(t, model, going.HTTPConfig{})
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if _, err := client.Chat(ctx, testRequest(), nil); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Chat error = %v, want the caller's deadline", err)
+	failed := make(chan error, 1)
+	go func() {
+		_, err := client.Chat(ctx, testRequest(), nil)
+		failed <- err
+	}()
+	// The model counts the call as it arrives and then holds its response open, so the cancel
+	// below lands while the client is waiting on it.
+	testwait.Eventually(t, "the model to take the call it never answers", func() bool { return model.Calls() == 1 })
+	cancel()
+	if err := testwait.Receive(t, "the call to end with its caller's context", failed); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Chat error = %v, want the caller's cancel", err)
 	}
 }
 

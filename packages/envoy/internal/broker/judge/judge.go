@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // runBudget is how long one run has, taken when the run starts (D9): the Dispatch phase,
@@ -148,6 +149,10 @@ type Options struct {
 	// would have stopped. It is the negative control of the judge's own checks and is for
 	// the broker's local stack alone (BROKER_JUDGE_TEST_SKIP_CHECKS).
 	SkipChecks bool
+	// Clock is what a run's bounds run on - runBudget, dispatchBound and the model call's
+	// modelBound: clock.Real when nil, and a test's clocktest.Fake, which ends a bound only when
+	// the test moves it there.
+	Clock clock.Clock
 }
 
 // Runner judges the pending requests a broker hands it. New takes the broker's serving
@@ -159,6 +164,9 @@ type Runner struct {
 
 // New is the runner for one broker. ctx is that broker's serving lifetime.
 func New(ctx context.Context, o Options) *Runner {
+	if o.Clock == nil {
+		o.Clock = clock.Real()
+	}
 	return &Runner{ctx: ctx, opts: o}
 }
 
@@ -172,7 +180,7 @@ func New(ctx context.Context, o Options) *Runner {
 // model call and one short transaction.
 func (r *Runner) Consider(p requests.PendingRequest) {
 	go func() {
-		ctx, cancel := context.WithTimeout(r.ctx, runBudget)
+		ctx, cancel := r.opts.Clock.WithTimeout(r.ctx, runBudget)
 		defer cancel()
 		r.consider(ctx, p)
 	}()
@@ -188,7 +196,7 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 	if firstFailure(checks) == nil || r.opts.SkipChecks {
 		if row.notPending = r.stillPending(ctx, p); row.notPending == "" {
 			row.asked = true
-			row.verdict, row.usage, row.raw, row.err = r.opts.Model.Ask(ctx, data)
+			row.verdict, row.usage, row.raw, row.err = r.opts.Model.Ask(ctx, r.opts.Clock, data)
 		}
 	}
 	r.write(ctx, p, row)
@@ -361,7 +369,7 @@ func (r *Runner) issue(ctx context.Context, p requests.PendingRequest, data *Dat
 		return false, "the request's signed reason names no Dispatch issue"
 	}
 	data.Issue.Key = key
-	readCtx, cancel := context.WithTimeout(ctx, dispatchBound)
+	readCtx, cancel := r.opts.Clock.WithTimeout(ctx, dispatchBound)
 	defer cancel()
 	issue, err := r.opts.Dispatch.Issue(readCtx, key)
 	switch {

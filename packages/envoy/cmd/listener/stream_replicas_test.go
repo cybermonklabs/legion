@@ -7,6 +7,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
@@ -60,9 +61,7 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 			cluster := testnats.StartCluster(t, 3)
 			js := cluster.JetStream(t)
 			deployed := bustest.DeployedThreeCopyStream(drift.Change)
-			if _, err := js.AddStream(&deployed); err != nil {
-				t.Fatalf("deploy the stream: %v", err)
-			}
+			cluster.CreateStream(t, deployed)
 			before := testnats.AwaitSettledStream(t, js, bus.Stream).Config
 
 			startListenerStream(t, listenerSettings(t, cluster.URL(), map[string]string{
@@ -90,7 +89,7 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 	// a moment after the stream is created that member can be one whose applied metadata does
 	// not hold the new stream's assignment yet, which is answered "stream not found". The start
 	// waits that out, so the test does; with nothing lagging it binds on the first attempt.
-	if _, err := bindListenerDurable(t.Context(), client, durable, func(*natsgo.Msg) {},
+	if _, err := bindListenerDurable(t.Context(), clock.Real(), client, durable, func(*natsgo.Msg) {},
 		listenerRigLogger(t, "durable bind"), durableBindInterval, durableBindDeadline); err != nil {
 		t.Fatalf("create and bind the listener's durable: %v", err)
 	}

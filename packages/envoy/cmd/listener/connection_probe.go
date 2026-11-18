@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
@@ -43,7 +44,8 @@ const connectionProbeTimeout = 1 * time.Second
 // (bus.DeliverSubject), the subject both plugins subscribe before they register and on which the
 // session's owning listener relays its consumer's messages, and reports whether the session is
 // connected. The request is one core NATS request bounded by connectionProbeTimeout within ctx
-// (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply inbox of
+// (bus.Client.RequestCore), armed on clk, the listener's own clock (listenerDeps.clk), as the
+// route's other bounds are, carrying bus.ConnectionProbeHeader and no body, on a reply inbox of
 // its own, so its answer never reaches the relay's reply handler.
 //
 // Only NATS's no-responders status (nats.ErrNoResponders) is stopped: no subscription on this
@@ -55,8 +57,8 @@ const connectionProbeTimeout = 1 * time.Second
 // connected too, and logged: a publish this listener's own grant denies (bus.ErrPublishDenied) and
 // a connection that is reconnecting say something about this listener, not about the session, and
 // a listener that cannot ask must not call every session of the deployment stopped.
-func probeSessionConnection(ctx context.Context, client *bus.Client, sessionID string, logger *logging.Logger) bool {
-	probeCtx, cancel := context.WithTimeout(ctx, connectionProbeTimeout)
+func probeSessionConnection(ctx context.Context, clk clock.Clock, client *bus.Client, sessionID string, logger *logging.Logger) bool {
+	probeCtx, cancel := clk.WithTimeout(ctx, connectionProbeTimeout)
 	defer cancel()
 	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), nats.Header{bus.ConnectionProbeHeader: []string{"1"}})
 	switch {

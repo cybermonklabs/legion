@@ -265,9 +265,9 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
-	if _, ok := ctx.Deadline(); !ok {
+	if _, ok := timeLeft(ctx); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
+		ctx, cancel = c.armBound(ctx, storedMessageWait)
 		defer cancel()
 	}
 	if err := c.ensureConnWithContext(ctx); err != nil {
@@ -305,7 +305,8 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
 // confirm for another reason still waits for its reply, and returns that reason if ctx ends
 // first. A no-responders status reply is nats.ErrNoResponders, as requestConfirmed maps it, and a
-// ctx with no deadline waits storedMessageWait.
+// ctx with no deadline waits storedMessageWait, armed on the client's clock as requestConfirmed
+// arms it (armBound).
 //
 // The reply is taken over a channel subscription of this request's own, not conn.SubscribeSync
 // as requestConfirmed takes it: that call sizes its channel at nats.Options.SubChanLen, 65,536
@@ -322,9 +323,9 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
 func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
-	if _, ok := ctx.Deadline(); !ok {
+	if _, ok := timeLeft(ctx); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
+		ctx, cancel = c.armBound(ctx, storedMessageWait)
 		defer cancel()
 	}
 	if err := c.ensureConnWithContext(ctx); err != nil {

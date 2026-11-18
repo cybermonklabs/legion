@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -116,8 +115,9 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	admission := admit.New(records, engine, 1, sweepProject, log)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: sweepProject, bootID: "test-boot", log: log, entrySweep: 10 * time.Millisecond,
+		dispatchProject: sweepProject, bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	swept := func() (n int) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `select count(*) from processed_events
@@ -138,7 +138,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
-	testwait.Eventually(t, "the sweep to send the entry's work", func() bool { return len(sweptStarts(t, pool, member.Key)) == 1 })
+	passes.until(t, passEntrySweep, "the sweep to send the entry's work", func() bool { return len(sweptStarts(t, pool, member.Key)) == 1 })
 	first := sweptStarts(t, pool, member.Key)[0]
 	stop()
 	<-done
@@ -166,19 +166,13 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 }
 
 // The sweep is what sends a role the work its entry names when no fact of the project arrives,
-// so its period is the longest such a role waits, and a daemon with no override must sweep at
-// least once a minute. Every other test of the sweep shortens the period, so this one reads the
-// choice tickEntrySweep makes (entrySweepPeriod) with no override, as the shipped binary runs
-// it, rather than the constant behind it; and with an override, which is how every other test
-// and the live proof reach the sweep at all.
-func TestTheEntrySweepConvergesAtLeastEveryMinuteWithNoOverride(t *testing.T) {
-	if got := entrySweepPeriod(0); got <= 0 || got > time.Minute {
-		t.Fatalf("the entry sweep's period with no override = %s, want more than zero and at most %s: a role behind its entry would wait longer than a minute for its work",
-			got, time.Minute)
-	}
-	const override = 10 * time.Millisecond
-	if got := entrySweepPeriod(override); got != override {
-		t.Fatalf("the entry sweep's period with an override of %s = %s, want the override as given", override, got)
+// so its period is the longest such a role waits, and the daemon must sweep at least once a
+// minute. Every other test of the sweep runs its pass itself (passEntrySweep), so this one reads
+// the period the shipped binary sweeps at.
+func TestTheEntrySweepConvergesAtLeastEveryMinute(t *testing.T) {
+	if entrySweepInterval <= 0 || entrySweepInterval > time.Minute {
+		t.Fatalf("the entry sweep's period = %s, want more than zero and at most %s: a role behind its entry would wait longer than a minute for its work",
+			entrySweepInterval, time.Minute)
 	}
 }
 
@@ -249,7 +243,7 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 	admission := admit.New(records, engine, 1, sweepProject, log)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: sweepProject, bootID: "test-boot", log: log, entrySweep: 10 * time.Millisecond,
+		dispatchProject: sweepProject, bootID: "test-boot", log: log,
 	}
 	swept := func() (n int) {
 		t.Helper()
@@ -371,7 +365,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 	admission := admit.New(records, engine, 1, sweepProject, log)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: sweepProject, bootID: "test-boot", log: log, entrySweep: 10 * time.Millisecond,
+		dispatchProject: sweepProject, bootID: "test-boot", log: log,
 	}
 	swept := func() (n int) {
 		t.Helper()

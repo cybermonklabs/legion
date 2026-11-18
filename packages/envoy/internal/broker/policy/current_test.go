@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
@@ -352,23 +353,17 @@ func heldCurrent(t *testing.T) *policy.Current {
 	return cur
 }
 
-// rereadWithin runs RefreshOne(ctx, name) and answers its error, failing t when it has not
-// returned within a second: long enough for any answer that waits on nothing, far shorter than a
-// held reload.
-func rereadWithin(t *testing.T, cur *policy.Current, ctx context.Context, name string) error {
+// reread runs RefreshOne(ctx, name) on a goroutine of its own and answers its error, so a
+// RefreshOne that waits on the writer lock a reload holds fails the test naming that wait rather
+// than returning an answer the caller reads as prompt.
+func reread(t *testing.T, cur *policy.Current, ctx context.Context, name string) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {
 		_, err := cur.RefreshOne(ctx, name)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(time.Second):
-		t.Fatalf("RefreshOne(%s) waited on the writer lock a reload holds", name)
-		return nil
-	}
+	return testwait.Receive(t, "RefreshOne("+name+") to answer rather than wait on the writer lock a reload holds", done)
 }
 
 // TestARereadOfANameNoSecretCanCarryWaitsOnNoReload pins that RefreshOne refuses such a name
@@ -377,7 +372,7 @@ func rereadWithin(t *testing.T, cur *policy.Current, ctx context.Context, name s
 func TestARereadOfANameNoSecretCanCarryWaitsOnNoReload(t *testing.T) {
 	cur := heldCurrent(t)
 	for _, name := range []string{"not a secret name", "A" + strings.Repeat("B", 512-len(policytest.Prefix))} {
-		if err := rereadWithin(t, cur, context.Background(), name); !errors.Is(err, policy.ErrNameInvalid) {
+		if err := reread(t, cur, context.Background(), name); !errors.Is(err, policy.ErrNameInvalid) {
 			t.Fatalf("RefreshOne(%.20s...) = %v, want ErrNameInvalid", name, err)
 		}
 	}
@@ -387,17 +382,34 @@ func TestARereadOfANameNoSecretCanCarryWaitsOnNoReload(t *testing.T) {
 // a reload holds ends with its caller's context: one already done returns its error without
 // waiting, and one whose deadline passes while it waits returns then.
 func TestARereadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
-	cur := heldCurrent(t)
-	done, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := rereadWithin(t, cur, done, "NEW_KEY"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("RefreshOne with its context done = %v, want context.Canceled", err)
-	}
-	expiring, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := rereadWithin(t, cur, expiring, "NEW_KEY"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("RefreshOne whose deadline passed while it waited = %v, want context.DeadlineExceeded", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		cur := heldCurrent(t)
+		// A context already done is answered by lock's own first check, before it waits at
+		// all, so this call returns on this goroutine: one that waited would leave every
+		// goroutine of the bubble blocked, which synctest reports as the deadlock it is.
+		done, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := cur.RefreshOne(done, "NEW_KEY"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("RefreshOne with its context done = %v, want context.Canceled", err)
+		}
+
+		expiring, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		answered := make(chan error, 1)
+		go func() {
+			_, err := cur.RefreshOne(expiring, "NEW_KEY")
+			answered <- err
+		}()
+		// Waiting on the writer lock the held reload owns: synctest.Wait returns once every
+		// other goroutine of the bubble is durably blocked, so the deadline below passes
+		// while this call waits, which is the path this half is about rather than lock's
+		// check of a context already done.
+		synctest.Wait()
+		time.Sleep(time.Minute)
+		if err := <-answered; !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RefreshOne whose deadline passed while it waited = %v, want context.DeadlineExceeded", err)
+		}
+	})
 }
 
 // abandonedRead is a secrets.Local whose GetSecretValue, once hold arms it, answers the reads hold
@@ -443,55 +455,59 @@ func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.G
 // down - records the reads it finished before then, waiting for the writer lock however that
 // context ends, since no caller waits on a reload: here a value the decoder refuses, with its one
 // RefusedMessage line. The read the context cut short records nothing, and the next load reads
-// that version alone again, since the version the reload finished reading is decoded.
+// that version alone again, since the version the reload finished reading is decoded. It runs in
+// a synctest bubble, whose clock moves only once every goroutine of it is blocked, so the reload's
+// deadline passes while its second read waits for it and never during its first.
 //
 // The named revert: record nothing once the reload's context has ended (answer at the first read
 // ctx cut short, or wait for the writer lock on ctx); FIRST_KEY is then still served after the
 // reload and this test fails.
 func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
-	local := secrets.NewLocal(
-		typeSecret("FIRST_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
-		typeSecret("SECOND_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
-	)
-	store := &abandonedRead{Local: local}
-	cur, registry, logged := bootThrough(t, local, store)
-	gained := logChecker(logged)
-	if got := gained(); got != "" {
-		t.Fatalf("the first load logged:\n%s", got)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		local := secrets.NewLocal(
+			typeSecret("FIRST_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+			typeSecret("SECOND_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+		)
+		store := &abandonedRead{Local: local}
+		cur, registry, logged := bootThrough(t, local, store)
+		gained := logChecker(logged)
+		if got := gained(); got != "" {
+			t.Fatalf("the first load logged:\n%s", got)
+		}
 
-	// A new version of each that no decoder reads. The reload reads them in name order: FIRST_KEY's
-	// answers, and its context ends during SECOND_KEY's.
-	local.Put(typeSecret("FIRST_KEY", policy.TypeGitHubApp, undecodable))
-	local.Put(typeSecret("SECOND_KEY", policy.TypeGitHubApp, undecodable))
-	store.hold(1)
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	err := cur.Refresh(ctx)
-	store.release()
-	if err != nil {
-		t.Fatalf("a reload whose context ended during its value reads = %v, want nil: a value read fails no reload", err)
-	}
-	if n := valueReads(t, registry); n != 4 {
-		t.Fatalf("the policy has read %d values; want 4, the boot's two and the reload's two", n)
-	}
-	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
-	if _, served := cur.Get().Secrets["SECOND_KEY"]; !served {
-		t.Fatal("the reload refused SECOND_KEY, whose value read its context cut short")
-	}
-	if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
-		t.Fatalf("the reload whose context ended during its second value read logged:\n%s\nwant:\n%s", got, want)
-	}
+		// A new version of each that no decoder reads. The reload reads them in name order:
+		// FIRST_KEY's answers, and its context ends during SECOND_KEY's.
+		local.Put(typeSecret("FIRST_KEY", policy.TypeGitHubApp, undecodable))
+		local.Put(typeSecret("SECOND_KEY", policy.TypeGitHubApp, undecodable))
+		store.hold(1)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		err := cur.Refresh(ctx)
+		store.release()
+		if err != nil {
+			t.Fatalf("a reload whose context ended during its value reads = %v, want nil: a value read fails no reload", err)
+		}
+		if n := valueReads(t, registry); n != 4 {
+			t.Fatalf("the policy has read %d values; want 4, the boot's two and the reload's two", n)
+		}
+		refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
+		if _, served := cur.Get().Secrets["SECOND_KEY"]; !served {
+			t.Fatal("the reload refused SECOND_KEY, whose value read its context cut short")
+		}
+		if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+			t.Fatalf("the reload whose context ended during its second value read logged:\n%s\nwant:\n%s", got, want)
+		}
 
-	refresh(t, cur)
-	if n := valueReads(t, registry); n != 5 {
-		t.Fatalf("the policy has read %d values; want 5, the next load reading SECOND_KEY's version alone again", n)
-	}
-	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
-	refusedAs(t, cur.Get(), "SECOND_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
-		t.Fatalf("the next load logged:\n%s\nwant:\n%s", got, want)
-	}
+		refresh(t, cur)
+		if n := valueReads(t, registry); n != 5 {
+			t.Fatalf("the policy has read %d values; want 5, the next load reading SECOND_KEY's version alone again", n)
+		}
+		refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
+		refusedAs(t, cur.Get(), "SECOND_KEY", policy.ReasonValueMalformed)
+		if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+			t.Fatalf("the next load logged:\n%s\nwant:\n%s", got, want)
+		}
+	})
 }
 
 // TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError: a reread that lists a
@@ -501,7 +517,9 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 // ErrValueUnchecked wrapping its context's error, not the Lookup of a reread that did, so the
 // reread route answers 503 REQUEST_ENDED rather than a 200 for a value nobody checked, and can
 // tell it from a reread that merged nothing. It records nothing: it writes no line, the secret is
-// still served, and the next load reads that version again and refuses it.
+// still served, and the next load reads that version again and refuses it. Each half runs in a
+// synctest bubble, whose clock moves only once every goroutine of it is blocked, so the reread's
+// deadline passes at the step the half is about and at no other.
 //
 // The named revert: RefreshOne drops readValues' answer (c.readValues(ctx, ctx, reads, false),
 // then return lk, nil); each reread then answers a nil error and this test fails.
@@ -533,72 +551,83 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 	}
 
 	t.Run("while its value read is out", func(t *testing.T) {
-		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-		store := &abandonedRead{Local: local}
-		cur, registry, logged := bootThrough(t, local, store)
-		gained := logChecker(logged)
-		if got := gained(); got != "" {
-			t.Fatalf("the first load logged:\n%s", got)
-		}
-		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
-		store.hold(0)
-		ctx, cancel := context.WithTimeout(context.Background(), deadline)
-		defer cancel()
-		_, err := cur.RefreshOne(ctx, "APP_KEY")
-		store.release()
-		endedUnrecorded(t, cur, registry, gained, err, func() { refresh(t, cur) })
+		synctest.Test(t, func(t *testing.T) {
+			local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+			store := &abandonedRead{Local: local}
+			cur, registry, logged := bootThrough(t, local, store)
+			gained := logChecker(logged)
+			if got := gained(); got != "" {
+				t.Fatalf("the first load logged:\n%s", got)
+			}
+			local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
+			store.hold(0)
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			_, err := cur.RefreshOne(ctx, "APP_KEY")
+			store.release()
+			endedUnrecorded(t, cur, registry, gained, err, func() { refresh(t, cur) })
+		})
 	})
 
 	t.Run("while it waits for the writer lock", func(t *testing.T) {
-		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-		store := &lockedOutRead{Local: local}
-		cur, registry, logged := bootThrough(t, local, store)
-		gained := logChecker(logged)
-		if got := gained(); got != "" {
-			t.Fatalf("the first load logged:\n%s", got)
-		}
-		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
-		readEntered, readRelease := store.armRead()
-		ctx, cancel := context.WithTimeout(context.Background(), deadline)
-		defer cancel()
-		rereadDone := make(chan struct{})
-		var rereadErr error
-		go func() {
-			defer close(rereadDone)
-			_, rereadErr = cur.RefreshOne(ctx, "APP_KEY")
-		}()
-		<-readEntered
-
-		// A reload whose listing hangs takes the writer lock while the reread's value read is out.
-		listEntered, listRelease := store.holdList()
-		reloadDone := make(chan struct{})
-		var reloadErr error
-		go func() {
-			defer close(reloadDone)
-			reloadErr = cur.Refresh(context.Background())
-		}()
-		<-listEntered
-		released := false
-		letGo := func() {
-			if !released {
-				released = true
-				close(listRelease)
+		synctest.Test(t, func(t *testing.T) {
+			local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+			store := &lockedOutRead{Local: local}
+			cur, registry, logged := bootThrough(t, local, store)
+			gained := logChecker(logged)
+			if got := gained(); got != "" {
+				t.Fatalf("the first load logged:\n%s", got)
 			}
-		}
-		t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+			local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
+			readEntered, readRelease := store.armRead()
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
+			defer cancel()
+			rereadDone := make(chan struct{})
+			var rereadErr error
+			go func() {
+				defer close(rereadDone)
+				_, rereadErr = cur.RefreshOne(ctx, "APP_KEY")
+			}()
+			<-readEntered
 
-		close(readRelease)
-		select {
-		case <-rereadDone:
-		case <-time.After(deadline + 1500*time.Millisecond):
-			t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits on the writer lock a reload holds", deadline)
-		}
-		endedUnrecorded(t, cur, registry, gained, rereadErr, func() {
-			letGo()
-			<-reloadDone
-			if reloadErr != nil {
-				t.Fatalf("Refresh: %v", reloadErr)
+			// A reload whose listing hangs takes the writer lock while the reread's value read
+			// is out.
+			listEntered, listRelease := store.holdList()
+			reloadDone := make(chan struct{})
+			var reloadErr error
+			go func() {
+				defer close(reloadDone)
+				reloadErr = cur.Refresh(context.Background())
+			}()
+			<-listEntered
+			released := false
+			letGo := func() {
+				if !released {
+					released = true
+					close(listRelease)
+				}
 			}
+			t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+
+			// The reread's value read answers and it waits for the writer lock the reload holds:
+			// synctest.Wait returns once every other goroutine of the bubble is durably blocked,
+			// so the deadline passes while it waits there, and the second Wait lets it answer.
+			close(readRelease)
+			synctest.Wait()
+			time.Sleep(deadline)
+			synctest.Wait()
+			select {
+			case <-rereadDone:
+			default:
+				t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits on the writer lock a reload holds once that deadline has passed", deadline)
+			}
+			endedUnrecorded(t, cur, registry, gained, rereadErr, func() {
+				letGo()
+				<-reloadDone
+				if reloadErr != nil {
+					t.Fatalf("Refresh: %v", reloadErr)
+				}
+			})
 		})
 	})
 }
@@ -679,7 +708,9 @@ func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
 		const failed = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": context deadline exceeded\"\n"
 		await(t, func() bool { return strings.Contains(logged.String(), failed) })
 		lister.unhang()
-		if err := rereadWithin(t, cur, context.Background(), "NEW_KEY"); err != nil {
+		// On this goroutine: a RefreshOne still waiting on the writer lock the hung reload
+		// held would leave every goroutine of the bubble blocked, which synctest reports.
+		if _, err := cur.RefreshOne(context.Background(), "NEW_KEY"); err != nil {
 			t.Fatalf("RefreshOne after the hung reload gave up = %v", err)
 		}
 	})

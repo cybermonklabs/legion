@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener built before the KV key check registered sessions under ids this one refuses to write
@@ -19,7 +20,7 @@ import (
 // one deletes it whether or not this build can read its key.
 func TestASessionRegistryOverKeysAnEarlierListenerStoredServesAndDeletesThem(t *testing.T) {
 	client := setupNATS(t)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -43,8 +44,7 @@ func TestASessionRegistryOverKeysAnEarlierListenerStoredServesAndDeletesThem(t *
 		t.Fatalf("open over the earlier listener's keys: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the cache: %v", err)
 	}

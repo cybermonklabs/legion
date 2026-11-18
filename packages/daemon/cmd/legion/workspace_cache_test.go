@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // cmdCacheToken is the bearer token the cache command's tests hand the cache, and the fetch's
@@ -185,23 +186,16 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
 	}()
 
-	address := ""
-	deadline := time.Now().Add(winitWait)
-	for address == "" {
+	address := testwait.Until(t, "the cache to say where it serves", func() (string, bool) {
 		for _, line := range strings.Split(stdout.String(), "\n") {
 			if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
-				address = found
+				return found, true
 			}
 		}
-		if address == "" {
-			if time.Now().After(deadline) {
-				t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	var health repocache.Health
-	for !health.Ready {
+		return fmt.Sprintf("stdout %q, stderr %q", stdout.String(), stderr.String()), false
+	})
+	health := testwait.Until(t, "the cache to become ready", func() (repocache.Health, bool) {
+		var health repocache.Health
 		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -215,11 +209,8 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return health, health.Ready
+	})
 	if want := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "main"); health.Head != want || health.Repo != winitRepo {
 		t.Fatalf("/healthz = %+v, want acme/widgets at the remote's main %s", health, want)
 	}
@@ -237,13 +228,8 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	holdsNoToken(t, v.root, "while the cache serves")
 
 	cancel()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
-		}
-	case <-time.After(winitWait):
-		t.Fatal("cache did not stop with its context")
+	if code := testwait.Receive(t, "the cache to stop with its context", exited); code != 0 {
+		t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
 	}
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
 		t.Fatalf("TMPDIR holds %v (%v) once the cache stopped, want its credential gone", entries, err)

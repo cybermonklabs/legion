@@ -28,6 +28,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -44,7 +45,7 @@ import (
 // connection went away, given up on at the rewatch that follows the reconnect: kvCall) and a
 // JetStream 503 while a server restarts.
 // A caller that queues behind a write in progress waits for that write and then its own, so a
-// Record can take two budgets, and recordWait holds it to that, every KV call included. The webhook
+// Record can take two budgets, and RecordWait holds it to that, every KV call included. The webhook
 // handler records a check_run once for each PR it lists, one after another, under one context for
 // the delivery (webhook.GitHubHandler), so a delivery listing k PRs can take up to 2k budgets
 // unless that context ends first; that needs a write to lose its compare-and-swap for its whole
@@ -54,13 +55,16 @@ import (
 const recordBudget = 2 * time.Second
 const recordBackoffCap = 50 * time.Millisecond
 
-// recordWait bounds one Record or RecordSuite as a whole: the wait for a write it queues behind and
+// RecordWait bounds one Record or RecordSuite as a whole: the wait for a write it queues behind and
 // its own write, two budgets (update). nats.go's KV calls take no context and wait up to the
 // JetStream MaxWait (10 s, Open), so each is waited for only until this wait, or the caller's
 // context, ends (kvCall): a silent bus fails the record then rather than holding it, and every
 // caller queued behind it, for the MaxWait. Within that wait a call is still waited for past its
 // write's own budget, so a server that stalls for less and then answers loses nothing.
-const recordWait = 2 * recordBudget
+//
+// It is exported because a caller's own test asserts the deadline a record arms on the store's
+// clock (cmd/listener's frozen-bus rows) rather than keeping a copy of this number.
+const RecordWait = 2 * recordBudget
 
 // checkRunID is a GitHub check-run id. Records written before ids were
 // validated at ingress carry it as a decimal string; new records carry a
@@ -315,11 +319,20 @@ type Store struct {
 
 	// logger writes the store's JSON lines, which an alarm can count (write).
 	logger *logging.Logger
+
+	// clock times every wait the store makes of its own: the record wait of a Record or
+	// RecordSuite (update), each write's retry budget and the backoff between its attempts
+	// (write, casState) and the summary loop's grid (StartSummaryLoop). It is clock.Real()
+	// unless WithClock names another, so a test asserting what a wait of the store's ends, or
+	// when a loop's pass runs, hands a clocktest.Fake and moves it rather than waiting it out.
+	// What nats.go waits for itself (the JetStream MaxWait) is not on it.
+	clock clock.Clock
 }
 
 type openOpts struct {
 	replicas int
 	ttl      time.Duration
+	clock    clock.Clock
 }
 
 // Option configures Open.
@@ -346,11 +359,20 @@ func WithTTL(d time.Duration) Option {
 	}
 }
 
+// WithClock sets the clock the store's own waits are timed on, clock.Real() by default (Store.clock).
+func WithClock(c clock.Clock) Option {
+	return func(o *openOpts) {
+		if c != nil {
+			o.clock = c
+		}
+	}
+}
+
 // Open connects (or creates) the CI-state KV bucket and starts the WatchAll
 // cache. Mirrors store.Open: the cache is populated asynchronously by watch()
 // so Open never blocks on per-key Gets. The store and its cache watcher log through logger.
 func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
-	o := openOpts{replicas: 1, ttl: 7 * 24 * time.Hour}
+	o := openOpts{replicas: 1, ttl: 7 * 24 * time.Hour, clock: clock.Real()}
 	for _, f := range opts {
 		f(&o)
 	}
@@ -372,6 +394,7 @@ func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error)
 		rewatched:   make(chan struct{}),
 		changedWake: make(chan struct{}, 1),
 		logger:      logger,
+		clock:       o.clock,
 	}
 	s.cache = newCICopy(s)
 	s.watcher = kvwatch.New("cistore", kv, ciCache{s}, kvwatch.WithLogger(logger.Slog()))
@@ -423,6 +446,7 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 		combiners: map[string]*keyCombiner{},
 		rewatched: make(chan struct{}),
 		logger:    logger,
+		clock:     clock.Real(),
 	}
 	// One handle for the store's life: nothing moves it, since a writer has no watcher to
 	// rewatch. The cache stays its zero value, since nothing a writer calls reads or writes it.
@@ -733,7 +757,7 @@ func (s *Store) record(ctx context.Context, observation contracts.CIObservation)
 		}
 		st.Checks[key] = next
 		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
+		st.LastEventAt = s.clock.Now().UnixMilli()
 		return true
 	})
 }
@@ -766,7 +790,7 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 		}
 		st.Suites[observation.SuiteID] = next
 		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
+		st.LastEventAt = s.clock.Now().UnixMilli()
 		return true
 	})
 }
@@ -840,7 +864,7 @@ func casBackoff(attempt int) time.Duration {
 // again.
 func (s *Store) casState(key string, apply func(st *State) (ok bool, err error)) (State, bool, error) {
 	kv, epoch := s.watcher.Handle()
-	deadline := time.Now().Add(recordBudget)
+	deadline := s.clock.Now().Add(recordBudget)
 	for attempt := 0; ; attempt++ {
 		entry, err := kv.Get(key)
 		if err != nil {
@@ -875,10 +899,10 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if !bus.IsCASConflict(err) {
 			return State{}, false, err
 		}
-		if time.Now().After(deadline) {
+		if s.clock.Now().After(deadline) {
 			return State{}, false, errors.New("cistore: state transition exceeded CAS budget")
 		}
-		time.Sleep(casBackoff(attempt))
+		_ = s.clock.Sleep(context.Background(), casBackoff(attempt))
 	}
 }
 
@@ -896,7 +920,7 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 		state.Claim = &SettlementClaim{
 			Hash:       expectedHash,
 			Generation: expectedGeneration,
-			ClaimedAt:  time.Now().UnixMilli(),
+			ClaimedAt:  s.clock.Now().UnixMilli(),
 		}
 		return true, nil
 	})

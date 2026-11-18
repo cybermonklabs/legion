@@ -146,15 +146,11 @@ func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 		_, err := store.AdmitClaim(ctx, child)
 		admitted <- err
 	}()
-	select {
-	case err := <-admitted:
-		t.Fatalf("the start did not wait for the reservation's serializer: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
+	awaitSerializerWaiter(t, store, "the start", admitted)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-admitted; !errors.Is(err, treelifecycle.ErrCleanupReserved) || !errors.Is(err, wait.ErrWaiting) {
+	if err := testwait.Receive(t, "the start's answer once the reservation committed", admitted); !errors.Is(err, treelifecycle.ErrCleanupReserved) || !errors.Is(err, wait.ErrWaiting) {
 		t.Fatalf("start after the reservation committed = %v, want the reservation's wait", err)
 	}
 	var count int
@@ -278,27 +274,37 @@ func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func()
 	}
 	done := make(chan error, 1)
 	go func() { done <- step() }()
-	if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
-		var waiting int
-		if err := store.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		return waiting > 0
-	}) {
-		t.Fatalf("the cleanup step never waited for the serializer (it returned %v)", <-done)
-	}
-	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if _, err := fact.Exec(lockCtx, lock, rootIssue); err != nil {
+	awaitSerializerWaiter(t, store, "the cleanup step", done)
+	if _, err := fact.Exec(testwait.Context(t), lock, rootIssue); err != nil {
 		t.Fatalf("the fact transaction could not lock the row behind the waiting cleanup step: %v", err)
 	}
 	if err := fact.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
+	if err := testwait.Receive(t, "the cleanup step's answer once the fact committed", done); err != nil {
 		t.Fatalf("cleanup step after the fact committed: %v", err)
 	}
+}
+
+// awaitSerializerWaiter waits until a session of the test's database waits on an advisory lock:
+// step queued on the serializer (treelifecycle.Serialize), which the test holds in a transaction
+// of its own. step reports its answer on done; an answer before any session waits there means step
+// did not wait for the serializer, and fails the test at once naming that answer.
+func awaitSerializerWaiter(t *testing.T, store *Store, step string, done <-chan error) {
+	t.Helper()
+	testwait.Eventually(t, step+" to wait for the serializer", func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("%s answered (%v) before it waited for the serializer", step, err)
+		default:
+		}
+		var waiting int
+		if err := store.Pool().QueryRow(context.Background(), `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		return waiting > 0
+	})
 }
 
 // IssueSandboxHome is the tree an issue's Sandbox belongs to now, and only while the issue is in that

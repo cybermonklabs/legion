@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func TestTheRegistrationDeadlineRetiresALiveUnregisteredProcess(t *testing.T) {
@@ -107,11 +108,7 @@ func TestAHelloOrRegistrationAtALaunchThatRecordsNoProcessPromotesNothing(t *tes
 				stopping, stop := context.WithCancel(h.ctx)
 				launched := make(chan error, 1)
 				go func() { launched <- h.m.Handle(stopping, RequestSpawn{Claim: testToken}) }()
-				select {
-				case <-gated.entered:
-				case <-time.After(5 * time.Second):
-					t.Fatal("the launch never reached the runtime")
-				}
+				testwait.Receive(t, "the launch to reach the runtime", gated.entered)
 				// The process the launch started says hello and registers while the launch still holds
 				// the claim, waiting on the runtime's answer; then the daemon stops.
 				helloed, registered := make(chan error, 1), make(chan error, 1)

@@ -99,7 +99,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/docker" \
     "$root/.github/actions/pull-test-images" \
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
-    "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
+    "$root/packages/daemon/docker" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
@@ -195,8 +195,7 @@ FROM $REGISTRY@$BUN_SLIM AS plugin
 RUN bun install
 YAML
   local go_file
-  for go_file in packages/daemon/internal/testnats/nats.go \
-    packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
+  for go_file in packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
     packages/envoy/internal/tests3/seaweedfs.go; do
     cat > "$root/$go_file" <<YAML
 package testimage
@@ -210,6 +209,9 @@ export { NATS_IMAGE };
 YAML
   cat > "$root/scripts/e2e/lib/nats-stream.test.ts" <<YAML
 docker("run", "--rm", "$REGISTRY@$NATS", "-js");
+YAML
+  cat > "$root/scripts/e2e/lib/containers.test.ts" <<YAML
+const natsImage = "$REGISTRY@$NATS";
 YAML
   cat > "$root/packages/dispatch/e2e/visual-run.sh" <<YAML
 #!/bin/sh
@@ -753,6 +755,18 @@ root=$(fixture opaque-docker)
 cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
 #!/usr/bin/env bash
 docker run -d --name pg "$PG_IMAGE" >/dev/null
+YAML
+run_check tree "$root"
+check "a variable from nowhere fails" "$(is "$status" 1)"
+check "says what to do with it" "$(contains "$out" 'add the variable that holds it to IMAGE_FROM')"
+
+echo "case: a lib/containers.sh start whose image this check cannot read"
+# start_postgres_container and start_nats_container run \`docker run\` on the image after their
+# \`--\`, so a call of either is a docker command that fetches that image.
+root=$(fixture opaque-container-start)
+cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
+#!/usr/bin/env bash
+start_postgres_container pg pg_sockets --cpus 2 --memory 2g -- "$PG_IMAGE"
 YAML
 run_check tree "$root"
 check "a variable from nowhere fails" "$(is "$status" 1)"

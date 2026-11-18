@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -327,12 +326,10 @@ func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeT
 				return owner.Connected() && consumers.client.Connected()
 			})
 			var state sessionStreamState
-			if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+			testwait.Until(t, "the stream to be read after the restart", func() (error, bool) {
 				state, err = consumers.streamState(ctx)
-				return err == nil
-			}) {
-				t.Fatalf("read the stream after the restart: %v", err)
-			}
+				return err, err == nil
+			})
 			if state.lastSeq != 0 {
 				t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 			}

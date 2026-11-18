@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -19,12 +20,13 @@ import (
 // and GitHub's spelling of the repository before the boot subscribes to any repository's events,
 // reading GitHub and Dispatch outside every fact transaction: fillRepositories fills the records
 // written before the record carried its repository, and nameRepositories the records written
-// before it carried GitHub's spelling.
-func backfillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
-	if err := fillRepositories(ctx, pool, records, client, project, stateDir, named, renames, log); err != nil {
+// before it carried GitHub's spelling. Each read of GitHub is bounded, and waited out, on clk
+// (backfillRead).
+func backfillRepositories(ctx context.Context, clk clock.Clock, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+	if err := fillRepositories(ctx, clk, pool, records, client, project, stateDir, named, renames, log); err != nil {
 		return err
 	}
-	return nameRepositories(ctx, pool, records, project, named, renames, log)
+	return nameRepositories(ctx, clk, pool, records, project, named, renames, log)
 }
 
 // fillRepositories fills every record of project written before the record carried its
@@ -60,9 +62,9 @@ func backfillRepositories(ctx context.Context, pool *store.Pool, records record.
 // now publishes under the name it moved to still reach it.
 //
 // The one exception is GitHub's rate limit, or a read GitHub does not answer: backfillRead waits
-// it out and reads again until GitHub answers, so the boot waits rather than exits, and every record
-// is filled.
-func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+// it out on clk and reads again until GitHub answers, so the boot waits rather than exits, and
+// every record is filled.
+func fillRepositories(ctx context.Context, clk clock.Clock, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -116,7 +118,7 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		if err != nil {
 			return err
 		}
-		read, err := backfillRead(ctx, named, repo, issue.Key, log)
+		read, err := backfillRead(ctx, clk, named, repo, issue.Key, log)
 		if err != nil {
 			return fmt.Errorf("fill the repository of %s: %w", issue.Key, err)
 		}
@@ -235,9 +237,9 @@ func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Rep
 // go on.
 //
 // The one exception is GitHub's rate limit, or a read GitHub does not answer: backfillRead waits
-// it out and reads again until GitHub answers, so the boot waits rather than exits, and every record
-// is named.
-func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+// it out on clk and reads again until GitHub answers, so the boot waits rather than exits, and
+// every record is named.
+func nameRepositories(ctx context.Context, clk clock.Clock, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unnamed []record.Issue
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
@@ -252,7 +254,7 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		if err != nil {
 			return err
 		}
-		read, err := backfillRead(ctx, named, repo, issue.Key, log)
+		read, err := backfillRead(ctx, clk, named, repo, issue.Key, log)
 		if err != nil {
 			return fmt.Errorf("name the repository of %s: %w", issue.Key, err)
 		}

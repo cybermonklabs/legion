@@ -2,9 +2,9 @@ package supervise
 
 import (
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // View never waits on a decision in flight, where Claim does: while a relaunch waits in the
@@ -26,21 +26,14 @@ func TestViewAnswersWhileARelaunchWaitsInTheRuntime(t *testing.T) {
 	go func() {
 		died <- h.m.Handle(h.ctx, RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
 	}()
-	select {
-	case <-gated.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the relaunch never reached the runtime")
-	}
+	testwait.Receive(t, "the relaunch to reach the runtime", gated.entered)
 	viewed := make(chan ClaimView, 1)
 	go func() { viewed <- h.m.View() }()
-	select {
-	case c := <-viewed:
-		if c.State != StateLaunching || c.Generation != 2 || c.Locator != nil {
-			t.Errorf("while the relaunch waits View reports %s at generation %d with locator %+v, want launching at 2 with none",
-				c.State, c.Generation, c.Locator)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("View waited on the relaunch in the runtime")
+	// The relaunch stays held in the runtime until the release below, so a View that waited on it
+	// never answers and this wait fails.
+	if c := testwait.Receive(t, "View's answer while the relaunch waits in the runtime", viewed); c.State != StateLaunching || c.Generation != 2 || c.Locator != nil {
+		t.Errorf("while the relaunch waits View reports %s at generation %d with locator %+v, want launching at 2 with none",
+			c.State, c.Generation, c.Locator)
 	}
 
 	close(gated.release)
@@ -85,11 +78,7 @@ func TestViewSaysAProcessIsStoppingOnlyWhenItsClaimDoesNotRunAgain(t *testing.T)
 				defer close(stopped)
 				tc.stop(h)
 			}()
-			select {
-			case <-gated.entered:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the suspension never reached the runtime")
-			}
+			testwait.Receive(t, "the suspension to reach the runtime", gated.entered)
 			if v := h.m.View(); v.Stopping != tc.stopping {
 				t.Errorf("while the runtime stops the process View says stopping %t, want %t", v.Stopping, tc.stopping)
 			}

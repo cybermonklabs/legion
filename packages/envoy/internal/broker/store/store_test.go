@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -11,19 +10,21 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
-func testDatabaseURL(t *testing.T) string {
-	url := os.Getenv("BROKER_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("BROKER_TEST_DATABASE_URL must be set to run Postgres store tests")
-	}
-	return url
+// ownDatabase creates an empty database of the test's own on the BROKER_TEST_DATABASE_URL server
+// (testdb), dropped when the test ends, and returns its URL; it skips the test when that variable
+// is unset. This package's own tests cannot clone storetest's migrated template, since storetest
+// imports this package, and several of them are about migrating an empty database.
+func ownDatabase(t *testing.T) string {
+	t.Helper()
+	return testdb.BrokerServer.Database(t, "broker_store_test")
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, testDatabaseURL(t))
+	s, err := Open(ctx, ownDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {
 // the sweeper and lock tests that happen to depend on the real predicate.
 func TestTerminalEventNamesMatchTheDecisionIndex(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, testDatabaseURL(t))
+	s, err := Open(ctx, ownDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestTerminalEventNamesMatchTheDecisionIndex(t *testing.T) {
 
 func TestMigrationFiveShapesTheRecordTables(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, testDatabaseURL(t))
+	s, err := Open(ctx, ownDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,11 +100,10 @@ func TestMigrationFiveShapesTheRecordTables(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The whole test runs inside one transaction that is always rolled back, never committed, so
-	// the fixed record id below can never collide with a leftover row from a prior run against the
-	// same long-lived database. Each statement expected to fail runs inside its own savepoint
-	// (tx.Begin on a pgx.Tx opens a SAVEPOINT), since a failed statement would otherwise abort the
-	// whole outer transaction and every later statement.
+	// The whole test runs inside one transaction that is always rolled back, never committed.
+	// Each statement expected to fail runs inside its own savepoint (tx.Begin on a pgx.Tx opens a
+	// SAVEPOINT), since a failed statement would otherwise abort the whole outer transaction and
+	// every later statement.
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestMigrationFiveShapesTheRecordTables(t *testing.T) {
 
 func TestMigrationFiveHandlesPreexistingLauncherCredentialsRow(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, testDatabaseURL(t))
+	s, err := Open(ctx, ownDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,11 +158,10 @@ func TestMigrationFiveHandlesPreexistingLauncherCredentialsRow(t *testing.T) {
 	// Migration 0005 adds NOT NULL columns to launcher_credentials, a table migration 0001
 	// created, not 0005 itself. Postgres refuses ALTER TABLE ... ADD COLUMN ... NOT NULL with no
 	// DEFAULT the instant the table holds even one row - exactly the state every deployed v8
-	// launcher credential leaves behind. This applies 0001-0004 by hand inside an isolated
-	// schema (dropped on rollback, so it can never collide with the shared long-lived database's
-	// own already-migrated public schema), inserts a v8-shaped row against that schema, then
-	// runs 0005 and confirms it both succeeds and clears the table - the exact scenario every
-	// other test misses, since Migrate always starts from an empty database.
+	// launcher credential leaves behind. This applies 0001-0004 by hand inside a schema of its
+	// own (dropped on rollback), inserts a v8-shaped row against that schema, then runs 0005 and
+	// confirms it both succeeds and clears the table - the exact scenario every other test
+	// misses, since Migrate always starts from an empty database.
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +218,7 @@ func TestMigrationFiveHandlesPreexistingLauncherCredentialsRow(t *testing.T) {
 // own, and a second live row in one slot is still refused, by the new index and not the old one.
 func TestMigrationSevenKeysLiveEnrollmentsBySlot(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, testDatabaseURL(t))
+	s, err := Open(ctx, ownDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +340,7 @@ func TestMigrationSevenKeysLiveEnrollmentsBySlot(t *testing.T) {
 func migrationSchema(t *testing.T, schema string, below int) (tx pgx.Tx, apply func(file string)) {
 	t.Helper()
 	ctx := context.Background()
-	s, err := Open(ctx, testDatabaseURL(t))
+	s, err := Open(ctx, ownDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}

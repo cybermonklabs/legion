@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -186,9 +187,10 @@ type durableBind struct {
 // binds, the bus's auto-resubscribe after a reconnect binds it, the durable is refused
 // (errListenerDurableRefused, returned as is), deadline passes (errListenerDurableBindExhausted,
 // wrapping the last refusal), or ctx ends (ctx.Err()). It logs the first refusal and then one every
-// durableBindLogEvery, and the bind itself.
-func bindListenerDurable(ctx context.Context, client *bus.Client, consumer string, handler nats.MsgHandler, logger *logging.Logger, interval, deadline time.Duration) (durableBind, error) {
-	start := time.Now()
+// durableBindLogEvery, and the bind itself. Every interval and the deadline are measured on clk,
+// so a test drives them with a clocktest.Fake instead of waiting a rolling deploy out.
+func bindListenerDurable(ctx context.Context, clk clock.Clock, client *bus.Client, consumer string, handler nats.MsgHandler, logger *logging.Logger, interval, deadline time.Duration) (durableBind, error) {
+	start := clk.Now()
 	var bind durableBind
 	bound := func(autoResubscribe bool) (durableBind, error) {
 		logger.Info("durable bound",
@@ -201,12 +203,12 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 	var logged time.Time
 	for {
 		if err := ctx.Err(); err != nil {
-			bind.waited = time.Since(start)
+			bind.waited = clk.Now().Sub(start)
 			return bind, err
 		}
 		bind.attempts++
 		_, err := startListenerSubscription(client, consumer, handler)
-		bind.waited = time.Since(start)
+		bind.waited = clk.Now().Sub(start)
 		if err == nil {
 			return bound(false)
 		}
@@ -217,8 +219,8 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 			return bind, fmt.Errorf("%w after %d attempts in %s: %w", errListenerDurableBindExhausted, bind.attempts, bind.waited.Round(time.Millisecond), err)
 		}
 		wait := min(interval, deadline-bind.waited)
-		if logged.IsZero() || time.Since(logged) >= durableBindLogEvery {
-			logged = time.Now()
+		if logged.IsZero() || clk.Now().Sub(logged) >= durableBindLogEvery {
+			logged = clk.Now()
 			logger.Warn("subscribe failed, retrying",
 				slog.String("error", err.Error()),
 				slog.Int("attempt", bind.attempts),
@@ -226,8 +228,8 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 				slog.String("deadline", deadline.String()),
 			)
 		}
-		if err := waitUnlessDone(ctx, wait); err != nil {
-			bind.waited = time.Since(start)
+		if err := waitUnlessDone(ctx, clk, wait); err != nil {
+			bind.waited = clk.Now().Sub(start)
 			return bind, err
 		}
 		// A reconnect during the wait re-subscribes the subscription the failed attempt registered
@@ -236,7 +238,7 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 		// handle with a bind racing the server's release of it, which can be refused with "consumer
 		// is already bound to a subscription".
 		if client.SubOK() {
-			bind.waited = time.Since(start)
+			bind.waited = clk.Now().Sub(start)
 			return bound(true)
 		}
 	}
@@ -283,7 +285,7 @@ const durableProbeConfirm = 250 * time.Millisecond
 // probe failure than an unclassified error is.
 func durableProbe(ctx context.Context, client *bus.Client, consumer string) error {
 	for read := range 2 {
-		if read > 0 && waitUnlessDone(ctx, durableProbeConfirm) != nil {
+		if read > 0 && waitUnlessDone(ctx, clock.Real(), durableProbeConfirm) != nil {
 			return nil
 		}
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer, nats.Context(ctx))
@@ -318,7 +320,8 @@ const (
 // subscribe call returned. It returns ctx.Err() when ctx ends first and an error wrapping
 // errDurableUnbound, naming how long it waited, once deadline passes. Each read runs under ctx and
 // ends no later than deadline, so neither a cancellation nor the deadline waits on a read the
-// server has not answered.
+// server has not answered. It runs inside the self-health monitor's rebuild, which no test drives
+// a clock through, so its waits are the real clock's.
 func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string, interval, deadline time.Duration) error {
 	start := time.Now()
 	for {
@@ -335,22 +338,23 @@ func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string,
 		if err == nil && !durableUnbound(info, client) {
 			return nil
 		}
-		if err := waitUnlessDone(ctx, min(interval, deadline-time.Since(start))); err != nil {
+		if err := waitUnlessDone(ctx, clock.Real(), min(interval, deadline-time.Since(start))); err != nil {
 			return err
 		}
 	}
 }
 
-// waitUnlessDone waits d out and reports nil, or returns ctx.Err() when ctx ended first. Both the
-// bind retry and the bound wait sleep this way, so neither holds a shutdown waiting for a timer
-// the cancellation cannot cut.
-func waitUnlessDone(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
+// waitUnlessDone waits d out on clk and reports nil, or returns ctx.Err() when ctx ended first.
+// Both the bind retry and the bound wait sleep this way, so neither holds a shutdown waiting for a
+// timer the cancellation cannot cut. clk is the caller's clock (listenerDeps.clk), so a test that
+// drives a fake moves the wait on rather than waiting it out.
+func waitUnlessDone(ctx context.Context, clk clock.Clock, d time.Duration) error {
+	timer := clk.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-timer.C():
 		return nil
 	}
 }

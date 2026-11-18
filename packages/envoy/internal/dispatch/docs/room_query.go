@@ -173,7 +173,8 @@ func readRoomQueryMembers(ctx context.Context, q Queryer, room string, checkLock
 }
 
 // ask sends a kind query about room to every other member, read through q, and returns the whole
-// answers that arrive within answerWait. asked says whether any other member was there to ask.
+// answers that arrive within answerWait on the service's clock. asked says whether any other
+// member was there to ask.
 // A query this process could not send, or whose answers it could not hear - its own listener is
 // not connected, so it is no member - is logged and answered by nobody; only a failed read of the
 // members, which leaves a transaction q belongs to aborted, is an error.
@@ -219,7 +220,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 		delete(r.pending, query.ID)
 		r.mu.Unlock()
 	}()
-	started := time.Now()
+	started := r.service.clock.Now()
 	if err := r.service.roomSyncSender.Notify(ctx, documentQueryChannel, string(payload)); err != nil {
 		if ctx.Err() != nil {
 			return nil, true, ctx.Err()
@@ -228,11 +229,11 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 			"room", room, "kind", kind, "error", err)
 		return nil, true, nil
 	}
-	timer := time.NewTimer(r.answerWait())
+	timer := r.service.clock.NewTimer(r.answerWait())
 	defer timer.Stop()
 	select {
 	case <-pending.done:
-	case <-timer.C:
+	case <-timer.C():
 	case <-ctx.Done():
 		return nil, true, ctx.Err()
 	}
@@ -243,7 +244,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 	if len(missing) > 0 {
 		slices.Sort(missing)
 		slog.Warn("dispatch: other processes did not answer a document room query in time; going on without them",
-			"room", room, "kind", kind, "members", missing, "waited", time.Since(started))
+			"room", room, "kind", kind, "members", missing, "waited", r.service.clock.Now().Sub(started))
 	}
 	for _, answer := range answers {
 		if answer.tooLarge {
@@ -321,7 +322,8 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 
 // query is documentQueryChannel's handler, on room sync's query lane. This process's own queries
 // are dropped. A holds or share query is answered here; a flush waits for the room's appends on a
-// goroutine of its own, bounded by answerWait, so a slow flush never holds up the next query.
+// goroutine of its own, bounded by answerWait on the service's clock, so a slow flush never
+// holds up the next query.
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
@@ -359,7 +361,7 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 		done := s.askRoomAppends(query.Room)
 		go func() {
 			defer done()
-			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
+			flushed, cancel := s.clock.WithTimeout(ctx, r.answerWait())
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
 				slog.Warn("dispatch: a document room's updates were not stored in time to answer another process's flush; it is left unanswered",

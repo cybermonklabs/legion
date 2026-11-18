@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeWindows is the countingReader's window in a test: the watch asks for one window after
@@ -28,16 +30,11 @@ func (w *fakeWindows) window(time.Duration) <-chan time.Time {
 	return opened
 }
 
-// waiting is the window the watch waits on now, failing the test when it asked for none.
+// waiting is the window the watch waits on now, once the watch has asked for one.
 func (w *fakeWindows) waiting(t *testing.T) chan time.Time {
 	t.Helper()
 	if w.pending == nil {
-		select {
-		case opened := <-w.asked:
-			w.pending = opened
-		case <-time.After(testTimeout):
-			t.Fatal("the low-speed watch waited on no window")
-		}
+		w.pending = testwait.Receive(t, "the low-speed watch to wait on a window", w.asked)
 	}
 	opened := w.pending
 	w.pending = nil
@@ -50,13 +47,17 @@ func (w *fakeWindows) waiting(t *testing.T) chan time.Time {
 func (w *fakeWindows) pass(t *testing.T, ctx context.Context) {
 	t.Helper()
 	w.waiting(t) <- time.Time{}
-	select {
-	case opened := <-w.asked:
-		w.pending = opened
-	case <-ctx.Done():
-	case <-time.After(testTimeout):
-		t.Fatal("the low-speed watch neither opened another window nor ended the stream")
-	}
+	testwait.Eventually(t, "the low-speed watch to open another window or end the stream", func() bool {
+		select {
+		case opened := <-w.asked:
+			w.pending = opened
+			return true
+		case <-ctx.Done():
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // A stream that keeps delivering more than CacheStreamLowSpeedBytes in every
@@ -91,6 +92,41 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 	}
 	if ctx.Err() != nil || stream.stalled.Load() {
 		t.Errorf("a stream delivering %d bytes per %s was ended: %v", chunk, CacheStreamLowSpeedTime, ctx.Err())
+	}
+}
+
+// The watch's first window, and the count it starts from, are set before watchStall returns:
+// unpackCache calls it before the ask and every Read, and only the windows after the first are
+// judged on a goroutine, so a Read that lands before that goroutine first runs is the first
+// window's. Here the first window is open when watchStall returns, the whole first window's bytes
+// are read before the window closes, and the window then closes with nothing more: a watch that
+// took its window or its count when its goroutine ran would have counted those bytes in no window
+// and ended a stream that delivered them. The second window, in which nothing arrives, is a stall,
+// so the watch is still judging.
+func TestTheCachesStreamsFirstWindowIsSetBeforeItsWatchReturns(t *testing.T) {
+	const chunk = CacheStreamLowSpeedBytes + 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	windowsOf := newFakeWindows()
+	stream := &countingReader{reader: &stoppedSender{ctx: ctx, left: chunk}, window: windowsOf.window}
+	stream.watchStall(ctx, cancel)
+	select {
+	case opened := <-windowsOf.asked:
+		windowsOf.pending = opened
+	default:
+		t.Fatal("watchStall returned before it opened the stream's first window")
+	}
+	if _, err := io.ReadFull(stream, make([]byte, chunk)); err != nil {
+		t.Fatalf("the stream's first %d bytes: %v", chunk, err)
+	}
+
+	windowsOf.pass(t, ctx)
+	if ctx.Err() != nil || stream.stalled.Load() {
+		t.Fatalf("a stream that delivered %d bytes in its first %s, read before the watch judged a window, was ended", chunk, CacheStreamLowSpeedTime)
+	}
+	windowsOf.pass(t, ctx)
+	if _, err := stream.Read(make([]byte, 1)); !errors.Is(err, errStreamStalled) {
+		t.Fatalf("a second %s with nothing delivered ended the stream with %v, want the low-speed bound's refusal", CacheStreamLowSpeedTime, err)
 	}
 }
 

@@ -13,9 +13,11 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // captureJSONLogs routes slog.Default() into a buffer for the test and decodes the records back, so
@@ -67,7 +69,7 @@ func jsonRecord(t *testing.T, records []map[string]any, msg string) map[string]a
 // finds it already there.
 func rawInterestBucket(t *testing.T, conn *natsgo.Conn) (natsgo.JetStreamContext, natsgo.KeyValue) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -146,7 +148,7 @@ func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	waitFor(t, 30*time.Second, registry.watcher.Ready)
+	waitFor(t, "the registry's interest cache to be ready (its warm-up scan ended)", registry.watcher.Ready)
 	return registry
 }
 
@@ -592,7 +594,7 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	if err != nil {
 		t.Fatalf("wrap the role bucket: %v", err)
 	}
-	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
+	registry := &Registry{roleKV: roles, clock: clock.Real(), index: newSubjectIndex()}
 	registry.cache = newInterestCopy(registry)
 	registry.roleHolders = newRoleHolderCopy(registry)
 	handle := bus.NewKeyValue(kv, earlyEndKV{KeyValue: interests.WatchHandle(), after: 2}, interests.Streams())
@@ -601,8 +603,8 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	t.Cleanup(registry.StopWatch)
 	registry.watcher.Start()
 	registry.roleWatcher.Start()
-	waitFor(t, 30*time.Second, registry.watcher.Ready)
-	waitFor(t, 30*time.Second, registry.roleWatcher.Ready)
+	waitFor(t, "the interest warm-up to end, its scan stalled past the idle bound", registry.watcher.Ready)
+	waitFor(t, "the role claim warm-up to end", registry.roleWatcher.Ready)
 
 	collector := collectorOf(registry)
 	collector.scanIdle = idle
@@ -672,8 +674,9 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 		granted := startGrantedServer(t, []string{purgeSubject})
 		before := bucketState(t, granted.js, bus.InterestBucket)
 		// The server answers a purge the grant refuses with nothing, so the passes purge through a
-		// context that waits a second; on granted.js each pass would wait out its whole 10 s.
-		// nats.go's PurgeStream ignores a per-call wait, so the bound has to be the context's.
+		// context that waits a second; on granted.js each pass would wait until the test binary's
+		// deadline. nats.go's PurgeStream ignores a per-call wait, so the bound has to be the
+		// context's.
 		refusedPurgeJS, err := granted.conn.JetStream(natsgo.MaxWait(time.Second))
 		if err != nil {
 			t.Fatalf("jetstream for the refused purge: %v", err)
@@ -726,8 +729,8 @@ type grantedServer struct {
 	srv      *testnats.Server
 	conn     *natsgo.Conn
 	registry *Registry
-	// js waits as long as the listener's own context does (10 s, internal/bus): on a loaded machine
-	// a seeding put can take more than a second.
+	// js waits for each answer until the test binary's deadline (testnats.MaxWait): on a loaded
+	// machine a seeding put can take more than a second.
 	js natsgo.JetStreamContext
 	kv natsgo.KeyValue
 }
@@ -753,11 +756,11 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 		t.Fatalf("connect to the granted NATS: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	waitFor(t, 30*time.Second, func() bool { _, err := js.AccountInfo(); return err == nil })
+	waitFor(t, "the granted server's JetStream to answer an account info", func() bool { _, err := js.AccountInfo(); return err == nil })
 	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: natsgo.FileStorage})
 	if err != nil {
 		t.Fatalf("create the interest bucket: %v", err)
@@ -769,7 +772,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	waitFor(t, 30*time.Second, registry.watcher.Ready)
+	waitFor(t, "the registry's interest cache to be ready over the seeded markers and live keys", registry.watcher.Ready)
 	return grantedServer{srv: srv, conn: conn, registry: registry, js: js, kv: kv}
 }
 
@@ -798,20 +801,12 @@ func (g grantedServer) traceThrough(t *testing.T) []string {
 		t.Fatalf("flush the trace sentinel: %v", err)
 	}
 	want := "[PUB " + sentinel + " "
-	deadline := time.Now().Add(traceWait)
-	for {
+	return testwait.Until(t, fmt.Sprintf("the server's log to hold a %q line", want), func() ([]string, bool) {
 		// The sentinel holds no newline, so the whole log answers what a line of it would; the
 		// split is left to the way out.
 		log := g.srv.Log()
-		if strings.Contains(log, want) {
-			return strings.Split(log, "\n")
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server's log holds no line with %q after %s. Every publish it traced:\n%s",
-				want, traceWait, strings.Join(tracedPublishLines(strings.Split(log, "\n")), "\n"))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return strings.Split(log, "\n"), strings.Contains(log, want)
+	})
 }
 
 // tracedPublish matches the line a tracing server writes for each publish a client sends,

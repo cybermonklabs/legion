@@ -72,7 +72,7 @@ func startedAgainDispatch(t *testing.T, project string) string {
 // ever. Every other call is answered 404, as repositoriesGitHub answers one.
 func startedAgainGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {
@@ -98,18 +98,17 @@ func startedAgainGitHub(t *testing.T) string {
 }
 
 // startedAgainDaemon is the daemon each subtest boots: the rig the stop's own tests use
-// (stoppedWorkerDaemon — its own database, a controller tick every stopTickInterval, and a
-// runtime that provisions each claim's workspace in the claim's own pod), with the board and the
-// GitHub above, a linger no tree of these subtests outlives, and the shipped production check
-// bound.
-func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
+// (stoppedWorkerDaemon — its own database, a passer to run its controller ticks, and a runtime
+// that provisions each claim's workspace in the claim's own pod), with the board and the GitHub
+// above, a linger no tree of these subtests outlives, and the shipped production check bound.
+func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime, *passer) {
 	t.Helper()
-	pool, cfg, o, rt := stoppedWorkerDaemon(t)
+	pool, cfg, o, rt, p := stoppedWorkerDaemon(t)
 	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
 	cfg.Linger = time.Hour
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
-	return pool, cfg, o, rt
+	return pool, cfg, o, rt, p
 }
 
 // startedAgainEngine is the workflow engine the daemon of cfg runs, built from cfg as the daemon
@@ -233,10 +232,13 @@ func lingerTree(t *testing.T, pool *store.Pool, records record.Store, key string
 // daemon provisions nothing on its host, so the provision the retired branch makes before the
 // relaunch ((*outbox).provisionWorkspace) returns at its first line and the fake records no call
 // of its own for it.
-func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept supervise.Claim, before int, start string) {
+func startedAgain(t *testing.T, p *passer, cfg config.Config, rt *fake.Runtime, kept supervise.Claim, before int, start string) {
 	t.Helper()
 	token := kept.Token
-	testwait.Eventually(t, start+" to start "+string(token)+" again", func() bool {
+	// The start row is the daemon's own to write: a fact the test applied through its own engine
+	// set the state up but woke no outbox lane, so the controller passes below are what write the
+	// start and wake its lane (stoppedWorkerDaemon). They run until the launch the row makes.
+	p.until(t, passControllerTick, start+" to start "+string(token)+" again", func() bool {
 		return len(launchesOf(rt, token)) > before
 	})
 	if launches := launchesOf(rt, token); len(launches) != before+1 {
@@ -289,7 +291,7 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
-		pool, cfg, o, rt := startedAgainDaemon(t)
+		pool, cfg, o, rt, p := startedAgainDaemon(t)
 		project, err := claim.ProjectToken(cfg.Project)
 		if err != nil {
 			t.Fatal(err)
@@ -307,18 +309,18 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		writePrompt(t, cfg, implementer)
 		d := startDaemon(t, cfg, o)
 
-		before := stopTheWorker(t, pool, rt, d, root, implementer)
+		before := stopTheWorker(t, p, pool, rt, d, root, implementer)
 
 		applyFact(t, pool, "api", "backward:"+root, intake.BackwardMove{Issue: root, Requester: claim.RoleImplementer,
 			To: phase.Implementing, Reason: "the retro found work the change still needs"}, startedAgainEngine(cfg))
 		if stands := d.state().Issues[root].Phase; stands != phase.Implementing {
 			t.Fatalf("%s stands at %s after the move back, want %s: the move is what starts the phase again", root, stands, phase.Implementing)
 		}
-		startedAgain(t, cfg, rt, kept, before, "the backward move into the worker's phase")
+		startedAgain(t, p, cfg, rt, kept, before, "the backward move into the worker's phase")
 	})
 
 	t.Run("the held phase's retry", func(t *testing.T) {
-		pool, cfg, o, rt := startedAgainDaemon(t)
+		pool, cfg, o, rt, p := startedAgainDaemon(t)
 		project, err := claim.ProjectToken(cfg.Project)
 		if err != nil {
 			t.Fatal(err)
@@ -333,17 +335,17 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		writePrompt(t, cfg, implementer)
 		d := startDaemon(t, cfg, o)
 
-		before := stopTheWorker(t, pool, rt, d, root, implementer)
+		before := stopTheWorker(t, p, pool, rt, d, root, implementer)
 
 		heldAndRetried(t, pool, d, startedAgainEngine(cfg), root, claim.RoleImplementer)
 		if stands := d.state().Issues[root].Phase; stands != phase.Implementing {
 			t.Fatalf("%s stands at %s after the retry, want %s: the retry puts the issue back in the phase its worker was stopped in", root, stands, phase.Implementing)
 		}
-		startedAgain(t, cfg, rt, kept, before, "the architect's retry of the held phase")
+		startedAgain(t, p, cfg, rt, kept, before, "the architect's retry of the held phase")
 	})
 
 	t.Run("the promotion of a re-admitted root", func(t *testing.T) {
-		pool, cfg, o, rt := startedAgainDaemon(t)
+		pool, cfg, o, rt, p := startedAgainDaemon(t)
 		// Two slots, and a root of another tree holds one of them from here to the end of the
 		// subtest: the re-admitted root takes the other at its promotion, so the member's start row
 		// waits for a slot rather than running the moment the outbox wakes. That wait is what
@@ -369,12 +371,12 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		writePrompt(t, cfg, implementer)
 		d := startDaemon(t, cfg, o)
 
-		before := stopTheWorker(t, pool, rt, d, member, implementer)
+		before := stopTheWorker(t, p, pool, rt, d, member, implementer)
 
 		// The tree closes and lingers, which is the state a re-admission takes a tree back from,
 		// and its members give their slots back.
 		lingerTree(t, pool, record.NewStore(), root)
-		passed(t, pool, "after the tree closed")
+		passed(t, p, "after the tree closed")
 		if held := slotHolders(t, pool); !slices.Equal(held, []string{other}) {
 			t.Fatalf("the admission slots are held by %v after the tree closed, want %s alone: a lingering tree's members give their slots back", held, other)
 		}
@@ -400,7 +402,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// its row still waiting for a slot: that is the state the stop rule weighs, and the row
 		// must stand, because the workflow is starting this worker again. The passes read it
 		// still there.
-		passed(t, pool, "after the re-admission")
+		passed(t, p, "after the re-admission")
 		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
 			t.Fatalf("three passes after the re-admission %s owes the start rows %v, want %q still among them: the start the promotion wrote is the way back, not a start the stop outlived",
 				member, rows, owed)
@@ -410,7 +412,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// is the whole of the start — the stopped worker comes back and its task reaches it.
 		finish(t, pool, record.NewStore(), other)
 
-		startedAgain(t, cfg, rt, kept, before, "the promotion of the re-admitted root")
+		startedAgain(t, p, cfg, rt, kept, before, "the promotion of the re-admitted root")
 
 		testwait.Eventually(t, "the task the promotion owed "+string(implementer)+" to be delivered", func() bool {
 			pending := storedClaim(t, cfg, implementer).Pending
@@ -419,7 +421,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 	})
 
 	t.Run("a production check's look after the issue's merge", func(t *testing.T) {
-		pool, cfg, o, rt := startedAgainDaemon(t)
+		pool, cfg, o, rt, p := startedAgainDaemon(t)
 		// The role the project's production check is worked by is the role this subtest stops.
 		cfg.Projects = map[string]config.Project{cfg.Project: {ProductionCheck: claim.RoleTester}}
 		project, err := claim.ProjectToken(cfg.Project)
@@ -437,7 +439,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		seedMergeablePullRequest(t, pool, root)
 		d := startDaemon(t, cfg, o)
 
-		before := stopTheWorker(t, pool, rt, d, root, tester)
+		before := stopTheWorker(t, p, pool, rt, d, root, tester)
 
 		// The issue reaches the one phase a merge closes it from, as the rest of its run would
 		// leave it, and GitHub reports the merge. On this release that phase is merging, which
@@ -459,7 +461,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 			t.Fatalf("the check the merge opened is %+v, want look 1 open for the %s, the role the project checks production with", check, claim.RoleTester)
 		}
 
-		startedAgain(t, cfg, rt, kept, before, "the first look of the production check the merge opened")
+		startedAgain(t, p, cfg, rt, kept, before, "the first look of the production check the merge opened")
 
 		testwait.Eventually(t, "the look's task to reach "+string(tester), func() bool {
 			pending := storedClaim(t, cfg, tester).Pending

@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,12 +22,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // senderLimitEnv is an environment holding values and nothing else, as os.Getenv reads one.
@@ -234,16 +235,24 @@ func newSenderLimitRig(t *testing.T) *senderLimitRig {
 }
 
 // newSenderLimitRigOnServer is a senderLimitRig on a server of its own, which the test can stop
-// answering under live connections (testnats.Server.Freeze).
-func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server) {
+// answering under live connections (testnats.Server.Freeze and FreezeReplies) or stop, with the
+// rig's routes (listenerDeps.clock) and the listener's bus client (bus.WithClock and
+// bus.WithPublishAcknowledgementClock) on the one clocktest.Fake it returns, which only the test
+// moves. A route's budget, the bounds of its reads and its probe, and a publish's own bound then
+// end when the test moves the fake to them, once what the case is about has happened, and never on
+// the machine's clock, so no answer turns on how long a step of a loaded run takes.
+func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server, *clocktest.Fake) {
 	t.Helper()
 	server, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	fake := clocktest.New(time.Now())
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithClock(fake), bus.WithPublishAcknowledgementClock(fake))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newSenderLimitRigOn(t, client, url), server
+	rig := newSenderLimitRigOn(t, client, url)
+	rig.deps.clock = fake
+	return rig, server, fake
 }
 
 // newSenderLimitRigOn is a senderLimitRig over client, a listener's connection to the server url
@@ -288,9 +297,7 @@ func (rig *senderLimitRig) live(t *testing.T, sessionID string, capabilities []s
 // session that stopped leaves behind: a send to it reports a wake before anything else is decided.
 func (rig *senderLimitRig) recorded(t *testing.T, sessionID string, capabilities []string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := rig.known.RecordWithin(ctx, session.KnownSession{SessionID: sessionID, Title: "a stopped target", Capabilities: capabilities}); err != nil {
+	if err := rig.known.RecordWithin(testwait.Context(t), session.KnownSession{SessionID: sessionID, Title: "a stopped target", Capabilities: capabilities}); err != nil {
 		t.Fatalf("record %s: %v", sessionID, err)
 	}
 	rig.record(t, sessionID)
@@ -300,16 +307,94 @@ func (rig *senderLimitRig) recorded(t *testing.T, sessionID string, capabilities
 // to the body's, and a nil value removes a field.
 func (rig *senderLimitRig) sendFrom(t *testing.T, sender, target string, fields map[string]any) limitedAnswer {
 	t.Helper()
-	body := map[string]any{"target_session": target, "source_session": sender, "message": countedMessage}
-	return serveLimited(t, rig.mux, rig.harness.logs.String, postJSON("/v1/messages/send", messageJSON(t, body, fields)))
+	return serveLimited(t, rig.mux, rig.harness.logs.String, sendRequestFrom(t, sender, target, fields))
 }
 
 // publishFrom publishes a message from sender to topic through the rig's routes, with fields as
 // sendFrom takes them.
 func (rig *senderLimitRig) publishFrom(t *testing.T, sender, topic string, fields map[string]any) limitedAnswer {
 	t.Helper()
+	return serveLimited(t, rig.mux, rig.harness.logs.String, publishRequestFrom(t, sender, topic, fields))
+}
+
+// sendRequestFrom is the request sendFrom serves.
+func sendRequestFrom(t *testing.T, sender, target string, fields map[string]any) *http.Request {
+	t.Helper()
+	body := map[string]any{"target_session": target, "source_session": sender, "message": countedMessage}
+	return postJSON("/v1/messages/send", messageJSON(t, body, fields))
+}
+
+// publishRequestFrom is the request publishFrom serves.
+func publishRequestFrom(t *testing.T, sender, topic string, fields map[string]any) *http.Request {
+	t.Helper()
 	body := map[string]any{"topic": topic, "source_session": sender, "message": countedMessage}
-	return serveLimited(t, rig.mux, rig.harness.logs.String, postJSON("/v1/messages/publish", messageJSON(t, body, fields)))
+	return postJSON("/v1/messages/publish", messageJSON(t, body, fields))
+}
+
+// limitedInFlight is a request the rig's routes serve on a goroutine of their own
+// (serveInBackground), so the test moves the routes' clock while the route waits on it.
+type limitedInFlight struct {
+	request  *http.Request
+	recorder *httptest.ResponseRecorder
+	answered chan struct{}
+	logs     func() string
+	before   int
+}
+
+// serveInBackground serves request through the rig's routes on a goroutine of its own.
+func (rig *senderLimitRig) serveInBackground(request *http.Request) *limitedInFlight {
+	served := &limitedInFlight{
+		request:  request,
+		recorder: httptest.NewRecorder(),
+		answered: make(chan struct{}),
+		logs:     rig.harness.logs.String,
+	}
+	served.before = len(served.logs())
+	go func() {
+		defer close(served.answered)
+		rig.mux.ServeHTTP(served.recorder, request)
+	}()
+	return served
+}
+
+// returned reports the route's answer once it has answered (awaitArmedBeforeReturn).
+func (s *limitedInFlight) returned() (string, bool) {
+	return closeReturned(s.answered, recorderAnswer(s.recorder))()
+}
+
+// answer waits through the shared wait for the route's answer and reads it as serveLimited does.
+func (s *limitedInFlight) answer(t *testing.T, what string) limitedAnswer {
+	t.Helper()
+	testwait.Receive(t, what, s.answered)
+	return readLimited(t, s.request, s.recorder, s.logs()[s.before:])
+}
+
+// untilBeforeAnswer waits through the shared wait until read reports true, and returns what it
+// read then: a fact the case needs before it moves the routes' clock. It fails the test at once,
+// naming the answer, when the route answers first, since a route that has answered reaches nothing
+// more.
+func untilBeforeAnswer[T any](t *testing.T, served *limitedInFlight, what string, read func() (T, bool)) T {
+	t.Helper()
+	return testwait.Until(t, what+", before the route answers", func() (T, bool) {
+		if value, ok := read(); ok {
+			return value, true
+		}
+		if outcome, answered := served.returned(); answered {
+			t.Fatalf("the route answered before %s: %s", what, outcome)
+		}
+		var none T
+		return none, false
+	})
+}
+
+// flushBehind returns once the server has answered a flush of the listener's connection, which it
+// answers after every flush the routes sent on that connection before it: nats.go hands the
+// server's PONGs to the flushes in the order they were sent.
+func (rig *senderLimitRig) flushBehind(t *testing.T) {
+	t.Helper()
+	if err := rig.harness.client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the listener's connection behind the routes' own flushes: %v", err)
+	}
 }
 
 // spend takes n messages of sender's count, each a publish to a team topic of its own that the
@@ -336,20 +421,18 @@ func (rig *senderLimitRig) requireCount(t *testing.T, sender string, has bool) {
 	next.requireNamed(t, sender+"'s next message", sender)
 }
 
-// requireNoWake reads the rig's wake reports until none has arrived for half a second, and fails
-// on one of kind naming name. A report is published off the route's path, so the quiet is what
-// tells a report that will never come from one still on its way.
+// requireNoWake fails when a wake report of kind naming name came of anything the rig was sent
+// before it. Its proof is a later action's effect: a send from a sender of its own to a session
+// nobody knows, which the route answers 404 with a wake report of its own. Each wake report is
+// published off the route's path in the order the sends raised them, so a report raised before
+// that send arrives before its report and is passed over on the way to it (awaitWake).
 func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
 	t.Helper()
-	for {
-		msg, err := rig.wakes.NextMsg(500 * time.Millisecond)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			return
-		}
-		if err != nil {
-			t.Fatalf("read the wake reports: %v", err)
-		}
-		if wakeNamed(wakeReportIn(t, msg), kind, name) {
+	marker := "ses_wake_marker_" + id.New()
+	rig.sendFrom(t, "ses_wake_marker_sender_"+id.New(), marker, nil).
+		requireStatus(t, "the send to a session nobody knows, sent after the one that names "+name, http.StatusNotFound)
+	for _, report := range awaitWake(t, rig.wakes, wakeKindAgent, marker) {
+		if wakeNamed(report, kind, name) {
 			t.Fatalf("a %s wake report named %s, want none", kind, name)
 		}
 	}
@@ -409,13 +492,13 @@ func messageJSON(t *testing.T, body, fields map[string]any) string {
 	return string(encoded)
 }
 
-// limitedAnswer is one message's answer as these tests read it, with the one line the route wrote
-// for it.
+// limitedAnswer is one message's answer as these tests read it, its headers among it, with the one
+// line the route wrote for it.
 type limitedAnswer struct {
-	status     int
-	retryAfter string
-	raw        string
-	line       map[string]any
+	status int
+	header http.Header
+	raw    string
+	line   map[string]any
 
 	Error             string `json:"error"`
 	Reason            string `json:"reason"`
@@ -428,23 +511,28 @@ type limitedAnswer struct {
 	Duplicate         bool   `json:"duplicate"`
 }
 
-// serveLimited serves request through handler and reads its answer, with the one record line the
-// route wrote for it: the line of the route's name among those logs gained while it was served. A
-// route writes that line as it answers, so it is there once ServeHTTP returns.
+// serveLimited serves request through handler and reads its answer (readLimited).
 func serveLimited(t *testing.T, handler http.Handler, logs func() string, request *http.Request) limitedAnswer {
+	t.Helper()
+	before := len(logs())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return readLimited(t, request, recorder, logs()[before:])
+}
+
+// readLimited reads the answer recorder holds for request, with the one record line the route
+// wrote for it: the line of the route's name among written, the logs gained while it was served. A
+// route writes that line as it answers, so it is there once ServeHTTP returns.
+func readLimited(t *testing.T, request *http.Request, recorder *httptest.ResponseRecorder, written string) limitedAnswer {
 	t.Helper()
 	name := "listener publish"
 	if request.URL.Path == "/v1/messages/send" {
 		name = "listener send"
 	}
-	before := len(logs())
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	answer := limitedAnswer{status: recorder.Code, retryAfter: recorder.Header().Get("Retry-After"), raw: recorder.Body.String()}
+	answer := limitedAnswer{status: recorder.Code, header: recorder.Header(), raw: recorder.Body.String()}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", answer.raw, err)
 	}
-	written := logs()[before:]
 	lines := linesIn(written, name, nil)
 	if len(lines) != 1 {
 		t.Fatalf("%s %s wrote %d %q lines, want one:\n%s", request.Method, request.URL.Path, len(lines), name, written)
@@ -494,8 +582,8 @@ func (a limitedAnswer) requireUnnamed(t *testing.T, what string) {
 func (a limitedAnswer) requireRefused(t *testing.T, what, sender string, perMinute, burst, seconds int) {
 	t.Helper()
 	a.requireStatus(t, what, http.StatusTooManyRequests)
-	if a.retryAfter != strconv.Itoa(seconds) {
-		t.Fatalf("%s: Retry-After %q, want %d", what, a.retryAfter, seconds)
+	if got := a.header.Get("Retry-After"); got != strconv.Itoa(seconds) {
+		t.Fatalf("%s: Retry-After %q, want %d", what, got, seconds)
 	}
 	if a.Reason != "sender_rate_limited" || a.RetryAfterSeconds != seconds || a.MessagesPerMinute != perMinute || a.Burst != burst {
 		t.Fatalf("%s: body %s, want reason sender_rate_limited, retry_after_seconds %d, messages_per_minute %d and burst %d",
@@ -591,9 +679,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		if delivered.Holder != claimant {
 			t.Fatalf("the message after the claim went to %q, want %s; body %s", delivered.Holder, claimant, delivered.raw)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		stored, err := readStored(ctx, rig.harness.client, contracts.LegacyAgentSubject(claimant))
+		stored, err := readStored(testwait.Context(t), rig.harness.client, contracts.LegacyAgentSubject(claimant))
 		if err != nil {
 			t.Fatalf("read what the stream holds for %s: %v", claimant, err)
 		}
@@ -698,13 +784,21 @@ func TestSenderLimitCost(t *testing.T) {
 	logs := rig.harness.logs.String
 	steer := map[string]any{"payload": `{"delivery":{"mode":"steer"}}`}
 
+	// The send reads its target's entry from the frozen bus, which never answers, so the send's
+	// budget ends it: the fake is moved to the budget once the read has armed its own bound, and
+	// the 503 comes before any wake report, which only a target the bus says has no entry raises.
 	t.Run("send while the bus is down before any wake report (503) costs nothing", func(t *testing.T) {
-		frozen, server := newSenderLimitRigOnServer(t)
+		frozen, server, fake := newSenderLimitRigOnServer(t)
 		frozen.limit(4, 1)
 		const sender, target = "ses_cost_bus_down", "ses_cost_bus_down_target"
 		thaw := server.Freeze(t)
 		t.Cleanup(thaw)
-		down := frozen.sendFrom(t, sender, target, nil)
+		start := fake.Now()
+		served := frozen.serveInBackground(sendRequestFrom(t, sender, target, nil))
+		awaitArmedBeforeReturn(t, fake, "the send's read of its target's entry from the frozen bus, "+sendSessionReadTimeout.String()+" out",
+			deadlineArmed(armedAt(start.Add(sendSessionReadTimeout))), served.returned)
+		fake.Set(start.Add(sendRequestBudget))
+		down := served.answer(t, "the send's answer once its budget was spent")
 		thaw()
 		down.requireStatus(t, "the send while the bus is down", http.StatusServiceUnavailable)
 		down.requireOutcome(t, "the send while the bus is down", outcomeBusUnavailable)
@@ -715,22 +809,29 @@ func TestSenderLimitCost(t *testing.T) {
 
 	// A publish that waits for NATS to reconnect sends nothing: the bus answers the route's
 	// deadline before any send (bus.ErrUnacknowledged does not wrap it), so the stream cannot hold
-	// the message and the 503 gives the take back.
+	// the message and the 503 gives the take back. The sender stamp's reads fail at once on a
+	// connection that buffers nothing while it reconnects, so the publish arms its own bound and
+	// waits for the reconnect, and only then is the fake moved to the route's budget.
 	t.Run("topic publish while the listener waits for NATS to reconnect, sending nothing (503) costs nothing", func(t *testing.T) {
-		down, server := newSenderLimitRigOnServer(t)
+		down, server, fake := newSenderLimitRigOnServer(t)
 		down.limit(4, 1)
 		const sender = "ses_cost_reconnecting"
 		client := down.harness.client
 		server.Stop(t)
-		waitFor(t, 10*time.Second, "the listener's connection to reconnect after its server stopped", func() bool {
+		testwait.Eventually(t, "the listener's connection to reconnect after its server stopped", func() bool {
 			return !client.Connected() && client.Connection().IsReconnecting()
 		})
-		unsent := down.publishFrom(t, sender, "notifications.team.sender-limit-reconnecting-"+id.New(), nil)
+		start := fake.Now()
+		served := down.serveInBackground(publishRequestFrom(t, sender, "notifications.team.sender-limit-reconnecting-"+id.New(), nil))
+		awaitArmedBeforeReturn(t, fake, "the publish's own bound, armed as it waits for NATS to reconnect, "+bus.PublishBound.String()+" out",
+			deadlineArmed(armedAt(start.Add(bus.PublishBound))), served.returned)
+		fake.Set(start.Add(sendRequestBudget))
+		unsent := served.answer(t, "the publish's answer once its budget was spent")
 		unsent.requireStatus(t, "the publish while NATS reconnects", http.StatusServiceUnavailable)
 		unsent.requireOutcome(t, "the publish while NATS reconnects", outcomeBusUnavailable)
 		unsent.requireUnnamed(t, "the publish while NATS reconnects")
 		server.Start(t)
-		waitFor(t, 30*time.Second, "the listener's bus to answer again after its server started", func() bool {
+		testwait.Eventually(t, "the listener's bus to answer again after its server started", func() bool {
 			if !client.Connected() {
 				return false
 			}
@@ -989,36 +1090,109 @@ func TestSenderLimitCost(t *testing.T) {
 	})
 
 	// A publish whose acknowledgement does not arrive in time may have stored the message, so the
-	// 503 costs one (bus.ErrUnacknowledged). The server stops answering before the publish route's
-	// one read, the sender stamp's, which only enriches the envelope, so the publish goes out into
-	// the frozen connection and waits out the route's deadline. Thawed, the server stores what the
-	// listener sent.
+	// 503 costs one (bus.ErrUnacknowledged). The relay holds the server's answers from before the
+	// publish route's one read, the sender stamp's, which only enriches the envelope: the server
+	// answers that read into the relay, so the read ends at its own bound, which the fake is moved
+	// to. The publish then goes out and the server stores it, which the test reads in the server
+	// itself (testnats.Server.StoredOn), and only then is the fake moved to the route's budget, so
+	// the acknowledgement the relay holds is what that budget ends.
 	t.Run("topic publish answered 503 after the listener sent it, its acknowledgement lost, costs one", func(t *testing.T) {
-		lost, server := newSenderLimitRigOnServer(t)
+		lost, server, fake := newSenderLimitRigOnServer(t)
 		lost.limit(4, 1)
 		const sender = "ses_cost_publish_unacknowledged"
 		topic := "notifications.team.sender-limit-unacknowledged-" + id.New()
-		thaw := server.Freeze(t)
+		thaw := server.FreezeReplies(t)
 		t.Cleanup(thaw)
-		unacknowledged := lost.publishFrom(t, sender, topic, nil)
+		start := fake.Now()
+		served := lost.serveInBackground(publishRequestFrom(t, sender, topic, nil))
+		awaitArmedBeforeReturn(t, fake, "the sender stamp's read, which the server answers into the relay, "+senderStampReadTimeout.String()+" out",
+			deadlineArmed(armedAt(start.Add(senderStampReadTimeout))), served.returned)
+		fake.Set(start.Add(senderStampReadTimeout))
+		untilBeforeAnswer(t, served, "the server to store the publish whose acknowledgement the relay holds", func() (uint64, bool) {
+			stored := server.StoredOn(t, bus.Stream, topic)
+			return stored, stored == 1
+		})
+		fake.Set(start.Add(sendRequestBudget))
+		unacknowledged := served.answer(t, "the publish's answer once its budget was spent")
 		thaw()
 		unacknowledged.requireStatus(t, "the publish whose acknowledgement was lost", http.StatusServiceUnavailable)
 		unacknowledged.requireOutcome(t, "the publish whose acknowledgement was lost", outcomeBusUnavailable)
 		unacknowledged.requireNamed(t, "the publish whose acknowledgement was lost", sender)
-		waitFor(t, 10*time.Second, "the stream to store the publish the frozen server held", func() bool {
-			return lost.storedOn(t, topic) == 1
-		})
+		if stored := lost.storedOn(t, topic); stored != 1 {
+			t.Fatalf("the stream holds %d messages on %s after the thaw, want the one publish whose acknowledgement was lost", stored, topic)
+		}
 		lost.requireCount(t, sender, false)
 	})
 
 	// The same holds for a send to a target with an entry. Its target is read before the publish,
-	// so the server stops answering later: a stand-in for the target's plugin freezes it as the
-	// send's connection probe reaches it and answers nothing, which the probe reads as connected.
+	// from the cache, and the send then probes it: a stand-in for the target's plugin hears the
+	// probe and answers nothing, which the probe reads as connected once its second has run on the
+	// fake. The relay holds the server's answers from the moment the probe's own flush is answered,
+	// which a flush of the test's own on the listener's connection, sent after it and answered
+	// after it, shows: a flush the relay held would wait out nats.go's own timeout, on the
+	// machine's clock. The publish then goes out and the server stores it, and only then is the
+	// fake moved to the send's budget.
 	t.Run("send to a live target answered 503 after the listener sent it, its acknowledgement lost, costs one", func(t *testing.T) {
-		lost, server := newSenderLimitRigOnServer(t)
+		lost, server, fake := newSenderLimitRigOnServer(t)
 		lost.limit(4, 1)
 		const sender, target = "ses_cost_send_unacknowledged", "ses_cost_send_unacknowledged_target"
 		lost.register(t, target, nil)
+		probed := make(chan struct{})
+		var heard sync.Once
+		plugin := testnats.Connect(t, lost.url)
+		t.Cleanup(plugin.Close)
+		if _, err := plugin.Subscribe(bus.DeliverSubject(target), func(msg *natsgo.Msg) {
+			if msg.Header.Get(bus.ConnectionProbeHeader) != "" {
+				heard.Do(func() { close(probed) })
+			}
+		}); err != nil {
+			t.Fatalf("subscribe %s's relay subject: %v", target, err)
+		}
+		if err := plugin.Flush(); err != nil {
+			t.Fatalf("flush the relay subscription: %v", err)
+		}
+		start := fake.Now()
+		served := lost.serveInBackground(sendRequestFrom(t, sender, target, nil))
+		untilBeforeAnswer(t, served, "the send's probe to reach the target's plugin", func() (struct{}, bool) {
+			select {
+			case <-probed:
+				return struct{}{}, true
+			default:
+				return struct{}{}, false
+			}
+		})
+		lost.flushBehind(t)
+		thaw := server.FreezeReplies(t)
+		t.Cleanup(thaw)
+		awaitArmedBeforeReturn(t, fake, "the probe's second, "+connectionProbeTimeout.String()+" out",
+			deadlineArmed(armedAt(start.Add(connectionProbeTimeout))), served.returned)
+		fake.Set(start.Add(connectionProbeTimeout))
+		subject := contracts.LegacyAgentSubject(target)
+		untilBeforeAnswer(t, served, "the server to store the send whose acknowledgement the relay holds", func() (uint64, bool) {
+			stored := server.StoredOn(t, bus.Stream, subject)
+			return stored, stored == 1
+		})
+		fake.Set(start.Add(sendRequestBudget))
+		unacknowledged := served.answer(t, "the send's answer once its budget was spent")
+		thaw()
+		unacknowledged.requireStatus(t, "the send whose acknowledgement was lost", http.StatusServiceUnavailable)
+		unacknowledged.requireOutcome(t, "the send whose acknowledgement was lost", outcomeBusUnavailable)
+		unacknowledged.requireNamed(t, "the send whose acknowledgement was lost", sender)
+		if stored := lost.storedOn(t, subject); stored != 1 {
+			t.Fatalf("the stream holds %d messages on %s after the thaw, want the one send whose acknowledgement was lost", stored, subject)
+		}
+		lost.requireCount(t, sender, false)
+	})
+
+	t.Run("role send whose receipt times out (504) costs one", func(t *testing.T) {
+		frozen, server, fake := newSenderLimitRigOnServer(t)
+		frozen.limit(4, 1)
+		const sender, holder, role = "ses_cost_timed_out", "ses_cost_timed_out_holder", "cost-timed-out"
+		claimRoleFor(t, frozen.deps.registry, frozen.deps.sessions, holder, role, nil)
+		// The holder answers no receipt: a forward is delivered once the stream acknowledges
+		// storing it (startRoleForward). The server stops answering as the first forward goes
+		// out, after the send resolved its holder live, so no acknowledgement arrives, and the
+		// fake is moved to the end of the send's window only then.
 		thaws := make(chan func(), 1)
 		t.Cleanup(func() {
 			select {
@@ -1028,56 +1202,26 @@ func TestSenderLimitCost(t *testing.T) {
 			}
 		})
 		var freeze sync.Once
-		plugin := testnats.Connect(t, lost.url)
-		t.Cleanup(plugin.Close)
-		if _, err := plugin.Subscribe(bus.DeliverSubject(target), func(msg *natsgo.Msg) {
-			if msg.Header.Get(bus.ConnectionProbeHeader) != "" {
-				freeze.Do(func() { thaws <- server.Freeze(t) })
-			}
-		}); err != nil {
-			t.Fatalf("subscribe %s's relay subject: %v", target, err)
-		}
-		if err := plugin.Flush(); err != nil {
-			t.Fatalf("flush the relay subscription: %v", err)
-		}
-		unacknowledged := lost.sendFrom(t, sender, target, nil)
-		select {
-		case thaw := <-thaws:
-			thaw()
-		default:
-			t.Fatalf("the send probed nothing, so its publish met no frozen server; body %s", unacknowledged.raw)
-		}
-		unacknowledged.requireStatus(t, "the send whose acknowledgement was lost", http.StatusServiceUnavailable)
-		unacknowledged.requireOutcome(t, "the send whose acknowledgement was lost", outcomeBusUnavailable)
-		unacknowledged.requireNamed(t, "the send whose acknowledgement was lost", sender)
-		waitFor(t, 10*time.Second, "the stream to store the send the frozen server held", func() bool {
-			return lost.storedOn(t, contracts.LegacyAgentSubject(target)) == 1
-		})
-		lost.requireCount(t, sender, false)
-	})
-
-	t.Run("role send whose receipt times out (504) costs one", func(t *testing.T) {
-		frozen, server := newSenderLimitRigOnServer(t)
-		frozen.limit(4, 1)
-		const sender, holder, role = "ses_cost_timed_out", "ses_cost_timed_out_holder", "cost-timed-out"
-		claimRoleFor(t, frozen.deps.registry, frozen.deps.sessions, holder, role, nil)
-		// The holder answers no receipt: a forward is delivered once the stream acknowledges
-		// storing it (startRoleForward). The server stops answering as the first forward goes
-		// out, after the send resolved its holder live, so no acknowledgement arrives and every
-		// later resolution waits out the window.
-		var thaw func()
 		frozen.interceptForwards(func(_ int, forward func() (func() error, error)) (func() error, error) {
-			if thaw == nil {
-				thaw = server.Freeze(t)
-				t.Cleanup(thaw)
-			}
+			freeze.Do(func() { thaws <- server.Freeze(t) })
 			return forward()
 		})
 		before := len(frozen.harness.logs.String())
-		timedOut := frozen.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
-		if thaw == nil {
-			t.Fatalf("the role send forwarded nothing, so no acknowledgement was stopped; body %s", timedOut.raw)
-		}
+		start := fake.Now()
+		served := frozen.serveInBackground(publishRequestFrom(t, sender, contracts.RoleTopicPrefix+role, nil))
+		thaw := untilBeforeAnswer(t, served, "the role send's first forward, which freezes the server", func() (func(), bool) {
+			select {
+			case thaw := <-thaws:
+				return thaw, true
+			default:
+				return nil, false
+			}
+		})
+		t.Cleanup(thaw)
+		awaitArmedBeforeReturn(t, fake, "the role send's window, "+publishDeliveryWindow.String()+" out",
+			deadlineArmed(armedAt(start.Add(publishDeliveryWindow))), served.returned)
+		fake.Set(start.Add(publishDeliveryWindow))
+		timedOut := served.answer(t, "the role send's answer once its window ended")
 		thaw()
 		timedOut.requireStatus(t, "the role send whose window ended", http.StatusGatewayTimeout)
 		timedOut.requireOutcome(t, "the role send whose window ended", outcomeDeliveryFailed)
@@ -1130,9 +1274,7 @@ func TestSenderLimitCost(t *testing.T) {
 		forwards := released.loseFirstForwardAck(func() {
 			// The claim names no process, so the release is the forced one DELETE
 			// /v1/interests/<session_id> makes (store.RoleReleaseAuthority.Force).
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := released.deps.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
+			if _, err := released.deps.registry.Remove(testwait.Context(t), holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
 				t.Fatalf("release %s's claim of %s: %v", holder, role, err)
 			}
 		})

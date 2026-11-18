@@ -21,19 +21,19 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 	if err := w.pin(publishAcknowledgementTimeout); err != nil {
 		t.Fatalf("pin the window's connection: %v", err)
 	}
-	flushWithin := func(deadline time.Time) error {
+	flushWithin := func(left time.Duration) error {
 		t.Helper()
 		before := observe(w.conn)
 		if err := w.conn.Publish(subject, []byte("{}")); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
-		return confirmFlushed(w.conn, subject, before, deadline)
+		return confirmFlushed(w.conn, subject, before, left)
 	}
-	if err := flushWithin(time.Now().Add(5 * time.Second)); err != nil {
+	if err := flushWithin(5 * time.Second); err != nil {
 		t.Fatalf("control: a flush with its window to spend answered %v", err)
 	}
 
-	spent := flushWithin(time.Now().Add(-time.Second))
+	spent := flushWithin(-time.Second)
 	if spent == nil {
 		t.Fatal("a flush whose window was spent answered nil")
 	}

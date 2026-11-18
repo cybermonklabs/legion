@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nkeys"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // seedFile writes contents to a 0600 file and returns its path.
@@ -362,31 +362,35 @@ func costInputs() []struct{ name, text string } {
 	}
 }
 
-// HoldsSeed's cost is linear in its input, so each 1 MiB input returns well inside costBound. The
-// bound is not a performance target: it separates linear from quadratic. A quadratic cost at 1 MiB
-// takes hours (the recursive decoding this replaced took 8.9 s at 32 KiB, and 51 s under the race
-// detector, four times as long per doubling). The slowest input here, the windows that every
-// decoding rescans, took at most 280 ms, and 1.35 s under the race detector, over three runs on a
-// 24-core workstation: 35 and 7 times under the bound. CI runs it under the race detector (the
-// envoy-go-race job in ci.yaml) and nowhere else, so the 1.35 s run is the timing that must hold:
-// a runner slower and busier than that workstation still passes it, while a quadratic regression
-// cannot.
+// HoldsSeed's cost is linear in its input: the work it does on each 1 MiB input stays under the
+// bound its own doc allows (bus.HoldsSeedLinearBound), which is the bytes its scans and decodings
+// read, the letters its runs move and the letters of the windows it checksums. The count, not a
+// duration, is what separates linear from quadratic: the recursive decoding this replaced rescanned
+// the text per window, which at 1 MiB is some 10^12 units of this count against the 10^8 the bound
+// allows, and took 8.9 s at 32 KiB where the count is already thousands of times over. The slowest
+// input here is the one whose seed-like windows every decoding rescans.
 func TestHoldsSeedCostIsLinear(t *testing.T) {
-	const costBound = 10 * time.Second
 	for _, in := range costInputs() {
 		t.Run(in.name, func(t *testing.T) {
-			done := make(chan bool, 1)
-			start := time.Now()
-			go func() { done <- bus.HoldsSeed(in.text) }()
-			select {
-			case found := <-done:
-				if found {
-					t.Fatal("HoldsSeed found a seed in a value that holds none")
-				}
-				t.Logf("%d bytes in %v", len(in.text), time.Since(start))
-			case <-time.After(costBound):
-				t.Fatalf("HoldsSeed did not return within %v on %d bytes", costBound, len(in.text))
+			type reading struct {
+				found bool
+				work  int
 			}
+			done := make(chan reading, 1)
+			go func() {
+				found, work := bus.HoldsSeedWork(in.text)
+				done <- reading{found: found, work: work}
+			}()
+			// A cost that grew with the square of the input would not return at all within the
+			// test binary's deadline, so the wait names it before the count can.
+			got := testwait.Receive(t, fmt.Sprintf("HoldsSeed to answer for %d bytes", len(in.text)), done)
+			if got.found {
+				t.Fatal("HoldsSeed found a seed in a value that holds none")
+			}
+			if bound := bus.HoldsSeedLinearBound(len(in.text)); got.work > bound {
+				t.Fatalf("HoldsSeed did %d units of work on %d bytes, want at most the %d its linear cost allows", got.work, len(in.text), bound)
+			}
+			t.Logf("%d bytes cost %d units of work, of the %d allowed", len(in.text), got.work, bus.HoldsSeedLinearBound(len(in.text)))
 		})
 	}
 }

@@ -148,24 +148,15 @@ test.skipIf(skip)(
     expect(jjLog?.text).toContain("role tools scratch");
     // A cgroup line: `hierarchy:controllers:path`, under either cgroup version.
     expect(cgroup?.text).toMatch(/^\d+:.*:/m);
-  },
-  120_000
+  }
 );
 
-test.skipIf(skip)(
-  "a reviewer writes, reads and edits a file; jj undo --help runs",
-  async () => {
-    const pane = await toolsPane(setup(), { role: "reviewer", root: false }, SCRATCH_TURNS);
-    await expectEverySucceeded(pane, 4);
-  },
-  120_000
-);
+test.skipIf(skip)("a reviewer writes, reads and edits a file; jj undo --help runs", async () => {
+  const pane = await toolsPane(setup(), { role: "reviewer", root: false }, SCRATCH_TURNS);
+  await expectEverySucceeded(pane, 4);
+});
 
-test.skipIf(skip)(
-  "a merger writes, reads and edits a file; jj undo --help runs",
-  async () => {
-    const pane = await toolsPane(setup(), { role: "merger", root: false }, SCRATCH_TURNS);
-    await expectEverySucceeded(pane, 4);
-  },
-  120_000
-);
+test.skipIf(skip)("a merger writes, reads and edits a file; jj undo --help runs", async () => {
+  const pane = await toolsPane(setup(), { role: "merger", root: false }, SCRATCH_TURNS);
+  await expectEverySucceeded(pane, 4);
+});

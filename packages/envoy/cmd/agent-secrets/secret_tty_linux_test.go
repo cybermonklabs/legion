@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 
@@ -83,8 +84,7 @@ type promptRead struct {
 
 // typeAtPrompt starts readHidden at a fresh terminal and, once it has turned echo off, writes typed
 // to the controller as a terminal emulator does for a person's keys or a paste. It answers the
-// pseudo-terminal and the reader's answer, failing t if the reader has not answered within two
-// seconds.
+// pseudo-terminal and the reader's answer.
 func typeAtPrompt(t *testing.T, typed string) (*os.File, int, promptRead) {
 	t.Helper()
 	return typeAtPromptInWrites(t, 0, typed)
@@ -109,24 +109,14 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 			t.Fatal(err)
 		}
 	}
-	select {
-	case got := <-answer:
-		return controller, terminal, got
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the reader did not return within 2s of %q being typed", writes)
-		return nil, 0, promptRead{}
-	}
+	return controller, terminal, testwait.Receive(t, fmt.Sprintf("the reader's answer to %q", writes), answer)
 }
 
-// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after ten
-// seconds: a prompt in a process of its own may take a while to start on a loaded machine.
+// awaitEchoOff waits until the prompt has turned the terminal's echo off: a prompt in a process
+// of its own may take a while to start on a loaded machine.
 func awaitEchoOff(t *testing.T, terminal int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the reader never turned echo off")
-		}
-	}
+	testwait.Eventually(t, "the reader to turn echo off", func() bool { return lflag(t, terminal)&unix.ECHO == 0 })
 }
 
 // TestPromptEndsAtTheValueDeadline: a prompt handed a deadline (a create's value read) that gets
@@ -141,13 +131,8 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 		answer <- promptRead{line, err}
 	}()
 	awaitEchoOff(t, terminal)
-	select {
-	case got := <-answer:
-		if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
-			t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the prompt was still reading 10s on, past its 500ms deadline")
+	if got := testwait.Receive(t, "the prompt to give up at its 500ms deadline", answer); got.line != nil || !errors.Is(got.err, errValueTimedOut) {
+		t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
 	}
 	if lflag(t, terminal)&unix.ECHO == 0 {
 		t.Fatal("the prompt left echo off at its deadline")
@@ -161,10 +146,25 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 // shell. The rest is typed once the prompt has either said so or answered, whichever comes first,
 // so a prompt that gives the entry up at the deadline shows the rest reaching the shell. The
 // pseudo-terminal is not this process's controlling terminal, so no key of it sends a signal: the
-// reason the notice reads names no interrupt key, and no open paste.
+// reason the notice reads names no interrupt key, and no open paste. The reader's first wait lasts
+// until input comes, however late, as the helper's AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY has it, so
+// the entry is under way when the deadline passes however late its first key is written; the reader
+// bounds each wait after that input by the deadline itself, so the deadline, never the moment the
+// test's write lands, decides when the prompt refuses the entry.
 func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	controller, terminal := openPTY(t)
 	deadline := time.Now().Add(2 * time.Second)
+	real := readTerminal
+	t.Cleanup(func() { readTerminal = real })
+	readSome := false
+	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		if !readSome {
+			timeout = -1
+		}
+		n, err := real(fd, wake, buf, timeout)
+		readSome = readSome || n > 0
+		return n, err
+	}
 	noticed := make(chan error, 1)
 	answer := make(chan promptRead, 1)
 	go func() {
@@ -175,29 +175,29 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	if _, err := controller.Write([]byte("fakehead-")); err != nil {
 		t.Fatal(err)
 	}
-	var early *promptRead
-	select {
-	case reason := <-noticed:
-		var notice valueDeadlineNotice
-		if !errors.Is(reason, errValueTimedOut) || !errors.As(reason, &notice) || notice.interrupt != 0 || notice.inPaste {
-			t.Fatalf("the prompt refused the entry for %#v; want a valueDeadlineNotice naming no interrupt key and no open paste, on a terminal that is not the controlling one", reason)
+	// The prompt either says at its 2s deadline that it refused the entry, or answers: whichever
+	// comes first is read, and the rest is typed only after it.
+	early := testwait.Until(t, "the prompt to refuse the entry at its 2s deadline, or to answer", func() (*promptRead, bool) {
+		select {
+		case reason := <-noticed:
+			var notice valueDeadlineNotice
+			if !errors.Is(reason, errValueTimedOut) || !errors.As(reason, &notice) || notice.interrupt != 0 || notice.inPaste {
+				t.Fatalf("the prompt refused the entry for %#v; want a valueDeadlineNotice naming no interrupt key and no open paste, on a terminal that is not the controlling one", reason)
+			}
+			return nil, true
+		case got := <-answer:
+			return &got, true
+		default:
+			return nil, false
 		}
-	case got := <-answer:
-		early = &got
-	case <-time.After(10 * time.Second):
-		t.Fatal("the prompt neither refused the entry nor answered 10s on, past its 2s deadline")
-	}
+	})
 	if _, err := controller.Write([]byte("FAKETAIL\r")); err != nil {
 		t.Fatal(err)
 	}
 	got := early
 	if got == nil {
-		select {
-		case read := <-answer:
-			got = &read
-		case <-time.After(10 * time.Second):
-			t.Fatal("the prompt had not answered 10s after the entry's line ended")
-		}
+		read := testwait.Receive(t, "the prompt to answer once the entry's line ended", answer)
+		got = &read
 	}
 	if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
 		t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
@@ -212,7 +212,11 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 // closes only once the window is over - is not stored: the prompt reads that paste through its
 // closing mark, and the create then refuses the value as one that did not come in time, never
 // calling AddSecretVersion, deletes the empty secret it made, asks the broker to reread the name,
-// and exits 1 naming the window and the command to run again.
+// and exits 1 naming the window and the command to run again. The create hands the prompt the
+// moment its window ends; the test reads that moment as data, and the prompt here reads with no
+// deadline of its own and holds every wait open until input comes, until the test closes the paste.
+// So neither the create's own start nor any write of the test races the window or the quiet window
+// after the line, and readSecretValue's own check of the deadline, which this test is about, decides.
 func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	controller, terminal := openPTY(t)
 	const window = 2 * time.Second
@@ -225,17 +229,28 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 	useTerminal(t)
 	stdinTerminal = func(io.Reader) (int, bool) { return terminal, true }
-	readHidden = readHiddenAtTerminal
+	deadlines := make(chan time.Time, 1)
+	readHidden = func(fd int, deadline time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
+		deadlines <- deadline
+		return readHiddenAtTerminal(fd, time.Time{}, prompt, onDiscard)
+	}
 	real := readTerminal
 	t.Cleanup(func() { readTerminal = real })
 	// draining closes at the reader's first wait after the read that ended the line: the drain of
-	// what follows the line. The terminal turns the typed carriage return into a line feed.
-	draining := make(chan struct{})
+	// what follows the line. The terminal turns the typed carriage return into a line feed. Until
+	// closing is closed, just before the paste's close mark is written, every wait lasts until input
+	// comes, so neither the quiet window after the line nor the bound inside the paste ends by a clock.
+	draining, closing := make(chan struct{}), make(chan struct{})
 	lineEnded, drainSeen := false, false
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
 		if lineEnded && !drainSeen {
 			drainSeen = true
 			close(draining)
+		}
+		select {
+		case <-closing:
+		default:
+			timeout = -1
 		}
 		n, err := real(fd, wake, buf, timeout)
 		if n > 0 && bytes.ContainsAny(buf[:n], "\r\n") {
@@ -253,34 +268,31 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 		done <- result{stderr, code}
 	}()
 	awaitEchoOff(t, terminal)
-	// The create asked the store for the secret before the prompt turned echo off, so its window
-	// is over by then.
-	windowEnds := time.Now().Add(window)
+	deadline := testwait.Receive(t, "the create to hand the prompt its deadline", deadlines)
+	if deadline.IsZero() {
+		t.Fatal("the create read its value with no deadline")
+	}
 	if _, err := controller.Write([]byte("typed-value\r")); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-draining:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the prompt never drained what follows the line")
-	}
+	testwait.Receive(t, "the prompt to drain what follows the line", draining)
 	if _, err := controller.Write([]byte("\x1b[200~")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Until(windowEnds) + 300*time.Millisecond)
+	// The stand-in for the person: the paste closes only once the create's window (valueReadWindow,
+	// 2s here) has passed by the wall clock, which readSecretValue reads. No verdict reads this
+	// sleep: a loaded machine only makes the paste's close later.
+	time.Sleep(time.Until(deadline))
+	close(closing)
 	if _, err := controller.Write([]byte("\x1b[201~")); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-done:
-		if got.code != 1 || !strings.Contains(got.stderr, "no value came in time, within 2s") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
-			t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
-		}
-		if !regexp.MustCompile(`Enter the value by \d\d:\d\d:\d\d \S+, 2s after the create, or nothing is stored\.\nValue for NEW_TEST: `).MatchString(got.stderr) {
-			t.Fatalf("stderr %q; want the prompt to name the time its value must come by, then its label", got.stderr)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the create had not ended 20s after the paste closed")
+	got := testwait.Receive(t, "the create to end once the paste closed", done)
+	if got.code != 1 || !strings.Contains(got.stderr, "no value came in time, within 2s") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
+		t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
+	}
+	if !regexp.MustCompile(`Enter the value by \d\d:\d\d:\d\d \S+, 2s after the create, or nothing is stored\.\nValue for NEW_TEST: `).MatchString(got.stderr) {
+		t.Fatalf("stderr %q; want the prompt to name the time its value must come by, then its label", got.stderr)
 	}
 	if calls := fake.called(); slices.Contains(calls, "AddSecretVersion") {
 		t.Fatalf("Secret Manager calls %v; want no AddSecretVersion for a value that ended past its window", calls)
@@ -368,13 +380,8 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 	if _, err := controller.Write([]byte("value\r")); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-answer:
-		if got.err != nil || string(got.line) != "value" {
-			t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "value")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the reader did not return within 2s")
+	if got := testwait.Receive(t, "the reader's answer", answer); got.err != nil || string(got.line) != "value" {
+		t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "value")
 	}
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("IEXTEN is off after the prompt returned")
@@ -541,22 +548,13 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			if _, err := controller.Write([]byte(tc.paste)); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-consumed:
-			case <-time.After(2 * time.Second):
-				t.Fatal("the reader did not read the paste within 2s")
-			}
+			testwait.Receive(t, "the reader to read the paste", consumed)
 			if err := controller.Close(); err != nil {
 				t.Fatal(err)
 			}
 			close(hungUp)
-			select {
-			case got := <-answer:
-				if !errors.Is(got.err, tc.want) || got.line != nil {
-					t.Fatalf("readHidden = %q, %v; want no value and %v", got.line, got.err, tc.want)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("the reader did not return within 2s of the hang-up")
+			if got := testwait.Receive(t, "the reader's answer to the hang-up", answer); !errors.Is(got.err, tc.want) || got.line != nil {
+				t.Fatalf("readHidden = %q, %v; want no value and %v", got.line, got.err, tc.want)
 			}
 		})
 	}
@@ -603,18 +601,14 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
 			awaitEchoOff(t, terminal)
 			if _, err := controller.Write([]byte{0x03}); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				_ = cmd.Process.Kill()
-				t.Fatalf("the process did not end within 10s of Ctrl-C; the terminal showed %q", shown(t, controller))
-			}
+			testwait.Receive(t, "the process to end on Ctrl-C", done)
 			status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 			out := shown(t, controller)
 			if tc.name == "the prompt alone" && (!status.Signaled() || status.Signal() != syscall.SIGINT) {
@@ -655,18 +649,14 @@ func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	tty.Close()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	awaitEchoOff(t, terminal)
 	if _, err := controller.Write([]byte{0x1c}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("the process did not quit within 10s of Ctrl-\\")
-	}
+	testwait.Receive(t, "the process to quit on Ctrl-\\", done)
 	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	out := shown(t, controller)
 	if !status.Signaled() || status.Signal() != syscall.SIGQUIT {

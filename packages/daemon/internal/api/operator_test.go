@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
@@ -124,7 +125,7 @@ func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
 	// One wake a minute, its burst already taken by another claim of this daemon, so the next
 	// reservation is a minute out: that is the wait a paced spawn would be held for.
 	limiter := wakepace.New(1, 1, nil)
-	now := stillClock{}.Now()
+	now := stillMoment
 	limiter.Reserve(now)
 	if at := limiter.Reserve(now); !at.After(now) {
 		t.Fatalf("the limiter reserved %s for a spent queue, want a moment after %s", at, now)
@@ -1684,13 +1685,7 @@ func TestForgetSessionRechecksItsSessionInsideTheMachine(t *testing.T) {
 		response <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/forget-session",
 			map[string]string{"session": "ses_architect"})
 	}()
-	select {
-	case <-snapshotted:
-	case recorder := <-response:
-		t.Fatalf("forget-session completed before its snapshot hook: %d %s", recorder.Code, recorder.Body)
-	case <-time.After(time.Second):
-		t.Fatal("forget-session did not reach its snapshot hook")
-	}
+	awaitForgetSnapshot(t, snapshotted, response)
 
 	machine, _ := h.supervisor.Machine(architectToken)
 	if err := machine.Handle(h.ctx, supervise.RequestForgetSession{Claim: architectToken, Session: "ses_architect"}); err != nil {
@@ -1750,13 +1745,7 @@ func TestForgetSessionRefusesDaemonStopAfterPreflight(t *testing.T) {
 		response <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/forget-session",
 			map[string]string{"session": "ses_architect"})
 	}()
-	select {
-	case <-snapshotted:
-	case recorder := <-response:
-		t.Fatalf("forget-session completed before its snapshot hook: %d %s", recorder.Code, recorder.Body)
-	case <-time.After(time.Second):
-		t.Fatal("forget-session did not reach its snapshot hook")
-	}
+	awaitForgetSnapshot(t, snapshotted, response)
 	beginStop()
 	close(resumeForget)
 
@@ -1764,6 +1753,22 @@ func TestForgetSessionRefusesDaemonStopAfterPreflight(t *testing.T) {
 	if got := h.stored(architectToken); got.State != supervise.StateSuspended || got.Session != "ses_architect" || got.SessionFile != "/sessions/ses_architect.jsonl" {
 		t.Fatalf("stopped forget changed the claim to %+v", got)
 	}
+}
+
+// awaitForgetSnapshot waits for forget-session to reach its snapshot hook, and fails at once if
+// the request answers first, which makes the hook's call impossible.
+func awaitForgetSnapshot(t *testing.T, snapshotted <-chan struct{}, response <-chan *httptest.ResponseRecorder) {
+	t.Helper()
+	testwait.Eventually(t, "forget-session to reach its snapshot hook", func() bool {
+		select {
+		case <-snapshotted:
+			return true
+		case recorder := <-response:
+			t.Fatalf("forget-session completed before its snapshot hook: %d %s", recorder.Code, recorder.Body)
+		default:
+		}
+		return false
+	})
 }
 
 // The claim listing carries what the daemon's last pod-update sweep decided beside the claims

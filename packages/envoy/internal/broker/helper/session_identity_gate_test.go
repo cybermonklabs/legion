@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // otherBootID is a boot id no running kernel has: any well-formed UUID that is not this boot's.
@@ -472,16 +473,13 @@ func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecd
 		amend(&recs[0])
 		writeRecords(t, state, recs)
 	}
-	r := newRig(t, state)
+	r := newRigOn(t, state)
 	gate, release := testGate(t)
 	// The confirming renew this gate holds is a FIRST confirmation, so the helper bounds it
-	// (Server.FirstConfirmBound, DefaultFirstConfirmBound = 3 s in production). The rows here
-	// hold the gate across that confirmation and release it in milliseconds, and the renew
-	// must still be the one that lands when they do: a bound of a minute is past anything but
-	// a hung host, so a loaded CI box cannot turn their ordering into a race with the bound.
-	// A variant that opens the gate at once is unaffected either way, and one that reads the
-	// bound itself (reclaimedIdentityRigNeverAnswering) sets its own.
-	r.srv.FirstConfirmBound = time.Minute
+	// (Server.FirstConfirmBound, DefaultFirstConfirmBound = 3 s in production). That bound is
+	// armed on this rig's own clock, which no row moves unless it is the bound it reads, so
+	// the rows that hold the gate across the confirmation and release it cannot race it at
+	// all, however loaded the host.
 	r.fake.mu.Lock()
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
@@ -538,14 +536,15 @@ func reclaimedIdentityRigFailingRenew(t *testing.T) *rig {
 
 // reclaimedIdentityRigNeverAnswering is that same fixture against the outage the bound exists
 // for: a broker that ACCEPTS the connection and never answers, which the gate — held, and
-// never released by the row — is exactly. bound is the row's own FirstConfirmBound, short so
-// the row is quick; the renew that the first confirmation sends then runs into it instead of
-// into the helper's whole client timeout (leasetime.RenewClientTimeout, 30 s). The gate still
-// opens at cleanup, before the fake's Close, so no held request outlives the row.
-func reclaimedIdentityRigNeverAnswering(t *testing.T, bound time.Duration) *rig {
+// never released by the row — is exactly. The first confirmation's renew then runs into
+// FirstConfirmBound, the production DefaultFirstConfirmBound, which the row fires on this
+// rig's clock rather than waiting out; unbounded it would run into the helper's whole client
+// timeout (leasetime.RenewClientTimeout, 30 s). The gate still opens at cleanup, before the
+// fake's Close, so no held request outlives the row.
+func reclaimedIdentityRigNeverAnswering(t *testing.T) *rig {
 	t.Helper()
 	r, _, _, _ := reclaimedIdentityRig(t)
-	r.srv.FirstConfirmBound = bound
+	r.srv.FirstConfirmBound = DefaultFirstConfirmBound
 	return r
 }
 
@@ -555,9 +554,9 @@ func reclaimedIdentityRigNeverAnswering(t *testing.T, bound time.Duration) *rig 
 // what that renew read when it started and what the waiting register reads are two different
 // readings of the same credential (DefaultFirstConfirmBound). The login is taken after the rig
 // is built, so the register that admits the session is still the first call the row makes.
-func reclaimedIdentityRigLoggedInNeverAnswering(t *testing.T, bound time.Duration) *rig {
+func reclaimedIdentityRigLoggedInNeverAnswering(t *testing.T) *rig {
 	t.Helper()
-	r := reclaimedIdentityRigNeverAnswering(t, bound)
+	r := reclaimedIdentityRigNeverAnswering(t)
 	r.login(t)
 	return r
 }
@@ -769,7 +768,8 @@ func TestATransientRenewFailureDoesNotCostTheInheritedEnrollment(t *testing.T) {
 // enrolls again and abandons the live enrollment the session has just proved — the very loss
 // this change exists to prevent. A wake counts only while the identity has in fact moved on.
 func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
-	r := startRig(t, "")
+	r := newRigOn(t, "")
+	r.login(t)
 	sess, err := newSession(1000, 1, "testhost:1000:1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -781,11 +781,14 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan bool, 1)
-	go func() { done <- r.srv.renewLoop(ctx, sess, time.Now().Add(time.Hour), served) }()
+	go func() { done <- r.srv.renewLoop(ctx, sess, r.clock.Now().Add(time.Hour), served) }()
+	// The loop took the left-over wake and went back to its wait: it arms its renew wait a
+	// second time, which a loop that had acted on the wake and returned would never do.
+	r.clock.AwaitArmed(t, "the renew loop's wait, armed again after the left-over wake", 2)
 	select {
 	case <-done:
 		t.Fatal("a wake left over from before this enrollment sent the session back to the enroll, abandoning a live enrollment")
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 
 	// A wake for an identity that really has moved on still ends the loop at once.
@@ -793,13 +796,8 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 		t.Fatal("rename")
 	}
 	sess.wakeEnroll()
-	select {
-	case again := <-done:
-		if !again {
-			t.Fatal("a rename's wake must send the session to the enroll, not end its loops")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a rename's wake did not reach the renew loop")
+	if again := testwait.Receive(t, "a rename's wake to reach the renew loop", done); !again {
+		t.Fatal("a rename's wake must send the session to the enroll, not end its loops")
 	}
 }
 
@@ -915,9 +913,10 @@ func TestARenameDuringTheOldRevokeRevokesTheNewBlockerFirst(t *testing.T) {
 	r.srv.Registry.Add(sess)
 	t.Cleanup(func() { r.srv.Registry.Remove(sess) })
 
-	// Hold the removal of enr-old long enough for the rename to land under it.
+	// Hold the removal of enr-old at the gate until the rename has landed under it.
+	gate, open := testGate(t)
 	r.fake.mu.Lock()
-	r.fake.revokeFirstDelay = 500 * time.Millisecond
+	r.fake.revokeFirstGate = gate
 	r.fake.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -933,6 +932,7 @@ func TestARenameDuringTheOldRevokeRevokesTheNewBlockerFirst(t *testing.T) {
 		t.Fatal("rename")
 	}
 	takeLapsed(sess, []string{"enr-blocking"}, true)
+	open() // the revoke of enr-old finishes now, after the rename it raced
 
 	waitFor(t, func() bool { return sess.snapshot().State == "enrolled" })
 	if got := sess.RuntimeID(); got != SessionRuntimeID(testSessionID) {
@@ -982,7 +982,8 @@ func TestARegisterForASessionTheRegistryNoLongerHoldsIsRefused(t *testing.T) {
 // closing its stop. The reply must then be NOT_A_SESSION, not OK with the identity of a session
 // nothing live holds and the sweep is about to revoke.
 func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
-	r := startRig(t, "") // logged in, so the reply actually waits
+	r := newRigOn(t, "") // its clock never moves, so only the retire can end the wait below
+	r.login(t)           // logged in, so the reply actually waits
 	sess, err := newSession(4242, 1, "testhost:4242:1", testSessionID, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -992,12 +993,7 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 	go func() { done <- r.srv.registerReply(sess, 5*time.Second) }()
 	// Retire it while the reply is mid-wait; Remove closes its stop, which wakes the wait.
 	r.srv.Registry.Remove(sess)
-	select {
-	case resp := <-done:
-		if resp.OK || resp.Code != CodeNotASession {
-			t.Fatalf("a register whose session retired mid-wait got %+v, want NOT_A_SESSION", resp)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("registerReply did not return after its session retired")
+	if resp := testwait.Receive(t, "registerReply to return once its session retired", done); resp.OK || resp.Code != CodeNotASession {
+		t.Fatalf("a register whose session retired mid-wait got %+v, want NOT_A_SESSION", resp)
 	}
 }

@@ -224,25 +224,26 @@ func replay(record *os.File, file string) {
 	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
 	for i, line := range lines {
 		if i == len(lines)-1 {
-			waitForGate(record)
+			waitForGate()
 		}
 		fmt.Fprintf(os.Stdout, "%s\n", line)
 	}
 }
 
-// waitForGate waits up to 10s for the test to open the gate, and returns at once when none is set.
-func waitForGate(record *os.File) {
+// waitForGate waits for the test to open the gate, and returns at once when none is set. It is
+// the fake's own process, which no wait of the test's reaches: a gate never opened leaves it
+// waiting until the bridge ends it, and the test's wait for the line names what never came.
+func waitForGate() {
 	gate := os.Getenv(fakeClaudeGateEnv)
 	if gate == "" {
 		return
 	}
-	for range 1000 {
+	for {
 		if _, err := os.Stat(gate); err == nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	fmt.Fprintln(record, "the gate never opened")
 }
 
 // rig runs one bridge over the fake Claude: frames go in through daemon, come out on frames.
@@ -311,11 +312,7 @@ func newRigWithEnv(t *testing.T, extra []string, args ...string) *rig {
 	t.Cleanup(func() {
 		cancel()
 		_ = inW.Close()
-		select {
-		case <-r.done:
-		case <-time.After(10 * time.Second):
-			t.Error("the bridge did not end")
-		}
+		testwait.Receive(t, "the bridge's end", r.done)
 	})
 	return r
 }
@@ -334,13 +331,7 @@ func (r *rig) send(frame shimwire.Frame) {
 // nextRaw is the next frame the bridge wrote, pane summaries (tool_execution_start) included.
 func (r *rig) nextRaw() map[string]any {
 	r.t.Helper()
-	select {
-	case frame := <-r.frames:
-		return frame
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("the bridge wrote nothing within 10s")
-		return nil
-	}
+	return testwait.Receive(r.t, "the bridge's next frame", r.frames)
 }
 
 // next is the next frame the bridge wrote that is not a pane summary (tool_execution_start).
@@ -371,11 +362,11 @@ func (r *rig) expect(typ string, want map[string]any) map[string]any {
 // quiet holds that the bridge writes no frame within a short while.
 func (r *rig) quiet() {
 	r.t.Helper()
-	select {
-	case frame := <-r.frames:
-		r.t.Fatalf("got %v, want no frame", frame)
-	case <-time.After(300 * time.Millisecond):
-	}
+	testwait.Quiet(r.t, "the bridge's frames", r.frames, 300*time.Millisecond,
+		"a frame that must not come would be owed for a line of the fake Claude Code's: a real child process, "+
+			"which no synctest bubble holds, whose lines no state of the test records, and which a later request "+
+			"to the bridge is not ordered after, since the line may still be in the pipe or be the fake's answer "+
+			"to input the bridge should not have sent it")
 }
 
 // open lets a replay write the last line of its recorded stream (fakeClaudeGateEnv).
@@ -391,12 +382,15 @@ func (r *rig) recorded() string {
 	return string(raw)
 }
 
-// waitFor waits up to 10 s for holds, failing with what it waited for.
+// waitFor waits for holds; a failure prints what the bridge logged and what Claude Code recorded.
 func (r *rig) waitFor(what string, holds func() bool) {
 	r.t.Helper()
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, holds) {
-		r.t.Fatalf("waited 10s for %s; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, r.log, r.recorded())
-	}
+	testwait.Until(r.t, what, func() (string, bool) {
+		if holds() {
+			return "", true
+		}
+		return fmt.Sprintf("the bridge logged:\n%s\nClaude Code recorded:\n%s", r.log, r.recorded()), false
+	})
 }
 
 // logged waits for the bridge to log text.
@@ -421,10 +415,19 @@ func (r *rig) release(name string) {
 // inboxClient is one connection to the bridge's inbox, which claude-envoy's channel server keeps
 // for every delivery, writing each without waiting for the answers before it.
 type inboxClient struct {
-	t       *testing.T
-	conn    net.Conn
-	answers *bufio.Reader
+	t    *testing.T
+	conn net.Conn
+	// answers carries each line the inbox writes, then the error that ended the reading.
+	answers chan inboxRead
 }
+
+// inboxRead is one read of the inbox's connection: a line it wrote, or the error that ended it.
+type inboxRead struct {
+	line []byte
+	err  error
+}
+
+func (r inboxRead) String() string { return fmt.Sprintf("%q, %v", r.line, r.err) }
 
 func (r *rig) dialInbox() *inboxClient {
 	r.t.Helper()
@@ -434,7 +437,18 @@ func (r *rig) dialInbox() *inboxClient {
 		r.t.Fatal(err)
 	}
 	r.t.Cleanup(func() { _ = conn.Close() })
-	return &inboxClient{t: r.t, conn: conn, answers: bufio.NewReader(conn)}
+	answers := make(chan inboxRead, 64)
+	go func() {
+		reader := bufio.NewReader(conn)
+		for {
+			line, err := reader.ReadBytes('\n')
+			answers <- inboxRead{line: line, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return &inboxClient{t: r.t, conn: conn, answers: answers}
 }
 
 func (c *inboxClient) deliver(id, content string) {
@@ -451,19 +465,16 @@ func (c *inboxClient) deliverBlocks(id, content string, blocks []json.RawMessage
 	}
 }
 
-// answer is the inbox's next answer, which must come within 10 s.
+// answer is the inbox's next answer.
 func (c *inboxClient) answer() InboxAnswer {
 	c.t.Helper()
-	if err := c.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		c.t.Fatal(err)
-	}
-	line, err := c.answers.ReadBytes('\n')
-	if err != nil {
-		c.t.Fatalf("the inbox answered %q, %v", line, err)
+	read := testwait.Receive(c.t, "the inbox's next answer", c.answers)
+	if read.err != nil {
+		c.t.Fatalf("the inbox answered %s", read)
 	}
 	var answer InboxAnswer
-	if err := json.Unmarshal(line, &answer); err != nil {
-		c.t.Fatalf("the inbox answered %q: %v", line, err)
+	if err := json.Unmarshal(read.line, &answer); err != nil {
+		c.t.Fatalf("the inbox answered %q: %v", read.line, err)
 	}
 	return answer
 }
@@ -471,14 +482,10 @@ func (c *inboxClient) answer() InboxAnswer {
 // noAnswer holds that the inbox answers nothing within a short while.
 func (c *inboxClient) noAnswer() {
 	c.t.Helper()
-	if err := c.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
-		c.t.Fatal(err)
-	}
-	line, err := c.answers.ReadBytes('\n')
-	var timeout net.Error
-	if !errors.As(err, &timeout) || !timeout.Timeout() || len(line) > 0 {
-		c.t.Fatalf("the inbox answered %q, %v; want no answer yet", line, err)
-	}
+	testwait.Quiet(c.t, "the inbox's answers", c.answers, 300*time.Millisecond,
+		"the inbox writes an answer once the bridge's loop takes the delivery as answered, which records "+
+			"nothing the test reads; the fake Claude Code is a real child process no synctest bubble holds; and "+
+			"the inbox answers a later delivery only after this one, so no later action's effect comes first")
 }
 
 func (r *rig) prompt(id, message string) {
@@ -1052,22 +1059,19 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	defer conn.Close()
 	// An answer proves the inbox accepted the connection and serves it, so its client is one the
 	// inbox's close waits for: a malformed delivery is answered with its refusal.
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	answered := make(chan inboxRead, 1)
+	go func() {
+		line, err := bufio.NewReader(conn).ReadBytes('\n')
+		answered <- inboxRead{line: line, err: err}
+	}()
 	if _, err := conn.Write([]byte("{}\n")); err != nil {
 		t.Fatal(err)
 	}
-	if answer, err := bufio.NewReader(conn).ReadBytes('\n'); err != nil || !strings.Contains(string(answer), "an id and content") {
-		t.Fatalf("the inbox answered %q, %v", answer, err)
+	if read := testwait.Receive(t, "the inbox's refusal of a malformed delivery", answered); read.err != nil || !strings.Contains(string(read.line), "an id and content") {
+		t.Fatalf("the inbox answered %s", read)
 	}
 	r.stopped()
-	select {
-	case code := <-r.done:
-		r.done <- code
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge did not end within 10s with an inbox client connected")
-	}
+	r.done <- testwait.Receive(t, "the bridge's end with an inbox client connected", r.done)
 	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the inbox's directory %s is still there (%v)", filepath.Dir(path), err)
 	}
@@ -1102,18 +1106,22 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 		}
 		done <- code
 	}()
-	select {
-	case code := <-done:
-		if code != 128+int(syscall.SIGTERM) {
-			t.Errorf("exit status %d, want %d, Claude Code's once SIGTERM ended it:\n%s", code, 128+int(syscall.SIGTERM), logged)
+	ended := false
+	t.Cleanup(func() {
+		if ended {
+			return
 		}
-	case <-time.After(30 * time.Second):
 		// Claude Code still runs, unreaped, under a bridge that never ended.
+		t.Logf("the bridge logged:\n%s", logged)
 		if match := regexp.MustCompile(`\(pid (\d+)\)`).FindStringSubmatch(logged.String()); match != nil {
 			pid, _ := strconv.Atoi(match[1])
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		t.Fatalf("the bridge did not end within 30s of Claude Code no longer reading:\n%s", logged)
+	})
+	code := testwait.Receive(t, "the bridge's end once Claude Code no longer reads its input", done)
+	ended = true
+	if code != 128+int(syscall.SIGTERM) {
+		t.Errorf("exit status %d, want %d, Claude Code's once SIGTERM ended it:\n%s", code, 128+int(syscall.SIGTERM), logged)
 	}
 	overflow := "Claude Code has left " + strconv.Itoa(claudeQueueLength) + " lines unread"
 	if n := strings.Count(logged.String(), overflow); n != 1 {
@@ -1158,15 +1166,11 @@ func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	_ = r.daemon.Close()
-	select {
-	case code := <-r.done:
-		if code != 0 {
-			t.Errorf("exit status %d, want Claude Code's 0", code)
-		}
-		r.done <- code
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge outlived its input")
+	code := testwait.Receive(t, "the bridge's end once its input closed", r.done)
+	if code != 0 {
+		t.Errorf("exit status %d, want Claude Code's 0", code)
 	}
+	r.done <- code
 }
 
 func TestConfigure(t *testing.T) {

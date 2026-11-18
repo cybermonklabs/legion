@@ -3,7 +3,6 @@ package cireconcile
 import (
 	"reflect"
 	"testing"
-	"time"
 )
 
 // unrenamedRow is a mapping that was never renamed and sorts after the renamed pair, so a read
@@ -128,10 +127,9 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 	// inside that repository and leaves the cursor there.
 	cutAt := head(2)
 	h.github.refuseChecks(letteredRepository, cutAt.sha)
-	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", time.Minute)
-	h.reconciler.PassTimeout = 3 * time.Second
+	h.github.hold("/repos/" + letteredRepository + "/commits/" + cutAt.sha + "/check-runs")
 
-	h.pass()
+	h.passCutByItsBound()
 
 	first := h.passLine()
 	if first["deadline_reached"] != true {
@@ -144,8 +142,7 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 	if _, err := h.pool.Exec(h.ctx, `delete from repo_projects where repo = $1`, letteredRow); err != nil {
 		t.Fatalf("unmap %s: %v", letteredRow, err)
 	}
-	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", 0)
-	h.reconciler.PassTimeout = 0
+	h.github.release("/repos/" + letteredRepository + "/commits/" + cutAt.sha + "/check-runs")
 
 	h.pass()
 

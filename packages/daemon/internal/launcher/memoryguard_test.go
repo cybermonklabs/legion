@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -212,40 +213,11 @@ func (p *guardPod) showKernelKill(pid int) {
 		"State:\tR (running)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n", pid, pid))
 }
 
-// guardClock hands each wait the guard asks for to the test, which fires it: a reading is then a
-// step of the test.
-type guardClock struct {
-	mu    sync.Mutex
-	now   time.Time
-	waits chan guardWait
-}
-
-type guardWait struct {
-	d    time.Duration
-	fire chan time.Time
-}
-
-func newGuardClock() *guardClock {
-	return &guardClock{now: time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC), waits: make(chan guardWait, 16)}
-}
-
-func (c *guardClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *guardClock) After(d time.Duration) <-chan time.Time {
-	w := guardWait{d: d, fire: make(chan time.Time, 1)}
-	c.waits <- w
-	return w.fire
-}
-
-func (c *guardClock) advance(d time.Duration) time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-	return c.now
+// newGuardClock is the module's fake clock at the moment every guard of these tests starts: a
+// timer the guard or the guest watch arms on it fires only when the test moves it, so a reading or
+// a scan is a step of the test.
+func newGuardClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC))
 }
 
 // guardSignal is a kill that ends nothing of the machine's: it records each process the guard
@@ -293,18 +265,20 @@ func (h *guardHandle) Exited() bool {
 
 func (h *guardHandle) Close() error { return nil }
 
-// guardRig is the guard or the guest watch a launcher builds, pointed at a guardPod with a
-// guardClock and, for the guard, a guardSignal, one reading or scan at a time.
+// guardRig is the guard or the guest watch a launcher builds, pointed at a guardPod with the
+// module's fake clock (newGuardClock) and, for the guard, a guardSignal, one reading or scan at a
+// time.
 type guardRig struct {
-	t       *testing.T
-	pod     *guardPod
-	clock   *guardClock
-	signal  *guardSignal
-	mu      sync.Mutex
-	guard   *memoryguard.Guard
-	guest   *memoryguard.Guest
-	lines   []string
-	pending guardWait
+	t      *testing.T
+	pod    *guardPod
+	clock  *clocktest.Fake
+	signal *guardSignal
+	mu     sync.Mutex
+	guard  *memoryguard.Guard
+	guest  *memoryguard.Guest
+	lines  []string
+	// pending is the deadline of the guard's next wait.
+	pending time.Time
 }
 
 // useGuardPod has every launcher this test starts run a memory guard, as the container's first
@@ -408,23 +382,26 @@ func (r *guardRig) started() {
 	r.pending = r.nextWait()
 }
 
-func (r *guardRig) nextWait() guardWait {
+// nextWait is the deadline of the guard's next wait: the guard arms it again only once a reading,
+// and all it led to, is done.
+func (r *guardRig) nextWait() time.Time {
 	r.t.Helper()
-	select {
-	case w := <-r.clock.waits:
-		return w
-	case <-time.After(testwait.Bounded(r.t, time.Minute, time.Second)):
-		r.t.Fatalf("the guard never waited for its next reading; its log:\n%s", r.log())
-	}
-	return guardWait{}
+	var at time.Time
+	testwait.Until(r.t, "the guard's next wait for a reading (the reading is its log)", func() (string, bool) {
+		if armed := r.clock.Armed(); len(armed) > 0 {
+			at = armed[0]
+			return "", true
+		}
+		return r.log(), false
+	})
+	return at
 }
 
 // tick lets the guard take its next reading, and returns once that reading and all it led to,
 // a kill and its report to the role's manager among them, are done.
 func (r *guardRig) tick() {
 	r.t.Helper()
-	w := r.pending
-	w.fire <- r.clock.advance(w.d)
+	r.clock.Set(r.pending)
 	r.pending = r.nextWait()
 }
 
@@ -475,15 +452,9 @@ func scanTable(t *testing.T, pod *guardPod) *memoryguard.Table {
 	}()
 	defer func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the guard's loop to return once its context ended", done)
 	}()
-	select {
-	case table := <-tables:
-		return table
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
-		t.Fatal("the guard never scanned the fake pod")
-	}
-	return nil
+	return testwait.Receive(t, "the guard's scan of the fake pod", tables)
 }
 
 // The pids of podTree.
@@ -762,11 +733,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 	done := serveMemoryGuard(ctx, Config{RolesDir: t.TempDir()}, []*manager{tester}, &pidGuard{})
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the memory guard did not return after its context ended")
-		}
+		testwait.Receive(t, "the memory guard's return after its context ended", done)
 	})
 	rig.started()
 	if kills := rig.signal.kills(); !slices.Equal(kills, []int{test}) {
@@ -941,7 +908,7 @@ func TestMemoryGuardAndTheGitLockSweepRunOnlyInTheContainersFirstProcess(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	select {
-	case <-serveGitLockSweep(ctx, managers):
+	case <-serveGitLockSweep(ctx, managers, lockAgeClock()):
 	default:
 		t.Fatal("serveGitLockSweep left something running in a launcher that runs no sweep")
 	}
@@ -1040,9 +1007,12 @@ func (f *fleet) dropConnection(role string) {
 	ended := func() int { return strings.Count(f.stderr.String(), role+": launcher: daemon connection: ") }
 	before := ended()
 	_ = f.role(role).conn.Close()
-	if !testwait.Holds(testwait.Bounded(f.t, time.Minute, time.Second), testwait.Poll, func() bool { return ended() > before }) {
-		f.t.Fatalf("the launcher never saw the %s's connection end; its log: %s", role, f.stderr.String())
-	}
+	testwait.Until(f.t, "the launcher to see the "+role+"'s connection end (the reading is its log)", func() (string, bool) {
+		if ended() > before {
+			return "", true
+		}
+		return f.stderr.String(), false
+	})
 }
 
 // A report made while the role's connection is down waits for the next one, and is sent on it
@@ -1155,19 +1125,10 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 		defer close(sent)
 		m.openMemoryReports(shimwire.NewWriter(conn), true)
 	}()
-	bound := testwait.Bounded(t, time.Minute, time.Second)
-	select {
-	case <-conn.writing:
-	case <-time.After(bound):
-		t.Fatal("the role's sender never began to write the oldest report")
-	}
+	testwait.Receive(t, "the role's sender to begin writing the oldest report", conn.writing)
 	m.queueMemoryKill(report(maxWaitingMemoryKills + 1))
 	close(conn.release)
-	select {
-	case <-sent:
-	case <-time.After(bound):
-		t.Fatal("the role's sender never finished writing the waiting reports")
-	}
+	testwait.Receive(t, "the role's sender to finish writing the waiting reports", sent)
 
 	want := fmt.Sprintf("launcher: memory guard: report dropped sequence=2 pid=%d reason=%d reports already wait for a connection, the most a role keeps",
 		first+1, maxWaitingMemoryKills)
@@ -1238,11 +1199,14 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-served:
-		case <-time.After(30 * time.Second):
-			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
-		}
+		testwait.Until(t, "the tester's manager to return after its context ended (the reading is its log)", func() (string, bool) {
+			select {
+			case <-served:
+				return "", true
+			default:
+				return stderr.String(), false
+			}
+		})
 	})
 	return acceptRole(t, listener), stderr
 }
@@ -1346,11 +1310,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 	done := serveMemoryGuard(ctx, Config{RolesDir: t.TempDir(), MicroVM: true}, []*manager{tester}, &pidGuard{})
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the guest watch did not return after its context ended")
-		}
+		testwait.Receive(t, "the guest watch to return after its context ended", done)
 	})
 	rig.started()
 	for _, tc := range []struct {

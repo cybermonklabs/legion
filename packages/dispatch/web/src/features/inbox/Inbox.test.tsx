@@ -1,6 +1,6 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, the Enter presses whose survival only fireEvent reports, and the reader's wheel in the reading column, which user-event has no form for.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -22,7 +22,6 @@ import type {
   Issue,
   IssueDetails,
 } from "../../api/types";
-import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import type { InboxRoute } from "../refs/routes";
@@ -1888,7 +1887,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
     getInbox.mockResolvedValue([handedBack]);
     await user.click(within(alert).getByRole("button", { name: /Retry/ }));
     await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
+    await waitFor(() => expect(rowIds()).toEqual([]));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -2054,6 +2053,11 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
 
     const row = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-b row missing");
+    // The moment the reader picks is held still, so the snooze the pick writes is a moment the
+    // row can name: 09:00 the next morning in the reader's own timezone. Held until the row
+    // ends, so every reading of the clock the fold makes is that same moment.
+    const picked = new Date();
+    setSystemTime(picked);
     await user.selectOptions(
       within(row).getByLabelText("Snooze CORE-2: Which format?"),
       "tomorrow"
@@ -2065,7 +2069,10 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
     const [, body] = snoozeAsk.mock.calls[0] ?? [];
-    expect(Date.parse(body?.snoozed_until ?? "")).toBeGreaterThan(Date.now());
+    const nextMorning = new Date(picked);
+    nextMorning.setDate(nextMorning.getDate() + 1);
+    nextMorning.setHours(9, 0, 0, 0);
+    expect(body?.snoozed_until).toBe(nextMorning.toISOString());
 
     await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
     const later = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
@@ -2079,6 +2086,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(screen.getByText(/Blocked on you: 2 items/)).toBeTruthy();
   } finally {
+    setSystemTime();
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
@@ -4261,10 +4269,11 @@ test("the first draw of a question's document puts the column at the start of it
 
 test("a question's document lost and read again leaves the column where the reader left it", async () => {
   // One placement is armed for each row the reader opens, so the document going and coming
-  // back - a read that fails and the read after it that lands - arms none. The row waits the
-  // hold's quiet window out before it leaves the reader anywhere: while the hold is on, the
-  // column is the first placement's to write, and a row that read `scrollTop` before it ended
-  // would pass whether or not a second placement had been armed.
+  // back - a read that fails and the read after it that lands - arms none. The reader moves the
+  // column before the document goes: while the first placement's hold is on, the column is that
+  // placement's to write, and a row that left the reader anywhere before it ended would pass
+  // whether or not a second placement had been armed. Their wheel in the column lets that hold
+  // go at once (`pane-placement.ts`), so from there only a placement armed anew can write it.
   const narrow = widenToReadingPane();
   const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
   const rows = [ask];
@@ -4282,10 +4291,9 @@ test("a question's document lost and read again leaves the column where the read
     const scroller = screen.getByTestId("inbox-pane-scroller");
     drawAskBlock(editor, "block-a", ask.question);
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    // The drawing has been quiet for longer than the hold waits, so the first placement is over.
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
-    });
+    // The reader's own scroll: a wheel over the document, which ends the first placement, and
+    // the offset it leaves (user-event has no wheel).
+    fireEvent.wheel(editor.root);
     scroller.scrollTop = 240;
 
     // The document's read fails, and the column falls back to the question's own card.
@@ -4322,8 +4330,9 @@ test("a question's document lost and read again leaves the column where the read
 
 test("opening another question arms a placement of its own", async () => {
   // Two decision blocks of one document, so the column keeps the document it has open and only
-  // the row the reader opened changes. The row waits the hold's quiet window out first, so the
-  // column the second row writes is written by the second row's own placement.
+  // the row the reader opened changes. The reader's wheel in the column ends the first row's
+  // placement first (`pane-placement.ts`), so the column the second row writes is written by
+  // the second row's own placement.
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
   const first = decisionRow("ask-a", "block-a", "Ship behind a flag?");
@@ -4345,9 +4354,9 @@ test("opening another question arms a placement of its own", async () => {
     drawAskBlock(editor, "block-a", first.question);
     drawAskBlock(editor, "block-b", second.question);
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
-    });
+    // The reader's own scroll: a wheel over the document, which ends the first placement, and
+    // the offset it leaves (user-event has no wheel).
+    fireEvent.wheel(editor.root);
     scroller.scrollTop = 240;
 
     await user.keyboard("j");

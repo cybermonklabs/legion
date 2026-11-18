@@ -12,6 +12,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -89,9 +90,9 @@ func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
 	const window = 200 * time.Millisecond
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
+	fake := clocktest.New(time.Now())
+	keys.Clock = fake
 	keys.MinRefresh = window
-	// Generated before the window opens: generating an RSA key takes long enough to pass a short
-	// window on its own, and this test is about the window, not about how slow that is.
 	rotated := oidctest.NewKey(t, "rotated-in")
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
@@ -108,7 +109,8 @@ func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
 		t.Fatalf("key set read %d times inside the window, want 2", fetches)
 	}
 
-	time.Sleep(window)
+	// The window passes on the clock the cache reads, not on this machine's.
+	fake.Advance(window)
 	key, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
 	if err != nil {
 		t.Fatalf("Key(the new key) once the window has passed: %v", err)

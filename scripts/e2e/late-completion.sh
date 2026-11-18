@@ -100,6 +100,10 @@ done
 export LEGION_E2E_REPO_ROOT="$root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# A person runs this proof (.github/e2e-scripts.json's elsewhere list), so no green run is on
+# record: the guard is the 20 minutes the driver's own -test.timeout gave it before the run took
+# one guard.
+proof_guard 1200
 live_daemon_proof 'late completion' late-completion \
   TestLateCompletionsThroughTheRealLegionToolLive \
   "${LATE_COMPLETION_EVIDENCE_DIR:-}"

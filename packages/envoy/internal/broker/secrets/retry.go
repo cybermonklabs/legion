@@ -63,9 +63,8 @@ const (
 // Now, Sleep and Draw are the clock, the wait and the jitter's draw, each the real one when nil,
 // so a test sets all three and never sleeps.
 type Retry struct {
-	// Now is the clock the budget refills by and a server's HTTP date or rate-limit reset is read
-	// against; time.Now when nil. A context's deadline is read on the real clock, as the context
-	// keeps it.
+	// Now is the clock the budget refills by, and the one a server's HTTP date or rate-limit reset
+	// and a context's deadline are read against (waitable); time.Now when nil.
 	Now func() time.Time
 	// Sleep waits wait, or until ctx ends, when it answers ctx's error; a timer when nil.
 	Sleep func(ctx context.Context, wait time.Duration) error
@@ -200,7 +199,7 @@ func (m *mintRetry) again(ctx context.Context, attempt int, err error) bool {
 	} else {
 		wait = m.retry.draw(min(backoffCeilings[attempt-1], m.waitLeft))
 	}
-	if wait > m.waitLeft || !waitable(ctx, wait) || !m.retry.take() {
+	if wait > m.waitLeft || !waitable(ctx, wait, m.retry.now()) || !m.retry.take() {
 		return false
 	}
 	m.waitLeft -= wait
@@ -208,11 +207,12 @@ func (m *mintRetry) again(ctx context.Context, attempt int, err error) bool {
 }
 
 // waitable is whether the context has the time to wait out a retry: it is not already done, and
-// it either carries no deadline or has more than wait left (agentloop's transport reads it so).
-func waitable(ctx context.Context, wait time.Duration) bool {
+// it either carries no deadline or has more than wait left (agentloop's transport reads it so),
+// as read at now on the Retry's clock.
+func waitable(ctx context.Context, wait time.Duration, now time.Time) bool {
 	if ctx.Err() != nil {
 		return false
 	}
 	deadline, ok := ctx.Deadline()
-	return !ok || time.Until(deadline) > wait
+	return !ok || deadline.Sub(now) > wait
 }

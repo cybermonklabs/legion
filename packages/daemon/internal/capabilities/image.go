@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -45,11 +46,19 @@ type Image struct {
 	// Chromium. The daemon's probe Sandbox never sets it, so a Sandbox pod's image is always
 	// checked for the browser.
 	SkipBrowser bool
+	// Clock is what each command's budget (commandTimeout) runs on; nil is clock.Real.
+	Clock Clock
+}
+
+// Clock is the clock a check's command budget runs on (Image.Clock): a narrowing of clock.Clock,
+// clock.Real unless a test names a clocktest.Fake.
+type Clock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // commandTimeout bounds each command a check runs: a `--version` or a `--check` that has not
 // answered in a minute is hanging, not slow, and the probe's own budget is not to be spent on it.
-var commandTimeout = 60 * time.Second
+const commandTimeout = 60 * time.Second
 
 // maxDetail caps a command's quoted output in a State's detail, so a chatty command cannot push
 // the table past the log tail the daemon reads back.
@@ -512,9 +521,17 @@ func (img Image) run(ctx context.Context, name string, args ...string) ran {
 	return img.runWithin(ctx, commandTimeout, name, args...)
 }
 
-// runWithin is run with budget in place of commandTimeout.
+// clock is img's Clock, or the real one when none is named.
+func (img Image) clock() Clock {
+	if img.Clock != nil {
+		return img.Clock
+	}
+	return clock.Real()
+}
+
+// runWithin is run with budget in place of commandTimeout, on img's Clock.
 func (img Image) runWithin(ctx context.Context, budget time.Duration, name string, args ...string) ran {
-	attempt, cancel := context.WithTimeout(ctx, budget)
+	attempt, cancel := img.clock().WithTimeout(ctx, budget)
 	defer cancel()
 	cmd := exec.CommandContext(attempt, name, args...)
 	cmd.Env = img.Env

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import ts from "typescript"
 import { assertPinnedBun, BUNDLE_ENTRYPOINTS, buildBundles } from "../scripts/build"
 
@@ -14,7 +15,7 @@ let distDirectory = ""
 beforeAll(async () => {
   distDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-fresh-dist-"))
   await buildBundles(distDirectory)
-}, 60_000)
+})
 
 afterAll(async () => {
   await rm(distDirectory, { recursive: true, force: true })
@@ -90,6 +91,7 @@ test("the fresh bundle starts without node_modules and, with no envoy.json, says
     const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
         CLAUDE_CODE_SESSION_ID: "test",
@@ -117,6 +119,7 @@ test("with Envoy off the bundle still writes the session title the dispatch comm
     const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
         CLAUDE_CODE_SESSION_ID: "ses-off",
@@ -148,6 +151,7 @@ test("the bundle stamps nothing with Dispatch off, or under the QA override ENVO
       Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
         cwd: scratch,
         env: {
+          ...bunCacheOff,
           PATH: process.env["PATH"] ?? "",
           HOME: scratch,
           CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
@@ -182,6 +186,7 @@ test("with Envoy off and no session id the bundle still serves the Envoy-off ser
     const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
         DISPATCH_URL: "http://127.0.0.1:9",
@@ -310,7 +315,7 @@ test("bin/dispatch is executable and runs a fresh dist/dispatch.js without node_
     expect((await stat(join(packageRoot, "bin", "dispatch"))).mode & 0o111).toBe(0o111)
     const run = Bun.spawn([shim, "--help"], {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
+      env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", HOME: scratch },
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -368,7 +373,7 @@ test("two builds of one tree are byte for byte the same", async () => {
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 60_000)
+})
 
 // `bun run verify-build` spawns a new "bun" to run scripts/build.ts, and that spawn
 // resolves "bun" from PATH rather than reusing whichever binary the caller invoked `bun run` with

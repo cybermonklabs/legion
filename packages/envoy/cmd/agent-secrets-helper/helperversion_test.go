@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestTheHelperAnswersItsRunningVersion: `--version` reads the binary on disk, which after a pin
@@ -43,24 +45,19 @@ func TestTheHelperAnswersItsRunningVersion(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the helper to answer on "+sock, func() (string, bool) {
 		resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, time.Second)
-		if err == nil && resp.OK {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the helper did not answer on %s within 10 s: %+v %v", sock, resp, err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%+v %v", resp, err), err == nil && resp.OK
+	})
 
-	conn, err := net.DialTimeout("unix", sock, time.Second)
+	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		_ = conn.SetDeadline(deadline)
+	}
 	if _, err := conn.Write([]byte(`{"op":"version"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}

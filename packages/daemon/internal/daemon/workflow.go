@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -110,42 +111,30 @@ type workflowRuntime struct {
 	// retry does not hold it again (holdForCatchUp). The boot alone writes it, from its one
 	// readiness goroutine.
 	caughtUp map[string]struct{}
-	// catchUpRootTimeout bounds the boot's catch-up of one root; zero means bootTimeout. A test
-	// shortens it.
-	catchUpRootTimeout time.Duration
-	// catchUpRetryDelay is the wait between two reads of one root Dispatch refused with an error it
-	// may stop giving; zero means catchUpRetryDelay's default. A test shortens it.
-	catchUpRetryDelay time.Duration
-	// holdPollInterval is pollHoldRelease's ticker period; zero means the production default. A
-	// test shortens it to bound how long a release takes to observe.
-	holdPollInterval time.Duration
+	// clock is the daemon's time (plan.clock): the timer of each of the runtime's periodic loops
+	// is armed on it (passTimer, read through timers), the hold and reconnect watchdogs read how
+	// long they have waited from it, the boot's mapping and App reads bound each attempt and wait
+	// between attempts on it, as the boot's catch-up bounds each root and waits between its reads of
+	// one, the mapping refresher arms its wait before a read of its own and times a held recovery
+	// on it, and a review author's kept permission and GitHub's rate-limit hold (permissions,
+	// limitedUntil) are measured on it. Nil, in a test that builds the runtime by hand, is the wall
+	// clock.
+	clock clock.Clock
+	// passes is a test's trigger for each of those loops (plan.passes); nil, in production, runs
+	// every pass on the clock alone.
+	passes *passTriggers
 	// controllerWake is tickController's period (`controller_wake_interval_seconds`); zero, in a
 	// test that builds the runtime by hand, means the configuration's default hour.
 	controllerWake time.Duration
-	// controllerFirstWake replaces firstControllerTick in a test; zero is the production delay.
-	controllerFirstWake time.Duration
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
 	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
 	// daemon's store, which holds the idle view and the release's mark, and idleRuntime the
 	// runtime the pass asks about the pod itself — its image, its Sandbox (issuePods); both nil
-	// when release is off. idleTick is the tick's period, zero being idleTickInterval; a test
-	// shortens it.
+	// when release is off.
 	idlePeriod  time.Duration
 	idleStore   *store.Store
 	idleRuntime issuePods
-	idleTick    time.Duration
-	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
-	// so it waits out its own period rather than the daemon's minute.
-	entrySweep time.Duration
-	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
-	// means the production defaults. A test shortens both to bound how long the warning takes to
-	// observe.
-	holdWarnAfter, holdWarnEvery time.Duration
-	// reconnectPollInterval and reconnectWarnEvery bound reconnectWatchdog's ticker and how often
-	// it logs while NATS has not reconnected: zero means the production defaults. A test
-	// shortens both to bound how long the warning takes to observe.
-	reconnectPollInterval, reconnectWarnEvery time.Duration
 	// githubAPI is the GitHub REST root the workflow calls: the per-issue read reads under it, and
 	// the outbox's issue_branch rows call under it. Empty, in production, is
 	// https://api.github.com, and a test points it at a stand-in.
@@ -176,9 +165,7 @@ type workflowRuntime struct {
 	// of each it did not record (tellReleaseWaits), and which leave with the repository's own
 	// marker where a pass stops reading GitHub for it (settleRecovery, tellLetGoWaits);
 	// recoveryHeldSince is when a recovery's listing was first found held with waits to tell (zero
-	// for none), so a hold past recoveryHoldBound tells them.
-	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
-	// a test sees each wait through it.
+	// for none), on the runtime's clock, so a hold past recoveryHoldBound tells them.
 	repositories      *repositories
 	installs          appauth.Installations
 	mappingMu         sync.Mutex
@@ -192,7 +179,6 @@ type workflowRuntime struct {
 	silenced          map[string]map[string]bool
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
-	recheckAfter      func(time.Duration) <-chan time.Time
 	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot) and then
 	// each read of the mapping's (refreshMapping), with each repository a record first names added
 	// to it with no read of the records (hearRecorded). Every write holds mappingMu, so no read of
@@ -231,12 +217,11 @@ type workflowRuntime struct {
 	// (workflow's DecidesRound), so reviewerCanWrite asks GitHub nothing about it.
 	reviewAppLogin string
 	// permissions holds, by repository and login, until when reviewerCanWrite's read of GitHub
-	// stands as no write access; permissionTTL is how long one stands, zero, in production, being
-	// reviewPermissionTTL, and a test shortens it. limitedUntil is when GitHub's last rate limit
-	// stops asking to be left alone: while it stands, no read is made.
+	// stands as no write access (reviewPermissionTTL from the read). limitedUntil is when GitHub's
+	// last rate limit stops asking to be left alone: while it stands, no read is made. Both are
+	// moments on the runtime's clock (timers).
 	permissionsMu sync.Mutex
 	permissions   map[permissionKey]time.Time
-	permissionTTL time.Duration
 	limitedUntil  time.Time
 	// refusedReviews is every review, by GitHub's review id, whose author a read of a pull
 	// request's reviews found the workflow does not let decide (reviewToApply), so this process
@@ -263,14 +248,28 @@ type workflowRuntime struct {
 	// mergeStates is each issue a fact left waiting on GitHub's merge state (queueMergeState,
 	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
 	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
-	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
-	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
-	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// of an issue already being read starts no second ladder. A ladder reads a state GitHub
+	// answers `unknown` for again mergeStateLadderWait later (mergeStateWait, which attach hands
+	// the outbox for its merge-queue read), and a test runs the next read itself (passMergeState).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateRunning map[string]bool
-	mergeStateRetry   time.Duration
+	// mergeStatePasses counts the reads every merge-state ladder made, for the observer's
+	// reports of them (climbMergeState): the ladders run on goroutines of their own.
+	mergeStatePasses atomic.Uint64
+	// observe is the daemon's observer (overrides.observe), told of each admission pass
+	// (admissionObserver, reconcileListing) and each pass of the runtime's periodic loops; nil,
+	// in production, is nobody.
+	observe func(observation)
+}
+
+// timers is the clock the runtime's timers are armed on: the daemon's (plan.clock), or the wall
+// clock for a runtime a test built by hand without one.
+func (w *workflowRuntime) timers() clock.Clock {
+	if w.clock == nil {
+		return clock.Real()
+	}
+	return w.clock
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -282,7 +281,7 @@ const readyReleaseTimeout = 30 * time.Second
 // appMintAttempt bounds one attempt at the boot's App tokens, both Apps' mints: installation
 // discovery, the exchange and the bot identity lookups each answer in well under a second, so an
 // attempt that runs this long holds a request GitHub never answered.
-var appMintAttempt = 15 * time.Second
+const appMintAttempt = 15 * time.Second
 
 // appMintRetry is the wait between attempts that failed transiently: 5 s doubling to 30 s, five
 // attempts. At worst the boot waits 2 min 20 s (five 15 s attempts and 65 s between them) before it
@@ -297,14 +296,14 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at the boot's App reads, bounded by appMintAttempt: passed, refused,
-// transient (appTransient), or pending when a token_command is still running past the bound
-// (appauth.ErrCommandPending, most often a grant that waits on a person's approval). A pending
-// attempt spends no retry: the command goes on, and the next attempt joins it, so the boot waits
-// for the grant with one request and never kills it.
-func appAttempt(attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
+// appAttempt is one attempt at the boot's App reads, bounded by appMintAttempt on clk: passed,
+// refused, transient (appTransient), or pending when a token_command is still running past the
+// bound (appauth.ErrCommandPending, most often a grant that waits on a person's approval). A
+// pending attempt spends no retry: the command goes on, and the next attempt joins it, so the boot
+// waits for the grant with one request and never kills it.
+func appAttempt(clk clock.Clock, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
-		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
+		bounded, cancel := clk.WithTimeout(ctx, appMintAttempt)
 		defer cancel()
 		err := attempt(bounded)
 		switch {
@@ -323,13 +322,13 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
-// other failure is refused at once. It returns the review App's login: the engine judges a review
-// by the login that authored it (workflow's byReviewer), so one App configured for both roles
-// would submit every role's review under the one login, and is refused, as is a review App that
-// names no login.
-func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
+// other failure is refused at once. Its attempts and the waits between them run on clk. It returns
+// the review App's login: the engine judges a review by the login that authored it (workflow's
+// byReviewer), so one App configured for both roles would submit every role's review under the one
+// login, and is refused, as is a review App that names no login.
+func appLoginsAtBoot(ctx context.Context, clk clock.Clock, apps appauth.Logins, log *slog.Logger) (string, error) {
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, clk, "GitHub App logins read", appMintRetry, log, appAttempt(clk, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			login, err := apps.AppLogin(ctx, role)
 			if err != nil {
@@ -350,14 +349,15 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 
 // mintAtBoot mints the implement and then the review App token on owner's installation, as one
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError);
-// any other failure is refused at once. The token manager keeps a lease it minted, so an attempt
-// after the implement token passed asks GitHub only for the review token. A mint asks for what
-// each App's installation is granted of the role's set and says on stderr what it left out
-// (appauth's exchangeGranted), so a permission an account has not approved no longer stops the
-// boot: what does is an App with no installation on the owner, an installation granted none of
-// the set at all, an answer the mint refuses, or GitHub's own trouble lasting past the retries.
-func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *slog.Logger) error {
-	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+// any other failure is refused at once. Its attempts and the waits between them run on clk. The
+// token manager keeps a lease it minted, so an attempt after the implement token passed asks
+// GitHub only for the review token. A mint asks for what each App's installation is granted of
+// the role's set and says on stderr what it left out (appauth's exchangeGranted), so a permission
+// an account has not approved no longer stops the boot: what does is an App with no installation
+// on the owner, an installation granted none of the set at all, an answer the mint refuses, or
+// GitHub's own trouble lasting past the retries.
+func mintAtBoot(ctx context.Context, clk clock.Clock, tokens appauth.Tokens, owner string, log *slog.Logger) error {
+	return bootprobe.Run(ctx, clk, "GitHub App tokens mint", appMintRetry, log, appAttempt(clk, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, err := tokens.Token(ctx, role, owner); err != nil {
 				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)
@@ -385,7 +385,11 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+//
+// clk is the daemon's clock (plan.clock): the boot's mapping read, App logins read and App mints
+// bound each attempt and wait between attempts on it, and the runtime's periodic loops and its
+// mapping refresher arm their timers on it.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clk clock.Clock) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -420,6 +424,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
+		clock:  clk,
 		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
@@ -427,16 +432,18 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		mergeStateRunning: map[string]bool{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
-		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
-	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
-	// logged and read again once the limit has passed, wherever it is made.
+	// A default branch is kept, and held through GitHub's rate limit, on the runtime's clock, the
+	// one the hold's read again is armed on (heldThroughLimit), so the hold ends when that read
+	// comes due. A read of a default branch GitHub's rate limit refuses, answered from the branch
+	// held, is logged and read again once the limit has passed, wherever it is made.
+	w.defaultBranches = newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, w.timers().Now)
 	w.defaultBranches.onHold = w.heldThroughLimit
 	log.Info("legion workflow boot stage", "stage", "dispatch")
 	if err := w.loadMapping(ctx); err != nil {
 		return nil, err
 	}
-	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, log)
+	reviewAppLogin, err := appLoginsAtBoot(ctx, w.timers(), logins, log)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +462,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// scope is (appauth's leaseScope: lowercased), so two repositories of one account are one
 	// mint, and minted in their sorted order, so one boot's log reads like the next's.
 	for _, owner := range w.repositories.Owners() {
-		if err := mintAtBoot(ctx, tokens, owner, log); err != nil {
+		if err := mintAtBoot(ctx, w.timers(), tokens, owner, log); err != nil {
 			return nil, err
 		}
 	}
@@ -508,7 +515,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
+	if err := backfillRepositories(ctx, w.timers(), w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
 	}
 	if err := w.queueGatedStepsPublish(ctx); err != nil {
@@ -1091,6 +1098,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
 	committed()
+	reportTo(w.observe, observedAdmissionPass{})
 	return nil
 }
 
@@ -1233,6 +1241,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		return pull, err
 	}
 	w.outbox.mergeStateWait = w.mergeStateWait
+	w.outbox.observe, w.outbox.passes = supervision.plan.observe, supervision.plan.passes
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1266,11 +1275,11 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 // (intake.Applied) and applies only the rest, one at a time as every fact applies.
 //
 // The read and each fact get budget of their own, on ctx, the daemon's lifetime, rather than one
-// budget shared by the whole replay. A fact may wait its turn on the lock behind a live one (a
-// restored claim's failure, a daemon of another project on the same database), so a replay of
-// hundreds of facts takes as long as they take, and the boot never exits on their count; a
-// Postgres that never answers still ends the boot within one budget, and the daemon's stop ends
-// the replay. supervision.start runs it before any hello is admitted.
+// budget shared by the whole replay, each armed on the runtime's clock (timers). A fact may wait
+// its turn on the lock behind a live one (a restored claim's failure, a daemon of another project
+// on the same database), so a replay of hundreds of facts takes as long as they take, and the boot
+// never exits on their count; a Postgres that never answers still ends the boot within one budget,
+// and the daemon's stop ends the replay. supervision.start runs it before any hello is admitted.
 func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise.Claim, budget time.Duration) error {
 	var terminal []supervise.Claim
 	var ids []string
@@ -1281,7 +1290,7 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 		terminal = append(terminal, c)
 		ids = append(ids, terminalEventID(c, c.State))
 	}
-	read, cancel := context.WithTimeout(ctx, budget)
+	read, cancel := w.timers().WithTimeout(ctx, budget)
 	applied, err := intake.Applied(read, w.pool, terminalSource, ids)
 	cancel()
 	if err != nil {
@@ -1297,7 +1306,7 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 		w.log.Info("legion daemon is replaying the terminal facts no daemon applied", "count", len(unapplied), "terminalClaims", len(terminal))
 	}
 	for _, c := range unapplied {
-		fact, cancel := context.WithTimeout(ctx, budget)
+		fact, cancel := w.timers().WithTimeout(ctx, budget)
 		err := w.applyTerminal(fact, c, c.State)
 		cancel()
 		if err != nil {
@@ -1613,30 +1622,14 @@ func (w *workflowRuntime) pollHoldRelease(ctx context.Context) {
 }
 
 func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positionReader) {
-	interval := w.holdPollInterval
-	if interval <= 0 {
-		interval = defaultHoldPollInterval
-	}
-	warnAfter, warnEvery := w.holdWarnAfter, w.holdWarnEvery
-	if warnAfter <= 0 {
-		warnAfter = defaultHoldWarnAfter
-	}
-	if warnEvery <= 0 {
-		warnEvery = defaultHoldWarnEvery
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	polls := newPassTimer(w.timers(), w.passes, passHoldRelease, defaultHoldPollInterval)
+	defer polls.stop()
 	var last intake.DispatchConsumerPosition
 	var lastHold uint64
 	haveLast := false
 	var heldSince, warnedAt time.Time
 	wasHeld := false
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+	for pass := uint64(1); polls.next(ctx); pass = passEnded(w.observe, passHoldRelease, pass) {
 		if !w.admission.Held() {
 			haveLast, heldSince, warnedAt = false, time.Time{}, time.Time{}
 			if wasHeld {
@@ -1658,8 +1651,9 @@ func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positi
 			continue
 		}
 		wasHeld = true
+		now := w.timers().Now()
 		if heldSince.IsZero() {
-			heldSince = time.Now()
+			heldSince = now
 		}
 		position, err := reader.DispatchPosition(ctx)
 		if err != nil {
@@ -1671,8 +1665,8 @@ func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positi
 		// the target it is waiting for and its current ack floor. Not the stream sequence stuck
 		// behind that floor: the notification stream also carries GitHub subjects interleaved with
 		// Dispatch's, so ack_floor+1 can name a message that has nothing to do with this hold.
-		if waiting := time.Since(heldSince); waiting >= warnAfter && time.Since(warnedAt) >= warnEvery {
-			warnedAt = time.Now()
+		if waiting := now.Sub(heldSince); waiting >= defaultHoldWarnAfter && now.Sub(warnedAt) >= defaultHoldWarnEvery {
+			warnedAt = now
 			w.log.Warn("admission: a hold has not released", "waiting", waiting.Round(time.Second),
 				"target", w.admission.Target(), "ack_floor", position.AckFloorStream)
 		}
@@ -1711,7 +1705,7 @@ type connStatus interface {
 }
 
 // reconnectWatchdog logs a warn once the downtime since conn last connected reaches
-// reconnectWarnEvery, and every reconnectWarnEvery after that while conn stays disconnected —
+// defaultReconnectWarnEvery, and every one of those after that while conn stays disconnected —
 // never on the first poll that merely finds it down, which would log a downtime near zero and
 // make this almost as noisy as nats.go's own reconnect wait. Each warn names the downtime so far
 // and conn's own LastError, usually empty during a plain refused dial (nats.go clears its own
@@ -1725,42 +1719,29 @@ func (w *workflowRuntime) reconnectWatchdog(ctx context.Context) {
 }
 
 func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connStatus) {
-	interval := w.reconnectPollInterval
-	if interval <= 0 {
-		interval = defaultReconnectPollInterval
-	}
-	warnEvery := w.reconnectWarnEvery
-	if warnEvery <= 0 {
-		warnEvery = defaultReconnectWarnEvery
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	polls := newPassTimer(w.timers(), w.passes, passReconnect, defaultReconnectPollInterval)
+	defer polls.stop()
 	var disconnectedSince, warnedAt time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+	for pass := uint64(1); polls.next(ctx); pass = passEnded(w.observe, passReconnect, pass) {
 		if conn.IsConnected() {
 			disconnectedSince, warnedAt = time.Time{}, time.Time{}
 			continue
 		}
+		now := w.timers().Now()
 		if disconnectedSince.IsZero() {
-			disconnectedSince = time.Now()
+			disconnectedSince = now
 		}
-		downtime := time.Since(disconnectedSince)
-		if downtime < warnEvery || (!warnedAt.IsZero() && time.Since(warnedAt) < warnEvery) {
+		downtime := now.Sub(disconnectedSince)
+		if downtime < defaultReconnectWarnEvery || (!warnedAt.IsZero() && now.Sub(warnedAt) < defaultReconnectWarnEvery) {
 			continue
 		}
 		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
-		warnedAt = time.Now()
+		warnedAt = now
 	}
 }
 
 // firstControllerTick is how soon after the runtime starts it applies its first ControllerTick:
-// a daemon restarted more often than the interval would otherwise never tick at all. A runtime's
-// controllerFirstWake, set only by a test, replaces it.
+// a daemon restarted more often than the interval would otherwise never tick at all.
 const firstControllerTick = time.Minute
 
 // tickController applies a ControllerTick fact once shortly after the runtime starts
@@ -1775,27 +1756,11 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 	if interval <= 0 {
 		interval = time.Hour
 	}
-	delay := firstControllerTick
-	if w.controllerFirstWake > 0 {
-		delay = w.controllerFirstWake
-	}
-	first := time.NewTimer(min(delay, interval))
-	defer first.Stop()
-	select {
-	case <-ctx.Done():
-		return
-	case at := <-first.C:
-		w.applyControllerTick(ctx, at)
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case at := <-ticker.C:
-			w.applyControllerTick(ctx, at)
-		}
+	ticks := newPassTimer(w.timers(), w.passes, passControllerTick, interval)
+	defer ticks.stop()
+	ticks.firstAfter(min(firstControllerTick, interval))
+	for pass := uint64(1); ticks.next(ctx); pass = passEnded(w.observe, passControllerTick, pass) {
+		w.applyControllerTick(ctx, w.timers().Now())
 	}
 }
 
@@ -1806,34 +1771,17 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 // pass already makes on every fact.
 const entrySweepInterval = time.Minute
 
-// entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
-// that a test shortens, where one is set, and entrySweepInterval where none is, which is what
-// the shipped binary runs. It is a function of its own so a test reads the period a daemon with
-// no override sweeps at, and not the constant alone.
-func entrySweepPeriod(override time.Duration) time.Duration {
-	if override > 0 {
-		return override
-	}
-	return entrySweepInterval
-}
-
-// tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
-// or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
-// row names is sent that entry's work, and the controller is woken for a stalled root architect,
-// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
-// project raises none. Each run's event id is its own — the word, the project, this boot and the
-// run's time — since processed_events is shared by every project's daemon. A failed apply is
-// logged, and the next run tries again, as applyControllerTick does.
+// tickEntrySweep applies an intake.EntrySweep fact every entrySweepInterval, so a role behind
+// the entry its phases row names is sent that entry's work, and the controller is woken for a
+// stalled root architect, even where nothing else happens in the project: an admission pass runs
+// on a fact, and a quiet project raises none. Each run's event id is its own — the word, the
+// project, this boot and the run's time — since processed_events is shared by every project's
+// daemon. A failed apply is logged, and the next run tries again, as applyControllerTick does.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
-	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case at := <-ticker.C:
-			w.applyEntrySweep(ctx, at)
-		}
+	sweeps := newPassTimer(w.timers(), w.passes, passEntrySweep, entrySweepInterval)
+	defer sweeps.stop()
+	for pass := uint64(1); sweeps.next(ctx); pass = passEnded(w.observe, passEntrySweep, pass) {
+		w.applyEntrySweep(ctx, w.timers().Now())
 	}
 }
 

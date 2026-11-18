@@ -20,7 +20,13 @@ import (
 func modelTokenCognito(t *testing.T, refuse bool) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
+	// The stand-in counts only a call of the shape the sign-in sends, one Cognito names in its
+	// X-Amz-Target header; any other is another process's, answered 404 and counted as nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("X-Amz-Target"), "AWSCognitoIdentityProviderService.") {
+			http.NotFound(w, r)
+			return
+		}
 		calls.Add(1)
 		var body struct{ ChallengeResponses map[string]string }
 		_ = json.NewDecoder(r.Body).Decode(&body)

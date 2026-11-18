@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A kept copy whose drain never forwarded it must still reach the role's holder. The drain claims
@@ -36,21 +38,28 @@ func TestAKeptCopyItsDrainNeverForwardedStillReachesTheRolesHolder(t *testing.T)
 	key := roleForwardDedupePrefix + item.DedupeKey
 
 	entry := session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)
 
 	// The drain that ends between its claim and its forward. Its claim has already advanced the
-	// role's cursor past this copy when the forward it never completes is attempted. Its window
-	// is the whole of that listener's life: a handover whose holder is live walks the lane again
-	// after a pause of its own, and this one is gone before it can.
-	lostCtx, cancelLost := context.WithTimeout(ctx, 2*time.Second)
-	defer cancelLost()
+	// role's cursor past this copy when the forward it never completes is attempted. Its window is
+	// the whole of that listener's life, run here on a fake clock this test moves past the window:
+	// a handover whose forward keeps failing walks the lane again after a pause of its own until
+	// its window ends, and this one is gone before it delivers.
+	stoodStill := time.Now()
+	held := clocktest.New(stoodStill)
 	lost := harness.config
+	lost.clock = held
+	lostCtx, cancelLost := held.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelLost()
 	lost.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		return errors.New("this listener ended between its claim of the copy and its forward")
 	})
-	if err := drainKeptRole(lostCtx, lost, role, time.Now); err == nil {
+	lostDone := make(chan error, 1)
+	go func() { lostDone <- drainKeptRole(lostCtx, lost, role, time.Now) }()
+	awaitArmed(t, held, "the lost listener's pause after its forward failed", armedAt(stoodStill.Add(roleKeepDrainRetryPause)))
+	held.Advance(2 * time.Second)
+	if err := testwait.Receive(t, "the lost listener's drain", lostDone); err == nil {
 		t.Fatalf("the drain whose forward never completed reported no error, so this test no longer reaches the moment it is about")
 	}
 

@@ -250,7 +250,7 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 		}},
 	} {
 		t.Run(string(end.state), func(t *testing.T) {
-			rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleTester, supervise.StateIdle})
+			rig := newOwedWriteRig(t, owedRole{claim.RoleTester, supervise.StateIdle})
 			// The store of a daemon with a workflow, which publishes (store.PublishRoleHolders).
 			rig.st.PublishRoleHolders(nil)
 			client := &roleHoldersDispatch{}

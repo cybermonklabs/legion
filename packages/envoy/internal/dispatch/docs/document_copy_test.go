@@ -206,7 +206,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 		t.Cleanup(httpServer.Close)
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
-		waitFor(t, 10*time.Second, "the peer's room to open", func() bool {
+		waitFor(t, "the peer's room to open", func() bool {
 			return service.srv.GetDoc(artifactID) != nil
 		})
 		state := service.room(artifactID)
@@ -235,7 +235,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 			}
 			return false
 		}
-		waitFor(t, time.Minute, "the room to store the browser's update or fail", func() bool {
+		waitFor(t, "the room to store the browser's update or fail", func() bool {
 			return state.failure() != nil || stored()
 		})
 		if err := state.failure(); err != nil {

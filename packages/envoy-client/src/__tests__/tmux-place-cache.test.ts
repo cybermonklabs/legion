@@ -62,10 +62,12 @@ async function settle(): Promise<void> {
 
 /**
  * A clock the case moves by hand, with the cache's refresh timer running on it rather than on
- * the host's: a real 30 seconds per tick would cost every run two minutes. `advanceTo` carries
- * the clock to a time and fires every refresh due strictly before it, letting each reading land,
- * so a refresh due at the very instant of an ask is taken as landing after that ask — the worst
- * order for the place the ask carries, and the one a drifting host timer gives.
+ * the host's: a real 30 seconds per tick would cost every run two minutes. It stands in for the
+ * `Date.now` and unreferenced `setInterval` the cache takes where no `now` and `every` are given,
+ * through those two seams of the cache's own. `advanceTo` carries the clock to a time and fires
+ * every refresh due strictly before it, letting each reading land, so a refresh due at the very
+ * instant of an ask is taken as landing after that ask — the worst order for the place the ask
+ * carries, and the one a drifting host timer gives.
  */
 function fakeClock() {
   let nowMs = 0;
@@ -356,14 +358,15 @@ describe("createTmuxPlaceCache", () => {
     // no tmux call — and every ask after it carries a place one lifetime old, not one heartbeat.
     // That is the sum the three-minute mark rests on: 90 s of registration, 5 s of roster, 15 s
     // of poll and the lifetime, which is 140 s, so a session that keeps registering never draws
-    // a place older than that while its report is fresh.
+    // a place older than that while its report is fresh: the readings come to the sum the
+    // constants name, and that sum stays under the three minutes.
     const oldestCarriedMs = Math.max(...carriedAgesMs.map((age) => age ?? 0));
     const worstCaseMs = DEFAULT_HEARTBEAT_MS + ROUTE_ROSTER_MS + PAGE_POLL_MS + oldestCarriedMs;
     expect({ carriedAgesMs, worstCaseMs }).toEqual({
       carriedAgesMs: [undefined, LIFETIME_MS, LIFETIME_MS, LIFETIME_MS],
       worstCaseMs: WORST_CASE_DRAWING_MS,
     });
-    expect(worstCaseMs).toBeLessThan(DRAWING_STALE_AFTER_MS);
+    expect(WORST_CASE_DRAWING_MS).toBeLessThan(DRAWING_STALE_AFTER_MS);
 
     // One timer for the life of the cache, armed by the first ask at the lifetime it read: the
     // asks after it arm none of their own, and a cache nobody asked would have armed none at all.

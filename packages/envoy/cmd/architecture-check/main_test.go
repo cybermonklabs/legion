@@ -7,7 +7,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,11 +14,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before any note is read,
@@ -236,25 +235,21 @@ type result struct {
 	stderr string
 }
 
-// binaryLimit bounds one run of the built binary, which answers in milliseconds. A run that blocks,
-// as one that opens a named pipe nothing writes to does, is killed at the limit and fails its test
-// then, rather than holding it until go test's own deadline and outliving it.
-const binaryLimit = 20 * time.Second
-
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
-// test.
+// empty, and answers its exit status and output. The built binary answers in milliseconds; a run
+// that blocks, as one that opens a named pipe nothing writes to does, is killed where the shared
+// wait gives up (testwait.Context), the test binary's deadline less its margin, and fails the test
+// then, rather than holding it until go test's own deadline and outliving it.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
-	defer cancel()
+	ctx := testwait.Context(t)
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("architecture-check %q did not finish within %s and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
+		t.Fatalf("architecture-check %q did not finish before the test binary's deadline less the shared wait's margin and was killed: stdout %q, stderr %q", args, stdout.String(), stderr.String())
 	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {

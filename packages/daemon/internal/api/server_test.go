@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 type fakeSource struct {
@@ -207,15 +207,7 @@ func TestStateRouteServesTheConsumersLagReadAfterTheCommit(t *testing.T) {
 
 func TestStateRouteReportsASourceFailure(t *testing.T) {
 	// The handler logs the failure through the default logger; keep it out of the test output.
-	// slog.SetDefault also points the log package's output at the handler and clears its flags,
-	// and setting the previous default back undoes neither, so both are put back too.
-	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	t.Cleanup(func() {
-		slog.SetDefault(previous)
-		log.SetOutput(output)
-		log.SetFlags(flags)
-	})
+	testlog.SetDefault(t, slog.NewTextHandler(io.Discard, nil))
 
 	recorder := serve(t, fakeSource{err: errors.New("dial db.internal: refused")}, http.MethodGet, "/legion/v1/state")
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestARefusedIdentityStopsTheRenewalLoopWithAPlainError: the broker is told to refuse, and the
@@ -174,8 +175,10 @@ func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 // started at boot, before NTP has corrected the host's clock, is refused `invalid_dpop_proof`
 // by a broker whose skew window is 60 s; stopping there would leave it holding no launcher
 // credential, answering NO_CREDENTIAL to every register and sign, until somebody restarted it.
-// The loop is proved still waiting to trade again by its context ending it with no error, while
-// the control — a refusal that is the broker's final word — returns at once.
+// The loop is proved still waiting to trade again by the wait it takes before its next trade,
+// which this row answers with a channel nothing fires: the context it then cancels is what ends
+// that wait, and Run returns no error. The control — a refusal that is the broker's final word —
+// takes no wait at all and returns the refusal.
 func TestADPoPRefusalKeepsTheRenewalLoopTrading(t *testing.T) {
 	for _, tc := range []struct {
 		code  string
@@ -189,19 +192,39 @@ func TestADPoPRefusalKeepsTheRenewalLoopTrading(t *testing.T) {
 			broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {
 				return 400, map[string]any{"error": tc.code, "error_description": "the proof was refused"}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			client := refusalClient(t, broker)
+			// Every wait the loop takes before trading again is reported here and never
+			// fires, so the row reads the loop's own decision to retry and ends that wait
+			// itself rather than waiting one out.
+			waiting := make(chan time.Duration, 1)
+			client.after = func(d time.Duration) <-chan time.Time {
+				waiting <- d
+				return make(chan time.Time)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			err := refusalClient(t, broker).Run(ctx, func(context.Context, *Token) error {
-				t.Error("the loop handed its caller a token the broker refused to mint")
-				return nil
-			})
-			var refused *RefusedError
-			switch stopped := errors.As(err, &refused); {
-			case tc.stops && !stopped:
-				t.Fatalf("Run on %s = %v, want it to stop with the broker's refusal", tc.code, err)
-			case !tc.stops && stopped:
-				t.Fatalf("Run on %s stopped with %v, want it still waiting to trade again: the next trade can succeed", tc.code, err)
-			case !tc.stops && err != nil:
+			done := make(chan error, 1)
+			go func() {
+				done <- client.Run(ctx, func(context.Context, *Token) error {
+					t.Error("the loop handed its caller a token the broker refused to mint")
+					return nil
+				})
+			}()
+
+			if tc.stops {
+				err := testwait.Receive(t, "Run to stop with the broker's refusal", done)
+				var refused *RefusedError
+				if !errors.As(err, &refused) {
+					t.Fatalf("Run on %s = %v, want it to stop with the broker's refusal", tc.code, err)
+				}
+				if len(waiting) != 0 {
+					t.Fatalf("Run on %s waited %s before stopping; a refusal no retry cures is not waited on", tc.code, <-waiting)
+				}
+				return
+			}
+			testwait.Receive(t, "the loop to wait before trading again", waiting)
+			cancel()
+			if err := testwait.Receive(t, "Run to return once its context ended", done); err != nil {
 				t.Fatalf("Run on %s = %v, want no error when its context ends", tc.code, err)
 			}
 		})

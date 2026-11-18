@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -42,9 +44,11 @@ type launchers struct {
 
 	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
 	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
-	// of it to a launcher, leakCheckHopBound outside the tests.
+	// of it to a launcher, leakCheckHopBound outside the tests, on timers, the runtime's clock
+	// (Options.Clock).
 	leakCheck    LeakCheckReader
 	leakCheckHop time.Duration
+	timers       clock.Clock
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
 	// A launchers built without the pair restores nothing.
@@ -92,8 +96,8 @@ type launcherSession struct {
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
+	guardKilled runtime.MemoryGuardKilled, timers clock.Clock, log *slog.Logger) *launchers {
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound, timers: timers,
 		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
 }
 
@@ -263,9 +267,9 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 		return nil, nil, errors.New("launcher connection closed")
 	}
 	session.waiters[id] = waiter
-	deadline := time.Now().Add(apiTimeout)
+	deadline, contextDeadline := time.Now().Add(apiTimeout), false
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
-		deadline = until
+		deadline, contextDeadline = until, true
 	}
 	err = session.conn.SetWriteDeadline(deadline)
 	if err == nil {
@@ -282,6 +286,15 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	}()
 	if err != nil {
 		session.close()
+		// A write whose deadline was ctx's own fails with the connection's timeout at the instant
+		// ctx's timer ends ctx, and either can run first: the write's error can come back while
+		// ctx.Err() is still nil. The deadline that ended the write is ctx's, so the request
+		// answers ctx's end, once ctx has ended, and a caller that tells its own bound from
+		// another failure by ctx.Err() reads the bound (serveLeakCheck, boundRanOut).
+		if contextDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
 		return nil, nil, err
 	}
 	select {
@@ -368,9 +381,10 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 // and installed the check. The daemon already holds the check when the hop begins, so the hop is
 // a few slices of shimwire.LauncherBundlePayloadBytes, the launcher's unpack, its one `--help`
 // run and its rename, and this is a slow connection's room. It runs under the start's own
-// context, as the bundle's hop does, so the launch's own bound needs no term for it. A hop that
-// outruns it refuses the start; the launcher's install goes on under its own bound, and the next
-// start is answered Installed at once.
+// context, as the bundle's hop does, so the launch's own bound needs no term for it, and on the
+// runtime's clock (Options.Clock), so a test moves it past the bound. A hop that outruns it
+// refuses the start; the launcher's install goes on under its own bound, and the next start is
+// answered Installed at once.
 const leakCheckHopBound = 2 * time.Minute
 
 // serveLeakCheck pushes the shared public leak check to token's launcher in podUID and waits for
@@ -411,7 +425,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	if err != nil {
 		return refuse(err.Error(), nil)
 	}
-	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
+	hop, cancel := d.timers.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
 	for _, frame := range served.Frames {
 		answer, confirmed, err := d.request(hop, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))

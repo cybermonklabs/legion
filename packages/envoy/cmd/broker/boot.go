@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // brokerBoot is what the boot sequence does its work through: each collaborator a function field,
@@ -253,6 +254,9 @@ type brokerStop struct {
 	// Drain is how long the broker goes on answering requests after the signal, failing
 	// readiness throughout. In production: BROKER_DRAIN_SECONDS.
 	Drain time.Duration
+	// Clock is what the drain is timed on, clock.Real() when nil. A test that reads when the
+	// shutdown ran against when the drain ended hands a clocktest.Fake here and moves it.
+	Clock clock.Clock
 	// DrainNow ends the drain at once; the watchdog hands a second signal over on it.
 	DrainNow <-chan struct{}
 	// Draining fails GET /healthz. In production: the atomic flag api.Deps.Draining reads.
@@ -272,6 +276,14 @@ type brokerStop struct {
 	CloseStore func()
 	// Log is where every line this sequence logs goes. In production: slog.Default().
 	Log *slog.Logger
+}
+
+// clock is what the drain is timed on: the one Clock names, else the wall clock.
+func (s brokerStop) clock() clock.Clock {
+	if s.Clock != nil {
+		return s.Clock
+	}
+	return clock.Real()
 }
 
 // stop takes the broker from the signal it has already read to a process with nothing of its own
@@ -297,10 +309,10 @@ func stop(ctx context.Context, s brokerStop) {
 		// the first signal — so the second one arrives on DrainNow, handed over by the watchdog at
 		// the top of main once it has found serveStarted closed. A zero drain takes neither this
 		// select nor a timer, which would be a wait on something that never fires.
-		timer := time.NewTimer(s.Drain)
+		timer := s.clock().NewTimer(s.Drain)
 		defer timer.Stop()
 		select {
-		case <-timer.C:
+		case <-timer.C():
 		case <-s.DrainNow:
 			s.Log.Info("broker: a second signal ended the drain early")
 		}

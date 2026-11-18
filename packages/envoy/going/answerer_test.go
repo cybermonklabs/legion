@@ -498,15 +498,7 @@ func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	}
 
 	cancel()
-	testwait.Eventually(t, "the run to end once its caller's context has", func() bool {
-		select {
-		case err = <-ran:
-			return true
-		default:
-			return false
-		}
-	})
-	if err != nil {
+	if err := testwait.Receive(t, "the run to end once its caller's context has", ran); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {

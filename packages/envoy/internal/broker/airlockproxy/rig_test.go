@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The grant every row but the two-name one is served by: one secret, bound to one host, whose
@@ -173,6 +174,11 @@ type fakeGrants struct {
 	// it ran under. A row moves it to play a policy change the broker took by its periodic
 	// reload, which reaches a pod's held values no other way.
 	version string
+	// versionPanic, once a row sets it (panicReadingVersion), is what every later PolicyVersion
+	// panics with. The proxy reads the version only in its read of a grant's values (valuesFor),
+	// which a bound call makes from its handler, so for a bound call it is a handler of the inner
+	// server that panics.
+	versionPanic any
 	// access is the placeholder each (grant, name, slot) of an exchange was minted, as the
 	// broker's own table holds it: minted once and answered again after.
 	access      map[string]string
@@ -221,7 +227,17 @@ func (f *fakeGrants) AirlockValues(_ context.Context, grantID string) (map[strin
 func (f *fakeGrants) PolicyVersion() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.versionPanic != nil {
+		panic(f.versionPanic)
+	}
 	return f.version
+}
+
+// panicReadingVersion makes every later PolicyVersion panic with value.
+func (f *fakeGrants) panicReadingVersion(value any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.versionPanic = value
 }
 
 // setPolicyVersion is a policy change the broker took: the version every later read answers,
@@ -373,20 +389,13 @@ func (c *logCapture) lines(message string) []logLine {
 // answer has been copied to the client, so a client whose own read of the body has returned can
 // still be ahead of that write by a few instructions: a row that reads calls()[0] straight after
 // its request passes on an idle machine and panics on a loaded one, which is how this wait came
-// to be written. It fails the row rather than hanging when the line never comes.
+// to be written.
 func (c *logCapture) callsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("the proxy to write at least %d lines for a call to a bound host", n), func() ([]logLine, bool) {
 		calls := c.calls()
-		if len(calls) >= n {
-			return calls
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the proxy wrote %d lines for a call to a bound host; want at least %d", len(calls), n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return calls, len(calls) >= n
+	})
 }
 
 // rig is one row's whole world: the proxy, what it dials, what it may resolve, the stand-in
@@ -518,9 +527,7 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 		}
 	}()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		r.proxy.Shutdown(ctx)
+		r.proxy.Shutdown(testwait.Context(t))
 	})
 	return r
 }

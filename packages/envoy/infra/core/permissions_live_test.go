@@ -5,6 +5,7 @@ package core_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
@@ -36,9 +38,6 @@ const (
 	liveMachineID = "example-host-a"
 	liveSession   = "s1"
 	liveRole      = "example-role"
-	// liveHealthWindow is how long the listener has to answer "healthy" (its durable bound under
-	// the grant), and how long a negative control watches one that must not.
-	liveHealthWindow = 60 * time.Second
 )
 
 // hubServerArgs are the arguments the GCP hub runs nats-server with.
@@ -66,7 +65,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				process := startListenerConfig(t, listener, uri, seed, held, core.ListenerConfig{
 					MachineID: liveMachineID,
 				})
-				t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
+				t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, listenerHealthy))
 
 				// A session on a host user shares that user, and the operations of its own hold:
 				// it reads its agent stream's control subject and writes that stream's frames.
@@ -127,7 +126,14 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 
 				seed, server, uri := startGrantServer(t, image.Ref, grant)
 				process, port := startListener(t, listener, uri, seed)
-				requireNeverHealthy(t, port)
+				// The listener answers healthy only once its durable is bound, and that needs the
+				// create this grant no longer holds. Its second attempt, which its own output
+				// names, is the event the health is read after: by then the server has refused the
+				// create and the listener has gone round its retry again with no durable.
+				testwait.Eventually(t, "the listener's second attempt at the durable its grant cannot create", func() bool {
+					return strings.Count(process.Output.String(), "subscribe failed, retrying") >= 2
+				})
+				requireNotHealthy(t, port)
 				// The removed subject is what the server refused, and all it refused: the listener
 				// stopped short of healthy for the grant's reason.
 				logged := violationsOnceLogged(t, server, removed)
@@ -135,7 +141,6 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 					require.Equal(t, []string{"Publish", removed}, v[1:], "the server refused something else too: %s", v[0])
 				}
 				t.Logf("server violation (%d alike): %s", len(logged), logged[0][0])
-				require.Contains(t, process.Output.String(), "subscribe failed, retrying")
 			})
 		})
 	}
@@ -154,7 +159,7 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 			t.Parallel()
 			seed, server, uri := startSplitServer(t, image.Ref)
 			process, port := startListener(t, listener, uri, seed)
-			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
+			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, listenerHealthy))
 
 			// The session's set holds no notification topic of its own: it reads its relay
 			// subject, the one the listener publishes its consumer's messages on.
@@ -235,7 +240,7 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 			process := startListenerConfig(t, listener, uri, seed, held, core.ListenerConfig{
 				MachineID: liveMachineID,
 			})
-			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
+			t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, listenerHealthy))
 
 			// The session connects as the credential-free session user, as a session on another
 			// machine does, and reads its relay subject, which consumer delivery sends it on.
@@ -318,7 +323,7 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			require.NoError(t, listener.Flush())
 			require.NoError(t, listener.PublishRequest(bus.DeliverSubject(liveSession), answers.Subject, data))
 			require.NoError(t, listener.Flush())
-			frame, err := relayed.NextMsg(10 * time.Second)
+			frame, err := relayed.NextMsgWithContext(testwait.Context(t))
 			require.NoError(t, err, "no relay frame reached %s", bus.DeliverSubject(liveSession))
 			var received contracts.Envelope
 			require.NoError(t, json.Unmarshal(frame.Data, &received))
@@ -330,7 +335,7 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			// Respond, so the answer arriving at the listener is what says the entry is held.
 			require.NoError(t, frame.Respond([]byte("done")))
 			require.NoError(t, conn.Flush())
-			answer, err := answers.NextMsg(10 * time.Second)
+			answer, err := answers.NextMsgWithContext(testwait.Context(t))
 			require.NoError(t, err, "the session's answer never reached the listener's inbox %s", answers.Subject)
 			require.Equal(t, "done", string(answer.Data))
 
@@ -462,39 +467,29 @@ func healthz(port int) (int, string, error) {
 // listenerHealthy is the answer the listener's /healthz gives once its durable is bound.
 func listenerHealthy(_ int, body string) bool { return strings.Contains(body, `"status":"healthy"`) }
 
-// requireHealthy waits up to window for /healthz to answer a response healthy accepts and returns
-// that body, failing at once when process exits first.
-func requireHealthy(t *testing.T, process *cmdtest.Process, port int, window time.Duration, healthy func(status int, body string) bool) string {
+// requireHealthy waits for /healthz to answer a response healthy accepts and returns that body,
+// failing at once when process exits first.
+func requireHealthy(t *testing.T, process *cmdtest.Process, port int, healthy func(status int, body string) bool) string {
 	t.Helper()
-	deadline := time.Now().Add(window)
-	var status int
-	var body string
-	var err error
-	for time.Now().Before(deadline) {
-		if status, body, err = healthz(port); err == nil && healthy(status, body) {
-			return body
-		}
+	return testwait.Until(t, fmt.Sprintf("the answer of /healthz on %d that this test calls healthy", port), func() (string, bool) {
 		select {
 		case <-process.Exited:
 			t.Fatalf("the process exited before /healthz answered healthy:\n%s", process.Output.String())
-		case <-time.After(500 * time.Millisecond):
+		default:
 		}
-	}
-	t.Fatalf("/healthz did not answer healthy within %s: last status %d, body %q, error %v\n%s",
-		window, status, body, err, process.Output.String())
-	return ""
+		status, body, err := healthz(port)
+		if err != nil {
+			return fmt.Sprintf("status %d, body %q, error %v", status, body, err), false
+		}
+		return fmt.Sprintf("status %d, body %q", status, body), healthy(status, body)
+	})
 }
 
-// requireNeverHealthy watches /healthz for liveHealthWindow and fails if it ever answers
-// "healthy".
-func requireNeverHealthy(t *testing.T, port int) {
+// requireNotHealthy fails the test when /healthz answers "healthy" at this moment.
+func requireNotHealthy(t *testing.T, port int) {
 	t.Helper()
-	deadline := time.Now().Add(liveHealthWindow)
-	for time.Now().Before(deadline) {
-		if status, body, err := healthz(port); err == nil && listenerHealthy(status, body) {
-			t.Fatalf("the listener answered \"healthy\": %s", body)
-		}
-		time.Sleep(time.Second)
+	if status, body, err := healthz(port); err == nil && listenerHealthy(status, body) {
+		t.Fatalf("the listener answered \"healthy\": %s", body)
 	}
 }
 
@@ -553,16 +548,16 @@ func getListener(t *testing.T, port int, path string) (int, string) {
 	return resp.StatusCode, string(answer)
 }
 
-// nextEnvelope returns the next message sub receives within 10 s that is not the listener's
-// connection probe, with the envelope it carries. A send to a session whose entry records
-// consumer delivery probes the session's relay subject (bus.ConnectionProbeHeader) before it
-// stores the message, so the probe can arrive ahead of the frame: it is answered done, as a plugin
-// answers it, and the wait goes on for the frame within the same 10 s.
+// nextEnvelope returns the next message sub receives that is not the listener's connection probe,
+// with the envelope it carries. A send to a session whose entry records consumer delivery probes
+// the session's relay subject (bus.ConnectionProbeHeader) before it stores the message, so the
+// probe can arrive ahead of the frame: it is answered done, as a plugin answers it, and the wait
+// goes on for the frame.
 func nextEnvelope(t *testing.T, process *cmdtest.Process, sub *natsgo.Subscription) (contracts.Envelope, *natsgo.Msg) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	ctx := testwait.Context(t)
 	for {
-		msg, err := sub.NextMsg(time.Until(deadline))
+		msg, err := sub.NextMsgWithContext(ctx)
 		require.NoError(t, err, "no message reached %s:\n%s", sub.Subject, process.Output.String())
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
 			if msg.Reply != "" {
@@ -594,21 +589,14 @@ func violations(t *testing.T, server natsServer) [][]string {
 	return serverViolation.FindAllStringSubmatch(serverLog(t, server), -1)
 }
 
-// violationsOnceLogged waits up to 10 s for the server to log a violation naming subject, then
-// returns every violation it has logged.
+// violationsOnceLogged waits for the server to log a violation naming subject, then returns every
+// violation it has logged.
 func violationsOnceLogged(t *testing.T, server natsServer, subject string) [][]string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, "the server's own log of a violation naming "+subject, func() ([][]string, bool) {
 		logged := violations(t, server)
-		if slices.ContainsFunc(logged, func(v []string) bool { return v[2] == subject }) {
-			return logged
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server logged no violation naming %s within 10s:\n%s", subject, serverLog(t, server))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return logged, slices.ContainsFunc(logged, func(v []string) bool { return v[2] == subject })
+	})
 }
 
 // sessionConsumerCall reports whether a refused subject is one of the session consumers' calls
@@ -660,8 +648,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(consumers.Close)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			agent := contracts.LegacyAgentSubject(liveSession)
 			filters := []string{agent, "notifications.github.example.repo.>"}
 			start, err := consumers.Ensure(ctx, liveSession, filters, 0)
@@ -686,10 +673,10 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			require.NoError(t, msg.Ack())
 			pull.Stop()
 			// An ack is a publish the server answers nothing to; the floor shows it was taken.
-			require.Eventually(t, func() bool {
+			testwait.Eventually(t, fmt.Sprintf("the consumer's ack floor to reach the acked message %d", msg.StreamSeq), func() bool {
 				info, err := consumers.Info(ctx, liveSession)
 				return err == nil && info.AckFloor.Stream == msg.StreamSeq
-			}, 10*time.Second, 50*time.Millisecond, "the ack of %d never reached the consumer", msg.StreamSeq)
+			})
 			restarted, err := consumers.RestartAtFloor(ctx, liveSession, filters)
 			require.NoError(t, err)
 			require.Equal(t, msg.StreamSeq+1, restarted.StartSeq)

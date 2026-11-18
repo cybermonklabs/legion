@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
@@ -102,14 +103,13 @@ type knownSessionsOpts struct {
 	replicas int
 	log      *slog.Logger
 	now      func() time.Time
-	// retryFirst and retryMax are the waits between the background repair's attempts,
-	// knownBucketRetryFirst and knownBucketRetryMax unless a test shortens them
-	// (withKnownSessionRetry, export_test.go).
-	retryFirst time.Duration
-	retryMax   time.Duration
+	// timers is the clock the background repair's waits (knownBucketRetryFirst,
+	// knownBucketRetryMax) are armed on: clock.Real unless a test hands it a clocktest.Fake it
+	// moves (withKnownSessionTimers, export_test.go). The records' own clock is now.
+	timers clock.Clock
 	// watch is what a test adds to the options the store's watcher is built with
-	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
-	// scan idle timeout. No deployment sets it.
+	// (WithKnownSessionWatch): a clock to move past the stale bound, timers the test holds, or a
+	// short scan idle timeout. No deployment sets it.
 	watch []kvwatch.Option
 }
 
@@ -133,6 +133,14 @@ func WithKnownSessionLogger(log *slog.Logger) KnownSessionsOption {
 // throttle with it. The cache watcher's stale bound is measured on its own clock (kvwatch.WithNow).
 func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 	return func(o *knownSessionsOpts) { o.now = now }
+}
+
+// WithKnownSessionWatch adds options to the ones the store's cache watcher is built with, after
+// them: the watcher's timers for a test (kvwatch.WithAfterFunc, kvwatch.WithNow), so its stream
+// probe and its other waits run on a clock the test holds rather than on time.AfterFunc, or a
+// clock that moves past the stale bound. No deployment sets it.
+func WithKnownSessionWatch(options ...kvwatch.Option) KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.watch = append(o.watch, options...) }
 }
 
 // KnownSessions is a cache-backed view of the envoy_known_sessions bucket: every session that
@@ -160,11 +168,10 @@ type KnownSessions struct {
 	now func() time.Time
 	log *slog.Logger
 	// replicas is the copies the bucket is created with, kept for the attempts that follow a
-	// bucket that did not open; retryFirst and retryMax are the waits between them, and
+	// bucket that did not open; timers is the clock the waits between them are armed on, and
 	// watchOptions what a test adds to the watcher's options.
 	replicas     int
-	retryFirst   time.Duration
-	retryMax     time.Duration
+	timers       clock.Clock
 	watchOptions []kvwatch.Option
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
@@ -221,14 +228,16 @@ type KnownSessions struct {
 }
 
 // newKnownSessions is a store with no bucket open yet: no watcher, an empty copy and index, and
-// the background goroutines not started.
+// the background goroutines not started. Its timers are clock.Real unless opts names others.
 func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
+	if opts.timers == nil {
+		opts.timers = clock.Real()
+	}
 	s := &KnownSessions{
 		now:          opts.now,
 		log:          opts.log,
 		replicas:     opts.replicas,
-		retryFirst:   opts.retryFirst,
-		retryMax:     opts.retryMax,
+		timers:       opts.timers,
 		watchOptions: opts.watch,
 		topics:       store.NewTopicMatcher(),
 		conn:         conn,
@@ -265,10 +274,8 @@ func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
 // opens.
 func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownSessions, error) {
 	opts := knownSessionsOpts{
-		replicas:   1,
-		now:        time.Now,
-		retryFirst: knownBucketRetryFirst,
-		retryMax:   knownBucketRetryMax,
+		replicas: 1,
+		now:      time.Now,
 	}
 	for _, o := range options {
 		o(&opts)
@@ -287,6 +294,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		s.armRepair()
 	} else {
 		s.startWatch(kv)
+		go s.awaitFirstRead(false)
 	}
 	go s.sweepUntilStopped()
 	return s, nil
@@ -355,7 +363,10 @@ func (s *KnownSessions) startWatch(kv bus.KeyValue) {
 		return
 	default:
 	}
-	options := append([]kvwatch.Option{kvwatch.WithLogger(s.log)}, s.watchOptions...)
+	// A first watch that fails is this store's to repair (awaitOpened arms its retry), and its to
+	// report once that repair has not come within bus.RepairGrace, so the watcher logs the failure
+	// itself at WARN (kvwatch.WithFirstWatchRepairedByOwner).
+	options := append([]kvwatch.Option{kvwatch.WithLogger(s.log), kvwatch.WithFirstWatchRepairedByOwner()}, s.watchOptions...)
 	s.watcher = kvwatch.New("known session store", kv, knownCache{s}, options...)
 	s.watcher.Start()
 }
@@ -377,8 +388,9 @@ const (
 )
 
 // repairUntilStopped is the store's one background repair: it attempts the store again, waiting
-// retryFirst and then twice the wait before it up to retryMax, until an attempt finds nothing
-// left to repair or the store is stopped. An attempt that repaired something starts the waits
+// knownBucketRetryFirst and then twice the wait before it up to knownBucketRetryMax, on the
+// store's timers, until an attempt finds nothing left to repair or the store is stopped. An
+// attempt that repaired something starts the waits
 // over, so a move that fails after a long denial is not left waiting out the cap, and so does a
 // connection event that found no bucket open (wake), which is attempted at once.
 //
@@ -418,8 +430,8 @@ const (
 // refuses, as one `envoy nats async error` at ERROR for the permissions violation
 // (internal/bus/connect.go); this loop writes nothing beside it.
 func (s *KnownSessions) repairUntilStopped() {
-	for wait := s.retryFirst; ; {
-		timer := time.NewTimer(wait)
+	for wait := knownBucketRetryFirst; ; {
+		timer := s.timers.NewTimer(wait)
 		select {
 		case <-s.stopped:
 			timer.Stop()
@@ -427,15 +439,15 @@ func (s *KnownSessions) repairUntilStopped() {
 			return
 		case <-s.wake:
 			timer.Stop()
-			wait = s.retryFirst
-		case <-timer.C:
+			wait = knownBucketRetryFirst
+		case <-timer.C():
 		}
 		result, err := s.retryRepair()
 		if err != nil {
-			wait = min(2*wait, s.retryMax)
+			wait = min(2*wait, knownBucketRetryMax)
 			continue
 		}
-		wait = s.retryFirst
+		wait = knownBucketRetryFirst
 		switch result {
 		case repairNothing:
 			return
@@ -582,7 +594,13 @@ func (s *KnownSessions) retireRepair() {
 // is the one a move installs, the reconnect's own or, once that failed, the retry's. It waits
 // until a read of the watcher completes, whichever move installed it, or until the store stops
 // (untilStopped). The bucket opens once, so a store waits here once at most.
-func (s *KnownSessions) awaitOpened() {
+func (s *KnownSessions) awaitOpened() { s.awaitFirstRead(true) }
+
+// awaitFirstRead is awaitOpened, which writes the open line when announce is set. The open at
+// OpenKnownSessions runs it with announce unset: a start announces nothing, and its first read is
+// what the listener's own WaitForCacheReady gates, but a watch of it that ends before that read is
+// this store's to repair and to report, as a later open's is.
+func (s *KnownSessions) awaitFirstRead(announce bool) {
 	watcher := s.watch()
 	if watcher == nil {
 		// The store stopped while the attempt ran, so startWatch installed nothing.
@@ -597,10 +615,35 @@ func (s *KnownSessions) awaitOpened() {
 		// so a watch that ended arms it again, and its next attempt moves the watcher that ended
 		// (attemptRepair); after a stop it arms nothing (armRepair).
 		s.armRepair()
+		if ctx.Err() == nil {
+			s.reportUnrepaired(err)
+		}
 		return
 	}
-	s.logger().Info("the known-session bucket is open; this listener writes and reads the 30-day records from now on",
-		slog.String("bucket", bus.KnownSessionBucket))
+	if announce {
+		s.logger().Info("the known-session bucket is open; this listener writes and reads the 30-day records from now on",
+			slog.String("bucket", bus.KnownSessionBucket))
+	}
+}
+
+// reportUnrepaired arms the one ERROR for a watch that ended before its first read, err: the
+// watcher logged the end itself at WARN (startWatch), and the store's retry repairs it, so the
+// ERROR is written only if the store still does not answer (Opened) bus.RepairGrace later on the
+// store's clock, the minute a stopped cache watcher gives its repair before its own ERROR. A stop
+// before then writes nothing. The bucket opens once, so this is armed once at most.
+func (s *KnownSessions) reportUnrepaired(err error) {
+	s.timers.AfterFunc(bus.RepairGrace, func() {
+		select {
+		case <-s.stopped:
+			return
+		default:
+		}
+		if s.Opened() {
+			s.logger().Debug("known session store watch repaired within the grace", slog.Duration("grace", bus.RepairGrace))
+			return
+		}
+		s.logger().Error("known session store watch failed", slog.Duration("unrepaired_for", bus.RepairGrace), slog.String("error", err.Error()))
+	})
 }
 
 // untilStopped is a context that ends when the store does, for a background wait that must not
@@ -733,9 +776,13 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
 //
-// No caller fails its request over what this answers: a registration and a subscription change
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
-// is for the call site's WARN.
+// A registration fails its request over what this answers: it is answered 200 only once its
+// record is written, and an error here refuses it as the store error it is, the bus-unavailable
+// 503 its client retries for a write that did not land (cmd/listener's answerRegistration),
+// since a session registered with no record is one a send cannot be stored for once its entry is
+// gone. A subscription change (RecordWithin) and a clean stop (TouchWithin) each answer whatever
+// the write did, and their error is for the call site's WARN. A nil answer is no promise that a
+// record is stored: a store whose bucket is not open answers nil and writes nothing.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {

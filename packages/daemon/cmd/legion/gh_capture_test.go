@@ -412,7 +412,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "key.pub"), []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl legion-test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ghEnv := []string{testMainEnv + "=1"}
+	ghEnv := []string{testMainEnv + "=1", testGhBoundsHeldEnv + "=1"}
 	// check runs `legion gh args…` in dir: refused with exit 2 and refuse's text, sending nothing,
 	// or sending GitHub alone owner's token on every request. A refusal of an option a gh version
 	// lacks names both texts, joined by "||", either of which passes.

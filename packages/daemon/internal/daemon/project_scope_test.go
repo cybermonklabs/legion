@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,10 +15,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Daemons of several projects share one database, and admission is each project's own. Another
@@ -88,10 +88,12 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	})
 
 	// ownRun closes when the outbox first reaches Dispatch for this project's issue: its first batch
-	// after admission has run, and the other project's older row would have run before it.
+	// after admission has run, and the other project's older row would have run before it. The
+	// board is a dispatchBoard: a request without the daemon's bearer is another process's,
+	// answered 404, and fails nothing.
 	ownRun := make(chan struct{})
 	var ownOnce sync.Once
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg.DispatchURL = dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		if servedBootCall(t, w, r, own[:strings.Index(own, "-")]) {
 			return
 		}
@@ -110,59 +112,34 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		if err := json.NewEncoder(w).Encode([]map[string]any{{"key": own, "title": "This project's root", "status": "todo", "parent": nil, "rank": "m", "labels": []string{dispatch.LegionLabel}, "resolved_repo": "acme/widgets"}}); err != nil {
 			t.Errorf("write Dispatch issues: %v", err)
 		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	cfg.DispatchURL = dispatchServer.URL
+	})
 	github := newBranchGitHub(t, nil, branchCreated)
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() {
-		done <- run(runCtx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
-			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
-			githubAPI: github.url,
-		})
-	}()
+	o := overrides{
+		listen:  heldListen,
+		runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: newStillClock(), workflowTokens: &workflowTokenRecorder{},
+		githubAPI: github.url,
+	}
+	// Two observers, each read on its own: the boot's listing is reconciled before the daemon
+	// serves, so its admission pass is reported before the daemon reports itself ready.
+	obs, passes := observing(&o), observing(&o)
+	go func() { done <- run(runCtx, cfg, quietLogger(), o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		if err := testwait.Receive(t, "the daemon's run to return once cancelled", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
-	awaitHealthz(t, cfg, done)
+	obs.ready(t, done)
 
-	var active []string
-	deadline := time.Now().Add(60 * time.Second)
-	for !slices.Equal(active, []string{own}) {
-		if time.Now().After(deadline) {
-			t.Fatalf("admission is %v, want %s alone: another project's slots and waiting root are not this daemon's", active, own)
-		}
-		time.Sleep(50 * time.Millisecond)
-		var state struct {
-			Admission struct {
-				Active []string `json:"active"`
-			} `json:"admission"`
-		}
-		response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state")
-		if err != nil {
-			continue
-		}
-		if err := json.NewDecoder(response.Body).Decode(&state); err == nil && response.StatusCode == http.StatusOK {
-			active = state.Admission.Active
-		}
-		response.Body.Close()
-	}
+	// Admission changes only inside a pass, and each pass is reported once it commits, so the
+	// state read after each report says whether that pass, or one before it, left this project's
+	// root alone in the line.
+	passes.admissionPasses(t, "the pass that leaves "+own+" alone in admission's active line: another project's slots and waiting root are not this daemon's", 1,
+		func(intake.Fact) bool { return slices.Equal(admissionActive(t, cfg), []string{own}) })
 
-	select {
-	case <-ownRun:
-	case <-time.After(60 * time.Second):
-		t.Fatalf("the outbox never reached Dispatch for %s after admitting it", own)
-	}
+	testwait.Receive(t, "the outbox's first call to Dispatch for "+own+" after admitting it", ownRun)
 
 	var slots []string
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {

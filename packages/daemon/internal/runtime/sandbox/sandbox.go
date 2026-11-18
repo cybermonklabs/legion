@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -123,7 +124,9 @@ type Runtime struct {
 	launchers               *launchers
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
-	log                     *slog.Logger
+	// clock is Options.Clock; timers reads it, the wall clock when it is nil.
+	clock clock.Clock
+	log   *slog.Logger
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -409,7 +412,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
-		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
+		store:      opts.Store, conns: opts.Conns, now: opts.Now, clock: opts.Clock, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
@@ -426,8 +429,9 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
 	// before any of its roles start, take its memory guard's kill reports, and log what they could
-	// not carry or record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
+	// not carry or record, so they are built once the runtime's log is settled. The check's push is
+	// bounded on the runtime's clock, as its other bounded waits are.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.timers(), r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -668,7 +672,7 @@ func (r *Runtime) notify(obj any) {
 // budget, and that one bound is the wait's: a request done makes, a launch's waiting out an
 // overloaded server included (resend), ends with the wait rather than up to a boot timeout past it.
 func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, done func(context.Context) (bool, error)) error {
-	bounded, cancel := context.WithTimeout(ctx, budget)
+	bounded, cancel := r.timers().WithTimeout(ctx, budget)
 	defer cancel()
 	recheck := time.NewTicker(recheckInterval)
 	defer recheck.Stop()
@@ -690,6 +694,15 @@ func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, 
 		case <-recheck.C:
 		}
 	}
+}
+
+// timers is the clock the runtime's bounded waits run on: Options.Clock, or the wall clock where
+// none was set.
+func (r *Runtime) timers() clock.Clock {
+	if r.clock == nil {
+		return clock.Real()
+	}
+	return r.clock
 }
 
 // storedObject is the claim's Sandbox in the synced store as the informer holds it, undecoded, or
@@ -917,7 +930,7 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
-	stopping, cancel := context.WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
+	stopping, cancel := r.timers().WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
 	defer cancel()
 	if err := r.launchers.stop(stopping, loc.Claim, loc.Sandbox.PodUID, r.stopFrame(loc.Sandbox.Generation)); err != nil {
 		return fmt.Errorf("suspend %s: %w", loc.Claim, err)

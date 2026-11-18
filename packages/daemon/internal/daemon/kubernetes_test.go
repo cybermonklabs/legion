@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
@@ -79,6 +80,68 @@ func defaultRepositoryCache(t *testing.T) sandbox.RepositoryCache {
 	return cache
 }
 
+// The bounds a test that builds sandbox Options by hand gives its runtime. The boot timeout and
+// the adoption's bound are the daemon's defaults (worker_boot_timeout_seconds,
+// slow_command_timeout_seconds), so every wait they bound ends on its event in a rig, which a
+// loaded machine only delays. The watch's period is an hour, past probe_interval_seconds' 30 s,
+// which keeps the periodic pass away from a rig that never reads it.
+const (
+	rigBootTimeout   = 120 * time.Second
+	rigAdoptTimeout  = 300 * time.Second
+	rigProbeInterval = time.Hour
+)
+
+// podlessBoots is a rig's runtime clock (Options.Clock) and the API its runtime launches into,
+// which runs no controller (issueSandboxAPI.run): a launch there sets its Sandbox Running and then
+// waits for a pod nothing in the rig will make. Such a wait runs out on the clock, never on the
+// machine's (outlastingTheBoot).
+type podlessBoots struct {
+	api   *issueSandboxAPI
+	clock *clocktest.Fake
+	// ranOut is how many of the launches the API holds (heldLaunches) the clock was moved past.
+	ranOut int
+}
+
+// newPodlessBoots is the runtime clock for a rig over api, standing at the machine's present.
+func newPodlessBoots(api *issueSandboxAPI) *podlessBoots {
+	return &podlessBoots{api: api, clock: clocktest.New(time.Now())}
+}
+
+// outlastingTheBoot runs call, which may launch into a Sandbox whose pod never comes, and runs
+// each such launch's wait for its pod out on the clock: once the API reports a launch it holds that
+// the clock has not yet been moved past (heldLaunches) and the launch's wait has armed its
+// deadline, the boot timeout from the clock's present, it sets the clock to that deadline and no
+// further. The clock moves only for a wait the API itself says nothing will end, so a launch that
+// is only slow is never cut short.
+func (b *podlessBoots) outlastingTheBoot(t *testing.T, what string, call func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- call() }()
+	for {
+		var err error
+		var deadline time.Time
+		returned := false
+		testwait.Eventually(t, what+" to return, or to wait for a pod the API will never make", func() bool {
+			select {
+			case err = <-done:
+				returned = true
+				return true
+			default:
+			}
+			if b.api.heldLaunches() <= b.ranOut {
+				return false
+			}
+			deadline = b.clock.Now().Add(rigBootTimeout)
+			return slices.Contains(b.clock.Armed(), deadline)
+		})
+		if returned {
+			return err
+		}
+		b.clock.Set(deadline)
+		b.ranOut++
+	}
+}
+
 // noRepositories is a mapping that names none, for a test whose runtime makes no cache.
 func noRepositories() []ghrepo.Repository { return nil }
 
@@ -88,7 +151,7 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 	t.Helper()
 	body := "apiVersion: v1\nkind: Config\n" +
 		"clusters:\n- name: test\n  cluster:\n    server: " + server + "\n" +
-		"users:\n- name: test\n  user:\n    token: kube-test-token\n" +
+		"users:\n- name: test\n  user:\n    token: " + kubeTestToken + "\n" +
 		"contexts:\n- name: test\n  context:\n    cluster: test\n    user: test\n"
 	if current != "" {
 		body += "current-context: " + current + "\n"
@@ -105,7 +168,14 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *testing.T) {
 	var mu sync.Mutex
 	var requested []string
+	// The daemon's cluster client of these tests sends no bearer, so the stand-in records only a
+	// request of its shape, a Kubernetes API path; any other is another process's, answered 404 and
+	// recorded as nothing.
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		requested = append(requested, r.Method+" "+r.URL.Path)
 		mu.Unlock()
@@ -116,9 +186,7 @@ func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *tes
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(testwait.Context(t), cfg, quietLogger(), overrides{clock: newStillClock(), listen: heldListen})
 	if err == nil {
 		t.Fatal("the daemon booted on a cluster without Agent Sandbox")
 	}
@@ -150,7 +218,14 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	const legacy = "legion-test-legion-208-tester"
 	var mu sync.Mutex
 	var requested []string
+	// The daemon's cluster client of these tests sends no bearer, so the stand-in records only a
+	// request of its shape, a Kubernetes API path; any other is another process's, answered 404 and
+	// recorded as nothing.
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		requested = append(requested, r.Method+" "+r.URL.Path)
 		mu.Unlock()
@@ -180,9 +255,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	cfg := kubernetesConfig(t, apiServer.URL)
 	cfg.PostgresDSN = "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(testwait.Context(t), cfg, quietLogger(), overrides{clock: newStillClock(), listen: heldListen})
 	if err == nil || !strings.Contains(err.Error(), "legacy issue Sandbox "+legacy) {
 		t.Fatalf("boot = %v, want the refusal naming the legacy Sandbox %s", err, legacy)
 	}
@@ -207,9 +280,7 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 		return bootprobe.ImageReport{}, errors.New("worker image ghcr.io/cybermonklabs/legion-worker@sha256:aaaa refused: the plugin declares contract 3")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := run(ctx, cfg, quietLogger(), o)
+	err := run(testwait.Context(t), cfg, quietLogger(), o)
 	if err == nil || !strings.Contains(err.Error(), "the plugin declares contract 3") {
 		t.Fatalf("boot = %v, want the image probe's refusal", err)
 	}
@@ -238,6 +309,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	obs := observing(&o)
 	go func() { done <- run(ctx, cfg, logger, o) }()
 	defer func() {
 		cancel()
@@ -245,7 +317,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 			t.Errorf("run: %v", err)
 		}
 	}()
-	awaitHealthz(t, cfg, done)
+	obs.ready(t, done)
 
 	record.mu.Lock()
 	address, apps, repository, mapped := record.address, record.apps, record.repository, record.mapped
@@ -385,6 +457,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	obs := observing(&o)
 	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
 	defer func() {
 		cancel()
@@ -392,7 +465,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 			t.Errorf("run: %v", err)
 		}
 	}()
-	awaitHealthz(t, cfg, done)
+	obs.ready(t, done)
 
 	record.mu.Lock()
 	address := record.address
@@ -900,31 +973,6 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 	}
 }
 
-// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first.
-func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
-	t.Helper()
-	var err error
-	if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
-		var response *http.Response
-		response, err = pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case exited := <-done:
-			done <- exited
-			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
-		default:
-		}
-		return false
-	}) {
-		t.Fatalf("the daemon never answered /healthz: %v", err)
-	}
-}
-
 // Each duration key reaches the runtime option that takes it, under either runtime: every value
 // here is distinct, so feeding an option from its neighbouring key fails a row.
 // worker_stop_timeout_seconds in particular has no other test: it is tmux's stop grace and the
@@ -1051,15 +1099,19 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	var mu sync.Mutex
 	var tokens []string
+	// The login's credential is its body's token, the one the token file holds. A request without
+	// it is another process's: it is answered 404, logged, and recorded as nothing. A daemon that
+	// posts another token is answered 404 too, so its login is never issued and the wait fails.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/launcher-credentials/token" {
-			http.NotFound(w, r)
-			return
-		}
 		var body struct {
 			Token string `json:"token"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/launcher-credentials/token" || body.Token != "the-daemon's-token" {
+			t.Logf("a stand-in answered 404 to %.16q %.200q, which carries no credential of the daemon's", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		tokens = append(tokens, body.Token)
 		mu.Unlock()
@@ -1081,13 +1133,11 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.Until(t, "the token login logged and issued", func() (string, bool) {
+		held, state := logged.String(), client.LoginStatus().State
+		return fmt.Sprintf("log = %s, state %q", held, state),
+			strings.Contains(held, "agent-secrets: logged in with the daemon's ServiceAccount token") && state == "issued"
+	})
 	mu.Lock()
 	defer mu.Unlock()
 	if len(tokens) != 1 || tokens[0] != "the-daemon's-token" {

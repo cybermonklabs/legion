@@ -437,7 +437,7 @@ test("ProofDocument shows content this build cannot show yet without a replace d
       token: "sha256:live-document",
       version: 1,
     });
-    await waitFor(() => expect(connections).toHaveLength(1), { timeout: 3_000 });
+    await waitFor(() => expect(connections).toHaveLength(1));
     expect(
       within(view.container).queryByText(
         "This document holds content this version of Dispatch cannot show yet. It reloads in a minute."

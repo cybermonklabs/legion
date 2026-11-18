@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { scriptFunctions } from "./script-functions";
 
 // start_daemon is run after the scratch session database binds its externally reachable port.
@@ -44,6 +45,7 @@ wait "$daemon_pid" || true
   try {
     const result = Bun.spawnSync(["bash", "-c", shell], {
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH ?? "",
         HOME: work,
         SESSION_DATABASE_BINDING: sessionDatabaseBinding,

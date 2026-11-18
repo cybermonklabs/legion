@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // serveTokenExchange adds the broker's token endpoint to f, minting a launcher credential of
@@ -114,13 +115,7 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal("the refused enrolment answered no error")
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the helper held no credential 5 s after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", trades()-first)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the drop to wake the trade loop, rather than leave every register answering NO_CREDENTIAL until the token's own renewal", b.HasCredential)
 	if again := trades() - first; again != 1 {
 		t.Fatalf("the trade loop traded %d times after the drop, want exactly one", again)
 	}

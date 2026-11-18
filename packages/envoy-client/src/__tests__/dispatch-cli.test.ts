@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -741,7 +743,7 @@ describe("the dispatch CLI", () => {
     expect(requests.map((request) => request.path)).toEqual(
       Array(4).fill("/api/v1/agents/ses-1/answers")
     );
-  }, 20_000);
+  });
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);
@@ -1087,8 +1089,8 @@ describe("the dispatch CLI", () => {
   // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
   // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
   // again, and the call's save leaves the sighting out of state.json, so the next call trusts
-  // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
-  // the test's 30 s bound lets that show as five posts rather than as a timeout.
+  // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses,
+  // well inside the command's guard, so that shows as five posts rather than as a timeout.
   test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const file = join(stateDir, "sessions", "ses-1", "state.json");
@@ -1119,7 +1121,7 @@ describe("the dispatch CLI", () => {
     );
     expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
     expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
-  }, 30_000);
+  });
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
@@ -1635,6 +1637,7 @@ describe("the dispatch entry as its own process", () => {
     const child = Bun.spawn([process.execPath, entry, ...argv], {
       cwd: stateDir,
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH,
         HOME: stateDir,
         DISPATCH_STATE_DIR: stateDir,
@@ -1646,11 +1649,14 @@ describe("the dispatch entry as its own process", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
+    const [stdout, stderr, code] = await settled(
+      `the dispatch entry's exit and output for ${argv[0]}`,
+      Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+    );
     return { code, stdout, stderr };
   }
 
@@ -1658,11 +1664,10 @@ describe("the dispatch entry as its own process", () => {
   // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
   // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
   //
-  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
-  // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
-  // Measured in a 2-CPU pod: 0.37 s idle; under 16 busy loops (8 x nproc), 3.98 s at most over 23
-  // whole-suite runs and 2.98 s with this file alone, past half that default. It fires only if the
-  // child never exits.
+  // The row runs the entry as a child process, and bun's unwritten 5,000 ms per-test default is a
+  // limit on that work rather than on a hang. Measured in a 2-CPU pod: 0.37 s idle; under 16 busy
+  // loops (8 x nproc), 3.98 s at most over 23 whole-suite runs and 2.98 s with this file alone,
+  // past half that default. A child that never exits fails the wait for it by name.
   test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
     writeFileSync(join(stateDir, "rows.jsonl"), rows);
 
@@ -1680,13 +1685,13 @@ describe("the dispatch entry as its own process", () => {
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
     expect(stdout).toContain("--path <file>");
     expect(requests).toEqual([]);
-  }, 30_000);
+  });
 
-  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process twice
-  // over, once per command, and bun's unwritten 5,000 ms per-test default is a limit on that work
-  // rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out at
-  // 5,261.76 ms, 1 run of 3 with this file alone, where it costs 0.70 s idle and 6.81 s at most
-  // over 23 whole-suite runs under those loops. It fires only if a child never exits.
+  // The row runs the entry as a child process twice over, once per command, and bun's unwritten
+  // 5,000 ms per-test default is a limit on that work rather than on a hang. Under 16 busy loops
+  // (8 x nproc) in a 2-CPU pod it timed out at 5,261.76 ms, 1 run of 3 with this file alone, where
+  // it costs 0.70 s idle and 6.81 s at most over 23 whole-suite runs under those loops. A child
+  // that never exits fails the wait for it by name.
   test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
     const refusal = printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
     const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
@@ -1702,15 +1707,14 @@ describe("the dispatch entry as its own process", () => {
       expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
       expect(stdout.trim(), command).toBe(refusal);
     }
-  }, 30_000);
+  });
 
   // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
   // INFRA-1201), and what the writer reads is the whole of the server's message, which says
   // where the question belongs. The refusal now opens with the server's code, because
   // `skill://dispatch` has every agent branch on the code and the command printed none
   // (dispatch://INFRA-1523); the message that INFRA-1201's row was written for follows it
-  // unchanged. The 30 s limit is the hang guard the row above carries, for the reason written
-  // there.
+  // unchanged. It runs the entry twice over too, as the row above does.
   test("exits nonzero on the server's decision-block refusal, printing its code and its whole message", async () => {
     const refusal = `DECISION_BLOCK_IN_BODY: ${decisionBlockRefusal(2)}`;
     const body = 'The mirror is behind.\n\n:::ask{urgency="med"}\nWhich region first?\n:::';
@@ -1727,7 +1731,7 @@ describe("the dispatch entry as its own process", () => {
       expect(stdout.trim(), command).toBe(refusal);
       expect(stdout, command).toContain(decisionBlockRefusal(2));
     }
-  }, 30_000);
+  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {

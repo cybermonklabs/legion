@@ -82,11 +82,14 @@ describe("remove_run_container", () => {
   });
 
   // The teardown removes by label alone, so a container the run starts without one is left on the
-  // devbox until a person removes it. Both of the run's containers are started here.
+  // devbox until a person removes it. Both of the run's containers are started here: Postgres
+  // through lib/containers.sh's start_postgres_container, which publishes no port, and the session
+  // database through session_db_start. A start in any of those forms, or a plain docker run, must
+  // carry the label.
   test("the script labels every container it starts with the run's own id", () => {
     const lines = readFileSync(script, "utf8").split("\n");
-    const started = lines.filter(
-      (line) => line.startsWith("docker run ") || line.startsWith("session_db_start ")
+    const started = lines.filter((line) =>
+      /^(docker run |session_db_start |start_[a-z]+_container )/.test(line)
     );
     expect(started.length).toBe(2);
     for (const line of started) {

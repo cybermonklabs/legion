@@ -4,13 +4,18 @@
   "license": "Apache-2.0",
   "type": "module",
   "private": true,
+  "//": [
+    "test: each bun test command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two builds Jobs) or on CI.",
+    "test:web, 10000: every document of the table reads in a DOM as the table says it reads, 4,299.70 ms (the slowest hook 390 ms).",
+    "e2e/__tests__, 60000: the pull-request lane stays inside its budget, and inside its real-stack share, 29,450.42 ms over 20 green merge-group runs on CI (9,898.28 ms under the loops, where the slowest row was no row runs twice in one configuration, 13,500.67 ms)."
+  ],
   "scripts": {
     "dev": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
     "check:classes": "bun web/src/theme/classes-in-build-css.ts",
     "check:asset-sizes": "bun web/src/asset-sizes-in-build.ts",
-    "test": "bun run build:contracts && bun run test:web web/src && bun test --parallel --timeout 60000 e2e/__tests__",
-    "test:web": "bun test --parallel --timeout 60000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts",
+    "test": "bun run build:contracts && bun run test:web web/src && bun test --parallel --timeout 60000 --preload @legion/test-fixtures/row-deadline e2e/__tests__",
+    "test:web": "bun test --parallel --timeout 10000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts --preload @legion/test-fixtures/row-deadline",
     "dispatch:local": "bun e2e/local-instance.ts",
     "build:contracts": "bun run --filter @legion/contracts build:dispatch",
     "e2e": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts",

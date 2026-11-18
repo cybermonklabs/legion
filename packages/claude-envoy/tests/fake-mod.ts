@@ -3,6 +3,7 @@
  * process: it polls the socket the server bound, answers the calls the server makes, and sends
  * the events a real session would. What the real mod adds beyond this is Claude Code itself.
  */
+import { until } from "@legion/test-fixtures/wait"
 import {
   MOD_ROUTE_EVENTS,
   MOD_ROUTE_REQUESTS,
@@ -162,22 +163,31 @@ export async function startFakeMod(
   }
 
   // The server binds its socket while its MCP transport starts, so a mod started beside it
-  // probes until the socket answers, as the real mod does.
-  const deadline = Date.now() + 20_000
-  for (;;) {
+  // probes until the socket answers, as the real mod does, through the shared wait: it ends at
+  // the row's deadline, naming the refusal the last probe met.
+  if (options.hello !== false) {
+    const hello: ModEvent = {
+      kind: "hello",
+      sessionId: options.sessionId,
+      claudeVersion: "2.1.310",
+      interactive: true,
+    }
+    let refusal = "no probe had failed"
     try {
-      if (options.hello !== false) {
-        await send({
-          kind: "hello",
-          sessionId: options.sessionId,
-          claudeVersion: "2.1.310",
-          interactive: true,
-        })
-      }
-      break
+      await until("the channel server's mod socket to take the hello", async () => {
+        try {
+          await send(hello)
+          return true
+        } catch (error) {
+          refusal = String(error)
+          return false
+        }
+      })
     } catch (error) {
-      if (Date.now() > deadline) throw error
-      await Bun.sleep(50)
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; the last probe: ${refusal}`,
+        { cause: error },
+      )
     }
   }
   void poll()

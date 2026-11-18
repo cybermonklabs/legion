@@ -2,11 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"log"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestSummarizeUngranted(t *testing.T) {
@@ -67,8 +68,7 @@ func TestSummarizeUngrantedWithNoSamples(t *testing.T) {
 // and one failed read, and its table row shows "-" with the mark "(1 failed read)".
 func TestLockSamplerCountsAFailedConnect(t *testing.T) {
 	var logged bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	now := time.Now()
 	ls := &lockSampler{}
 	ls.loop(ctx, unreachablePG, now, now, log.New(&logged, "", 0))

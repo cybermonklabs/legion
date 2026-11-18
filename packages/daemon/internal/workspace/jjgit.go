@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -107,6 +108,14 @@ func OutputLines(out string) []string {
 // child that holds the pipe past the budget needs the same note and the same stop and wait the
 // save has.
 func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
+	return runCommandOn(ctx, clock.Real(), start, budget, started, env, dir, stdin, args)
+}
+
+// runCommandOn is RunCommand on c: the clock the grace of the budget's stop (procgroup.StopGrace) is
+// measured on, and the one a timeout's report reads how long the command ran from, which a test
+// hands a clocktest.Fake along with a budget context on that same fake. A stale lock's age stays
+// on the wall clock, which is what its file's modification time is.
+func runCommandOn(ctx context.Context, c clock.Clock, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
 	cmd.Dir = dir
@@ -120,7 +129,7 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	// remove the lock files it holds, then SIGKILL to the group, and procgroup.WaitDelay as the
 	// bound on the wait for a child that still holds the pipes once the command itself has gone
 	// (procgroup.Configure, which also answers whether that stop is what ended the command).
-	killed := procgroup.Configure(cmd)
+	killed := procgroup.ConfigureOn(cmd, c)
 	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
 	// the start still reads as a timeout below.
 	err := procgroup.Run(cmd, start)
@@ -145,7 +154,7 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	}
 	if timedOut {
 		message := fmt.Sprintf("Command timed out after %s s (ran %.1f s): %s",
-			strconv.FormatFloat(budget.Seconds(), 'f', -1, 64), time.Since(started).Seconds(), command)
+			strconv.FormatFloat(budget.Seconds(), 'f', -1, 64), c.Now().Sub(started).Seconds(), command)
 		if report != "" {
 			message += "\n" + report
 		}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -23,8 +24,11 @@ import (
 // roleHolderSessions is the session side of a role-holder resolution (roles.SessionLookup): this
 // listener's session registry, which judges a record on its own windows (EntryState) and
 // remembers a departed session's last registration (LastSeen) already, with the one read a
-// resolution adds.
-type roleHolderSessions struct{ *session.SessionRegistry }
+// resolution adds. clk is the clock the read's bound is measured on (listenerDeps.clk).
+type roleHolderSessions struct {
+	*session.SessionRegistry
+	clk clock.Clock
+}
 
 // Holder is the claim holder's record for a resolution, whatever state that record is in: the
 // cached one while it reads live, and otherwise the session bucket itself (Refresh), because the
@@ -43,7 +47,7 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 	if entry, state := s.Lookup(sessionID); state == session.Live {
 		return entry, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	readCtx, cancel := s.clk.WithTimeout(ctx, roleHolderReadTimeout)
 	defer cancel()
 	return s.Refresh(readCtx, sessionID)
 }
@@ -152,10 +156,12 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // and the state the record really carries for the second, so a caller can report what it refused
 // on rather than call every such session gone. Any other error is a read that did not answer, on
 // which nothing is taken from a holder and no send is refused as unaddressed. The bucket read gets
-// bound, derived from ctx, so a lookup, a soft claim, a role send through the publish route and a
-// send that cannot read the bucket answer their 503 inside the deadline their own caller holds.
+// bound on clk, derived from ctx, so a lookup, a soft claim, a role send through the publish route
+// and a send that cannot read the bucket answer their 503 inside the deadline their own caller
+// holds.
 func liveSessionEntry(
 	ctx context.Context,
+	clk clock.Clock,
 	sessions *session.SessionRegistry,
 	sessionID string,
 	bound time.Duration,
@@ -164,7 +170,7 @@ func liveSessionEntry(
 	if entry, state := sessions.Lookup(sessionID); accept(state) {
 		return entry, state, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, bound)
+	readCtx, cancel := clk.WithTimeout(ctx, bound)
 	defer cancel()
 	entry, err := sessions.Refresh(readCtx, sessionID)
 	if err != nil {
@@ -191,10 +197,10 @@ func liveSessionEntry(
 //
 // nats.ErrKeyNotFound is the bucket's word that the session is gone, and the caller acts on it;
 // any other error is a read that did not answer, on which nothing is taken from a holder. The read
-// gets bound, derived from ctx, so a route answers its 503 inside the deadline its own caller
-// holds.
-func bucketSessionEntry(ctx context.Context, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
-	readCtx, cancel := context.WithTimeout(ctx, bound)
+// gets bound on clk, derived from ctx, so a route answers its 503 inside the deadline its own
+// caller holds.
+func bucketSessionEntry(ctx context.Context, clk clock.Clock, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
+	readCtx, cancel := clk.WithTimeout(ctx, bound)
 	defer cancel()
 	return sessions.Refresh(readCtx, sessionID)
 }
@@ -355,11 +361,11 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // The error is non-nil only with roleHolderUnread, wrapped as the route reports it, naming the
 // read that failed. A key the bucket does not hold is that bucket's word that the session is
 // gone, not a failure; every other read failure takes nothing from a holder. Both reads are
-// bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget its own
-// caller holds.
-func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
+// bounded by roleHolderReadTimeout on clk within ctx, so the route answers inside the budget its
+// own caller holds.
+func roleSupersessionVerdict(ctx context.Context, clk clock.Clock, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
-		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive)
+		_, _, err := liveSessionEntry(ctx, clk, sessions, holder, roleHolderReadTimeout, sessionIsLive)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil
@@ -369,7 +375,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 			return roleStaysWithHolder, nil
 		}
 	}
-	predecessor, err := bucketSessionEntry(ctx, sessions, holder, roleHolderReadTimeout)
+	predecessor, err := bucketSessionEntry(ctx, clk, sessions, holder, roleHolderReadTimeout)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil

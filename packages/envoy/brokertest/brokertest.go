@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	internal "github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // Rig is internal/broker/brokertest.Rig under a name a foreign module may import.
@@ -33,4 +34,18 @@ const ExchangeRolesAccount = internal.ExchangeRolesAccount
 // BROKER_TEST_DATABASE_URL is unset.
 func NewRig(t *testing.T) *Rig {
 	return internal.NewRig(t)
+}
+
+// Main is internal/broker/store/storetest.Main, which every Rig's database needs: a package whose
+// tests call NewRig returns it from TestMain, func TestMain(m *testing.M) {
+// os.Exit(brokertest.Main(m.Run)) }, and it drops the template the rigs' databases are cloned
+// from once run has returned.
+func Main(run func() int) int {
+	return storetest.Main(run)
+}
+
+// Available reports whether BROKER_TEST_DATABASE_URL is set, the server every Rig's database is
+// made on: whether NewRig would give a rig rather than skip.
+func Available() bool {
+	return storetest.Available()
 }

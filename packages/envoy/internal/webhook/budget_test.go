@@ -15,6 +15,8 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -105,13 +107,19 @@ type testBody struct {
 	stall      <-chan struct{}
 	wait       <-chan struct{}
 	read       int
+	// parked, when set, is incremented once the body first blocks on wait or stall, so a caller
+	// can wait for every sender to reach its body rather than sleep a guessed span for it.
+	parked  *atomic.Int64
+	didPark bool
 }
 
 func (b *testBody) Read(p []byte) (int, error) {
 	if b.read == 0 && b.wait != nil {
+		b.park()
 		<-b.wait
 	}
 	if b.stallAfter >= 0 && b.read >= b.stallAfter {
+		b.park()
 		<-b.stall
 		return 0, io.ErrUnexpectedEOF
 	}
@@ -125,6 +133,14 @@ func (b *testBody) Read(p []byte) (int, error) {
 	b.remaining -= n
 	b.read += n
 	return n, nil
+}
+
+// park marks that this body has reached the block where it stops reading, once.
+func (b *testBody) park() {
+	if b.parked != nil && !b.didPark {
+		b.didPark = true
+		b.parked.Add(1)
+	}
 }
 
 // A body declared larger than GitHub delivers is refused before a byte of it is read.
@@ -156,20 +172,16 @@ func TestGitHubHandlerBoundsTheBodyBytesItHoldsInABurst(t *testing.T) {
 	const requests = 16
 	bound := int64(githubBodyBudget + 2*githubMaxBody)
 	bodies := newBodyBudget(githubBodyBudget)
-	handler := githubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+	handler := githubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies, clock.Real())
 	start := make(chan struct{})
 	senders := make([]*testBody, requests)
 	for i := range senders {
 		senders[i] = &testBody{remaining: githubMaxBody, stallAfter: -1, wait: start}
 	}
 	// Let every request reach its body before any byte is sent.
-	codes, done := serveUnsigned(t, handler, senders, 20*time.Millisecond)
+	codes, done := serveUnsigned(t, handler, senders)
 	close(start)
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the burst never drained: requests waited on each other's half-read bodies")
-	}
+	testwait.Receive(t, "the burst to drain (requests must not wait on each other's half-read bodies)", done)
 
 	most := bodies.mostHeld()
 	if most > bound {
@@ -197,13 +209,12 @@ func TestGitHubHandlerServesADeliveryBehindSlowSenders(t *testing.T) {
 		senders = append(senders, &testBody{remaining: githubMaxBody, stallAfter: sent, stall: stall})
 	}
 	// Let every slow sender reach its body, or the wait for room ahead of it.
-	_, done := serveUnsigned(t, handler, senders, 20*time.Millisecond)
+	_, done := serveUnsigned(t, handler, senders)
 	defer func() {
 		close(stall)
 		<-done
 	}()
-	took := requireServedPushes(t, handler, secret, "three trickling senders and one that sent only headers", 1)
-	t.Logf("served in %s", took.Round(time.Millisecond))
+	requireServedPushes(t, handler, secret, "three trickling senders and one that sent only headers", 1)
 }
 
 // Connections that send only headers, or one byte of body, cost a sender almost nothing, so there
@@ -216,14 +227,14 @@ func TestGitHubHandlerServesADeliveryBehindManyHeaderOnlySenders(t *testing.T) {
 		secret = "s"
 		budget = 8 << 20
 	)
-	handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, newBodyBudget(budget))
+	handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, newBodyBudget(budget), clock.Real())
 	stall := make(chan struct{})
 	senders := make([]*testBody, budget/(16<<10))
 	for i := range senders {
 		senders[i] = &testBody{remaining: githubMaxBody, stallAfter: i % 2, stall: stall}
 	}
 	// Let every sender reach its body.
-	_, done := serveUnsigned(t, handler, senders, 50*time.Millisecond)
+	_, done := serveUnsigned(t, handler, senders)
 	defer func() {
 		close(stall)
 		<-done
@@ -249,15 +260,14 @@ func TestGitHubHandlerServesPushesPastTheBudgetBehindAStalledConnection(t *testi
 		{"one byte", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, newBodyBudget(budget))
+			handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, newBodyBudget(budget), clock.Real())
 			stall := make(chan struct{})
-			_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: tc.sent, stall: stall}}, 20*time.Millisecond)
+			_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: tc.sent, stall: stall}})
 			defer func() {
 				close(stall)
 				<-done
 			}()
-			took := requireServedPushes(t, handler, secret, "a connection that sent "+tc.name, 4)
-			t.Logf("served in %s", took.Round(time.Millisecond))
+			requireServedPushes(t, handler, secret, "a connection that sent "+tc.name, 4)
 		})
 	}
 }
@@ -278,7 +288,7 @@ func TestGitHubHandlerServesDeliveriesInProgressBehindASenderThatTookTheRightAnd
 		buffer = 2 << 20
 	)
 	bodies := newBodyBudget(budget)
-	handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+	handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies, clock.Real())
 	push := largePushPayload(t, 1000)
 	resume := make(chan struct{})
 	resumePushes := sync.OnceFunc(func() { close(resume) })
@@ -291,16 +301,14 @@ func TestGitHubHandlerServesDeliveriesInProgressBehindASenderThatTookTheRightAnd
 		awaitBudget(t, bodies, int64(i+1)*buffer, false)
 	}
 	stall := make(chan struct{})
-	_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: 1 << 20, stall: stall}}, 0)
+	_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: 1 << 20, stall: stall}})
 	defer func() {
 		close(stall)
 		<-done
 	}()
 	awaitBudget(t, bodies, budget, true)
-	began := time.Now()
 	resumePushes()
-	took := requireServed(t, recorders, &answered, began, "3 signed pushes in progress behind a sender that took the right and stopped")
-	t.Logf("served in %s", took.Round(time.Millisecond))
+	requireServed(t, recorders, &answered, "3 signed pushes in progress behind a sender that took the right and stopped")
 }
 
 // A request asks for room as soon as its buffer is full, before its next byte arrives, so a sender
@@ -328,7 +336,7 @@ func TestGitHubHandlerServesADeliveryBehindASenderThatTookTheRightAtABufferBound
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			bodies := newBodyBudget(budget)
-			handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+			handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies, clock.Real())
 			staying, finishing := bodies.begin(), bodies.begin()
 			defer staying.release()
 			if err := staying.charge(ctx, budget/2); err != nil {
@@ -338,15 +346,14 @@ func TestGitHubHandlerServesADeliveryBehindASenderThatTookTheRightAtABufferBound
 				t.Fatalf("the read that finishes: %v", err)
 			}
 			stall := make(chan struct{})
-			_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: tc.sent, stall: stall}}, 0)
+			_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: tc.sent, stall: stall}})
 			defer func() {
 				close(stall)
 				<-done
 			}()
 			awaitBudget(t, bodies, budget-tc.free+1<<10, true)
 			finishing.release()
-			took := requireServedPushes(t, handler, secret, "a sender that took the right after "+tc.name+" and stopped", 1)
-			t.Logf("served in %s", took.Round(time.Millisecond))
+			requireServedPushes(t, handler, secret, "a sender that took the right after "+tc.name+" and stopped", 1)
 		})
 	}
 }
@@ -355,12 +362,11 @@ func TestGitHubHandlerServesADeliveryBehindASenderThatTookTheRightAtABufferBound
 // ends its wait at its own body deadline, and is answered 400 there. Nothing reads its connection
 // while it waits, so only the read's own deadline can end the wait before the holder lets go.
 func TestAGitHubDeliveryWaitingForRoomEndsAtItsOwnDeadline(t *testing.T) {
-	previous := githubBodyDeadline
-	githubBodyDeadline = 300 * time.Millisecond
-	t.Cleanup(func() { githubBodyDeadline = previous })
 	const budget = 64 << 10
+	start := time.Now()
+	fake := clocktest.New(start)
 	bodies := newBodyBudget(budget)
-	handler := githubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+	handler := githubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies, fake)
 	holder := bodies.begin()
 	defer holder.release()
 	if err := holder.charge(context.Background(), budget+1); err != nil {
@@ -371,40 +377,36 @@ func TestAGitHubDeliveryWaitingForRoomEndsAtItsOwnDeadline(t *testing.T) {
 	req.Header.Set("X-GitHub-Delivery", "delivery-waiting")
 	req.Header.Set("X-GitHub-Event", "push")
 	rr := httptest.NewRecorder()
-	start := time.Now()
 	answered := make(chan struct{})
 	go func() {
 		handler.ServeHTTP(rr, req)
 		close(answered)
 	}()
-	select {
-	case <-answered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the waiting delivery was not answered within 5 s; its wait outlasted its own deadline")
+	// The waiting delivery can never get room, so the only thing that can end its wait is the body
+	// context the route arms on the clock. That it is armed, at githubBodyDeadline from the start,
+	// proves the wait is the body deadline's and no shorter: a wait on the wall clock would arm no
+	// fake timer and AwaitArmed would never see it.
+	armed := fake.AwaitArmed(t, "the waiting delivery's body deadline", 1)
+	if want := start.Add(githubBodyDeadline); !armed[0].Equal(want) {
+		t.Fatalf("armed the body deadline %s from the start, want githubBodyDeadline (%s)", armed[0].Sub(start), githubBodyDeadline)
 	}
-	if elapsed := time.Since(start); elapsed < githubBodyDeadline {
-		t.Fatalf("answered after %s, before its deadline of %s", elapsed.Round(time.Millisecond), githubBodyDeadline)
-	}
+	fake.Set(armed[0])
+	testwait.Receive(t, "the waiting delivery to be answered once its deadline passed", answered)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
 }
 
 // awaitBudget waits until bodies holds held bytes with the right to go past its limit taken, or
-// free, as taken says, and fails the test if that takes longer than 5 s.
+// free, as taken says.
 func awaitBudget(t *testing.T, bodies *bodyBudget, held int64, taken bool) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	testwait.Until(t, fmt.Sprintf("the budget to hold %d bytes with the right taken %t", held, taken), func() (string, bool) {
 		bodies.mu.Lock()
 		nowHeld, nowTaken := bodies.held, bodies.over != nil
 		bodies.mu.Unlock()
-		if nowHeld == held && nowTaken == taken {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the budget holds %d bytes with the right taken %t, want %d bytes and %t", nowHeld, nowTaken, held, taken)
-		}
-	}
+		return fmt.Sprintf("%d bytes with the right taken %t", nowHeld, nowTaken), nowHeld == held && nowTaken == taken
+	})
 }
 
 // pausedBody is a request body of data. It yields its first pauseAt bytes as fast as they are read
@@ -433,14 +435,16 @@ func (b *pausedBody) Read(p []byte) (int, error) {
 }
 
 // serveUnsigned starts handler on one push delivery with a wrong signature per body, each declaring
-// githubMaxBody, waits until every one has entered the handler, and then gives them settle to reach
-// their bodies. done is closed once every one has been answered, and codes then holds each status.
-func serveUnsigned(t *testing.T, handler http.Handler, bodies []*testBody, settle time.Duration) (codes []int, done <-chan struct{}) {
+// githubMaxBody, and waits until every one has reached its body (parked on its wait or stall), so a
+// caller can count on them holding their room before it serves its own delivery. done is closed once
+// every one has been answered, and codes then holds each status.
+func serveUnsigned(t *testing.T, handler http.Handler, bodies []*testBody) (codes []int, done <-chan struct{}) {
 	t.Helper()
 	codes = make([]int, len(bodies))
-	var entered atomic.Int64
+	var parked atomic.Int64
 	var wg sync.WaitGroup
 	for i, body := range bodies {
+		body.parked = &parked
 		req := httptest.NewRequest(http.MethodPost, "/webhook/github", body)
 		req.ContentLength = githubMaxBody
 		req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("delivery-unsigned-%d", i))
@@ -449,16 +453,14 @@ func serveUnsigned(t *testing.T, handler http.Handler, bodies []*testBody, settl
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			entered.Add(1)
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
 			codes[i] = rr.Code
 		}()
 	}
-	if !testwait.Holds(10*time.Second, time.Millisecond, func() bool { return entered.Load() == int64(len(bodies)) }) {
-		t.Fatalf("only %d of %d requests entered the handler", entered.Load(), len(bodies))
-	}
-	time.Sleep(settle)
+	testwait.Eventually(t, "every unsigned request to reach its body", func() bool {
+		return parked.Load() == int64(len(bodies))
+	})
 	finished := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -468,18 +470,17 @@ func serveUnsigned(t *testing.T, handler http.Handler, bodies []*testBody, settl
 }
 
 // requireServedPushes sends handler n signed 3.6 MB pushes at once and fails the test unless every
-// one is answered 200 within 5 s, well inside the 10 s GitHub gives a delivery. It returns how
-// long the slowest took.
-func requireServedPushes(t *testing.T, handler http.Handler, secret, behind string, n int) time.Duration {
+// one is answered 200, which a delivery that waited for a stalled sender's room instead of going
+// past the budget never is: its wait would outlast the test and the shared wait would end naming it.
+func requireServedPushes(t *testing.T, handler http.Handler, secret, behind string, n int) {
 	t.Helper()
 	push := largePushPayload(t, 1000)
 	var answered sync.WaitGroup
-	began := time.Now()
 	recorders := make([]*httptest.ResponseRecorder, n)
 	for i := range recorders {
 		recorders[i] = startPush(handler, secret, push, bytes.NewReader(push), i, &answered)
 	}
-	return requireServed(t, recorders, &answered, began, fmt.Sprintf("%d signed pushes behind %s", n, behind))
+	requireServed(t, recorders, &answered, fmt.Sprintf("%d signed pushes behind %s", n, behind))
 }
 
 // startPush starts handler on signed push delivery i, whose body is push read from body, adds it
@@ -499,24 +500,20 @@ func startPush(handler http.Handler, secret string, push []byte, body io.Reader,
 	return rr
 }
 
-// requireServed fails the test unless every delivery in answered has been answered 200 within 5 s
-// of began, well inside the 10 s GitHub gives a delivery. It returns how long the slowest took.
-func requireServed(t *testing.T, recorders []*httptest.ResponseRecorder, answered *sync.WaitGroup, began time.Time, what string) time.Duration {
+// requireServed fails the test unless every delivery in answered has been answered 200. A delivery
+// that waits for a stalled sender's room rather than going past the budget is never answered while
+// the test holds that sender, so the shared wait ends naming it.
+func requireServed(t *testing.T, recorders []*httptest.ResponseRecorder, answered *sync.WaitGroup, what string) {
 	t.Helper()
 	served := make(chan struct{})
 	go func() {
 		answered.Wait()
 		close(served)
 	}()
-	select {
-	case <-served:
-	case <-time.After(5*time.Second - time.Since(began)):
-		t.Fatalf("%s were not all served within 5 s; GitHub gives up at 10 s", what)
-	}
+	testwait.Receive(t, what+" to all be served (GitHub gives up at 10 s)", served)
 	for i, rr := range recorders {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("push %d: status = %d, want 200; body = %s", i, rr.Code, rr.Body.String())
 		}
 	}
-	return time.Since(began)
 }

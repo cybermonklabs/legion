@@ -166,6 +166,10 @@
       "types": "./test/stall-proxy.ts",
       "bun": "./test/stall-proxy.ts"
     },
+    "./test/pattern-analysis": {
+      "types": "./test/pattern-analysis.ts",
+      "bun": "./test/pattern-analysis.ts"
+    },
     "./test/stall-scenario": {
       "types": "./test/stall-scenario.ts",
       "bun": "./test/stall-scenario.ts"
@@ -200,10 +204,16 @@
       "default": "./dist/transport.js"
     }
   },
+  "//": [
+    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (three runs in a builds Job).",
+    "The first, 30000: a ! command in envoy.json > still running after 10 s is an error naming the field and the file, 10,200.35 ms; the two keyed-writes upload rows, as fixed after that head, took up to 10,440 ms under the same load in an issue pod.",
+    "The second, 120000: 6,202.12 ms here; with LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK set, nats-stall.test.ts's slowest row took 50,109.26 ms and the live suites' beforeAll up to 52,389.38 ms under the same load. nats-auth.test.ts's Docker rows took at most 32.89 ms on CI."
+  ],
   "scripts": {
     "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/machine.ts src/nats-connection.ts src/process-ancestry.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 30000",
+    "analyze:patterns": "bun test/analyze-patterns.ts",
+    "test": "bun test --timeout 30000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/__tests__/nats-stall.test.ts' --path-ignore-patterns 'src/__tests__/nats-auth.test.ts' --path-ignore-patterns 'src/__tests__/*.live.test.ts' --path-ignore-patterns 'src/__tests__/dispatch-askgate.test.ts' --path-ignore-patterns 'src/__tests__/dispatch-who-waits.test.ts' --path-ignore-patterns 'src/__tests__/askgate-record.test.ts' && bun test --timeout 120000 --preload @legion/test-fixtures/row-deadline src/__tests__/nats-stall.test.ts src/__tests__/nats-auth.test.ts src/__tests__/design-gate-advice.live.test.ts src/__tests__/moved-approval-advice.live.test.ts src/__tests__/dispatch-askgate.test.ts src/__tests__/dispatch-who-waits.test.ts src/__tests__/askgate-record.test.ts",
     "lint": "bunx biome check src/ bin/ test/"
   },
   "dependencies": {
@@ -217,6 +227,7 @@
     "@biomejs/biome": "^2.3.14",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
+    "recheck": "4.6.2",
     "typescript": "^5.3.0"
   }
 }

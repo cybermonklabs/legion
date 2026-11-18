@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -259,12 +260,15 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			t.Fatalf("the renewing role's first exchange = %d %v, want 200 with an access token", status, body)
 		}
 
-		time.Sleep((shortAccessSeconds + 1) * time.Second)
-		status, body = renewal.introspect(t, first, apiToken)
-		if status != http.StatusOK || body["active"] != false {
-			t.Fatalf("introspection of the first token %ds after it was minted = %d %v, want 200 with active false: this broker was started with a %ds access-token lifetime, past which its token is not live",
-				shortAccessSeconds+1, status, body, shortAccessSeconds)
-		}
+		// The first token lapses at this broker's own access-token lifetime, which it was
+		// started with: the row waits for the introspection that says so.
+		testwait.Until(t, "the first access token to lapse", func() (map[string]any, bool) {
+			status, body := renewal.introspect(t, first, apiToken)
+			if status != http.StatusOK {
+				t.Fatalf("introspection of the first token = %d %v, want 200", status, body)
+			}
+			return body, body["active"] == false
+		})
 
 		status, body = renewal.exchange(t, exchangeForm(podToken, renewalSession))
 		second, _ := body["access_token"].(string)

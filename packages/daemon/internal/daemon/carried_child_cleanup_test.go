@@ -50,7 +50,7 @@ func TestAnOldTreesCleanupBeforeTheNewTreesStartDeletesTheCarriedChildsSandbox(t
 	}
 	enqueueOutbox(t, f.pool, f.records, mustOutboxRow(t, childKey, record.SuperviseRequest{Op: "start", Tree: childKey, Role: claim.RoleImplementer,
 		Generation: 2, Phase: phase.Implementing, Task: "Issue: " + childKey + ". Phase: implementing. Resume the existing phase work.", ResumeTask: true}, clock))
-	if err := runner.RunOnce(ctx); err != nil {
+	if err := f.boots.outlastingTheBoot(t, "the new tree's start", func() error { return runner.RunOnce(ctx) }); err != nil {
 		t.Fatalf("the new tree's start: %v", err)
 	}
 	if !slices.Contains(api.created, childSandbox) || api.uid(childSandbox) == "" || api.uid(childSandbox) == "sandbox-uid-child" {
@@ -115,7 +115,10 @@ func TestTheSweepDeletesACarriedChildsOwnSandboxOnceItLeavesTheLine(t *testing.T
 // fake API, with the real store. The fake API serves a watch its initial events alone, so a runtime
 // sees a Sandbox as the API holds it only from its own first listing (newRuntime).
 type carriedCleanup struct {
-	t                         *testing.T
+	t *testing.T
+	// boots is the runtime's clock, on which its bounded waits run: a row that launches runs the
+	// launch's wait for a pod out on it (outlastingTheBoot).
+	boots                     *podlessBoots
 	ctx                       context.Context
 	pool                      *store.Pool
 	st                        *store.Store
@@ -175,6 +178,7 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
+	boots := newPodlessBoots(api)
 	t.Cleanup(stopRuntime)
 	newRuntime := func() *sandbox.Runtime {
 		t.Helper()
@@ -183,7 +187,8 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 			StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
 			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-			BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+			BootTimeout:  rigBootTimeout, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: rigProbeInterval, AdoptTimeout: rigAdoptTimeout,
+			Clock:  boots.clock,
 			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
@@ -201,7 +206,7 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	}
 	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
+		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: newStillClock(), Log: logger,
 		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
@@ -221,7 +226,7 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	if _, err := sup.restore(ctx, []supervise.Claim{implementer}); err != nil {
 		t.Fatal(err)
 	}
-	return &carriedCleanup{t: t, ctx: ctx, pool: pool, st: st, records: records, api: api, rt: rt, newRuntime: newRuntime, sup: sup, logs: logs,
+	return &carriedCleanup{t: t, boots: boots, ctx: ctx, pool: pool, st: st, records: records, api: api, rt: rt, newRuntime: newRuntime, sup: sup, logs: logs,
 		logger: logger, lifecycle: lifecycle, rootKey: rootKey, childKey: childKey, rootSandbox: rootSandbox, childSandbox: childSandbox,
 		child: child, implementer: implementer}
 }

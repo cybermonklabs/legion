@@ -11,14 +11,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // hangingServer accepts an HTTPS connection and never writes a byte of response: git's
 // git-remote-https helper sits forever waiting for a reply unless something outside curl's own
-// retry logic ends it.
-func hangingServer(t *testing.T) *httptest.Server {
+// retry logic ends it. asked receives once the first request has reached the server, which is
+// that helper up and waiting.
+func hangingServer(t *testing.T) (server *httptest.Server, asked <-chan struct{}) {
 	t.Helper()
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	reached := make(chan struct{}, 1)
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
 		<-r.Context().Done()
 	}))
 	t.Cleanup(func() {
@@ -27,7 +36,7 @@ func hangingServer(t *testing.T) *httptest.Server {
 		server.CloseClientConnections()
 		server.Close()
 	})
-	return server
+	return server, reached
 }
 
 // trustHangingServerCA makes the fetch's own clone (which reads no config file, GIT_CONFIG_GLOBAL
@@ -43,20 +52,17 @@ func trustHangingServerCA(t *testing.T, server *httptest.Server) {
 	t.Setenv("GIT_SSL_CAINFO", caFile)
 }
 
-// shortTimeoutRunner retargets the fetch's clone at a local server and cuts Fetch's real
-// FetchTimeout (30 minutes, never practical to wait out) down to timeout, so the test proves
-// execRunner.Run's own process-group kill without waiting real minutes: the production Fetch
-// through NewRunner, against a local TLS server that accepts a connection and never answers, with
-// the timeout cut to a few seconds.
-type shortTimeoutRunner struct {
-	remote  string
-	timeout time.Duration
-	run     Runner
+// hangingRemoteRunner retargets the fetch's clone at a local server, through the production
+// runner (recordingRunner's), against a local TLS server that accepts a connection and never
+// answers.
+type hangingRemoteRunner struct {
+	remote string
+	run    Runner
 }
 
-func (r *shortTimeoutRunner) Timeout() time.Duration { return r.run.Timeout() }
+func (r *hangingRemoteRunner) Timeout() time.Duration { return r.run.Timeout() }
 
-func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, error) {
+func (r *hangingRemoteRunner) Run(ctx context.Context, command Command) (Result, error) {
 	if commandWith(command.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
 		rewritten := append([]string(nil), command.Argv...)
 		for i, arg := range rewritten {
@@ -65,7 +71,6 @@ func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, 
 			}
 		}
 		command.Argv = rewritten
-		command.Timeout = r.timeout
 	}
 	return r.run.Run(ctx, command)
 }
@@ -73,19 +78,27 @@ func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, 
 // git's https transport spawns git-remote-https, a helper holding the same stdout/stderr pipes as
 // the git process exec.CommandContext starts directly: killing only that direct child when the
 // deadline fires leaves the helper, now reparented, holding the pipe open, and Wait (so Run, so
-// Fetch) never returns. Against a server that accepts the connection and never answers, with the
-// clone's timeout cut to 3 s, Fetch must still return within a few seconds of that deadline, with
-// an error naming the timeout, and no git process of this test still running.
+// Fetch) never returns. Against a server that accepts the connection and never answers, the
+// clone's timeout, on a fake clock that the row moves to it once the helper's request has reached
+// the server and never past the grace that follows, must still end Fetch, with an error naming the
+// timeout, and no git process of this test still running.
 func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 	run := newLocalRunner(t)
-	server := hangingServer(t)
+	clock := clocktest.New(stopMoment)
+	run.runner = execRunner{timeout: run.timeout, tools: testTools(t), clock: clock}
+	server, asked := hangingServer(t)
 	trustHangingServerCA(t, server)
 	req := fetchRequest(t)
-	timeout := 3 * time.Second
 
-	start := time.Now()
-	_, err := Fetch(context.Background(), &shortTimeoutRunner{remote: server.URL + "/widgets.git", timeout: timeout, run: run}, req)
-	elapsed := time.Since(start)
+	fetched := inFlight(func() error {
+		_, err := Fetch(context.Background(), &hangingRemoteRunner{remote: server.URL + "/widgets.git", run: run}, req)
+		return err
+	})
+	testwait.Receive(t, "the clone's git-remote-https to reach the server", asked)
+	// The clone is the one command running, so its timeout is the one deadline armed.
+	armed := clock.AwaitArmed(t, "the clone's timeout", 1)
+	clock.Advance(armed[0].Sub(clock.Now()))
+	err := testwait.Receive(t, "Fetch to return once the clone's timeout stopped its whole process group", fetched)
 
 	if err == nil {
 		t.Fatal("Fetch: no error, want the clone's own timeout to end it")
@@ -93,10 +106,6 @@ func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 	if !strings.Contains(err.Error(), "command timed out") {
 		t.Errorf("Fetch error = %q, want it to name the timeout (\"command timed out\")", err)
 	}
-	if elapsed > timeout+3*time.Second {
-		t.Errorf("Fetch took %s to return, want within a few seconds of its %s timeout", elapsed, timeout)
-	}
-
 	if leftover := gitProcessesUnder(t, server.URL); len(leftover) != 0 {
 		t.Errorf("git processes still running after Fetch returned: %v", leftover)
 	}

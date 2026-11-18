@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // pooledDocumentHandler serves a Dispatch API whose pool is maxConns wide and whose documents
@@ -43,9 +44,7 @@ func pooledDocumentHandlerWith(
 		t.Cleanup(pool.Close)
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := service.Shutdown(ctx); err != nil {
+			if err := service.Shutdown(testwait.Context(t)); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -84,11 +83,7 @@ func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {
 			group.Wait()
 			close(finished)
 		}()
-		select {
-		case <-finished:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("round %d wedged: conditional edit flood did not return", round)
-		}
+		testwait.Receive(t, fmt.Sprintf("round %d's conditional edit flood to return (a wedge never does)", round), finished)
 	}
 }
 
@@ -123,10 +118,6 @@ func TestConcurrentConditionalAndUnconditionalEditsDoNotWedge(t *testing.T) {
 			group.Wait()
 			close(finished)
 		}()
-		select {
-		case <-finished:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("round %d wedged: concurrent conditional and unconditional edits did not return", round)
-		}
+		testwait.Receive(t, fmt.Sprintf("round %d's concurrent conditional and unconditional edits to return (a wedge never does)", round), finished)
 	}
 }

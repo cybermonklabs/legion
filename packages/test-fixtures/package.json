@@ -5,6 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./bun-child-environment": {
+      "types": "./src/bun-child-environment.ts",
+      "bun": "./src/bun-child-environment.ts"
+    },
     "./environment": {
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
@@ -12,6 +16,14 @@
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
+    },
+    "./postgres": {
+      "types": "./src/postgres.ts",
+      "bun": "./src/postgres.ts"
+    },
+    "./row-deadline": {
+      "types": "./src/row-deadline.ts",
+      "bun": "./src/row-deadline.ts"
     },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",
@@ -28,11 +40,18 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./wait": {
+      "types": "./src/wait.ts",
+      "bun": "./src/wait.ts"
     }
   },
+  "//": [
+    "test: --timeout 10000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): ownDatabase on the server LEGION_TEST_PG_DSN names > makes a database of its own, which its URL opens and its drop removes, 3,176.79 ms."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 10000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/"
   },
   "devDependencies": {

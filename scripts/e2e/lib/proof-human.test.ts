@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // require_proof_human (lib/workflow.sh) against a fake gh first on PATH: it prints FAKE_GH_LOGIN
@@ -39,6 +40,7 @@ function run(script: string, fake: { login?: string; stderr?: string; exit?: num
   mkdirSync(work);
   const result = Bun.spawnSync(["bash", "-c", prelude + script], {
     env: {
+      ...bunCacheOff,
       PATH: `${dir}:/usr/bin:/bin`,
       HOME: dir,
       LIB: lib,

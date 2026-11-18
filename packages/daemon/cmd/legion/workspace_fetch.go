@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
@@ -29,7 +30,7 @@ const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 const defaultBranchEnv = "LEGION_DEFAULT_BRANCH"
 
 // fetchClock is the time the fetch's clone retries read and wait on; a test replaces it.
-var fetchClock workspace.Clock = workspace.WallClock{}
+var fetchClock workspace.Clock = clock.Real()
 
 // workspaceFetch fills the feed, the container's own directory on the issue's volume: from the
 // repository cache when one is named, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE

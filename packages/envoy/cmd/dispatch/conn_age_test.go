@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeClock is a clock the test moves by hand, so a connection ages without the test sleeping.
@@ -216,11 +216,7 @@ func TestMaxConnAgeDoesNotDisturbAnAgedHijackedWebsocket(t *testing.T) {
 	if response.Close || strings.EqualFold(response.Header.Get("Connection"), "close") {
 		t.Fatalf("hijacked websocket carried Connection: close: %v", response.Header)
 	}
-	select {
-	case <-upgraded:
-	case <-time.After(time.Second):
-		t.Fatal("server did not hold the websocket after the handshake")
-	}
+	testwait.Receive(t, "the server to hold the websocket after the handshake", upgraded)
 }
 
 func TestMaxConnAgeHandlerPassesARequestWithNoAcceptTime(t *testing.T) {
@@ -271,8 +267,7 @@ func TestServerClosesConnectionsAfterShutdownBegins(t *testing.T) {
 	}()
 
 	<-entered
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- server.Config.Shutdown(ctx) }()
 

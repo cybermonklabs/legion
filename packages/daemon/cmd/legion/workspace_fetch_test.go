@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -287,25 +288,24 @@ func cloneAttempts(t *testing.T, attempts string) int {
 	return count
 }
 
-// instantClock is the fetch's clock in a test: each wait passes at once, recorded, and moves the
-// clock on by its length.
+// instantClock is the fetch's clock in a test: a clocktest.Fake that each wait moves on by its
+// length at once, recording it. The wait is not the Fake's own, which would wait for the test to
+// move it: the fetch sleeps on the test's own goroutine.
 type instantClock struct {
-	now   time.Time
+	*clocktest.Fake
 	waits []time.Duration
 }
 
-func (c *instantClock) Now() time.Time { return c.now }
-
 func (c *instantClock) Sleep(ctx context.Context, d time.Duration) error {
 	c.waits = append(c.waits, d)
-	c.now = c.now.Add(d)
+	c.Advance(d)
 	return ctx.Err()
 }
 
 // useInstantClock makes an instantClock the fetch's clock until the test ends.
 func useInstantClock(t *testing.T) *instantClock {
 	t.Helper()
-	clock := &instantClock{now: time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC)}
+	clock := &instantClock{Fake: clocktest.New(time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC))}
 	saved := fetchClock
 	fetchClock = clock
 	t.Cleanup(func() { fetchClock = saved })

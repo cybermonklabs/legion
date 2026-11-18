@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The read with no credential carries no credential of the pod's. Of the caller's GIT_ variables
@@ -45,7 +47,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 		"NETRC="+filepath.Join(home, ".netrc"),
 		"LC_ALL=fr_FR.UTF-8",
 	)})
-	visibility, err := guard.lsRemote(bound(t), githubOrigin, theRepo)
+	visibility, err := guard.lsRemote(testwait.Context(t), githubOrigin, theRepo)
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
@@ -84,7 +86,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	if askpass == "unset" || askpass == "" {
 		t.Fatalf("git ran with no askpass program: %q", askpass)
 	}
-	if status, _, err := guard.run(bound(t), child{argv: []string{askpass}}); err != nil || status == 0 {
+	if status, _, err := guard.run(testwait.Context(t), child{argv: []string{askpass}}); err != nil || status == 0 {
 		t.Errorf("the askpass program %s answered %d, %v; want a program that answers no credential", askpass, status, err)
 	}
 }
@@ -107,7 +109,7 @@ func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 		"GIT_TERMINAL_PROMPT=1",
 		"GIT_ASKPASS="+filepath.Join(askpasses, "answers"),
 	)})
-	visibility, err := guard.lsRemote(bound(t), githubOrigin, theRepo)
+	visibility, err := guard.lsRemote(testwait.Context(t), githubOrigin, theRepo)
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
@@ -139,7 +141,13 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 	git := realGit(t)
 	var mu sync.Mutex
 	var requests, authorized int
+	// git sends this server no credential, so it counts only requests of the shape git's read
+	// sends, its ref discovery of the repository; any other is another process's, answered 404 and
+	// counted as nothing (fromTheDaemonWhen).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, strings.HasPrefix(r.URL.Path, "/private/invented-repo")) {
+			return
+		}
 		mu.Lock()
 		requests++
 		if r.Header.Get("Authorization") != "" {
@@ -159,7 +167,7 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 		}
 	}
 	guard := New(Options{Env: loopbackEnv(home, pathWith(filepath.Dir(git)), "NETRC="+named)})
-	visibility, err := guard.lsRemote(bound(t), server.URL, "private/invented-repo")
+	visibility, err := guard.lsRemote(testwait.Context(t), server.URL, "private/invented-repo")
 	if err == nil {
 		t.Fatalf("read %q, want no answer: a 401 is not one", visibility)
 	}
@@ -174,94 +182,86 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 }
 
 // The read with no credential ends at its own cap when git never answers, inside a caller's bound
-// that would let it run longer, and the call is refused naming the spent limit and git's stop by
-// a bound no longer than that cap. GraphQL's own limit is spent, which is what sends the read on
-// to git.
+// that would let it run a minute longer, and the call is refused naming the spent limit and git's
+// stop by that cap. GraphQL's own limit is spent, which is what sends the read on to git. The cap
+// and the caller's bound are both on the test clock: the cap is armed at lsRemoteBound from the
+// read's start, before the caller's bound, and the test moves the clock to it once git has
+// started. A git the cap did not stop would end its own sleep and list nothing, which ls-remote
+// answers public.
 func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
-	saved := lsRemoteBound
-	lsRemoteBound = 2 * time.Second
-	t.Cleanup(func() { lsRemoteBound = saved })
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
-	reset := clock.Now().Add(30 * time.Minute)
-	bin := t.TempDir()
+	clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
+	start := clock.Now()
+	reset := start.Add(30 * time.Minute)
+	bin, started := t.TempDir(), filepath.Join(t.TempDir(), "started")
 	writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
-	writeProgram(t, bin, "git", "sleep 30\n")
-	started := time.Now()
-	_, err := New(Options{
+	writeProgram(t, bin, "git", ": > "+shQuote(started)+"\nsleep 30\n")
+	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(bound(t), theRepo)
-	answeredWithin10s(t, started)
+	})
+	ctx := boundOn(t, clock.Fake, lsRemoteBound+time.Minute)
+	err := stoppedOnceStarted(t, started, func() {
+		armed := clock.AwaitArmed(t, "ls-remote's own cap beside the caller's bound", 2)
+		if want := []time.Time{start.Add(lsRemoteBound), start.Add(lsRemoteBound + time.Minute)}; !slices.Equal(armed, want) {
+			t.Fatalf("the armed deadlines are %v, want ls-remote's cap at %v before the caller's bound at %v", armed, want[0], want[1])
+		}
+		clock.Advance(lsRemoteBound)
+	}, func() error {
+		_, err := guard.Visibility(ctx, theRepo)
+		return err
+	})
 	if err == nil {
 		t.Fatal("the visibility read passed while git never answered")
 	}
+	seconds := wholeSeconds(lsRemoteBound)
 	for _, want := range []string{
 		"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
-		"GraphQL's rate limit is spent too, and git ls-remote could not answer: git ran ",
+		fmt.Sprintf("GraphQL's rate limit is spent too, and git ls-remote could not answer: git ran %d s and was stopped by its bound of %d s", seconds, seconds),
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the failure %q does not say %q", err, want)
 		}
 	}
-	if got := stopBound(t, err); got > 2 {
-		t.Errorf("git was stopped by a bound of %d s, want the read's own %s, not the caller's minute", got, lsRemoteBound)
-	}
 }
 
 // The read with no credential also ends when the caller's context ends, before its own cap: a
-// caller that cancels while git hangs, and one whose deadline comes before lsRemoteBound, each
-// get the call back at once, refused naming the spent limit, its reset and git's stop. Nothing is
-// kept, so the next call reads the visibility again. lsRemoteBound keeps its own two minutes
-// here. Each caller's context ends only once the stand-in git has started, so it is a running git
-// the end stops on a loaded machine too. GraphQL's own limit is spent, which is what sends the
-// read on to git.
+// caller that cancels while git hangs, and one whose deadline of 2 s comes before lsRemoteBound,
+// each get the call back, refused naming the spent limit, its reset and git's stop. Nothing is
+// kept, so the next call reads the visibility again. Each caller's context ends only once the
+// stand-in git has started (stoppedOnceStarted), so it is a running git the end stops; the
+// deadline is on the test clock, which the test moves to it. GraphQL's own limit is spent, which
+// is what sends the read on to git.
 func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// caller is the caller's context, given the file the stand-in git writes before it
-		// hangs.
-		caller func(t *testing.T, started string) context.Context
-		// stop checks what the failure says of git's stop.
-		stop func(t *testing.T, err error)
+		// caller is the caller's context on clock, and the end the test brings about once the
+		// stand-in git has started.
+		caller func(t *testing.T, clock *visibilityTestClock) (context.Context, func())
+		// says is what the failure says of git's stop.
+		says string
 	}{
 		{
 			name: "the caller cancels",
-			caller: func(t *testing.T, started string) context.Context {
-				ctx, cancel := context.WithCancel(bound(t))
+			caller: func(t *testing.T, _ *visibilityTestClock) (context.Context, func()) {
+				ctx, cancel := context.WithCancel(testwait.Context(t))
 				t.Cleanup(cancel)
-				whenWritten(ctx, started, cancel)
-				return ctx
+				return ctx, cancel
 			},
-			stop: func(t *testing.T, err error) {
-				if want := "and was stopped by a cancel"; !strings.Contains(err.Error(), want) {
-					t.Errorf("the failure %q does not say %q", err, want)
-				}
-			},
+			says: "git ls-remote could not answer: git ran 0 s and was stopped by a cancel",
 		},
 		{
 			name: "the caller's deadline comes first",
-			caller: func(t *testing.T, started string) context.Context {
-				deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				t.Cleanup(cancel)
-				ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
-				whenWritten(bound(t), started, func() {
-					<-deadline.Done()
-					close(ctx.done)
-				})
-				return ctx
+			caller: func(t *testing.T, clock *visibilityTestClock) (context.Context, func()) {
+				return boundOn(t, clock.Fake, 2*time.Second), func() { clock.Advance(2 * time.Second) }
 			},
-			stop: func(t *testing.T, err error) {
-				if got := stopBound(t, err); got > 2 {
-					t.Errorf("git was stopped by a bound of %d s, want the caller's deadline of 2 s, not the read's own %s", got, lsRemoteBound)
-				}
-			},
+			says: "git ls-remote could not answer: git ran 2 s and was stopped by its bound of 2 s",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+			clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
 			reset := clock.Now().Add(30 * time.Minute)
 			bin, started := t.TempDir(), filepath.Join(t.TempDir(), "started")
 			writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
@@ -273,22 +273,22 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 					return "", &rateLimitError{reset: reset}
 				},
 			})
-			ctx := tc.caller(t, started)
-			began := time.Now()
-			_, err := guard.Visibility(ctx, theRepo)
-			answeredWithin10s(t, began)
+			ctx, stop := tc.caller(t, clock)
+			err := stoppedOnceStarted(t, started, stop, func() error {
+				_, err := guard.Visibility(ctx, theRepo)
+				return err
+			})
 			if err == nil {
 				t.Fatal("the visibility read passed while git never answered")
 			}
 			for _, want := range []string{
 				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
-				"GraphQL's rate limit is spent too, and git ls-remote could not answer: git ran ",
+				"GraphQL's rate limit is spent too, and " + tc.says,
 			} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the failure %q does not say %q", err, want)
 				}
 			}
-			tc.stop(t, err)
 			if _, err := os.Stat(guard.visibilityCachePath(theRepo)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("a visibility was kept for the refused read (%v), want none", err)
 			}
@@ -390,7 +390,7 @@ func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
 		{owner: "missing", fails: "not found"},
 	} {
 		t.Run(tc.owner, func(t *testing.T) {
-			visibility, err := guard.lsRemote(bound(t), server.URL, tc.owner+"/invented-repo")
+			visibility, err := guard.lsRemote(testwait.Context(t), server.URL, tc.owner+"/invented-repo")
 			if tc.fails == "" {
 				if err != nil || visibility != Public {
 					t.Fatalf("read %q, %v; want public", visibility, err)
@@ -416,7 +416,7 @@ func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
 func TestVisibilityNeverReadsAnUnauthenticatedRefusalAsPrivate(t *testing.T) {
 	git := realGit(t)
 	server := gitHubStandIn(t)
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
 	reset := clock.Now().Add(30 * time.Minute)
 	for _, tc := range []struct {
 		owner string
@@ -441,7 +441,7 @@ func TestVisibilityNeverReadsAnUnauthenticatedRefusalAsPrivate(t *testing.T) {
 					return "", &rateLimitError{reset: reset}
 				},
 			})
-			visibility, err := guard.Visibility(bound(t), slug)
+			visibility, err := guard.Visibility(testwait.Context(t), slug)
 			if tc.fails == "" {
 				if err != nil || visibility != Public {
 					t.Fatalf("read %q, %v; want public", visibility, err)
@@ -515,7 +515,7 @@ func TestLsRemoteClearsTheSettingsAGitWrapperAdds(t *testing.T) {
 			}
 			writeProgram(t, bin, "git", wrapper+" \"$@\"\n")
 			guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(bin), tc.env...)})
-			visibility, err := guard.lsRemote(bound(t), server.URL, "public/invented-repo")
+			visibility, err := guard.lsRemote(testwait.Context(t), server.URL, "public/invented-repo")
 			if err != nil || visibility != Public {
 				t.Fatalf("read %q, %v; want public: the setting reached the request", visibility, err)
 			}

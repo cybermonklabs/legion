@@ -92,7 +92,7 @@ beforeAll(async () => {
   const packed = (await readdir(packageCopy)).filter((entry) => entry.endsWith(".tgz"))
   expect(packed).toHaveLength(1)
   tarball = join(packageCopy, packed[0] as string)
-}, 60_000)
+})
 
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })

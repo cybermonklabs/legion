@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
@@ -18,7 +17,8 @@ import (
 
 // imageOmp is an `omp` that answers each of the image's probes by its own plan, one step per
 // attempt of that probe (the last step repeats), telling them apart by argv as a real Oh My Pi
-// would run them, and recording the order they ran in and each attempt's argv and environment.
+// would run them, and recording the order they ran in, each attempt's argv and environment, and
+// each attempt that hangs (fakeHang).
 type imageOmp struct{ dir, path string }
 
 func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
@@ -31,6 +31,7 @@ func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	}
 	script := `#!/bin/sh
 dir=` + dir + `
+` + fakeHang + `
 # The pod's load arm, three extensions, comes before the pane's, one, whose glob would swallow it.
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json") kind=load lane=pod ;;
@@ -61,7 +62,7 @@ agents:available) echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
 agents:missing) echo LEGION_OMP_AGENTS=missing >&2; exit 0 ;;
 agents:silent) exit 0 ;;
 agents:available-then-die) echo LEGION_OMP_AGENTS=available >&2; echo "database is locked" >&2; exit 1 ;;
-agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 30 ;;
+agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; hang ;;
 load:yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 load:no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 load:elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$dir/elsewhere/pi-legion/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -76,7 +77,7 @@ session:refuses) echo "Invalid OMP_SESSION_STORAGE: legion-launch-probe (expecte
 session:accepts) exit 0 ;;
 session:dies) echo "database is locked" >&2; exit 1 ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
-*:hang) exec sleep 30 ;;
+*:hang) hang ;;
 esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
@@ -143,20 +144,24 @@ func imageEnv(home string) map[string]string {
 }
 
 // imageGateUnder is the image probe's gate over the image's HOME, loading the image's plugin roots
-// as a pod does, run through f, with budgets that cost the suite little: attempts bounds the retry
-// (0 for none).
+// as a pod does, run through f, with the image probe's own budget and backoff on the gate's clock
+// (gateClock), which only the test moves (verifyEndingHangs). attempts bounds the retry (0 for
+// none).
 func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	var logged bytes.Buffer
 	home := imageHome(t, legion)
+	retry := bootprobe.Image
+	retry.Attempts = attempts
 	return pluginGate{
 		env:             imageEnv(home),
 		pluginRoot:      legionRootOf(home),
 		envoyPluginRoot: envoyRootOf(home),
 		workDir:         t.TempDir(),
 		invocation:      f.path,
-		timeout:         1500 * time.Millisecond,
-		retry:           bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond, Attempts: attempts},
+		timeout:         defaultProbeTimeout,
+		retry:           retry,
+		clock:           gateClock(),
 		contract:        3,
 		log:             slog.New(slog.NewTextHandler(&logged, nil)),
 	}, &logged
@@ -383,20 +388,22 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		plan     []string
 		attempts int
 		refusal  []string
+		// hangs is how many of the attempts hang until the test ends their budget.
+		hangs int
 	}{
-		{[]string{"available"}, 1, nil},
-		{[]string{"missing"}, 1, []string{"does not expose pi.agents", "LEGION_OMP_AGENTS=missing"}},
-		{[]string{"silent"}, 1, []string{"does not expose pi.agents"}},
-		{[]string{"denied"}, 1, []string{"does not expose pi.agents", "secrets: ANTHROPIC_API_KEY was denied"}},
-		{[]string{"missing-then-hang"}, 1, []string{"does not expose pi.agents", "LEGION_OMP_AGENTS=missing"}},
-		{[]string{"available-then-die", "available-then-die", "available"}, 3, nil},
-		{[]string{"hang", "hang", "available"}, 3, nil},
+		{[]string{"available"}, 1, nil, 0},
+		{[]string{"missing"}, 1, []string{"does not expose pi.agents", "LEGION_OMP_AGENTS=missing"}, 0},
+		{[]string{"silent"}, 1, []string{"does not expose pi.agents"}, 0},
+		{[]string{"denied"}, 1, []string{"does not expose pi.agents", "secrets: ANTHROPIC_API_KEY was denied"}, 0},
+		{[]string{"missing-then-hang"}, 1, []string{"does not expose pi.agents", "LEGION_OMP_AGENTS=missing"}, 1},
+		{[]string{"available-then-die", "available-then-die", "available"}, 3, nil, 0},
+		{[]string{"hang", "hang", "available"}, 3, nil, 2},
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, testCase.plan, []string{"yes"}, []string{"refuses"})
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
 
-			err := gate.verifyImage(context.Background())
+			err := verifyEndingHangs(t, gate, f.dir, testCase.hangs, gate.verifyImage)
 
 			if testCase.refusal == nil && err != nil {
 				t.Fatalf("verifyImage = %v, want a pass", err)
@@ -427,17 +434,19 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		plan     []string
 		attempts int
 		refusal  []string
+		// hangs is how many of the attempts hang until the test ends their budget.
+		hangs int
 	}{
-		{[]string{"refuses"}, 1, nil},
-		{[]string{"accepts"}, 1, []string{"started with OMP_SESSION_STORAGE=legion-launch-probe (exit 0)", "predates the session.storage setting"}},
-		{[]string{"dies", "dies", "refuses"}, 3, nil},
-		{[]string{"hang", "hang", "refuses"}, 3, nil},
+		{[]string{"refuses"}, 1, nil, 0},
+		{[]string{"accepts"}, 1, []string{"started with OMP_SESSION_STORAGE=legion-launch-probe (exit 0)", "predates the session.storage setting"}, 0},
+		{[]string{"dies", "dies", "refuses"}, 3, nil, 0},
+		{[]string{"hang", "hang", "refuses"}, 3, nil, 2},
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, []string{"available"}, []string{"yes"}, testCase.plan)
 			gate, _ := imageGateUnder(t, f, contractCurrent, 0)
 
-			err := gate.verifyImage(context.Background())
+			err := verifyEndingHangs(t, gate, f.dir, testCase.hangs, gate.verifyImage)
 
 			if testCase.refusal == nil && err != nil {
 				t.Fatalf("verifyImage = %v, want a pass", err)
@@ -461,17 +470,19 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 		name                  string
 		agents, session, want []string
 		kind                  string
+		// hangs is how many of the attempts hang until the test ends their budget.
+		hangs int
 	}{
 		{"pi.agents cut off every time", []string{"hang"}, []string{"refuses"},
-			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 1.5s"}, "agents"},
+			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after " + defaultProbeTimeout.String()}, "agents", 3},
 		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
-			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
+			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session", 0},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
 			gate, _ := imageGateUnder(t, f, contractCurrent, 3)
 
-			err := gate.verifyImage(context.Background())
+			err := verifyEndingHangs(t, gate, f.dir, testCase.hangs, gate.verifyImage)
 
 			for _, want := range append(testCase.want, f.path) {
 				if err == nil || !strings.Contains(err.Error(), want) {

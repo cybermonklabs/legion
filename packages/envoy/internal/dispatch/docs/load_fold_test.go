@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A load of a log within foldBufferBytes reads its rows, ends its transaction and folds them
@@ -22,6 +24,10 @@ import (
 // Either way a room's load (Load) and a cold read (LoadDocument) read the state the log makes: a
 // single row as stored, a folded log as its merge reads, a log with parked items keeping them, and
 // a log the fold cannot apply served merged, which a cold read refuses as ErrDocumentUnloadable.
+//
+// Which connection a fold holds is the fold's own report (beforeFold's inTransaction), not a
+// sample of the pool's acquired connections: pgxpool's own health check acquires idle connections
+// of that pool on a timer of its own, which raised the sample on a slow run.
 func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) {
 	fixtures := readHistoryFixtures(t)
 	parked, lost, gone := parkedHistory(t)
@@ -31,28 +37,24 @@ func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) 
 		t.Fatalf("merge the unfoldable log: %v", err)
 	}
 	database := storetest.Open(t)
-	rooms, err := database.Pool.Rooms()
-	if err != nil {
-		t.Fatalf("open the rooms pool: %v", err)
-	}
 	ctx := context.Background()
 	for _, mode := range []struct {
-		name  string
-		limit int64
-		held  int32
+		name          string
+		limit         int64
+		inTransaction bool
 	}{
-		{name: "in memory", held: 0},
-		{name: "streamed", limit: 1, held: 1},
+		{name: "in memory", inTransaction: false},
+		{name: "streamed", limit: 1, inTransaction: true},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			versioned := NewPgVersioned(database)
 			versioned.foldBufferLimit = mode.limit
-			var held []int32
-			versioned.beforeFold = func(string) { held = append(held, rooms.Stat().AcquiredConns()) }
+			var held []bool
+			versioned.beforeFold = func(_ string, inTransaction bool) { held = append(held, inTransaction) }
 			requireFoldHeld := func(t *testing.T, what string) {
 				t.Helper()
-				if len(held) != 1 || held[0] != mode.held {
-					t.Fatalf("%s folded holding %v connections of the rooms pool, want one fold holding %d", what, held, mode.held)
+				if len(held) != 1 || held[0] != mode.inTransaction {
+					t.Fatalf("%s folded %v (true: inside its read transaction, holding its connection), want one fold, inside it: %t", what, held, mode.inTransaction)
 				}
 				held = held[:0]
 			}
@@ -137,7 +139,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	release := sync.OnceFunc(func() { close(released) })
 	t.Cleanup(release)
 	var waitedFolds atomic.Int32
-	versioned.beforeFold = func(room string) {
+	versioned.beforeFold = func(room string, _ bool) {
 		switch room {
 		case holding:
 			close(held)
@@ -153,11 +155,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		_, err := versioned.Load(ctx, holding)
 		first <- err
 	}()
-	select {
-	case <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the first load never reached its fold")
-	}
+	testwait.Receive(t, "the first load to reach its fold", held)
 	type coldRead struct {
 		loaded LoadedDocument
 		err    error
@@ -176,25 +174,22 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	}()
 	// The holder committed its read before its fold, so the two transactions left open are the
 	// waiters', each past its read of the stored log and waiting for the slot.
-	waitFor(t, 30*time.Second, "both later loads to wait for the slot inside their read transactions", func() bool {
+	waitFor(t, "both later loads to wait for the slot inside their read transactions", func() bool {
 		return idleInTransaction(t, database) == 2
 	})
+	// Both waiters are in the slot's wait, inside their read transactions, which nothing but the
+	// slot ends: the third's context is live, and the slot is held.
 	select {
 	case read := <-second:
 		t.Fatalf("the second load returned (%v) while the only slot was held", read.err)
 	case err := <-third:
 		t.Fatalf("the third load returned (%v) while the only slot was held and its context was live", err)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 
 	cancel()
-	select {
-	case err := <-third:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the waiter whose context ended returned %v, want %v", err, context.Canceled)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the waiter whose context ended is still waiting for the slot")
+	if err := testwait.Receive(t, "the waiter whose context ended to leave the slot's wait", third); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the waiter whose context ended returned %v, want %v", err, context.Canceled)
 	}
 	select {
 	case read := <-second:
@@ -206,24 +201,15 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	}
 
 	release()
-	select {
-	case err := <-first:
-		if err != nil {
-			t.Fatalf("the first load: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the first load did not return once released")
+	if err := testwait.Receive(t, "the first load to return once released", first); err != nil {
+		t.Fatalf("the first load: %v", err)
 	}
-	select {
-	case read := <-second:
-		if read.err != nil {
-			t.Fatalf("the second load: %v", read.err)
-		}
-		if got := docMarkdown(read.loaded.Doc); got != "First.\n\nSecond.\n" {
-			t.Fatalf("the second load reads %q, want the stored document", got)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the second load did not proceed once the slot was given back")
+	read := testwait.Receive(t, "the second load to fold once the slot was given back", second)
+	if read.err != nil {
+		t.Fatalf("the second load: %v", read.err)
+	}
+	if got := docMarkdown(read.loaded.Doc); got != "First.\n\nSecond.\n" {
+		t.Fatalf("the second load reads %q, want the stored document", got)
 	}
 	if folds := waitedFolds.Load(); folds != 1 {
 		t.Fatalf("the waiting document folded %d times, want the second load's one fold", folds)
@@ -263,7 +249,7 @@ func TestABufferedFoldEndsWithItsContext(t *testing.T) {
 	t.Run("before the fold starts", func(t *testing.T) {
 		loadCtx, cancelLoad := context.WithCancel(context.Background())
 		defer cancelLoad()
-		versioned.beforeFold = func(string) { cancelLoad() }
+		versioned.beforeFold = func(string, bool) { cancelLoad() }
 		loaded, err := versioned.Load(loadCtx, artifactID)
 		if !errors.Is(err, context.Canceled) || loaded.Update != nil || loaded.Version != 0 {
 			t.Fatalf("the load whose context ended before its fold returned %d bytes at version %d (%v), want none and %v",
@@ -271,7 +257,7 @@ func TestABufferedFoldEndsWithItsContext(t *testing.T) {
 		}
 		readCtx, cancelRead := context.WithCancel(context.Background())
 		defer cancelRead()
-		versioned.beforeFold = func(string) { cancelRead() }
+		versioned.beforeFold = func(string, bool) { cancelRead() }
 		document, err := versioned.LoadDocument(readCtx, artifactID)
 		if !errors.Is(err, context.Canceled) || document.Doc != nil || document.Stamp != (DocumentStamp{}) {
 			t.Fatalf("the cold read whose context ended before its fold returned %+v (%v), want no document and %v",
@@ -308,11 +294,7 @@ func roomLoadService(t *testing.T) (*Service, *PgVersioned, *roomDecodes) {
 	service := New(Deps{Store: database, Persistence: versioned, Events: events.NewBroker(), Settle: time.Hour})
 	decodes := &roomDecodes{states: make(map[string][][]byte)}
 	service.bootstrapping = decodes.decoded
-	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
-		defer cancel()
-		_ = service.Shutdown(stop)
-	})
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	return service, versioned, decodes
 }
 
@@ -465,13 +447,8 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 				if !wrapsDecodeError(err, want) {
 					t.Fatalf("access %d: the room's load = %v, want the decode's error %q", access, err, want)
 				}
-				select {
-				case room := <-evicting:
-					if room != artifactID {
-						t.Fatalf("access %d: failed room %s, want %s", access, room, artifactID)
-					}
-				case <-time.After(recoveryBound):
-					t.Fatalf("access %d: the room that cannot load never failed", access)
+				if room := testwait.Receive(t, fmt.Sprintf("access %d: the room that cannot load to fail", access), evicting); room != artifactID {
+					t.Fatalf("access %d: failed room %s, want %s", access, room, artifactID)
 				}
 				// The eviction waits here, so the failure is the one this access recorded.
 				state := service.lockExistingState(artifactID)
@@ -493,9 +470,7 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 					t.Fatalf("access %d: a room that did not load is served", access)
 				}
 				release <- struct{}{}
-				recovered, cancel := context.WithTimeout(ctx, recoveryBound)
-				err = service.awaitRoomRecovery(recovered, artifactID)
-				cancel()
+				err = service.awaitRoomRecovery(testwait.Context(t), artifactID)
 				if err != nil {
 					t.Fatalf("access %d: the failed room's eviction: %v", access, err)
 				}

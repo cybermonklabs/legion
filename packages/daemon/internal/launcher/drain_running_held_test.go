@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -58,7 +59,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			// The drain begins once the held child is under way, with a child of its own (its sleep),
 			// as the install's --help run is: bash, and the python it runs.
 			children := fmt.Sprintf("/proc/%d/task/%d/children", pid, pid)
-			testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child's sleep to start", func() bool {
+			testwait.Eventually(t, "the held child's sleep to start", func() bool {
 				body, err := os.ReadFile(children)
 				return err == nil && strings.TrimSpace(string(body)) != ""
 			})
@@ -79,29 +80,39 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		guard := &pidGuard{}
 		m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
 		marks := t.TempDir()
-		started, finished := filepath.Join(marks, "started"), filepath.Join(marks, "finished")
+		started, release, finished := filepath.Join(marks, "started"), filepath.Join(marks, "release"), filepath.Join(marks, "finished")
+		t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
 		// The member writes its own pid, and the drain begins only once PID 1 has adopted it, so
-		// it is no descendant of the held child and only the group clause can spare it.
+		// it is no descendant of the held child and only the group clause can spare it. It runs
+		// until the test lets it go, once the drain has returned, and then writes finished. The
+		// held child exits 5 once the member has finished, and 9 once the member is gone without
+		// finishing: a drain that ended it has reaped it too, as it reaps every orphan it counts.
 		held := exec.CommandContext(context.Background(), "/bin/sh", "-c",
-			`( sh -c 'echo $$ >"$1"; sleep 1; : >"$2"' sh "$1" "$2" & ); sleep 2 && [ -e "$2" ] && exit 5; exit 9`, "sh", started, finished)
+			`( sh -c 'echo $$ >"$1"; until [ -e "$2" ]; do sleep 0.01; done; : >"$3"' sh "$1" "$2" "$3" & ); `+
+				`until [ -s "$1" ]; do sleep 0.01; done; member=$(cat "$1"); `+
+				`until [ -e "$3" ]; do kill -0 "$member" 2>/dev/null || exit 9; sleep 0.01; done; exit 5`,
+			"sh", started, release, finished)
 		procgroup.Configure(held)
 		pid, err := guard.start(held)
 		if err != nil {
 			t.Fatal(err)
 		}
-		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "PID 1 to adopt the held child's group member", func() bool {
+		member := testwait.Until(t, "PID 1 to adopt the held child's group member (the reading is its pid)", func() (int, bool) {
 			body, err := os.ReadFile(started)
 			if err != nil {
-				return false
+				return 0, false
 			}
 			member, err := strconv.Atoi(strings.TrimSpace(string(body)))
 			ppid, _, ok := statParentAndGroup("/proc", member)
-			return err == nil && ok && ppid == 1
+			return member, err == nil && ok && ppid == 1
 		})
-		if _, err := os.Stat(finished); err == nil {
-			t.Fatal("the group member finished before the drain began, so the drain had nothing of the group to spare")
-		}
 		m.cleanExitedGeneration()
+		if err := syscall.Kill(member, 0); err != nil {
+			t.Errorf("the held child's group member %d is gone once the drain has returned (%v): the drain ended its group's orphan", member, err)
+		}
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		err = held.Wait()
 		guard.done(pid)
 		if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
@@ -147,34 +158,64 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 	})
 	// While a child is held the drain signals process by process rather than with kill(-1), and it
 	// still ends what the generation left: a setsid'd process that ignores SIGTERM outlives the
-	// drain's SIGTERM, is killed at the end of the grace and is reaped, while the held child beside
-	// it runs to its own exit.
+	// drain's SIGTERM, is killed once the grace is over and is reaped, while the held child beside
+	// it runs to its own exit. The grace and the drain's pause between passes are on the launcher's
+	// clock, the test's, which moves it one pause at a time.
 	t.Run("what the generation left is ended around a held child", func(t *testing.T) {
 		grace := 500 * time.Millisecond
+		clk := clocktest.New(time.Now())
+		start := clk.Now()
 		guard := &pidGuard{}
-		m := &manager{cfg: Config{StopGrace: grace}, guard: guard}
+		m := &manager{cfg: Config{StopGrace: grace, Clock: clk}, guard: guard}
 		held := exec.Command("/bin/sh", "-c", "sleep 2; exit 5")
 		pid, err := guard.start(held)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ignoring := filepath.Join(t.TempDir(), "ignoring")
-		left := exec.Command("/usr/bin/setsid", "/bin/sh", "-c", `trap '' TERM; : >"$1"; exec sleep 30`, "sh", ignoring)
+		marks := t.TempDir()
+		ignoring, outlived := filepath.Join(marks, "ignoring"), filepath.Join(marks, "outlived")
+		// Only a SIGKILL ends it before its sleep does: it ignores SIGTERM, and its sleep with it,
+		// and once it has outlived its sleep it writes outlived, which a drain that never killed
+		// it leaves behind.
+		left := exec.Command("/usr/bin/setsid", "/bin/sh", "-c", `trap '' TERM; : >"$1"; sleep 30; : >"$2"`, "sh", ignoring, outlived)
 		if err := left.Start(); err != nil {
 			t.Fatal(err)
 		}
-		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the left process to ignore SIGTERM", func() bool {
+		testwait.Eventually(t, "the left process to ignore SIGTERM", func() bool {
 			_, err := os.Stat(ignoring)
 			return err == nil
 		})
-		began := time.Now()
-		m.cleanExitedGeneration()
-		took := time.Since(began)
-		t.Logf("the drain returned after %s", took.Round(time.Millisecond))
-		// The left process sleeps 30s, so a drain that never signals it waits for that and fails
-		// here too.
-		if took < grace || took > grace+10*time.Second {
-			t.Errorf("the drain returned after %s, want past its %s grace (the process it left ignores SIGTERM) and well before that process's 30s sleep ends: the drain did not kill it", took, grace)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			m.cleanExitedGeneration()
+		}()
+		for returned := false; !returned; {
+			testwait.Until(t, "the drain's next pass or its end (the reading is the pauses it armed)", func() ([]time.Time, bool) {
+				select {
+				case <-drained:
+					returned = true
+					return nil, true
+				default:
+				}
+				armed := clk.Armed()
+				return armed, len(armed) > 0
+			})
+			if returned {
+				break
+			}
+			// Inside the grace the drain has sent its SIGTERM, which the left process ignores, and
+			// nothing else: the process still runs, or is a zombie the next pass reaps.
+			if waited := clk.Now().Sub(start); waited < grace && syscall.Kill(left.Process.Pid, 0) != nil {
+				t.Fatalf("the process the generation left is gone %s into the drain, inside its %s grace: the drain killed it before the grace was over", waited, grace)
+			}
+			clk.Advance(namespaceReapPoll)
+		}
+		if waited := clk.Now().Sub(start); waited < grace {
+			t.Errorf("the drain returned %s into its run, inside its %s grace, though the process it left ignores SIGTERM", waited, grace)
+		}
+		if _, err := os.Stat(outlived); err == nil {
+			t.Error("the process the generation left outlived its sleep: the drain did not kill it")
 		}
 		if err := left.Wait(); !reapedByAnother(err) {
 			t.Errorf("the process the generation left answered its own wait with %v, want ECHILD or ESRCH: the drain did not end and reap it", err)
@@ -216,7 +257,7 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	var orphan int
-	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child's orphan to exit", func() bool {
+	testwait.Eventually(t, "the held child's orphan to exit", func() bool {
 		body, err := os.ReadFile(orphanFile)
 		if err != nil {
 			return false

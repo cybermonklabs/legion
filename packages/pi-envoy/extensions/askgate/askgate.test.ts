@@ -21,6 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -704,7 +705,7 @@ describe("mode and model role (plan tests c-g)", () => {
       for (const g of [rebutted, closing, failing, unreadable])
         expect(markersIn(g.store)).toEqual([]);
     }
-  }, 30_000);
+  });
 });
 
 describe("scopedDevice (test 2)", () => {
@@ -2208,7 +2209,7 @@ console.log(JSON.stringify(args, null, 2));
         Array(quoted.length).fill(["dispatch_comment", "load-failed"])
       );
     }
-  }, 30_000);
+  });
   const STILL_REFUSED: Array<[string, string, string]> = [
     [
       "a program that may write the file the write reads",
@@ -2410,7 +2411,7 @@ console.log(JSON.stringify(args, null, 2));
       ["quoted", "dispatch_comment", "verdict", "allow"],
       ["cd", "dispatch_ask", "verdict", "allow"],
     ]);
-  }, 30_000);
+  });
   // A program word an expansion names or the shell expands, the old scan's "unreadable program".
   for (const command of [
     "$HOME/bin/dispatch comment --issue X-1 --body hi",
@@ -2525,7 +2526,7 @@ console.log(JSON.stringify(args, null, 2));
       ["dispatch_comment", "verdict"],
       ["dispatch_ask", "verdict"],
     ]);
-  }, 30_000);
+  });
   test("dispatch issue is reviewed with --spec or --spec-file and not without", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("plain", "dispatch issue --project P --title 'A new issue'");
@@ -2570,7 +2571,7 @@ console.log(JSON.stringify(args, null, 2));
       "The agent is about to run `dispatch request-approval` with these arguments:"
     );
     expect(g.calls[4].user).toContain('"summary": "A live sync replaces the nightly export."');
-  }, 30_000);
+  });
   test("a command the agent already runs with --dry-run or --help sends nothing and is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("a", "dispatch ask --dry-run --issue X-1 --question q");
@@ -2817,7 +2818,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
               "so AskGate removed it before the call ran"
             );
           }
-        }, 30_000);
+        });
 
     // #2161, reviewer round 16: the call's own `cd` is continued over two lines, so the command's
     // line ends on the text's second line. Bash removes the continuation before it reads the
@@ -3117,7 +3118,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       ]);
     }
     // Ten real dry runs, each a bun process: past bun's 5 s default on a loaded host.
-  }, 30_000);
+  });
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -3150,7 +3151,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]) {
       expect((await g.bash(command, command))?.reason).not.toContain(NOTE);
     }
-  }, 30_000);
+  });
   // Oh My Pi reads no CDPATH ("(c2)" below): from `bin`, its bash tool takes `cd sub &&` as the
   // directory `bin/sub`, which does not exist, and runs nothing. So the gate reads no file from
   // the directory CDPATH names, and says it cannot read the call.
@@ -3229,7 +3230,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([core.DRY_RUN_TIMEOUT_MS, 25_000]);
     expect(g.entries).toMatchObject([{ tool: "dispatch_ask", outcome: "verdict" }]);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
-  }, 30_000);
+  });
   test("a dry-run cut twice runs the call unreviewed and tells the agent why and what to do", async () => {
     let clock = 1_000_000;
     const g = bind({
@@ -3280,7 +3281,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     const began = Date.now();
     const result = await core.spawnDryRun("sleep 5", {
       cwd: work,
-      env: { PATH: process.env.PATH ?? "", HOME: work },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: work },
       timeoutMs: 100,
     });
     expect(result.timedOut).toBe(true);
@@ -3449,7 +3450,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       ]);
       // The row's own bound is a hang guard, the file's convention: its work is three 20 ms
       // deadlines, far below this.
-    }, 30_000);
+    });
 
     test("a rebuttal binds the dry run's arguments, its flag gone from the argv", async () => {
       const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
@@ -3796,7 +3797,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         expect(run.consumed).toEqual({ ok: true });
         expect(markersIn(g.store)).toEqual([]);
       }
-    }, 30_000);
+    });
 
     // Design 2: `scopedCommand` reads the override comment the gate itself writes, so the command
     // the agent reads back and resends is the same rebuttal, with a marker bound to its arguments.
@@ -3838,7 +3839,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
           marker: { argv: argvDigest(argv), args: argsDigest(args) },
         });
       }
-    }, 30_000);
+    });
 
     // Design 9: the review is the one await a call's own end can fall in, and a marker lives for
     // hours. A call whose own tool ended there runs nothing more, so it is owed no marker.
@@ -3869,7 +3870,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect((await g.bash("ends-in-review", ASK))?.block).toBeUndefined();
       expect(markersIn(g.store)).toMatchObject([{ toolCallId: "ends-in-review" }]);
       expect(g.entries[1]?.mintSkipped).toBeUndefined();
-    }, 30_000);
+    });
 
     // Design 9 names `tool_result` beside `tool_execution_end`: a result carrying the call's own
     // id ends that call just the same, and a write made from an eval cell reports only this one.
@@ -3902,7 +3903,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.entries).toMatchObject([
         { toolCallId: "result-in-review", outcome: "verdict", mintSkipped: "call-ended" },
       ]);
-    }, 30_000);
+    });
   });
 
   describe("dispatch artifact uploads of markdown (Task 4.3)", () => {
@@ -4249,7 +4250,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       } finally {
         fs.closeSync(fd);
       }
-    }, 30_000);
+    });
     // Finding 6: the CLI's readFileSync lets the kernel resolve `..` after a symlink, while
     // path.resolve collapses it first, so the gate reviewed one file and the command posted
     // another. The gate now joins the physical base and the operand as written.
@@ -4281,7 +4282,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
           sha256: createHash("sha256").update("The file the CLI would post.\n").digest("hex"),
         },
       ]);
-    }, 30_000);
+    });
 
     test("an unreadable --path is told to send the text with --content-file -, never --path -, which the CLI opens as a file named -", async () => {
       const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
@@ -4376,7 +4377,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         ]);
         const run = Bun.spawnSync(["bash", "-c", command], {
           cwd: work,
-          env: { ...STUB, HOME: work, ASKGATE_POSTED: posted },
+          env: { ...bunCacheOff, ...STUB, HOME: work, ASKGATE_POSTED: posted },
         });
         expect(run.exitCode).toBe(0);
         expect(JSON.parse(fs.readFileSync(posted, "utf8"))).toMatchObject({ question: text });
@@ -4532,7 +4533,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
   /** The argv real bash gives the stand-in for `command`. */
   const bashArgv = (command: string): unknown => {
     const run = Bun.spawnSync(["bash", "-c", command], {
-      env: { PATH: `${bin}:${process.env.PATH}`, HOME: home },
+      env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH}`, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -4692,7 +4693,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     const bashArgv = (command: string) =>
       execFileSync("bash", ["-c", command.replace(/^dispatch/, "printf '%s\\0'")], {
         encoding: "utf8",
-        env: { PATH: process.env.PATH ?? "", HOME: home },
+        env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
       })
         .split("\0")
         .filter((word) => word !== "");
@@ -4972,7 +4973,7 @@ describe("sessions", () => {
     expect(ids()).toEqual(["bg"]);
     await g.event("session_shutdown");
     expect(ids()).toEqual([]);
-  }, 30_000);
+  });
   // The second re-gate of #2159, non-blocking: `./dispatch` is the literal grammar, and reading
   // the call runs that program once with `--dry-run`. A refusal that says nothing ran would not
   // be true of a checkout's own `./dispatch`.
@@ -4999,7 +5000,7 @@ describe("sessions", () => {
     expect((await g.device("device", "dispatch_comment", COMMENT))?.reason).not.toContain(
       "--dry-run"
     );
-  }, 30_000);
+  });
 });
 
 describe("data routing", () => {
@@ -5922,6 +5923,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     );
   });
   const env = {
+    ...bunCacheOff,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: work,
     DISPATCH_HOST: "omp",
@@ -5999,7 +6001,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
-  }, 30_000);
+  });
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`
@@ -6014,7 +6016,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     ]);
     expect(result?.block).toBe(true);
     expect(g.dryRuns[0]?.script).toBe(`${command} --dry-run`);
-  }, 30_000);
+  });
 
   test("a reviewed --body-file posts the text the model reviewed, once", async () => {
     fs.writeFileSync(path.join(work, "note.md"), NOTE);
@@ -6026,7 +6028,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toMatchObject([
       { path: "/api/v1/issues/DSP-1/comments", body: { body: NOTE } },
     ]);
-  }, 30_000);
+  });
 
   for (const [form, file, command] of [
     ["--body-file", "note.md", "dispatch comment --issue DSP-1 --body-file note.md"],
@@ -6045,7 +6047,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
         "Send the call again in a later message than the one that changes the file."
       );
       expect(posted.sent).toEqual([]);
-    }, 30_000);
+    });
 
   // A session on another provider than the gate's: the gate reviews nothing, so a file that a call
   // later in the same message changes posts as the CLI reads it, with no refusal naming a review.
@@ -6069,7 +6071,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       expect(posted.stdout).not.toContain(CHANGED);
       expect(posted.code).toBe(0);
       expect(posted.sent).toMatchObject([{ body: form === "--path" ? edited : { body: edited } }]);
-    }, 30_000);
+    });
 
   test("a file a call earlier in the same message writes is refused with what to do, then posts when sent again", async () => {
     const file = path.join(work, "later.md");
@@ -6087,7 +6089,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     const posted = await post(command, g.store);
     expect(posted.code).toBe(0);
     expect(posted.sent).toMatchObject([{ body: { body: NOTE } }]);
-  }, 30_000);
+  });
 
   test("in warn mode a file that is missing when the gate runs passes unreviewed, with the same text as its note", async () => {
     fs.rmSync(path.join(work, "missing.md"), { force: true });
@@ -6101,7 +6103,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(result?.additionalContext).toContain("The call ran unreviewed.");
     expect(g.entries).toMatchObject([{ outcome: "unreadable", decision: "allow" }]);
     expect(markersIn(g.store)).toMatchObject([{ args: null, outcome: "unreadable" }]);
-  }, 30_000);
+  });
 });
 
 describe("rules check", () => {

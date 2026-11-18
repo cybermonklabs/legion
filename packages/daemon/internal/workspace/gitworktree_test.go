@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // unreadableOwnEntry lays out a workspace whose .git names its own worktree entry, and that entry
@@ -99,22 +100,13 @@ func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
 	if err := syscall.Mkfifo(pointer, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() {
-		done <- restoreGitWorktree(context.Background(), NewRunner(testTimeout, testTools(t)), located, func(string) {})
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatalf("restoreGitWorktree answered nil for a pointer that is a fifo, want the reason it holds no pointer git wrote")
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked read returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(pointer, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("restoreGitWorktree was still reading %s after 5s: a pointer that is a fifo blocks the provision", pointer)
+	run := NewRunner(CommandTimeout, testTools(t))
+	answered := inFlight(func() error {
+		return restoreGitWorktree(context.Background(), run, located, func(string) {})
+	})
+	// A blocking open of the fifo never answers, and this wait fails.
+	if err := testwait.Receive(t, "restoreGitWorktree to answer a pointer that is a fifo rather than read it", answered); err == nil {
+		t.Fatalf("restoreGitWorktree answered nil for a pointer that is a fifo, want the reason it holds no pointer git wrote")
 	}
 }
 
@@ -127,20 +119,10 @@ func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
 	if err := syscall.Mkfifo(parent, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- removeTree(filepath.Join(parent, "infra-1")) }()
-	select {
-	case err := <-done:
-		if !errors.Is(err, syscall.ENOTDIR) {
-			t.Fatalf("removeTree under a fifo answered %v, want ENOTDIR", err)
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked open returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("removeTree was still opening %s after 5s: a parent that is a fifo blocks the removal", parent)
+	answered := inFlight(func() error { return removeTree(filepath.Join(parent, "infra-1")) })
+	// A blocking open of the fifo never answers, and this wait fails.
+	if err := testwait.Receive(t, "removeTree to answer a parent that is a fifo rather than open it", answered); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("removeTree under a fifo answered %v, want ENOTDIR", err)
 	}
 	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)
@@ -154,7 +136,7 @@ type worktreesToFifo struct {
 	worktrees string
 }
 
-func (worktreesToFifo) Timeout() time.Duration { return testTimeout }
+func (worktreesToFifo) Timeout() time.Duration { return CommandTimeout }
 
 func (r worktreesToFifo) Run(_ context.Context, command Command) (Result, error) {
 	if command.Argv[0] == "jj" {
@@ -195,22 +177,12 @@ func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() {
-		done <- restoreGitWorktree(context.Background(), worktreesToFifo{worktrees: resolved}, located, func(string) {})
-	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "read-tree") {
-			t.Fatalf("restoreGitWorktree answered %v, want the failure of its git read-tree", err)
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked open returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(resolved, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("restoreGitWorktree was still removing its temporary entry under %s after 5s: a .git/worktrees swapped for a fifo blocks the provision", resolved)
+	answered := inFlight(func() error {
+		return restoreGitWorktree(context.Background(), worktreesToFifo{worktrees: resolved}, located, func(string) {})
+	})
+	// A removal that opens the fifo never answers, and this wait fails.
+	if err := testwait.Receive(t, "restoreGitWorktree to answer its failure rather than remove its temporary entry through the fifo", answered); err == nil || !strings.Contains(err.Error(), "read-tree") {
+		t.Fatalf("restoreGitWorktree answered %v, want the failure of its git read-tree", err)
 	}
 }
 
@@ -221,7 +193,7 @@ type gitDirAway struct {
 	clone, away string
 }
 
-func (gitDirAway) Timeout() time.Duration { return testTimeout }
+func (gitDirAway) Timeout() time.Duration { return CommandTimeout }
 
 func (r gitDirAway) Run(_ context.Context, command Command) (Result, error) {
 	switch {
@@ -320,42 +292,12 @@ func excludeClone(t *testing.T) (clone, exclude string) {
 	return clone, filepath.Join(clone, ".git", "info", "exclude")
 }
 
-// excludeWithin runs excludeCodegraphDirectory on clone and answers its error, failing the row when
-// it is still running after 5s: it holds the repository's store lock under the tmux runtime, so a
-// call that waits holds every later provision of the repository. fifo, when it is set, is the fifo
-// the call may be waiting on: held, the writer the row holds open on it, if any, is closed, and the
-// fifo is then opened and closed for both ends until the call returns, so the row's goroutine
-// ends whichever open or read it waits in.
-func excludeWithin(t *testing.T, clone, fifo string, held *os.File) error {
+// excluded runs excludeCodegraphDirectory on clone and answers its error once it answers: it holds
+// the repository's store lock under the tmux runtime, so a call that waits — on a fifo, in its open
+// or its read — holds every later provision of the repository, never answers, and fails this wait.
+func excluded(t *testing.T, clone string) error {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- excludeCodegraphDirectory(clone) }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(5 * time.Second):
-	}
-	if held != nil {
-		_ = held.Close()
-	}
-	stop := make(chan struct{})
-	go func() {
-		for fifo != "" {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if end, err := os.OpenFile(fifo, os.O_RDWR, 0); err == nil {
-				time.Sleep(20 * time.Millisecond)
-				_ = end.Close()
-			}
-		}
-	}()
-	<-done
-	close(stop)
-	t.Fatalf("excludeCodegraphDirectory(%s) was still running after 5s", clone)
-	return nil
+	return testwait.Receive(t, "excludeCodegraphDirectory("+clone+") to answer rather than wait", inFlight(func() error { return excludeCodegraphDirectory(clone) }))
 }
 
 // A clone's .git/info/exclude that is a fifo is refused, naming it, rather than waited on: in the
@@ -382,7 +324,7 @@ func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = held.Close() })
 			}
-			err := excludeWithin(t, clone, exclude, held)
+			err := excluded(t, clone)
 			if want := exclude + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
 			}
@@ -429,7 +371,7 @@ func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
 				t.Fatal(err)
 			}
 			link := row.link(t, clone, outside)
-			err := excludeWithin(t, clone, "", nil)
+			err := excluded(t, clone)
 			if want := link + " is a symlink"; err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
 			}
@@ -447,7 +389,7 @@ func TestExcludeCodegraphDirectoryRefusesAFileLargerThanItsBound(t *testing.T) {
 	if err := os.WriteFile(exclude, []byte(strings.Repeat("a", excludeLimit+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := excludeWithin(t, clone, "", nil)
+	err := excluded(t, clone)
 	if want := fmt.Sprintf("%s is larger than %d bytes", exclude, excludeLimit); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
 	}
@@ -487,7 +429,7 @@ func TestExcludeCodegraphDirectoryAppendsToAnOrdinaryFile(t *testing.T) {
 			clone, exclude := excludeClone(t)
 			row.plant(t, exclude)
 			for range 2 {
-				if err := excludeWithin(t, clone, "", nil); err != nil {
+				if err := excluded(t, clone); err != nil {
 					t.Fatalf("excludeCodegraphDirectory: %v", err)
 				}
 			}

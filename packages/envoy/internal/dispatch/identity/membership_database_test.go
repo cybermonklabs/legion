@@ -17,7 +17,7 @@ import (
 )
 
 // TestMain gives the package's Postgres-backed tests a database each (storetest.Main).
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // laggingDatabaseClock opens a pool on database whose now() runs lag behind this process's clock,
 // as a database server's clock may run behind a server process's: a schema of the test's own holds

@@ -69,7 +69,7 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 			}
 			sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 			sup.deps = supervise.Deps{
-				Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+				Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 				Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 				PluginContract: 24,
@@ -188,7 +188,7 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 			rt.InPod = tc.inPod
 			sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 			sup.deps = supervise.Deps{
-				Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+				Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 				Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 				PluginContract: 24,
@@ -260,7 +260,7 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	st := outboxTreeStore(t, pool) // no slot ever opened the tree
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,

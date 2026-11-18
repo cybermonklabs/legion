@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -248,24 +249,17 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	machine, _ := sup.Machine(architect)
 	rt.stalling.Store(true)
 	go func() { _ = machine.Handle(context.Background(), supervise.RequestSpawn{Claim: architect}) }()
-	select {
-	case <-rt.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the architect's launch never reached the runtime")
-	}
+	testwait.Receive(t, "the architect's launch to reach the runtime", rt.entered)
 	publisher := &holderPublisher{}
 	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Phase: phase.Implementing}, time.Now()))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}
 
 	executed := make(chan error, 1)
 	go func() { executed <- runner.execute(context.Background(), row) }()
-	select {
-	case err := <-executed:
-		if err != nil {
-			t.Fatalf("execute the notice: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the notice waited on its architect's launch in the runtime")
+	// The notice routes without waiting on the architect's launch, which stays in the runtime: a
+	// routing that waited on it would never return.
+	if err := testwait.Receive(t, "the notice to execute while its architect's launch stays in the runtime", executed); err != nil {
+		t.Fatalf("execute the notice: %v", err)
 	}
 	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {
 		t.Fatalf("notice publishes = %+v, want one to the launching architect's role topic", delivered)
@@ -307,11 +301,7 @@ func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
 	go func() {
 		_ = machine.Handle(ctx, supervise.RequestSuspend{Claim: sub, Reason: "its issue left its phase", By: supervise.SuspendedByDaemon})
 	}()
-	select {
-	case <-rt.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the sub-architect's suspension never reached the runtime")
-	}
+	testwait.Receive(t, "the sub-architect's suspension to reach the runtime", rt.entered)
 	publisher := &holderPublisher{}
 	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}

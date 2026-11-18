@@ -132,10 +132,16 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			name: "the verdict mint answers after the check's own bound",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(t *testing.T, f *narrowingFixture) {
+				// The stand-in holds every token request until the case ends, so the check's
+				// mint bound and the release's bound always end first, however slow the
+				// machine. The hold is let go at cleanup, before the stand-in's own close,
+				// which the fixture registered earlier (cleanups run last first).
 				f.NarrowingCheckMint = 50 * time.Millisecond
+				held := make(chan struct{})
+				t.Cleanup(func() { close(held) })
 				f.stand.answersTokensWith(func(w http.ResponseWriter, _ int) bool {
-					time.Sleep(2 * time.Second)
+					<-held
 					w.WriteHeader(http.StatusInternalServerError)
 					return true
 				})

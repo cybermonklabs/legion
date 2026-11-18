@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -113,8 +114,7 @@ func TestAnchorRefreshKeepsABlockIDPinnedAfterItReadTheRow(t *testing.T) {
 	// A content change is what makes the settlement write a version, and a version write is what
 	// refreshes the anchors.
 	editLiveTree(t, service, artifactID, replaceRun("Introduction.", "Intro."))
-	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelSettle()
+	settleCtx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(settleCtx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}
@@ -175,8 +175,7 @@ func TestAnchorRefreshKeepsABlockIDPinnedAfterItReadTheRow(t *testing.T) {
 // position; nothing here assumes how long a step takes.
 func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, "the settlement to reach its anchor refresh, waiting on the advisory lock the test holds", func() bool {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
@@ -185,12 +184,8 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 		`, key).Scan(&waiting); err != nil {
 			t.Fatalf("read the anchor refresh hold: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("the settlement never reached its anchor refresh")
+		return waiting > 0
+	})
 }
 
 func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {

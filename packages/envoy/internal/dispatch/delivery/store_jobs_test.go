@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestJobsReadBeforeARunEndsLeaveItForTheBackfill: jobs read while the run was still running leave
@@ -246,9 +246,8 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // change log's lock while it waits for the row the run write holds, and Postgres refuses one of
 // them as a deadlock (40P01).
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	pool, _ := deliveryTestPool(t)
+	ctx := testwait.Context(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := changeTestRun(803, DeliveryRunKindDeploy, started, started)
 	if err := UpsertRun(ctx, pool, run); err != nil {
@@ -273,14 +272,10 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	}
 	jobsDone := make(chan error, 1)
 	go func() { jobsDone <- UpsertRunJobs(ctx, pool, "acme/widgets", 803, jobs, true) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the jobs write never waited for the change log's lock: %d waiting", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	runDone := make(chan error, 1)
 	go func() { runDone <- UpsertRun(ctx, pool, run) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("the run write never waited behind the jobs write: %d waiting", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}

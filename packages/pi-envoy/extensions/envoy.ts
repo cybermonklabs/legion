@@ -2622,12 +2622,17 @@ export default function envoyExtension(pi: PiApi): void {
   let agentStreamControlSession = "";
   let agentStreamCommandsRefreshedOnWatchAt = -Infinity;
   // When this session last put its context usage on the wire, which bounds how often it sends
-  // one, and the reading a turn's last message is owed, waiting for that interval to be up
-  // (`refreshAgentStreamContext`).
+  // one, the number of the interval that publish opened, and the reading a turn's last message is
+  // owed, waiting for that interval to be up (`refreshAgentStreamContext`).
   let agentStreamContextRefreshedAt = -Infinity;
+  let agentStreamContextInterval = 0;
   let agentStreamContextTrailing: Timer | undefined;
   let agentStreamContextHeld:
-    | { readonly session: string; readonly usage: ContextUsage | undefined }
+    | {
+        readonly session: string;
+        readonly usage: ContextUsage | undefined;
+        readonly readAt: number;
+      }
     | undefined;
   let agentStreamViewerAttached = false;
 
@@ -2712,10 +2717,36 @@ export default function envoyExtension(pi: PiApi): void {
   // for the turn that is running: measured on the pinned binary, a session whose turn read 7,661
   // tokens answers 5 two seconds later, with the turn over, and a ring drawn from that would show
   // a full session as empty.
-  const publishAgentStreamContext = (session: string, usage: ContextUsage | undefined): void => {
-    agentStreamContextRefreshedAt = Date.now();
+  //
+  // Each frame carries the session's own record of when it read and published: the number of the
+  // interval it went out in (`interval`), when it went out under that number (`at`), and when its
+  // reading was taken (`readAt`), which a reader checks the frames' order against without a clock
+  // of its own. A frame that goes out at once is numbered on from the interval the last publish
+  // opened by every whole interval since, so an interval that sent nothing is a number no frame
+  // carries; the held reading goes out at the moment its interval is up, which its timer is armed
+  // for, so it is the next interval's whatever the timer's own lateness. The next interval opens
+  // when the frame went out (`sentAt`): at `at` for a frame that went out at once, and when the
+  // timer ran for a held one, never before its interval was up. The count runs on across the
+  // sessions this process serves, as the stream's `seq` does.
+  const publishAgentStreamContext = (
+    session: string,
+    usage: ContextUsage | undefined,
+    readAt: number,
+    at: number,
+    sentAt: number
+  ): void => {
+    // Infinite before this process's first publish, and after the session it served was left.
+    const since = at - agentStreamContextRefreshedAt;
+    agentStreamContextInterval += Number.isFinite(since)
+      ? Math.floor(since / CONTEXT_FRAME_INTERVAL_MS)
+      : 1;
+    agentStreamContextRefreshedAt = sentAt;
     try {
-      agentStream.setContext(agentStreamFramesSubject(session), usage);
+      agentStream.setContext(agentStreamFramesSubject(session), usage, {
+        interval: agentStreamContextInterval,
+        at,
+        readAt,
+      });
     } catch (error) {
       logger.warn("envoy: could not publish the agent stream's context frame", {
         error: messageFor(error),
@@ -2737,26 +2768,35 @@ export default function envoyExtension(pi: PiApi): void {
       });
       return;
     }
-    const waited = Date.now() - agentStreamContextRefreshedAt;
-    if (waited >= CONTEXT_FRAME_INTERVAL_MS) {
+    const now = Date.now();
+    // The end of the interval the last publish opened.
+    const dueAt = agentStreamContextRefreshedAt + CONTEXT_FRAME_INTERVAL_MS;
+    if (now >= dueAt) {
       // A trailing frame still owed is due by now and holds the older reading: it is dropped
       // before this one goes out, or its callback would publish after this frame and leave a
       // session that then stays idle showing the earlier figure.
       clearTimeout(agentStreamContextTrailing);
       agentStreamContextTrailing = undefined;
       agentStreamContextHeld = undefined;
-      publishAgentStreamContext(session, usage);
+      publishAgentStreamContext(session, usage, now, now, now);
       return;
     }
     // Held rather than dropped, and the newest reading is the one that goes out.
-    agentStreamContextHeld = { session, usage };
+    agentStreamContextHeld = { session, usage, readAt: now };
     if (agentStreamContextTrailing !== undefined) return;
     agentStreamContextTrailing = setTimeout(() => {
       agentStreamContextTrailing = undefined;
       const held = agentStreamContextHeld;
       agentStreamContextHeld = undefined;
-      if (held !== undefined) publishAgentStreamContext(held.session, held.usage);
-    }, CONTEXT_FRAME_INTERVAL_MS - waited);
+      if (held === undefined) return;
+      publishAgentStreamContext(
+        held.session,
+        held.usage,
+        held.readAt,
+        dueAt,
+        Math.max(Date.now(), dueAt)
+      );
+    }, dueAt - now);
     // A frame nobody is waiting on must not hold this process open at its end.
     agentStreamContextTrailing.unref?.();
   };

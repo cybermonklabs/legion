@@ -19,9 +19,9 @@ name: CI job sessions-script
 # any of its thirty-two harness steps — the cost this issue exists to stop. The `test` job keeps
 # the lint and the typecheck of scripts/sessions, which need no database and share its Bun.
 #
-# No install: the suite and the script it spawns import node: builtins and bun alone, so the Bun
-# the setup action installs is the whole of what they need and this job's filter names no
-# lockfile.
+# The suite imports @legion/test-fixtures (its own database and the shared wait) and runs under
+# the row-deadline preload of that package, so the job installs the workspace with the frozen
+# lockfile, as every other Bun job does: without the install no workspace package resolves.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -69,8 +69,14 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Its one guard, --timeout 5000, is at least twice the slowest row or hook of the command
+      # under 8 busy loops on 2 CPUs in a builds Job at 61b66deb (two runs): message-wait.test.ts's
+      # beforeAll took 2,197.48 ms; its one row took 0.13 ms.
       - name: Test the session message-wait script
-        run: bun test scripts/sessions
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/sessions
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

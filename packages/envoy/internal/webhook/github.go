@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/verify"
@@ -86,14 +87,15 @@ var (
 	githubHandleDeadline = 15 * time.Second
 )
 
-// GitHubHandler returns the HTTP handler for GitHub webhook events.
-func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder) http.HandlerFunc {
-	return githubHandler(secret, mentionTrigger, reviewerAppID, publisher, ci, newBodyBudget(githubBodyBudget))
+// GitHubHandler returns the HTTP handler for GitHub webhook events. It arms its body and handle
+// deadlines on the clock WithClock names, and on the wall clock when none does.
+func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, options ...Option) http.HandlerFunc {
+	return githubHandler(secret, mentionTrigger, reviewerAppID, publisher, ci, newBodyBudget(githubBodyBudget), clockOf(options))
 }
 
-// githubHandler is GitHubHandler reading bodies against the given budget. Each handler remembers
-// the failed deliveries it has logged (failedDeliveries).
-func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget) http.HandlerFunc {
+// githubHandler is GitHubHandler reading bodies against the given budget and arming its deadlines
+// on c. Each handler remembers the failed deliveries it has logged (failedDeliveries).
+func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget, c clock.Clock) http.HandlerFunc {
 	failures := newFailedDeliveries(githubFailuresKept, githubFailureAge)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -106,8 +108,11 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		defer read.release()
 		counted := &countingReader{r: r.Body}
 		// The connection's read deadline ends a read that is waiting on the sender, and this one a
-		// wait for room in the budget, which reads nothing from the connection.
-		ctx, cancel := context.WithDeadline(r.Context(), start.Add(githubBodyDeadline))
+		// wait for room in the budget, which reads nothing from the connection. start on the clock
+		// is the moment the body and answer deadlines count from; the connection's own deadlines
+		// (extendDeadlines) are the socket's and stay on the wall clock.
+		clockStart := c.Now()
+		ctx, cancel := c.WithDeadline(r.Context(), clockStart.Add(githubBodyDeadline))
 		defer cancel()
 		body, err := read.readAll(ctx, counted, r.ContentLength, githubMaxBody)
 		if err != nil {
@@ -145,7 +150,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 				delivery, event)
 		}
 		// Records and publishes end with the request and at its write deadline (extendDeadlines).
-		answer, cancelAnswer := context.WithDeadline(r.Context(), start.Add(githubBodyDeadline+githubHandleDeadline))
+		answer, cancelAnswer := c.WithDeadline(r.Context(), clockStart.Add(githubBodyDeadline+githubHandleDeadline))
 		defer cancelAnswer()
 		// A pull request's CI events only update durable state. The summary loop publishes one
 		// settled checks envelope for each commit whose suites and check runs are done. A finished

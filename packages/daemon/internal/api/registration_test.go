@@ -279,14 +279,18 @@ func TestARelaunchRegistersTheResumedSession(t *testing.T) {
 // exchangeBroker is POST /v1/oauth/exchange/pod-sessions as the broker serves it, for the
 // agent-secrets client's own renewer: each write registers the pod its token names for the
 // session, bound to the thumbprint the write sends, and is answered as the registration now
-// stands.
+// stands. A request without the daemon's own token (registrationsToken) is another process's: it
+// is answered 404 and logged, fails nothing, and is taken as no write (fromTheDaemon).
 type exchangeBroker struct {
-	t      *testing.T
+	t      testing.TB
 	mu     sync.Mutex
 	writes []registration
 }
 
 func (b *exchangeBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !fromTheDaemon(b.t, w, r, registrationsToken) {
+		return
+	}
 	var body struct {
 		PodToken   string `json:"pod_token"`
 		Session    string `json:"session"`

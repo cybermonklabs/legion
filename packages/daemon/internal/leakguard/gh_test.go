@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theProgram is the public_leak_check.py of a stand-in check these tests count as proven: its
@@ -31,45 +33,62 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	const repo = "invented-org/invented-repo"
 	args := []string{"search", "code", theHost}
 	proven := hexSHA256(theProgram)
-	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+	// guardOf is a guard on clock (nil is wall time) whose shared check is check, with program as
+	// the public_leak_check.py beside it unless program is empty, and which counts the
+	// repositories it reads the visibility of in asked.
+	guardOf := func(t *testing.T, clock Clock, check, program string, asked *[]string) *Guard {
 		t.Helper()
-		var asked []string
 		script := leakguardtest.Write(t, t.TempDir(), check)
 		if program != "" {
 			if err := os.WriteFile(filepath.Join(filepath.Dir(script), checkProgram), []byte(program), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		guard := New(Options{
+		return New(Options{
 			Check:      script,
-			Visibility: answers(Public, &asked),
+			Visibility: answers(Public, asked),
 			Env:        fixtureenv.Isolated(t.TempDir()),
+			Clock:      clock,
 		})
-		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
+	}
+	request := func(writesNothing bool) GhRequest {
+		return GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven}
+	}
+	call := func(t *testing.T, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+		t.Helper()
+		var asked []string
+		answer, err := guardOf(t, nil, check, program, &asked).GhCall(testwait.Context(t), request(writesNothing))
 		return asked, answer, err
 	}
 	t.Run("a read the check clears", func(t *testing.T) {
-		if asked, answer, err := call(t, bound(t), passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
+		if asked, answer, err := call(t, passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
 			t.Fatalf("GhCall = %+v, %v, visibility asked of %q; want the read cleared by the check alone", answer, err, asked)
 		}
 	})
 	t.Run("a read the check refuses", func(t *testing.T) {
-		asked, _, err := call(t, bound(t), refuses, theProgram, true)
+		asked, _, err := call(t, refuses, theProgram, true)
 		refusal(t, err)
 		if len(asked) != 0 {
 			t.Fatalf("visibility asked of %q for a read the check refused", asked)
 		}
 	})
 	t.Run("a read whose check cannot finish", func(t *testing.T) {
-		_, _, err := call(t, bound(t), cannotFinish, theProgram, true)
+		_, _, err := call(t, cannotFinish, theProgram, true)
 		setupFailure(t, err)
 	})
+	// The bound runs on the guard's clock, which the test moves to it once the check has read its
+	// input and started its sleep (stoppedAtItsBound), so the check ran exactly its bound. A stop
+	// that did not end the call would leave it to answer once the 30 s sleep ended, as a read the
+	// check cleared, which is no setup failure.
 	t.Run("a read whose check runs past its bound", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		started := time.Now()
-		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
-		answeredWithin10s(t, started)
+		clock := clocktest.New(time.Now())
+		pidFile := filepath.Join(t.TempDir(), "sleep.pid")
+		var asked []string
+		guard := guardOf(t, clock, stopsAfterItsInput(pidFile), theProgram, &asked)
+		err := stoppedAtItsBound(t, clock, pidFile, func(ctx context.Context) error {
+			_, err := guard.GhCall(ctx, request(true))
+			return err
+		})
 		says(t, setupFailure(t, err), "the shared public leak check", "ran 2 s", "bound of 2 s")
 		if len(asked) != 0 {
 			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
@@ -85,7 +104,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		{"the same call as a write", theProgram, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			asked, answer, err := call(t, bound(t), passes, tc.program, tc.writesNothing)
+			asked, answer, err := call(t, passes, tc.program, tc.writesNothing)
 			if report := refusal(t, err); !strings.Contains(report.Error(), theClass) {
 				t.Fatalf("the refusal does not name the class: %v", report)
 			}
@@ -133,7 +152,7 @@ func TestAGhCallsBodyFileIsRead(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			_, err := guard.GhCall(bound(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
+			_, err := guard.GhCall(testwait.Context(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
 			if err == nil {
 				t.Fatal("the call was cleared, so the file's text reaches GitHub unread")
 			}
@@ -180,7 +199,7 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			_, err := guard.GhCall(bound(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
+			_, err := guard.GhCall(testwait.Context(t), GhRequest{Args: tc.args, Repo: "invented-org/invented-repo"})
 			failed := setupFailure(t, err)
 			if !strings.Contains(failed.Error(), tc.want) {
 				t.Fatalf("the failure is %q, want it to name the option in %q", failed, tc.want)
@@ -194,7 +213,7 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 // that name to open, and a guard that tried would turn every such call into a setup failure.
 func TestAGhCallsBodyFileOfStandardInputOpensNoFile(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	if _, err := guard.GhCall(bound(t), GhRequest{
+	if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args: []string{"pr", "comment", "1", "--body-file", "-"},
 		Repo: "invented-org/invented-repo",
 	}); err != nil {
@@ -210,7 +229,7 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 		t.Fatal(err)
 	}
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	if _, err := guard.GhCall(bound(t), GhRequest{
+	if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args: []string{"pr", "comment", "1", "--body-file", body},
 		Repo: "invented-org/invented-repo",
 	}); err != nil {
@@ -322,7 +341,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 		// The shape the table misses and the parse does not: `-dF <path>` is `--draft
 		// --body-file <path>` to gh, and the caller hands the file it read out of that.
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args:  []string{"pr", "create", "-dF", unnamed},
 			Repo:  "invented-org/invented-repo",
 			Files: []GhFile{{Option: "--body-file", Path: unnamed}},
@@ -333,7 +352,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	})
 	t.Run("a caller that parsed no file reads none", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		if _, err := guard.GhCall(bound(t), GhRequest{
+		if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args:  []string{"pr", "comment", "1", "--body-file", named},
 			Repo:  "invented-org/invented-repo",
 			Files: []GhFile{},
@@ -343,7 +362,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	})
 	t.Run("a caller that parsed nothing gets the table", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args: []string{"pr", "comment", "1", "--body-file", named},
 			Repo: "invented-org/invented-repo",
 		})
@@ -371,7 +390,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "--input", body},
 			Repo: "invented-org/invented-repo",
 		})
@@ -383,7 +402,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 	})
 	t.Run("the buffered standard input", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-		_, err := guard.GhCall(bound(t), GhRequest{
+		_, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args:  []string{"api", "repos/invented-org/invented-repo/pulls/1", "--method", "PATCH", "--input", "-"},
 			Stdin: strings.NewReader(escaped),
 			Repo:  "invented-org/invented-repo",
@@ -400,7 +419,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-		if _, err := guard.GhCall(bound(t), GhRequest{
+		if _, err := guard.GhCall(testwait.Context(t), GhRequest{
 			Args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "--input", body},
 			Repo: "invented-org/invented-repo",
 		}); err != nil {
@@ -414,7 +433,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 // never a truncated buffer handed to gh as though the guard had read the whole.
 func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-	answer, err := guard.GhCall(bound(t), GhRequest{
+	answer, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: bytes.NewReader(bytes.Repeat([]byte("a"), maxGhFile+1)),
 		Repo:  "invented-org/invented-repo",

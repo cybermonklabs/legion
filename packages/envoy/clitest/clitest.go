@@ -144,6 +144,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Case is a command line's commands and how its binary reaches a server, as Conformance checks
@@ -165,6 +167,13 @@ type Case struct {
 
 // runTimeout bounds one run of the binary or of a shell: a run still going after it is killed and
 // reported, so a binary that waits on a server or on its input fails rather than holding the test.
+// It is the harness's own report of a command that never exits, which
+// TestConformanceFailsOnAHangingCommand tests, not a wait for a fact, so it is a guard of its own,
+// at least twice the slowest correct run on the machines that run this package (docs/testing.md).
+// Of the 1,075 runs a pass of this package's tests makes, the slowest took 412 ms beside 8 busy
+// loops on 2 CPUs and 1,598 ms beside 32 (five passes each, builds Jobs legion-load-run-j5qsg and
+// legion-load-run-8qmbb, 2026-11-17, at 86fbd5e07d). CI's envoy-go job ran the whole package in
+// 15.9 s to 16.5 s, 15 s of it the hanging row's, in four merge-group runs of 2026-11-17.
 var runTimeout = time.Minute
 
 const (
@@ -198,6 +207,7 @@ func Conformance(t *testing.T, bin string, c Case) {
 	}
 	home := t.TempDir()
 	h := &harness{
+		wait:     testwait.Context(t),
 		bin:      path,
 		name:     filepath.Base(bin),
 		dir:      home,
@@ -273,6 +283,10 @@ type harness struct {
 	server   *Recorder
 	commands [][]string
 	hidden   [][]string
+	// wait bounds the wait for a fact after each run, the recorder's count of what the run asked:
+	// what is left of the test binary's deadline less testwait's margin, so a loaded machine that
+	// takes the run's connections late costs the test time and not its result.
+	wait context.Context
 }
 
 func (h *harness) help(t *testing.T) {
@@ -519,9 +533,7 @@ func (h *harness) run(args ...string) result {
 	default:
 		r.failed = err.Error()
 	}
-	settle, cancelSettle := context.WithTimeout(context.Background(), runTimeout)
-	defer cancelSettle()
-	r.requests, r.connections, err = h.server.contactsSince(settle, requests, connections)
+	r.requests, r.connections, err = h.server.contactsSince(h.wait, requests, connections)
 	if err != nil && r.failed == "" {
 		r.failed = fmt.Sprintf("the recorder's count after the run could not be read: %v: UNKNOWN", err)
 	}
@@ -660,6 +672,10 @@ type Recorder struct {
 	// beforeTake, when set, runs each time the server takes a connection, before it is counted: a
 	// test's hold on the count.
 	beforeTake func()
+	// beforeWait, when set, runs each time contactsSince finds its own connection not counted yet,
+	// before it waits for the server's next take: the moment a test that holds the count knows the
+	// count is waiting.
+	beforeWait func()
 }
 
 // NewRecorder starts a Recorder on a loopback port, closed when the test ends.
@@ -727,8 +743,11 @@ func (r *Recorder) contactsSince(ctx context.Context, requests, connections int)
 			r.connections = slices.Delete(r.connections, connections+i, connections+i+1)
 			return slices.Clone(r.requests[requests:]), len(r.connections) - connections, nil
 		}
-		taken := r.taken
+		taken, hold := r.taken, r.beforeWait
 		r.mu.Unlock()
+		if hold != nil {
+			hold()
+		}
 		select {
 		case <-taken:
 			r.mu.Lock()

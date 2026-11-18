@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 )
 
 func TestLogRequestFailureLogsWarnOnceTheRequestItselfHasEnded(t *testing.T) {
@@ -80,10 +81,10 @@ func TestLogRequestFailureLogsWarnOnceTheRequestItselfHasEnded(t *testing.T) {
 			case c.cancelRequest:
 				hangUp()
 			case c.expireRequest:
-				// A deadline already in the past leaves the request's own context ended with
-				// DeadlineExceeded, with no wait for the clock.
+				// A deadline the fake clock has already reached leaves the request's own context
+				// ended with DeadlineExceeded, with no wait for the clock.
 				var expired context.CancelFunc
-				requestContext, expired = context.WithDeadline(request.Context(), time.Now().Add(-time.Minute))
+				requestContext, expired = clocktest.New(stillMoment).WithTimeout(request.Context(), 0)
 				defer expired()
 			}
 			request = request.WithContext(requestContext)

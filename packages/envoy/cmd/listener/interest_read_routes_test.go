@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two routes that read one session's interest record - GET /v1/registry/<session_id> and GET
@@ -41,7 +43,6 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		missed = "ses_interest_routes_subscribed_to_nothing"
 		cached = "ses_interest_routes_cached_interest"
 		topic  = "notifications.role.reviewer"
-		within = 4 * time.Second
 	)
 	relay := startListenerRelay(t, testnats.URL(t))
 	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
@@ -94,22 +95,49 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if ids := cachedIDs(); !slices.Contains(ids, cached) || slices.Contains(ids, missed) {
 		t.Fatalf("the interest cache holds %v, want %s and not %s", ids, cached, missed)
 	}
-
-	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-	get := func(handler http.HandlerFunc, path string) (*httptest.ResponseRecorder, time.Duration) {
-		recorder := httptest.NewRecorder()
-		started := time.Now()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-		return recorder, time.Since(started)
+	// The routes' own budgets run on this clock, which stands still: a route that answers while
+	// it stands has answered from what the listener holds, and one that waits on the silent bus
+	// is refused when the test moves the clock past the budget it armed, never when nats.go's
+	// own timeout runs out.
+	stoodStill := time.Now()
+	frozen := clocktest.New(stoodStill)
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, clock: frozen}
+	serving := func(handler http.Handler, path string) <-chan *httptest.ResponseRecorder {
+		answers := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+			answers <- recorder
+		}()
+		return answers
 	}
-	list := func() (*httptest.ResponseRecorder, time.Duration) {
-		return get(sessionsHandler(registry, sessions), "/v1/sessions")
+	// serve answers once the route has, with the clock standing still throughout.
+	serve := func(handler http.Handler, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		return testwait.Receive(t, "the answer of "+path+" from what the listener holds", serving(handler, path))
 	}
-	entry := func(id string) (*httptest.ResponseRecorder, time.Duration) {
-		return get(sessionEntryHandler(state), "/v1/registry/"+id)
+	// refused answers once the route's own budget, armed on the clock above, has been spent.
+	refused := func(handler http.Handler, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		at := frozen.Now()
+		answers := serving(handler, path)
+		awaitArmedBeforeReturn(t, frozen, "the budget "+path+" gives its read of the silent bus", deadlineArmed(armedAt(at.Add(sendRequestBudget))), answerReturned(answers))
+		select {
+		case recorder := <-answers:
+			t.Fatalf("%s answered %d before its own budget was spent: %s", path, recorder.Code, recorder.Body.String())
+		default:
+		}
+		frozen.Advance(sendRequestBudget)
+		return testwait.Receive(t, "the refusal of "+path+" once its budget was spent", answers)
 	}
-	interests := func(id string) (*httptest.ResponseRecorder, time.Duration) {
-		return get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+id)
+	list := func() *httptest.ResponseRecorder {
+		return serve(sessionsHandler(registry, sessions), "/v1/sessions")
+	}
+	entry := func(id string) *httptest.ResponseRecorder {
+		return serve(sessionEntryHandler(state), "/v1/registry/"+id)
+	}
+	interests := func(id string) *httptest.ResponseRecorder {
+		return serve(adminInterestsHandler(registry, sessions, frozen, nil, logging.New("test")), "/v1/interests/"+id)
 	}
 	wantTopics := func(t *testing.T, info sessionInfo, want []string) {
 		t.Helper()
@@ -120,7 +148,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	cachedTopics := []string{contracts.LegacyAgentSubject(cached), topic}
 
 	// The control: with the bus answering, every request is served.
-	recorder, _ := list()
+	recorder := list()
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions with the bus answering: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}
@@ -139,16 +167,16 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		}
 	}
 	for id, want := range map[string][]string{missed: nil, cached: cachedTopics} {
-		recorder, _ := entry(id)
+		recorder := entry(id)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET /v1/registry/%s with the bus answering: status %d, body %s; want 200", id, recorder.Code, recorder.Body.String())
 		}
 		wantTopics(t, decodeSessionInfo(t, recorder), want)
 	}
-	if recorder, _ := interests(missed); recorder.Code != http.StatusNotFound {
+	if recorder := interests(missed); recorder.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/interests/%s with the bus answering: status %d, body %s; want 404", missed, recorder.Code, recorder.Body.String())
 	}
-	if recorder, _ := interests(cached); recorder.Code != http.StatusOK {
+	if recorder := interests(cached); recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/interests/%s with the bus answering: status %d, body %s; want 200", cached, recorder.Code, recorder.Body.String())
 	}
 
@@ -156,12 +184,8 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	// and the connection stays open, so the client still reports itself connected.
 	relay.arm("\r\n", 1)
 
-	wantBusUnanswered := func(t *testing.T, route string, recorder *httptest.ResponseRecorder, elapsed time.Duration) {
+	wantBusUnanswered := func(t *testing.T, route string, recorder *httptest.ResponseRecorder) {
 		t.Helper()
-		if elapsed >= within {
-			t.Fatalf("%s answered after %s (status %d, body %s), want inside %s - a bus that stopped answering must be refused inside the caller's 5 s attempt, not left to its timeout",
-				route, elapsed, recorder.Code, recorder.Body.String(), within)
-		}
 		if recorder.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route, recorder.Code, recorder.Body.String())
 		}
@@ -179,16 +203,16 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		if got := recorder.Header().Get("Retry-After"); got != "1" {
 			t.Fatalf("Retry-After = %q, want 1", got)
 		}
-		t.Logf("%s with the bus silent: 503 in %s: %s", route, elapsed, refusal.Error)
+		t.Logf("%s with the bus silent: 503 once its own budget was spent: %s", route, refusal.Error)
 	}
 	t.Run("sessions", func(t *testing.T) {
-		recorder, elapsed := list()
+		// The clock has not moved, so a listing that answers at all answered the copies it
+		// holds: one that read a record per row would be waiting on the silent bus still, and
+		// this wait would name it.
+		recorder := list()
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET /v1/sessions with the bus silent: status %d, body %s; want the 200 the copies answer, since the listing reads no record",
 				recorder.Code, recorder.Body.String())
-		}
-		if elapsed >= within {
-			t.Fatalf("GET /v1/sessions with the bus silent answered after %s, want inside %s: the listing waited on the bus", elapsed, within)
 		}
 		var rows []sessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
@@ -204,22 +228,21 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 				wantTopics(t, row, nil)
 			}
 		}
-		t.Logf("GET /v1/sessions with the bus silent: 200 in %s", elapsed)
+		t.Logf("GET /v1/sessions with the bus silent: 200 with the clock standing still")
 	})
 	t.Run("registry", func(t *testing.T) {
-		recorder, elapsed := entry(missed)
-		wantBusUnanswered(t, "GET /v1/registry/"+missed, recorder, elapsed)
+		wantBusUnanswered(t, "GET /v1/registry/"+missed, refused(sessionEntryHandler(state), "/v1/registry/"+missed))
 		// A cache hit asks nothing of the bus, so it is still served with its topics.
-		hit, _ := entry(cached)
+		hit := entry(cached)
 		if hit.Code != http.StatusOK {
 			t.Fatalf("GET /v1/registry/%s, whose interest is cached, with the bus silent: status %d, body %s; want 200", cached, hit.Code, hit.Body.String())
 		}
 		wantTopics(t, decodeSessionInfo(t, hit), cachedTopics)
 	})
 	t.Run("interests", func(t *testing.T) {
-		recorder, elapsed := interests(missed)
-		wantBusUnanswered(t, "GET /v1/interests/"+missed, recorder, elapsed)
-		if hit, _ := interests(cached); hit.Code != http.StatusOK {
+		wantBusUnanswered(t, "GET /v1/interests/"+missed,
+			refused(adminInterestsHandler(registry, sessions, frozen, nil, logging.New("test")), "/v1/interests/"+missed))
+		if hit := interests(cached); hit.Code != http.StatusOK {
 			t.Fatalf("GET /v1/interests/%s, whose interest is cached, with the bus silent: status %d, body %s; want 200", cached, hit.Code, hit.Body.String())
 		}
 	})

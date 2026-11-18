@@ -31,7 +31,9 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -39,11 +41,6 @@ const (
 	// for the route's own, and what matters about it is that it is a fiftieth of
 	// kvwatch.ScanIdleTimeout (10 s), the earliest a stalled scan ends on its own account.
 	stalledListingDeadline = 200 * time.Millisecond
-	// stalledListingBound is how long that deregistration may take. It is ten times the deadline
-	// the request carries, so a loaded runner does not fail the case, and a fifth of
-	// kvwatch.ScanIdleTimeout, so a fallback that waited for the stalled listing fails it on any
-	// runner.
-	stalledListingBound = 2 * time.Second
 
 	// walkedAwayClaims is how many claims the bucket holds in the walked-away case, and
 	// walkedAwayEntryDelay how long the fake watch holds each one before it hands it over: the
@@ -52,12 +49,13 @@ const (
 	// told apart from one that stopped by a count rather than by a clock.
 	walkedAwayClaims     = 200
 	walkedAwayEntryDelay = 10 * time.Millisecond
-	// walkedAwayDeadline is the request the deregistration is given, long enough for its listing
-	// to be handed a few claims and far short of the bucket.
-	walkedAwayDeadline = 150 * time.Millisecond
-	// walkedAwayCeiling is the most entries a stopped listing may have been handed. The request
-	// above pays for about fifteen, so this leaves an order of magnitude, and it is half the
-	// bucket, so a listing that read the bucket to its end cannot pass under it.
+	// walkedAwayHandful is how many of the bucket's claims a listing is let read before the test
+	// ends its request: a handful, far short of the bucket, so a listing that stops here is well
+	// under the ceiling below and one that read on is not.
+	walkedAwayHandful = 10
+	// walkedAwayCeiling is the most entries a stopped listing may have been handed. The handful
+	// above is well under it, so this leaves an order of magnitude, and it is half the bucket, so
+	// a listing that read the bucket to its end cannot pass under it.
 	walkedAwayCeiling = walkedAwayClaims / 2
 	// walkedAwayDrift is how many entries the fake may forward after the scan has stopped: the
 	// one that can already be in flight on its way to the drain when the stop lands, and one
@@ -102,31 +100,50 @@ func TestTheDeregistrationFallbackAnswersItsRequestWhileItsListingIsStillStalled
 	const session = "ses_stalled_listing"
 	held := []string{"stalled-held-a", "stalled-held-b"}
 	reg, _, _ := smallRoleBucketRegistry(t, session, held)
+	// The fallback scan's 10 s idle bound and the request's 200 ms budget are both driven on this
+	// fake, so the case moves time rather than waiting either span out in real time.
+	fake := clocktest.New(time.Now())
+	reg.clock = fake
 	// after 0, ended false: the watcher forwards nothing and never ends, the stalled scan
 	// earlyEndKV documents.
 	watchRoleBucketThrough(t, reg, earlyEndKV{KeyValue: reg.roles().WatchHandle()})
 
-	ctx, cancel := context.WithTimeout(context.Background(), stalledListingDeadline)
+	ctx, cancel := fake.WithTimeout(context.Background(), stalledListingDeadline)
 	defer cancel()
-	started := time.Now()
-	_, err := reg.Remove(ctx, session, nil, releasedByItsProcess)
-	elapsed := time.Since(started)
-	t.Logf("the deregistration answered %v after %s, with the stalled scan's own idle bound at %s", err, elapsed, kvwatch.ScanIdleTimeout)
+	done := make(chan error, 1)
+	go func() {
+		_, err := reg.Remove(ctx, session, nil, releasedByItsProcess)
+		done <- err
+	}()
+	// Wait until Remove is inside the stalled scan, which arms the scan's idle bound (one idle period
+	// out, told from the 200 ms request budget by its deadline), then move the fake just past the
+	// request's budget. A fallback that waited for the scan would answer only at its 10 s idle, which
+	// this never reaches, so the shared wait would end naming it and the error would be
+	// ErrScanTimedOut rather than the request's own deadline.
+	testwait.Until(t, "the stalled scan's idle bound to be armed", func() (bool, bool) {
+		for _, at := range fake.Armed() {
+			if at.Sub(fake.Now()) > stalledListingDeadline {
+				return true, true
+			}
+		}
+		return false, false
+	})
+	fake.Advance(stalledListingDeadline)
+	err := testwait.Receive(t, "the deregistration to answer at its request's deadline", done)
 
 	// The request's own deadline, not the scan's timeout: a fallback that waited for the listing
-	// would answer kvwatch.ErrScanTimedOut instead, and ten seconds later.
+	// would answer kvwatch.ErrScanTimedOut instead, at the scan's 10 s idle.
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Remove(%s) over a stalled listing answered %v, want the request's own deadline", session, err)
+	}
+	if errors.Is(err, kvwatch.ErrScanTimedOut) {
+		t.Fatalf("Remove(%s) answered the scan's timeout %v, want the request's own deadline: the fallback waited for the listing", session, err)
 	}
 	// The wording is what the route reports to the caller, so it names what was being done and
 	// for which session; a bare context error says neither.
 	want := fmt.Sprintf("list the role bucket's keys to release %s's claims:", session)
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("Remove(%s) answered %q, want it to say %q and carry the deadline", session, err, want)
-	}
-	if elapsed >= stalledListingBound {
-		t.Fatalf("the deregistration answered after %s, want it inside %s: the scan it is waiting for delivers nothing until its own %s idle bound, so an answer that slow is the fallback waiting for the listing rather than for its request",
-			elapsed, stalledListingBound, kvwatch.ScanIdleTimeout)
 	}
 	// The deregistration failed, so nothing of it landed: the interest record is still there for
 	// the caller's retry, as it is after any other failed sweep.
@@ -150,6 +167,10 @@ type slowWatchKV struct {
 	jetstream.KeyValue
 
 	delay time.Duration
+	// scanStopped, when set, is closed once the forwarding goroutine has ended, which is once the
+	// scan has stopped its watcher: a test waits on it rather than sleeping to prove the listing is
+	// no longer reading the bucket.
+	scanStopped chan struct{}
 
 	mu        sync.Mutex
 	forwarded int
@@ -163,6 +184,9 @@ func (k *slowWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream.
 	slow := &slowWatcher{KeyWatcher: watcher, updates: make(chan jetstream.KeyValueEntry), stopped: make(chan struct{})}
 	go func() {
 		defer close(slow.updates)
+		if k.scanStopped != nil {
+			defer close(k.scanStopped)
+		}
 		for {
 			var entry jetstream.KeyValueEntry
 			select {
@@ -176,6 +200,9 @@ func (k *slowWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream.
 				return
 			}
 			select {
+			// delay copies the real role bucket's per-entry delivery latency, a fixed sleep this
+			// stand-in keeps (a production component's latency), so the listing is fed at the rate
+			// NATS would feed it and the count below reads how much it was handed before its request ends.
 			case <-time.After(k.delay):
 			case <-slow.stopped:
 				k.drain(watcher)
@@ -278,69 +305,89 @@ func TestARoleListingTheRequestWalkedAwayFromStopsReadingTheBucket(t *testing.T)
 		watch := &slowWatchKV{KeyValue: reg.roles().WatchHandle(), delay: walkedAwayEntryDelay}
 		watchRoleBucketThrough(t, reg, watch)
 
-		ctx, cancel := context.WithTimeout(context.Background(), walkedAwayDeadline)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
-		started := time.Now()
-		claims, err := reg.roleClaimsUntil(ctx)
-		elapsed := time.Since(started)
-		handed := watch.count()
-		t.Logf("the listing answered %v after %s, having been handed %d of the bucket's %d claims", err, elapsed, handed, walkedAwayClaims)
-
-		// A listing short of the bucket is not a reading of it, so it is an error and no
-		// claims, and the error is the request's: a caller cannot tell a partial list from a
-		// complete one.
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("a listing whose request ended after %s answered %d claims and %v, want no claims and the request's deadline", elapsed, len(claims), err)
+		type listed struct {
+			claims []scannedRoleClaim
+			err    error
 		}
-		if claims != nil {
-			t.Fatalf("the refused listing returned %d claims, want none", len(claims))
+		done := make(chan listed, 1)
+		go func() {
+			claims, err := reg.roleClaimsUntil(ctx)
+			done <- listed{claims, err}
+		}()
+		// Let the listing be handed a handful of the bucket's claims, then end its request: a
+		// handful is far short of the bucket, so a listing that stops here holds no more than the
+		// ceiling below.
+		testwait.Until(t, "the listing to be handed a handful of claims", func() (int, bool) {
+			n := watch.count()
+			return n, n >= walkedAwayHandful
+		})
+		cancel()
+		got := testwait.Receive(t, "the listing to answer its ended request", done)
+		handed := watch.count()
+		t.Logf("the listing answered %v, having been handed %d of the bucket's %d claims", got.err, handed, walkedAwayClaims)
+
+		// A listing short of the bucket is not a reading of it, so it is an error and no claims,
+		// and the error is the request's: a caller cannot tell a partial list from a complete one.
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("a listing whose request ended answered %d claims and %v, want no claims and the request's end", len(got.claims), got.err)
+		}
+		if got.claims != nil {
+			t.Fatalf("the refused listing returned %d claims, want none", len(got.claims))
 		}
 		if handed > walkedAwayCeiling {
-			t.Fatalf("the stopped listing had been handed %d of the bucket's %d claims by the time it answered, want no more than %d: a listing that was handed most of the bucket in a %s request is one that read past its request",
-				handed, walkedAwayClaims, walkedAwayCeiling, walkedAwayDeadline)
+			t.Fatalf("the stopped listing had been handed %d of the bucket's %d claims, want no more than %d: a listing handed most of the bucket is one that read past its request",
+				handed, walkedAwayClaims, walkedAwayCeiling)
 		}
 	})
 
 	t.Run("the deregistration's listing stops reading the bucket behind its answer", func(t *testing.T) {
-		watch := &slowWatchKV{KeyValue: reg.roles().WatchHandle(), delay: walkedAwayEntryDelay}
+		watch := &slowWatchKV{KeyValue: reg.roles().WatchHandle(), delay: walkedAwayEntryDelay, scanStopped: make(chan struct{})}
 		watchRoleBucketThrough(t, reg, watch)
 
-		ctx, cancel := context.WithTimeout(context.Background(), walkedAwayDeadline)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
-		started := time.Now()
-		_, err := reg.Remove(ctx, session, nil, releasedByItsProcess)
-		elapsed := time.Since(started)
+		done := make(chan error, 1)
+		go func() {
+			_, err := reg.Remove(ctx, session, nil, releasedByItsProcess)
+			done <- err
+		}()
+		testwait.Until(t, "the listing to be handed a handful of claims", func() (int, bool) {
+			n := watch.count()
+			return n, n >= walkedAwayHandful
+		})
+		cancel()
+		err := testwait.Receive(t, "the deregistration to answer its ended request", done)
 		answered := watch.count()
-		t.Logf("the deregistration answered %v after %s, its listing having been handed %d of the bucket's %d claims", err, elapsed, answered, walkedAwayClaims)
+		t.Logf("the deregistration answered %v, its listing having been handed %d of the bucket's %d claims", err, answered, walkedAwayClaims)
 
 		// The fallback answers its request rather than the bucket, in the wording the route
-		// reports. That bound is the stalled-listing case's subject, and it is held here only
-		// so far as the rest of this case needs it: a deregistration that answered something
-		// else never reached the listing this one is about.
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Remove(%s) over a listing short of the bucket answered %v, want the request's own deadline", session, err)
+		// reports. That bound is the stalled-listing case's subject, and it is held here only so
+		// far as the rest of this case needs it: a deregistration that answered something else
+		// never reached the listing this one is about.
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Remove(%s) over a listing short of the bucket answered %v, want the request's own end", session, err)
 		}
 		want := fmt.Sprintf("list the role bucket's keys to release %s's claims:", session)
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Remove(%s) answered %q, want it to say %q and carry the deadline", session, err, want)
+			t.Fatalf("Remove(%s) answered %q, want it to say %q and carry the request's error", session, err, want)
 		}
 		if answered > walkedAwayCeiling {
-			t.Fatalf("the listing had been handed %d of the bucket's %d claims by the time the deregistration answered, want no more than %d: a listing handed most of the bucket in a %s request is one that read past its request",
-				answered, walkedAwayClaims, walkedAwayCeiling, walkedAwayDeadline)
+			t.Fatalf("the listing had been handed %d of the bucket's %d claims by the time the deregistration answered, want no more than %d: a listing handed most of the bucket is one that read past its request",
+				answered, walkedAwayClaims, walkedAwayCeiling)
 		}
 
 		// The check the answer itself cannot make, and the reason this half runs through the
-		// deregistration: the listing's goroutine outlives the answer, so the bucket is read
-		// again after the whole bucket could have been delivered twice over. A listing still
-		// reading it would have been handed every claim by now, even on a runner several times
-		// slower than this delay assumes.
-		settle := 2 * walkedAwayClaims * walkedAwayEntryDelay
-		time.Sleep(settle)
+		// deregistration: the listing's goroutine outlives the answer. Wait for it to stop reading
+		// the bucket rather than sleeping; then the count is final, and a listing still scanning for
+		// a caller that has its answer would have been handed more of the bucket before it stopped.
+		testwait.Receive(t, "the listing to stop reading the bucket behind its answer", watch.scanStopped)
 		after := watch.count()
-		t.Logf("%s after the deregistration answered, the bucket had been read for %d claims, up from %d", settle, after, answered)
+		t.Logf("the bucket had been read for %d claims by the time the listing stopped, up from %d", after, answered)
 		if after > answered+walkedAwayDrift {
-			t.Fatalf("the bucket was read for %d more claims in the %s after the deregistration answered (%d, up from %d), want no more than %d: the listing is still scanning the bucket for a caller that has its answer",
-				after-answered, settle, after, answered, walkedAwayDrift)
+			t.Fatalf("the bucket was read for %d more claims after the deregistration answered (%d, up from %d), want no more than %d: the listing is still scanning the bucket for a caller that has its answer",
+				after-answered, after, answered, walkedAwayDrift)
 		}
 	})
 }

@@ -47,7 +47,8 @@ var (
 // ref of that branch, and each create of a ref answered by answer. It records each read's path, in
 // order, and each create, with the launches the runtime had made when it came. A booted daemon's
 // start lists the repository's open pull requests, none, and that listing is not recorded as a
-// read.
+// read. A request that carries no lease of the package's App token stand-ins (aLease) is another
+// process's: it is answered 404 and logged, and is recorded as nothing.
 type branchGitHub struct {
 	url           string
 	mu            sync.Mutex
@@ -65,7 +66,7 @@ type branchCreate struct {
 func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)) *branchGitHub {
 	t.Helper()
 	g := &branchGitHub{answer: answer, defaultBranch: "main"}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.handle(t, rt)})
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: g.handle(t, rt)})
 	return g
 }
 

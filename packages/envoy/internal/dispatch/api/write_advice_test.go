@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -794,34 +796,15 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 	}
 }
 
-// A session's write on an issue with a long event history still answers its advice, with the full
-// count of the session's writes. The advice's queries run under the 500 ms statement_timeout
-// writeAdvice sets on its savepoint, and a count that runs past that bound is cancelled and costs
-// the write its advice, so a count that is answered ran inside the bound. The hook reads that the
-// bound stood on the savepoint the count runs on. The write's wall-clock time depends on the
-// machine and is not checked.
-func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
+// seedLongIssueHistory is an issue of seededEvents session writes, the history a write's advice
+// counts, on a server a row can hook (server.adviceQueryHook).
+func seedLongIssueHistory(t *testing.T, seededEvents int) (http.Handler, *server, string) {
+	t.Helper()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	bound := make(chan string, 1)
-	served.adviceQueryHook = func(ctx context.Context, tx pgx.Tx, query string) error {
-		if query != "session_writes_since_human" {
-			return nil
-		}
-		var setting string
-		if err := tx.QueryRow(ctx, `select current_setting('statement_timeout')`).Scan(&setting); err != nil {
-			return err
-		}
-		select {
-		case bound <- setting:
-		default:
-		}
-		return nil
-	}
 	createAdviceProject(t, handler, "PERF")
 	spec := "# Performance\n"
 	issue := createAdviceIssue(t, handler, "PERF", "Long event history", &spec)
 
-	const seededEvents = 5000
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin event seed: %v", err)
@@ -849,8 +832,34 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit event seed: %v", err)
 	}
+	return handler, served, issue.Key
+}
 
-	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+// A session's write on an issue with a long event history still answers its advice, with the full
+// count of the session's writes. The advice's queries run under the 500 ms statement_timeout
+// writeAdvice sets on its savepoint, and a count that runs past that bound is cancelled and costs
+// the write its advice, so a count that is answered ran inside the bound. The hook reads that the
+// bound stood on the savepoint the count runs on. The write's wall-clock time depends on the
+// machine and is the timing lane's (TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds).
+func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
+	const seededEvents = 5000
+	handler, served, issueKey := seedLongIssueHistory(t, seededEvents)
+	bound := make(chan string, 1)
+	served.adviceQueryHook = func(ctx context.Context, tx pgx.Tx, query string) error {
+		if query != "session_writes_since_human" {
+			return nil
+		}
+		var setting string
+		if err := tx.QueryRow(ctx, `select current_setting('statement_timeout')`).Scan(&setting); err != nil {
+			return err
+		}
+		select {
+		case bound <- setting:
+		default:
+		}
+		return nil
+	}
+	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/messages", map[string]any{
 		"body": "bounded advice", "actor": adviceSessionActor("session-performance"),
 	})
 	advice := adviceFromResponse(t, response.Code, response.Body.String())
@@ -867,6 +876,21 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 	}
 }
 
+// TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds is the row above's service level,
+// which only the timing lane reads (benchtime.TimingEnv): a shared runner's clock is its load as
+// much as the advice's work.
+func TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	handler, _, issueKey := seedLongIssueHistory(t, 5000)
+	started := time.Now()
+	sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/messages", map[string]any{
+		"body": "bounded advice", "actor": adviceSessionActor("session-performance"),
+	})
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("advice round trip took %s, want under 2s", elapsed)
+	}
+}
+
 // A session's write whose advice query cannot finish still commits, without its advice. The
 // failing query sleeps for two seconds, and the 500 ms statement_timeout on the advice's savepoint
 // (writeAdvice) ends it: Postgres cancels it for that timeout, and the server logs the advice as
@@ -878,6 +902,8 @@ func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
 	spec := "# Failure isolation\n"
 	issue := createAdviceIssue(t, handler, "FAIL", "Advice failure", &spec)
 
+	// The advice query sleeps two seconds and the savepoint's statement_timeout (500 ms) cuts it:
+	// a query that ran to the end would answer, and the advice below would be in the body.
 	logs := captureLogs(t)
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "must still commit", "actor": adviceSessionActor("session-failure"),
@@ -938,6 +964,12 @@ func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
 	}
 }
 
+// newFailingAdviceHandler builds a handler whose write-advice read of query is held past the
+// bound the advice runs under, so every write through it answers advice of the suggestions-only
+// shape. Its server runs on a fake clock nothing moves, so the related-item check's allowance
+// ends only where the caller spent it (spentRelatedAllowance) and never because the machine was
+// slow; suggestionTimeout is the allowance that check runs under, zero being the deployment's own
+// (relatedCheckAllowance).
 func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.Duration) (http.Handler, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -965,7 +997,11 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	s := &server{
 		deps:              deps,
 		lifetime:          t.Context(),
+		clock:             clocktest.Held(),
 		suggestionTimeout: suggestionTimeout,
+		// The creates through this handler run the near-copy gate too, under a bound past any
+		// read of a test project, as every server the rig builds does (newRegisteredTestServer).
+		duplicateBound: gateBoundPastEveryRead,
 		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {
 				return nil

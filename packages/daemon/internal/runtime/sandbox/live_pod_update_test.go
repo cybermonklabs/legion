@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -101,7 +102,7 @@ func (r *liveRig) checkPodUpdate() error {
 		name, podShapeAnnotation, moved, short(old.Sandbox.PodUID))
 
 	var drifted []string
-	if err := r.poll(liveAdoptTimeout, "the runtime to read the moved shape of "+name, func() (bool, error) {
+	if err := r.poll("the runtime to read the moved shape of "+name, func() (bool, error) {
 		var err error
 		drifted, err = r.rt.PodDrift(r.ctx, runtime.Known{Claim: first.token, Locator: first.loc})
 		return len(drifted) > 0, err
@@ -169,12 +170,9 @@ func (r *liveRig) checkPodUpdate() error {
 	note("runtime", "ReplacePod(%s): the round is over, so pod %s is ended", first.name, short(old.Sandbox.PodUID))
 	for _, c := range workers {
 		loc := *c.loc
-		ended, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+		ended := r.obs.await(r.t, mark, c.name+"'s "+loc.Incarnation+" to be observed ended", func(o runtime.Observation) bool {
 			return o.Locator.Claim == c.token && (o.Kind == runtime.Gone || o.Kind == runtime.NotRecordedProcess)
 		})
-		if !ok {
-			return fmt.Errorf("no end of %s's %s within %s", c.name, loc.Incarnation, liveGoneLimit)
-		}
 		if !sameLocator(ended.Locator, loc) || !ended.Displaced {
 			return fmt.Errorf("%s's end is %s at %s, Displaced %t: %s; want Displaced at its recorded %s",
 				c.name, ended.Kind, ended.Locator.Incarnation, ended.Displaced, ended.Detail, loc.Incarnation)
@@ -315,11 +313,27 @@ func (r *liveRig) branchHead(c *liveClaim, dir workspace.Workspace) (string, err
 }
 
 // holdDriftedPod holds the drifted pod to what an open round promises: while one worker has not
-// answered, nothing replaces the pod. Over liveSettle no process in it is observed ending or
-// moving, the pod keeps its uid and stays Running with its Sandbox Running, and every worker in it
-// probes Alive — the drift is read and the pod is kept.
+// answered, nothing replaces the pod. Over the watch's next passes over each worker in it no
+// process is observed ending or moving, the pod keeps its uid and stays Running with its Sandbox
+// Running, and every worker in it probes Alive — the drift is read and the pod is kept.
 func (r *liveRig) holdDriftedPod(name, uid string, workers []*liveClaim, mark int, waiting *liveClaim) error {
-	time.Sleep(liveSettle)
+	// The passes are the test's count, not a span it waits out: an end the round should not have
+	// taken is among the observations they leave behind.
+	const passes = 2
+	testwait.Eventually(r.t, fmt.Sprintf("%d observations of each worker of pod %s while the round waits on %s", passes, name, waiting.name), func() bool {
+		for _, c := range workers {
+			seen := 0
+			for _, o := range r.obs.since(mark) {
+				if o.Locator.Claim == c.token {
+					seen++
+				}
+			}
+			if seen < passes {
+				return false
+			}
+		}
+		return true
+	})
 	for _, o := range r.obs.since(mark) {
 		for _, c := range workers {
 			if o.Locator.Claim == c.token && o.Kind != runtime.Alive && o.Kind != runtime.Uncertain {
@@ -348,8 +362,8 @@ func (r *liveRig) holdDriftedPod(name, uid string, workers []*liveClaim, mark in
 			return fmt.Errorf("%s probes %s while the round waited on %s: %v", c.name, obs.Kind, waiting.name, err)
 		}
 	}
-	note("runtime", "%s has not answered: after %s the pod %s is the same uid and Running, its Sandbox Running, and every worker in it probes Alive",
-		waiting.name, liveSettle, short(uid))
+	note("runtime", "%s has not answered: over %d passes of the watch over each worker the pod %s is the same uid and Running, its Sandbox Running, and every worker in it probes Alive",
+		waiting.name, passes, short(uid))
 	return nil
 }
 
@@ -502,7 +516,7 @@ func (r *liveRig) checkPodUpdateFleet() error {
 
 	for _, round := range rounds {
 		first := round.workers[0]
-		if err := r.poll(liveAdoptTimeout, "the runtime to read the moved shape of "+round.sandbox, func() (bool, error) {
+		if err := r.poll("the runtime to read the moved shape of "+round.sandbox, func() (bool, error) {
 			drifted, err := r.rt.PodDrift(r.ctx, runtime.Known{Claim: first.token, Locator: first.loc})
 			return len(drifted) > 0, err
 		}); err != nil {
@@ -617,12 +631,9 @@ func (r *liveRig) replaceFleetPod(round *liveFleetRound, mark int) (runtime.Loca
 	note("runtime", "ReplacePod(%s): %s's round is over, so pod %s is ended", first.name, round.issue, short(round.uid))
 	for _, c := range round.workers {
 		loc := *c.loc
-		ended, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+		ended := r.obs.await(r.t, mark, c.name+"'s "+loc.Incarnation+" to be observed ended", func(o runtime.Observation) bool {
 			return o.Locator.Claim == c.token && (o.Kind == runtime.Gone || o.Kind == runtime.NotRecordedProcess)
 		})
-		if !ok {
-			return runtime.Locator{}, fmt.Errorf("no end of %s's %s within %s", c.name, loc.Incarnation, liveGoneLimit)
-		}
 		if !sameLocator(ended.Locator, loc) || !ended.Displaced {
 			return runtime.Locator{}, fmt.Errorf("%s's end is %s at %s, Displaced %t: %s; want Displaced at its recorded %s",
 				c.name, ended.Kind, ended.Locator.Incarnation, ended.Displaced, ended.Detail, loc.Incarnation)

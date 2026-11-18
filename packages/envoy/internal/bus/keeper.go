@@ -13,54 +13,49 @@ import (
 )
 
 // defaultKeepInterval is the keeper's period (keep): how long, at most, a stream or bucket a
-// concurrent start or an operator lowered stays below the deployment's settings.
+// concurrent start or an operator lowered stays below the deployment's settings. It is the period
+// every client keeps; a test of this package moves the client's clock past it instead (WithClock).
 const defaultKeepInterval = 30 * time.Second
-
-// WithKeepInterval sets the keeper's period in place of defaultKeepInterval, so a test sees a
-// period pass without waiting one. It is exported for the tests of the programs that connect
-// through this package, as WithReconnectErrClock is: no deployment sets it, and no caller outside
-// a test may.
-func WithKeepInterval(interval time.Duration) ConnectOption {
-	return clientOption(func(o *connectOpts) { o.keepInterval = interval })
-}
 
 // startKeeper starts the keeper of a client whose start reconciled the stream with cfg
 // (ensureStreamWithConfig), which keeps buckets (WithKeptBuckets) at cfg's copies too: the
 // constructor's start once install has returned, and the first connection's on a client that
-// connects in the background (ensureStreamOnce), which a Close or Drain can stop first. A client
+// connects in the background (startKeeperOnce), which a Close or Drain can stop first. A client
 // already stopped starts none. The client's stop ends it (Close and Drain wait for it:
 // awaitKeeper). The check and keeperDone's write are one step under mu, and Close and Drain stop
 // the client before awaitKeeper reads keeperDone under mu, so a keeper either sees the stop or is
 // waited for.
-func (c *Client) startKeeper(cfg nats.StreamConfig, buckets []string, interval time.Duration) {
+func (c *Client) startKeeper(cfg nats.StreamConfig, buckets []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stopped() {
 		return
 	}
 	c.keeperDone = make(chan struct{})
-	go c.keep(c.keeperDone, cfg, buckets, interval)
+	go c.keep(c.keeperDone, cfg, buckets)
 }
 
-// keep is the keeper: every interval it puts back what the deployment's settings and this binary
-// ask of the stream (keepStream) and raises each of buckets, the program's own (WithKeptBuckets),
-// back to the deployment's copies (raiseReplicas), until the client stops. A start's reconcile can
-// lose to a concurrent start with other settings or subjects, since JetStream's stream update has
-// no compare-and-swap (ensureStreamWithConfig), and an operator can lower either by hand; the
-// keeper ends both within one period. A pass waits for a live connection: a pass while the client
-// is not connected is skipped, and none starts once the client has stopped, though a tick and the
-// stop came together. A pass that fails is logged and the next period tries again: the keeper never
-// stops the client or the process. A failure once the client has stopped is the stop's, and is not
-// logged.
-func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []string, interval time.Duration) {
+// keep is the keeper: a period (defaultKeepInterval) after it starts, and a period after each pass
+// ends, on the client's clock (WithClock), it puts back what the deployment's settings and this
+// binary ask of the stream (keepStream) and raises each of buckets, the program's own
+// (WithKeptBuckets), back to the deployment's copies (raiseReplicas), until the client stops. A
+// start's reconcile can lose to a concurrent start with other settings or subjects, since
+// JetStream's stream update has no compare-and-swap (ensureStreamWithConfig), and an operator can
+// lower either by hand; the keeper ends both within one period of a pass. A pass waits for a live
+// connection: a pass while the client is not connected is skipped, and none starts once the client
+// has stopped, though a tick and the stop came together. A pass that fails is logged and the next
+// period tries again: the keeper never stops the client or the process. A failure once the client
+// has stopped is the stop's, and is not logged. The next period is armed only once a pass has
+// ended, so a test that sees it armed knows the pass before it is done.
+func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []string) {
 	defer close(done)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	period := c.timers().NewTimer(defaultKeepInterval)
+	defer period.Stop()
 	for {
 		select {
 		case <-c.stopCh:
 			return
-		case <-ticker.C:
+		case <-period.C():
 		}
 		if c.stopped() {
 			return
@@ -68,6 +63,7 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 		if c.Connected() {
 			c.keepPass(&cfg, buckets)
 		}
+		period.Reset(defaultKeepInterval)
 	}
 }
 

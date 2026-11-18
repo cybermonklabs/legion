@@ -20,7 +20,7 @@
 // whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
+// whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration load,
 // the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has: the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream and the
@@ -88,9 +88,6 @@ const (
 	// 4 to release a root inside its linger, as INFRA-214's release came, and short enough for the
 	// step to wait the linger out.
 	childAdoptionLinger = 8 * time.Second
-	// childAdoptionOutboxPoll is the margin past a row's due time a step allows the outbox lane
-	// that wakes for it (outbox_lanes.go arms a timer at the row's next_at) to run it.
-	childAdoptionOutboxPoll = 2 * time.Second
 	// childAdoptionGate is the live tree's approved design document.
 	childAdoptionGate = "5b7c9e1a-3d2f-4a6b-8c0e-1f3a5b7d9e2c"
 )
@@ -110,6 +107,8 @@ type childAdoptionLive struct {
 	architect *childAdoptionArchitect
 	// seq is the Dispatch sequence the next envelope the driver publishes carries.
 	seq int64
+	// lingers is the daemon's observer for step 4's wait on the old linger's close row.
+	lingers *observer
 }
 
 // TestAQueuedRootUnderALiveTreeJoinsItLive drives the eleven steps of the proof against one booted
@@ -147,7 +146,8 @@ func newChildAdoptionLive(t *testing.T) *childAdoptionLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = childAdoptionGitHub(t)
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.lingers = observing(&o)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.architect = r.registerArchitect()
 	return r
 }
@@ -158,7 +158,7 @@ func newChildAdoptionLive(t *testing.T) *childAdoptionLive {
 // github.com.
 func childAdoptionGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {
@@ -563,12 +563,9 @@ func (r *childAdoptionLive) queuedRootLeavesTheLine() {
 	if got.Generation != recorded.Generation {
 		t.Fatalf("the state shows %s at generation %d and the record at %d", c, got.Generation, recorded.Generation)
 	}
-	deadline := time.Now().Add(liveSettle)
-	for time.Now().Before(deadline) {
-		if got := r.issue(c); got.Slot == nil || got.Architect == nil || r.waiting(c) {
-			t.Fatalf("within %s of starting, %s lost its slot or its own architect's claim, or went back to the line: %+v", liveSettle, c, got)
-		}
-		time.Sleep(100 * time.Millisecond)
+	r.settle()
+	if got := r.issue(c); got.Slot == nil || got.Architect == nil || r.waiting(c) {
+		t.Fatalf("within %s of starting, %s lost its slot or its own architect's claim, or went back to the line: %+v", liveSettle, c, got)
 	}
 	r.inTree(c, r.tree)
 	r.note("read back over %s: %s kept its slot and its own architect's claim, stayed out of the line, and is still recorded in the tree of %s", liveSettle, c, r.tree)
@@ -707,9 +704,12 @@ func (r *childAdoptionLive) releaseAdoptsInfra214State() {
 	r.parksAndFrees(r.key(5))
 	adopted := r.runsInTree(e)
 
-	time.Sleep(time.Until(deadline.Add(childAdoptionOutboxPoll)))
-	testwait.Eventually(t, "the old linger's close of "+e+" run", func() bool { return r.outboxRows(e, 0, "kind = 'linger_close'") == 0 })
-	r.note("read back past the old deadline plus %s: no linger_close row of %s is left in the outbox — the old linger's close ran", childAdoptionOutboxPoll, e)
+	// The old linger's close row comes due at its deadline, and the outbox reports its finish.
+	r.lingers.settled(t, rowOf{issue: e, kind: record.OutboxKindLingerClose, outcome: settledFinished})
+	if rows := r.outboxRows(e, 0, "kind = 'linger_close'"); rows != 0 {
+		t.Fatalf("the outbox holds %d linger_close rows of %s once the old linger's close finished, want none", rows, e)
+	}
+	r.note("read back once the old linger's close finished: no linger_close row of %s is left in the outbox", e)
 	got := r.issue(e)
 	if !planning(got) || got.Generation != adopted.Generation {
 		t.Fatalf("after its old linger's deadline %s is in %s at generation %d with workers %v, want planning at %d with its planner", e, got.Phase, got.Generation, got.Workers, adopted.Generation)
@@ -761,11 +761,8 @@ func (r *childAdoptionLive) heldUnderAnUnreleasedChild() {
 	r.publishIssue(r.filler, "backlog", "", true, false)
 	r.note("drove %s, the second slotted tree, to backlog: an issue.updated envelope", r.filler)
 	r.waitFor(r.filler+"'s slot freed", r.filler, func(got api.Issue) bool { return got.Slot == nil })
-	deadline := time.Now().Add(liveSettle)
-	for time.Now().Before(deadline) {
-		held("with a slot free")
-		time.Sleep(100 * time.Millisecond)
-	}
+	r.settle()
+	held("with a slot free")
 	state := r.state()
 	if !slices.Equal(state.Admission.Active, []string{r.tree}) {
 		t.Fatalf("admission.active is %v, want %s's slot alone", state.Admission.Active, r.tree)
@@ -966,15 +963,12 @@ func (r *childAdoptionLive) recordedAsAncestryHeld(key string) {
 func (r *childAdoptionLive) ancestryHeldWithASlotFree(keys ...string) {
 	t := r.t
 	t.Helper()
-	deadline := time.Now().Add(liveSettle)
-	for time.Now().Before(deadline) {
-		for _, key := range keys {
-			got := r.issue(key)
-			if r.waiting(key) || got.Slot != nil || got.Architect != nil || r.launched(r.token(key, claim.RoleArchitect)) {
-				t.Fatalf("held under %s, %s is waiting %v, slot %v, architect %v: want out of the line with no slot and no architect", r.tree, key, r.waiting(key), got.Slot, got.Architect)
-			}
+	r.settle()
+	for _, key := range keys {
+		got := r.issue(key)
+		if r.waiting(key) || got.Slot != nil || got.Architect != nil || r.launched(r.token(key, claim.RoleArchitect)) {
+			t.Fatalf("held under %s, %s is waiting %v, slot %v, architect %v: want out of the line with no slot and no architect", r.tree, key, r.waiting(key), got.Slot, got.Architect)
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 	state := r.state()
 	if !slices.Equal(state.Admission.Active, []string{r.tree}) || state.Admission.Cap != childAdoptionCap {
@@ -982,6 +976,15 @@ func (r *childAdoptionLive) ancestryHeldWithASlotFree(keys ...string) {
 	}
 	r.note("read back over %s: admission.active %v of cap %d, admission.waiting %v, and %s: no slot, no architect, no launch of one",
 		liveSettle, state.Admission.Active, state.Admission.Cap, state.Admission.Waiting, strings.Join(keys, ", "))
+}
+
+// settle holds a step liveSettle before it reads that nothing happened: a slot, an architect, a
+// place in the line or an architect's launch taken, or one taken back. What it must not see is
+// taken by an admission pass and launched through the outbox's start row after that pass commits,
+// and a slot or a launch stays where the read finds it (the state, the fake runtime's calls).
+func (r *childAdoptionLive) settle() {
+	testwait.Span(r.t, liveSettle, "an architect's launch runs from an outbox start row after the admission pass that queued it commits, and nothing the proof reads says "+
+		"the outbox has run every row a pass could queue: no state marks it, no later action's effect is ordered after it, and the daemon's real NATS and Postgres keep it out of a synctest bubble")
 }
 
 // takesTheFreeSlot requires key, within the bounded wait, to hold a free slot with its

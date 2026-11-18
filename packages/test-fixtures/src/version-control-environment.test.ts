@@ -271,6 +271,5 @@ test.skipIf(vacuous !== undefined)(
     expect(pushed.code).toBe(0);
     // And the check it ran is the machine's own, not one the fixture made up.
     expect(environment["PUBLIC_LEAK_CHECK"]).toBe(sharedPublicLeakCheck());
-  },
-  60_000
+  }
 );

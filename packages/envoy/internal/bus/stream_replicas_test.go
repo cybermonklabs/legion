@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here run on an in-process three-server cluster (testnats.StartCluster), one per test
@@ -27,12 +28,33 @@ import (
 // testStreamMaxBytes is a byte limit every member of a test cluster can reserve.
 const testStreamMaxBytes = 8 << 20
 
-// startClusterJetStream starts a three-server cluster and returns it with a JetStream context
-// connected to whichever running member answers (testnats.Cluster.JetStream).
+// startClusterJetStream starts a three-server cluster and returns it with programJetStream's
+// context on it.
 func startClusterJetStream(t *testing.T) (*testnats.Cluster, nats.JetStreamContext) {
 	t.Helper()
 	cluster := testnats.StartCluster(t, 3)
-	return cluster, cluster.JetStream(t)
+	return cluster, programJetStream(t, cluster)
+}
+
+// programJetStream is a JetStream context on whichever running member of cluster answers
+// (clusterConn), whose requests each wait RequestTimeout: the per-send bound every program of the
+// deployment opens its own context with, as memberJetStream's does. The rows hand it to the bus's
+// own start and keeper code (EnsureKeyValue, OpenKeyValue, ensureStreamWithConfig, keepStream),
+// and on a cluster nats-server leaves some of that code's requests unanswered by design: a member
+// that is not a stream's leader answers nothing for it while the group elects one, as a raise to
+// three copies makes it do (nats-server v2.15.1, jsStreamInfoRequest and isGroupLeaderless). That
+// code ends each such request at this bound: sentAgain sends a lookup, a create or a stream read
+// again, updateStream reads the stream again, and awaitReplicasCurrent returns the read of a raised
+// stream as the start's error. So a request that draws no answer ends here where it ends in a
+// program, where testnats.MaxWait(t) would hold it, and every row of the package after it, until
+// the test binary's deadline. The rows' own reads through it take the same bound.
+func programJetStream(t *testing.T, cluster *testnats.Cluster) nats.JetStreamContext {
+	t.Helper()
+	js, err := clusterConn(t, cluster).JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return js
 }
 
 // clusterConn is a connection to cluster, closed when the test ends: EnsureKeyValue and
@@ -72,12 +94,7 @@ func deployedClusterStream(change func(*nats.StreamConfig)) nats.StreamConfig {
 	return deployed
 }
 
-// keptValueWait is a hang guard on awaitKeptValue's read, not a budget: a copy a raise adds
-// catches up with a one-message stream in milliseconds.
-const keptValueWait = 30 * time.Second
-
-// awaitKeptValue reads key through kv until the bucket answers with want, and fails the test if
-// no read does within keptValueWait.
+// awaitKeptValue reads key through kv until the bucket answers with want.
 //
 // A KV read is a direct get, and nats-server hands a copy the direct-get queue group as soon as
 // that copy is 90% caught up with its leader, rather than when it is current
@@ -87,17 +104,13 @@ const keptValueWait = 30 * time.Second
 // on no copy, and no read answers with it.
 func awaitKeptValue(t *testing.T, kv KeyValue, key, want string) {
 	t.Helper()
-	deadline := time.Now().Add(keptValueWait)
-	for {
+	testwait.Until(t, fmt.Sprintf("the bucket to answer %s with %q", key, want), func() (string, bool) {
 		entry, err := kv.Get(key)
-		if err == nil && string(entry.Value()) == want {
-			return
+		if err != nil {
+			return err.Error(), false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("get %s after the raise = %v, %v within %s; want %q", key, entry, err, keptValueWait, want)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return string(entry.Value()), string(entry.Value()) == want
+	})
 }
 
 // On an existing three-copy stream with a byte limit, DiscardOld and an id, a start that changes
@@ -127,9 +140,7 @@ func TestAReconcileOnTheClusterKeepsTheCopiesTheByteLimitTheIDAndTheLimitsItDoes
 			t.Run(drift.name+"/"+start.name, func(t *testing.T) {
 				cluster, js := startClusterJetStream(t)
 				deployed := deployedClusterStream(drift.change)
-				if _, err := js.AddStream(&deployed); err != nil {
-					t.Fatalf("deploy the stream: %v", err)
-				}
+				cluster.CreateStream(t, deployed)
 				before := testnats.AwaitSettledStream(t, js, Stream).Config
 
 				startOnCluster(t, cluster, start.options...)
@@ -525,7 +536,7 @@ func TestOneServerStoppedAStartOfAThreeCopyDeploymentWritesNothing(t *testing.T)
 
 	cluster.Servers[2].Stop(t)
 	cluster.AwaitReady(t)
-	js = cluster.JetStream(t)
+	js = programJetStream(t, cluster)
 	testnats.AwaitStreamLeader(t, js, Stream, cluster.Name(2))
 	testnats.AwaitStreamLeader(t, js, "KV_"+bucket, cluster.Name(2))
 

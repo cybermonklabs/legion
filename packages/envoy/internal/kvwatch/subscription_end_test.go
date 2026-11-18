@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A kvwatch subscription can end in ways kvwatch does not choose: the connection closes or drains
@@ -48,16 +49,12 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 			t.Fatalf("jetstream: %v", err)
 		}
 		// The bucket lookup is setup, not what the round tests, and the 20 ms wait the round needs
-		// bounds the legacy STREAM.INFO it makes too, which a loaded machine can miss: try again.
-		var handle bus.KeyValue
-		for attempt := 0; ; attempt++ {
-			if handle, err = bus.OpenKeyValue(context.Background(), conn, js, testBucketName); err == nil {
-				break
-			}
-			if attempt == 50 {
-				t.Fatalf("round %d: bucket: %v", round, err)
-			}
-		}
+		// bounds the legacy STREAM.INFO it makes too, which a loaded machine can miss: try again
+		// through the shared wait until it opens.
+		handle := testwait.Until(t, fmt.Sprintf("round %d: the test bucket's handle", round), func() (bus.KeyValue, bool) {
+			h, err := bus.OpenKeyValue(context.Background(), conn, js, testBucketName)
+			return h, err == nil
+		})
 		release := make(chan struct{})
 		first := make(chan time.Time, 1)
 		var once sync.Once
@@ -69,12 +66,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 		}}
 		w := kvwatch.New("test cache", handle, into, kvwatch.WithStreamProbeInterval(0))
 		w.Start()
-		var started time.Time
-		select {
-		case started = <-first:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("round %d: the first record never reached the cache", round)
-		}
+		started := testwait.Receive(t, fmt.Sprintf("round %d: the first record to reach the cache", round), first)
 		time.Sleep(time.Until(started.Add(hold)))
 		conn.Close()
 		close(release)

@@ -2,14 +2,13 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theLeakCheckHost is the one refusable literal these tests need: a Tailscale MagicDNS host built
@@ -57,8 +56,7 @@ func aPushFixture(t *testing.T, message string) (dir, line string) {
 // own, and the command writes nothing to it.
 func leakCheck(t *testing.T, stdin string, args ...string) (int, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	t.Cleanup(cancel)
+	ctx := testwait.Context(t)
 	previous := leakCheckStdin
 	t.Cleanup(func() { leakCheckStdin = previous })
 	leakCheckStdin = strings.NewReader(stdin)

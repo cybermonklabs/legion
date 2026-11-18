@@ -23,6 +23,10 @@ on:
 jobs:
   conflicts-script:
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 87 s, 4 s of its clock over them, and its test step's longest, 5 s,
+    # plus its guard of 5 s: 101 s in all.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,8 +38,11 @@ jobs:
       # scripts/conflicts is no workspace; the root package pins its TypeScript and Bun types.
       - name: Typecheck the conflict measurement script
         run: bunx tsc --noEmit -p scripts/conflicts
+      # Its one guard, --timeout 5000, is at least twice the slowest row or hook of the command
+      # under 8 busy loops on 2 CPUs in a builds Job at 61b66deb (two runs): 1,986.02 ms, "fix
+      # states > classifyFixes refuses a merge whose parent cannot be fetched".
       - name: Test the conflict measurement script
-        run: bun test scripts/conflicts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/conflicts
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

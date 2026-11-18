@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // TestABurstableIssuePodRendersLive launches an issue pod from each case's configuration
@@ -52,8 +53,7 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 		t.Fatalf("LEGION_E2E_KUBE_CONTEXT %q is no kind cluster's context (kind-<name>); the proof runs only on the cluster its script creates", env["LEGION_E2E_KUBE_CONTEXT"])
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	var results []string
 	for _, tc := range burstableLiveCases {

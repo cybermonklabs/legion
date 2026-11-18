@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -23,9 +24,12 @@ import (
 // re-mints each as it nears its expiry, so most ticks render the hosts.yml files the controller's
 // directories already hold and write nothing; a minute keeps the time its gh runs on a token the
 // daemon has already replaced short against an installation token's hour, as tmux's and sandbox's
-// gitHubRefreshInterval do for the roles the daemon launches itself. A var, not a const, so a test
-// can shorten it.
-var controllerGitHubRefreshInterval = time.Minute
+// gitHubRefreshInterval do for the roles the daemon launches itself.
+const controllerGitHubRefreshInterval = time.Minute
+
+// controllerClock is the clock startControllerGitHubRefresh's ticks are measured on: clock.Real(),
+// which a test replaces with a clocktest.Fake it moves a tick at a time.
+var controllerClock = clock.Real()
 
 // controllerCredentialFailure is a non-2xx answer to POST
 // /legion/v1/controller/github-credential whose body parsed as an api.Failure: its code lets the
@@ -219,16 +223,19 @@ func startControllerGitHubRefresh(daemonURL, secret, dir, defaultOwner, logPath 
 	log := slog.New(slog.NewTextHandler(logFile, nil))
 	loopCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	tick := controllerClock.NewTimer(controllerGitHubRefreshInterval)
 	go func() {
 		defer close(done)
 		defer logFile.Close()
-		tick := time.NewTicker(controllerGitHubRefreshInterval)
 		defer tick.Stop()
 		for {
 			select {
 			case <-loopCtx.Done():
 				return
-			case <-tick.C:
+			case <-tick.C():
+				// The next tick is armed as this one's turn comes, before the refresh runs, so a
+				// refresh that outlasts the interval is followed by the next at once, as a ticker's.
+				tick.Reset(controllerGitHubRefreshInterval)
 				if !refreshControllerGitHubCredential(loopCtx, daemonURL, secret, dir, defaultOwner, log) {
 					return
 				}

@@ -21,7 +21,8 @@ var (
 
 // createWorkspace ports workspace.ts's createWorkspace. It resolves a bookmark before deleting a
 // stale git worktree entry or adding a workspace: a conflicted bookmark must not leave a registered
-// working copy behind.
+// working copy behind. now is what the moment the add made the workspace is read from, which it
+// records (RecordCreated).
 //
 // One read of the issue's bookmark legion/<KEY>, its local row and origin's (readBookmark),
 // decides where the workspace starts:
@@ -69,7 +70,7 @@ var (
 //   - No row at all is an issue whose branch GitHub does not have, such as a merged branch GitHub
 //     deleted. The workspace starts at the repository's default branch (workspace.DefaultBranch),
 //     resolved to one commit first (baseCommit), with the bookmark created on it.
-func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log func(string)) error {
+func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log func(string), now func() time.Time) error {
 	cloneDir := workspace.Clone
 	workspaceName := filepath.Base(workspace.Dir)
 	remote := workspace.Bookmark + "@origin"
@@ -182,7 +183,7 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	// Recorded the moment the add has made the workspace, ahead of anything that can still fail:
 	// a provisioning that failed after it finds the workspace there next time and adds it no more,
 	// so only this one can record when it was created (Created).
-	if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
+	if err := RecordCreated(workspace.Dir, now()); err != nil {
 		return err
 	}
 	if !fromBase {

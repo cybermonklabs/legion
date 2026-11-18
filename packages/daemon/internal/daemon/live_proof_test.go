@@ -173,9 +173,7 @@ func (p *liveProof) publish(subject, source, eventID, payload string) string {
 	if err != nil {
 		p.t.Fatalf("encode the %s envelope: %v", subject, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := p.js.Publish(ctx, subject, envelope); err != nil {
+	if _, err := p.js.Publish(testwait.Context(p.t), subject, envelope); err != nil {
 		p.t.Fatalf("publish %s: %v", subject, err)
 	}
 	return eventID

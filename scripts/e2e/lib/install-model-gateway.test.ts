@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 
 // The key command install-model-gateway.sh writes, against a fake hawk-token first on PATH. The
 // fake appends its pid to FAKE_MINT_LOG (one line per mint), sleeps FAKE_MINT_SLEEP seconds, then
@@ -92,6 +94,8 @@ function install(fake: Fake = {}) {
     { env: env(mints, fake) }
   );
   expect(result.exitCode).toBe(0);
+  // The key the preflight's mint kept, which the fake prints only once its sleep is over.
+  expect(existsSync(join(cache, "hawk-token.key")), "the preflight kept no key").toBe(true);
   rmSync(join(cache, "hawk-token.key"));
   writeFileSync(mints, "");
   return { run, dest, cache, mints, keyCommand: result.stdout.toString().trim() };
@@ -100,7 +104,6 @@ function install(fake: Fake = {}) {
 // call runs the key command as Oh My Pi does, in a pane's own working directory.
 async function call(keyCommand: string, cwd: string, mints: string, fake: Fake = {}) {
   mkdirSync(cwd, { recursive: true });
-  const started = performance.now();
   const child = Bun.spawn(["/bin/sh", "-c", `exec ${keyCommand}`], {
     cwd,
     env: env(mints, fake),
@@ -108,7 +111,7 @@ async function call(keyCommand: string, cwd: string, mints: string, fake: Fake =
     stderr: "pipe",
   });
   const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-  return { code, stdout: stdout.trim(), ms: performance.now() - started };
+  return { code, stdout: stdout.trim() };
 }
 
 function unserved(...args: string[]) {
@@ -271,31 +274,43 @@ describe("the model gateway key command", () => {
   test("gives up on a mint that outlasts the caller, and on the wait behind it, before Oh My Pi's ten seconds", async () => {
     const { run, dest, mints, keyCommand } = install();
     const since = now();
-    // Real time throughout: the deadline under test is the key command's own wall clock, in another
-    // process, which no fake timer reaches. The second caller starts 300 ms after the first, so it
-    // can take the lock the first releases when its mint is stopped with only a few hundred
-    // milliseconds left: too little to mint.
-    const calls = await Promise.all([
-      call(keyCommand, join(run, "pane-1"), mints, { sleep: 12 }),
-      Bun.sleep(300).then(() => call(keyCommand, join(run, "pane-2"), mints, { sleep: 12 })),
-    ]);
+    // The deadline under test is the key command's own clock, in another process, which no fake
+    // timer reaches, so each call's own record says when it gave up. The second caller starts once
+    // the first call's mint has started, under the lock: it waits behind that mint, and takes the
+    // lock the first releases when its mint is stopped with too little of its own deadline left
+    // to mint, or none.
+    const first = call(keyCommand, join(run, "pane-1"), mints, { sleep: 12 });
+    await until("the first call's mint to start", () => mintCount(mints) === 1);
+    const second = call(keyCommand, join(run, "pane-2"), mints, { sleep: 12 });
+    const calls = await Promise.all([first, second]);
 
     expect(mintCount(mints)).toBe(1);
-    for (const c of calls) {
-      expect([c.code, c.stdout]).toEqual([1, ""]);
-      expect(c.ms).toBeLessThan(10_000);
-    }
+    for (const c of calls) expect([c.code, c.stdout]).toEqual([1, ""]);
+    // Each call gave up at the call's 9500 ms deadline, under Oh My Pi's ten seconds: the first
+    // stopped its mint there, and the second its wait behind that mint.
+    const outcomes = new Map(
+      readFileSync(join(dest, "hawk-token.calls"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => l.split("\t"))
+        .map((fields) => [fields[2], fields.slice(4).join("\t")] as const)
+    );
+    expect(outcomes.get(join(run, "pane-1"))).toStartWith(
+      "timeout\tthe mint ran past the call's 9500 ms and was stopped"
+    );
+    expect(outcomes.get(join(run, "pane-2"))).toMatch(
+      /^timeout\twaited \d+ ms for another call's mint\b.* the call's 9500 ms\b/
+    );
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
     expect(notes).toContain("for another call's mint");
-  }, 30_000);
+  });
 
   test("exempts the installer's preflight mint from the deadline, for hawk-token's first-run build", () => {
-    // Real time: the deadline is the key command's own wall clock, in another process.
-    const started = performance.now();
+    // The fake's mint takes 11 s, past the 9500 ms every other call gives up at: the preflight
+    // still kept the key that mint prints once its sleep is over, which `install` requires.
     install({ sleep: 11 });
-    expect(performance.now() - started).toBeGreaterThan(11_000);
-  }, 30_000);
+  });
 
   test("keeps the installer's preflight out of the record, and says why it got no key once", () => {
     const run = join(dir, "preflight-refused");
@@ -384,7 +399,12 @@ describe("the model gateway key command", () => {
     ];
     for (const [script, inputs] of stages) {
       const result = Bun.spawnSync(["bash", join(lib, "..", script)], {
-        env: { PATH: `${stageBin}:${process.env.PATH}`, HOME: operatorHome, ...inputs },
+        env: {
+          ...bunCacheOff,
+          PATH: `${stageBin}:${process.env.PATH}`,
+          HOME: operatorHome,
+          ...inputs,
+        },
       });
       const stderr = result.stderr.toString();
       const scratch = /the run's scratch workspace(?:, kept for review,)? is (\S+)/.exec(
@@ -396,7 +416,7 @@ describe("the model gateway key command", () => {
       // The earlier run's tester could not have failed this run's setup, which never started one.
       expect(`${result.stdout}${stderr}`).not.toContain("may have failed check");
     }
-  }, 120_000);
+  });
 
   test("the profile's config.yml raises Oh My Pi's tool_call handler limit to 120 s, so AskGate's review fits inside it", () => {
     const { run } = install();

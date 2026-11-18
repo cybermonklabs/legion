@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -847,11 +848,7 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			done := make(chan struct{})
 			go func() { defer close(done); tc.w.tickIdle(context.Background()) }()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatal("tickIdle kept running with release off")
-			}
+			testwait.Receive(t, "tickIdle to return with release off", done)
 		})
 	}
 }

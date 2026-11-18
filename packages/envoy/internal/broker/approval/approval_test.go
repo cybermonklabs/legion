@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn pins A1: a person with no session is sent to
@@ -733,21 +734,13 @@ func TestASignInWhoseProviderCannotBeReached(t *testing.T) {
 	if res := b.Get(t, "/approve/"+p.recordID); res.Status != http.StatusServiceUnavailable {
 		t.Fatalf("the page right after the provider came back = %d, want 503 from the failed read oidc still holds", res.Status)
 	}
-	start := time.Now()
-	for {
+	testwait.Until(t, "the sign-in to be reached again once oidc reads the provider afresh", func() (int, bool) {
 		res := b.Get(t, "/approve/"+p.recordID)
-		if res.Status == http.StatusFound {
-			t.Logf("the sign-in was reached again %s after the provider came back", time.Since(start).Round(time.Millisecond))
-			break
-		}
-		if res.Status != http.StatusServiceUnavailable {
+		if res.Status != http.StatusServiceUnavailable && res.Status != http.StatusFound {
 			t.Fatalf("the page while oidc waits to read again = %d, want 503 or the sign-in's 302:\n%s", res.Status, res.Body)
 		}
-		if time.Since(start) > 30*time.Second {
-			t.Fatalf("the sign-in was still unavailable %s after the provider came back", time.Since(start))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return res.Status, res.Status == http.StatusFound
+	})
 	b.SignIn(t, p.recordID, person(ada))
 	r.requirePending(t, p.recordID)
 }

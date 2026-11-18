@@ -150,13 +150,8 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit %d, want the child's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
 	}
-	select {
-	case err := <-daemon:
-		if err != nil {
-			t.Fatalf("the daemon side: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shim never completed the handshake")
+	if err := testwait.Receive(t, "the shim to complete the handshake", daemon); err != nil {
+		t.Fatalf("the daemon side: %v", err)
 	}
 	if got, err := os.ReadFile(seen); err != nil || string(got) != "provided" {
 		t.Fatalf("the child saw LEGION_SHIM_TEST_PROVIDED=%q (%v), want the providers file's trimmed contents", got, err)
@@ -262,19 +257,18 @@ esac
 	daemon := acknowledgeHello(ln)
 
 	var stdout, stderr bytes.Buffer
-	started := time.Now()
-	code := run(context.Background(), []string{"legion", "worker-shim",
-		"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
-		"--", "sh", "-c", `echo '{"type":"fake_ready"}'; while [ ! -e "$0" ]; do sleep 0.01; done; exit 7`, lease}, &stdout, &stderr)
-	elapsed := time.Since(started)
+	// A shim that waited on the warm-up with no end would never return, and this wait fails
+	// naming it rather than leaving the package to `go test`'s own timeout.
+	code := testwait.Receive(t, "the shim to return once the agent exited and the warm-up released its lease", inFlight(func() int {
+		return run(context.Background(), []string{"legion", "worker-shim",
+			"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
+			"--", "sh", "-c", `echo '{"type":"fake_ready"}'; while [ ! -e "$0" ]; do sleep 0.01; done; exit 7`, lease}, &stdout, &stderr)
+	}))
 	if code != 7 {
 		t.Fatalf("exit %d, want the child's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
 	}
 	if _, err := os.Stat(lease); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the shim returned %s after the agent exited with the warm-up's lease still at %s (stat: %v): a relaunch within the minute will skip its warm-up; stderr: %s", elapsed, lease, err, stderr.String())
-	}
-	if elapsed > 10*time.Second {
-		t.Fatalf("the shim took %s to return after the agent exited; the wait for the warm-up must be bounded", elapsed)
+		t.Fatalf("the shim returned after the agent exited with the warm-up's lease still at %s (stat: %v): a relaunch within the minute will skip its warm-up; stderr: %s", lease, err, stderr.String())
 	}
 	if err := <-daemon; err != nil {
 		t.Fatalf("the daemon side: %v", err)

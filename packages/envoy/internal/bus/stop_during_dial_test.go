@@ -6,10 +6,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A recovery that is dialling when Drain stops the client neither installs the connection its dial
@@ -34,15 +34,14 @@ func TestARecoveryStoppedMidDialInstallsNothingAndLogsNoError(t *testing.T) {
 		return logs.Write(p)
 	}), nil))
 
-	proxy.delay.Store(int64(time.Second))
+	letGo := proxy.holdDials(t)
 	client.Conn.Close()
-	select {
-	case <-proxy.held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the recovery never dialled")
-	}
-	_ = client.Drain(5 * time.Second)
-	time.Sleep(2 * time.Second)
+	testwait.Receive(t, "the recovery to dial", proxy.held)
+	_ = client.Drain(listenerDrain)
+	letGo()
+	// The recovery's dial comes back once the hold is let go, and the recovery then finds the
+	// client stopped and says so; nothing of it is left to install a connection after that.
+	testwait.Eventually(t, "the recovery stopped by Drain to end", func() bool { return logged(&logsMu, &logs, "envoy nats recovery cancelled") })
 
 	if client.Connected() {
 		t.Fatal("the recovery installed the connection it dialled after Drain stopped the client")
@@ -59,6 +58,13 @@ func TestARecoveryStoppedMidDialInstallsNothingAndLogsNoError(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// logged reports whether the captured log holds fragment.
+func logged(mu *sync.Mutex, logs *bytes.Buffer, fragment string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return strings.Contains(logs.String(), fragment)
+}
 
 // A recovery whose dial is failing when Close stops the client ends at the stop: it logs the
 // cancellation and never a reconnect failure. Its dial retries a lost server for up to ten
@@ -82,30 +88,16 @@ func TestARecoveryDiallingALostServerEndsAtTheStop(t *testing.T) {
 		return logs.Write(p)
 	}), nil))
 
-	logged := func(fragment string) bool {
-		logsMu.Lock()
-		defer logsMu.Unlock()
-		return strings.Contains(logs.String(), fragment)
-	}
-
+	letGo := proxy.holdDials(t)
 	proxy.refuse.Store(true)
-	proxy.delay.Store(int64(500 * time.Millisecond))
 	client.Conn.Close()
-	select {
-	case <-proxy.held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the recovery never dialled")
-	}
+	testwait.Receive(t, "the recovery to dial", proxy.held)
 	client.Close()
+	letGo()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !logged("envoy nats recovery cancelled") {
-		if time.Now().After(deadline) {
-			t.Fatal("the recovery was still dialling 3s after Close stopped the client")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	time.Sleep(2 * time.Second)
+	testwait.Eventually(t, "the recovery stopped by Close to end", func() bool {
+		return logged(&logsMu, &logs, "envoy nats recovery cancelled")
+	})
 	logsMu.Lock()
 	defer logsMu.Unlock()
 	for _, line := range strings.Split(logs.String(), "\n") {

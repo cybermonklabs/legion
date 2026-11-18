@@ -100,7 +100,10 @@ func answersHealthz(base string) bool {
 // launcher reaches the daemon only through that Service, which routes to the daemon's pod only once
 // the pod is Ready: once the daemon answers /healthz, the path its probes read. A launch whose
 // launcher cannot reach the daemon within wait fails as the Sandbox's does. A launch that returns
-// has had its launcher start the role's worker, reported on started for the test to play.
+// has had its launcher start the role's worker, reported on started for the test to play. Its
+// /healthz poll and its bound are the stand-in's own: they copy the cluster's readiness probe,
+// which asks /healthz with a one-second timeout (probeClient) every period, and the launcher's wait
+// for the daemon (wait), so they stay as the cluster's settings rather than any wait of the test's.
 type clusterRoutedRuntime struct {
 	*fake.Runtime
 	base     string
@@ -149,17 +152,12 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 	}
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), launcherWait)
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
 	if failed := rt.timedOut.Load(); failed != 0 {
 		t.Fatalf("the daemon answered /healthz only after %d relaunch attempts timed out waiting for it", failed)
 	}
-	var spec runtime.SpawnSpec
-	select {
-	case spec = <-rt.started:
-	case <-time.After(2 * launcherWait):
-		t.Fatalf("the unfinished launch was never relaunched; the runtime saw %v", rt.Methods())
-	}
+	spec := testwait.Receive(t, "the unfinished launch to be relaunched", rt.started)
 	if spec.Claim != token || spec.Generation != 2 {
 		t.Fatalf("the runtime started %s at generation %d, want %s at generation 2", spec.Claim, spec.Generation, token)
 	}
@@ -210,18 +208,14 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	t.Cleanup(letThrough)
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), 10*time.Second)
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
+	// Every relaunch waits in the runtime at once; relaunches run one after another would leave
+	// the second never entering while the first waits for warm.
 	waiting := map[claim.Token]runtime.SpawnSpec{}
-	deadline := time.After(10 * time.Second)
 	for len(waiting) < len(tokens) {
-		select {
-		case spec := <-rt.entered:
-			waiting[spec.Claim] = spec
-		case <-deadline:
-			t.Fatalf("%d of %d relaunches wait in the runtime at once, want every one: they are run one after another",
-				len(waiting), len(tokens))
-		}
+		spec := testwait.Receive(t, fmt.Sprintf("relaunch %d of %d to wait in the runtime beside the others", len(waiting)+1, len(tokens)), rt.entered)
+		waiting[spec.Claim] = spec
 	}
 	if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
 		t.Fatalf("%d relaunches left the runtime before it let them through", len(spawns))
@@ -271,36 +265,35 @@ func (r *stopsEarlierRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec)
 // has read its previous connection's close.
 func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 	t.Helper()
-	var last error
+	// A hello the daemon holds is answered once it is let through; a read waits for that answer
+	// until the shared wait's end, which is when the wait below gives up too.
+	end, bounded := testwait.Context(t).Deadline()
 	var acked *shim
-	if !testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Until(t, "a hello with "+bootToken+" to be acked (the reading is the last refusal)", func() (error, bool) {
 		conn, err := net.Dial("unix", strings.TrimPrefix(address, "unix://"))
 		if err != nil {
-			last = err
-			return false
+			return err, false
 		}
 		s := newTestShim(t, conn)
 		if err := s.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
 			conn.Close()
-			last = err
-			return false
+			return err, false
 		}
-		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			t.Fatalf("set the read deadline: %v", err)
+		if bounded {
+			if err := conn.SetReadDeadline(end); err != nil {
+				t.Fatalf("set the read deadline: %v", err)
+			}
 		}
 		line, err := s.lines.ReadBytes('\n')
 		if err == nil {
 			if frame, decodeErr := shimwire.Decode(line); decodeErr == nil && frame.FrameType() == shimwire.TypeHelloAck {
 				acked = s
-				return true
+				return nil, true
 			}
 		}
 		conn.Close()
-		last = fmt.Errorf("hello refused: %v", err)
-		return false
-	}) {
-		t.Fatalf("no hello with %s was acked: %v", bootToken, last)
-	}
+		return fmt.Errorf("hello refused: %v", err), false
+	})
 	return acked
 }
 
@@ -321,7 +314,7 @@ func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocks
 	rt := &stopsEarlierRuntime{Runtime: fake.NewRuntime(), earlier: map[claim.Token]net.Conn{}}
 	var record built
 	o := fakeRuntime(rt, &record)
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	d := startDaemon(t, cfg, o)
 
 	old := dialShim(t, record.address, oldBootToken)
@@ -332,7 +325,7 @@ func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocks
 		t.Fatalf("the pre-restart process's registration = %d %s, want a named 409", status, body)
 	}
 	// The store, not the listing: the listing's view shows a release in flight as queued, and the
-	// refused release is retried at every 20 ms sweep.
+	// refused release is retried at every sweep of the boot's unfinished relaunches.
 	if c := storedClaim(t, cfg, token); c.State != supervise.StateLaunchUncertain || c.Locator != nil || c.Generation != 1 {
 		t.Fatalf("the admitted pre-restart hello left the claim stored %s at generation %d with locator %+v, want launch_uncertain at 1 with none",
 			c.State, c.Generation, c.Locator)
@@ -342,7 +335,7 @@ func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocks
 	rt.mu.Unlock()
 
 	letRelease()
-	testwait.Eventually(t, "the claim to relaunch once the store takes its release", func() bool {
+	passes.until(t, passUnfinished, "the claim to relaunch once the store takes its release", func() bool {
 		c := d.claim(token)
 		return c.State == string(supervise.StateLaunching) && c.Locator != nil
 	})

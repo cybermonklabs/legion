@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The stale-plugin refresh gate's sweep correction counts every credit the lane holds out, not only
+  the wakes the machines have published: a wake having its turn and a post the sweep admitted but
+  no machine has decided showed in neither, so a correction could set the held count below the
+  credits out and let the lane admit more than a minute of the wake pacing. The gate keeps a running
+  count of the credits out, from each admission to its release, and a correction never sets the held
+  count below it; a post that reaches no machine gives its credit back in the pass that took it,
+  and a post decided over a claim that cannot take a relaunch (launching, suspended, failed,
+  retired, or relaunched already by its own refresh turn) gives its credit back at that decision's
+  end, so no credit is held for good and the lane never stops short of its rate.

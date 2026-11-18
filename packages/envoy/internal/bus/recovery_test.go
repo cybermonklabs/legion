@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -21,19 +23,70 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// fakeStart is the moment a test's clocktest.New fake stands at until the test moves it.
+var fakeStart = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+// awaitArmedAt waits until a timer whose deadline due reports is armed on clock: a client arms
+// several on its clock (the keeper's period beside a publish's bounds and the reconnect wait's
+// recheck), so a test names the one it waits for in what and passes the Equal of the moment it
+// expects; the failure prints the deadlines the last read saw.
+func awaitArmedAt(t *testing.T, clock *clocktest.Fake, what string, due func(time.Time) bool) {
+	t.Helper()
+	testwait.Until(t, what+", among the deadlines armed", func() ([]time.Time, bool) {
+		armed := clock.Armed()
+		return armed, slices.ContainsFunc(armed, due)
+	})
+}
+
+// subscriptionsOn counts the subscriptions srv holds on subject across all of its connections, read
+// from its monitoring endpoint: the state a second copy of one delivery would come from.
+func subscriptionsOn(t *testing.T, srv *testnats.Server, subject string) int {
+	t.Helper()
+	endpoint := srv.MonitorURL() + "/connz?subs=detail&limit=4096"
+	response, err := http.Get(endpoint)
+	if err != nil {
+		t.Fatalf("read %s: %v", endpoint, err)
+	}
+	defer response.Body.Close()
+	var connz struct {
+		Connections []struct {
+			Subscriptions []struct {
+				Subject string `json:"subject"`
+			} `json:"subscriptions_list_detail"`
+		} `json:"connections"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
+		t.Fatalf("decode %s: %v", endpoint, err)
+	}
+	n := 0
+	for _, connection := range connz.Connections {
+		for _, subscription := range connection.Subscriptions {
+			if subscription.Subject == subject {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// requireOneSubscriptionOfTheDurable fails t unless srv holds exactly one subscription on the deliver
+// subject of the durable consumer: a second copy of a delivery would come from a second one.
+func requireOneSubscriptionOfTheDurable(t *testing.T, srv *testnats.Server, client *bus.Client, durable string) {
+	t.Helper()
+	info, err := client.JS().ConsumerInfo(bus.Stream, durable)
+	if err != nil {
+		t.Fatalf("read the durable %s: %v", durable, err)
+	}
+	if n := subscriptionsOn(t, srv, info.Config.DeliverSubject); n != 1 {
+		t.Fatalf("the server holds %d subscriptions on the deliver subject of %s, want 1", n, durable)
+	}
+}
+
 // startNATS runs a NATS server for the test and returns it with the connection
 // URI. The server is shut down when the test completes.
 func startNATS(t *testing.T) (*testnats.Server, string) {
 	t.Helper()
 	return testnats.Start(t)
-}
-
-// waitFor polls a condition with timeout. Returns true if condition was met.
-func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
-	t.Helper()
-	if !testwait.Holds(timeout, 250*time.Millisecond, cond) {
-		t.Fatalf("timed out waiting for: %s", desc)
-	}
 }
 
 func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, opts ...natsgo.SubOpt) (*natsgo.Subscription, error) {
@@ -58,6 +111,9 @@ func TestSubOK_NoSubscription(t *testing.T) {
 	}
 }
 
+// A publish while NATS is unreachable is bounded: its wait for a connection ends at PublishBound,
+// which it arms on the client's clock, for either transport. The test moves the clock to the bound
+// once the publish has armed it, and the publish ends there with its deadline passed.
 func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 	// Publish routes each topic to its transport (bus.Client.UsesCoreTransport), so both cases are
 	// the one call a caller makes.
@@ -71,7 +127,8 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, uri := startNATS(t)
-			client, err := bus.ConnectOwningStream([]string{uri})
+			clock := clocktest.New(fakeStart)
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithClock(clock), bus.WithPublishAcknowledgementClock(clock))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -81,7 +138,6 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 			client.Conn.Close()
 
 			result := make(chan error, 1)
-			started := time.Now()
 			go func() {
 				result <- client.Publish(contracts.Envelope{
 					EventID:        "evt-publish-reconnect-timeout-" + tc.name,
@@ -94,17 +150,14 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 					TraceID:        "trace-publish-reconnect-timeout-" + tc.name,
 				})
 			}()
-
-			select {
-			case err := <-result:
-				if err == nil {
-					t.Fatal("publish unexpectedly succeeded without NATS")
-				}
-				if elapsed := time.Since(started); elapsed > 6*time.Second {
-					t.Fatalf("publish returned after %s, want a bounded reconnect within 6s", elapsed)
-				}
-			case <-time.After(6 * time.Second):
-				t.Fatal("publish remained blocked after the reconnect deadline")
+			bound := fakeStart.Add(bus.PublishBound)
+			awaitArmedAt(t, clock, "the publish's bound", bound.Equal)
+			if len(result) != 0 {
+				t.Fatalf("the publish without NATS returned %v before the clock reached its bound", <-result)
+			}
+			clock.Set(bound)
+			if err := testwait.Receive(t, "the publish without NATS to end at its bound", result); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("a publish without NATS = %v, want it ended by its bound", err)
 			}
 		})
 	}
@@ -132,7 +185,7 @@ func TestCoreSubscriptionRestoresAfterConnectionRecovery(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "core role subscription to recover", func() bool {
+	testwait.Eventually(t, "core role subscription to recover", func() bool {
 		if err := publisher.Publish("notifications.role.recovery", []byte("recovered")); err != nil {
 			t.Fatalf("publish to recovered core role lane: %v", err)
 		}
@@ -171,11 +224,11 @@ func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "the client to bind a replacement core subscription", client.CoreSubOK)
+	testwait.Eventually(t, "the client to bind a replacement core subscription", client.CoreSubOK)
 	if returned.IsValid() {
 		t.Fatal("the handle SubscribeCore returned is still valid after its connection closed; the test proves nothing")
 	}
-	waitFor(t, 5*time.Second, "the replacement core subscription to deliver", func() bool {
+	testwait.Eventually(t, "the replacement core subscription to deliver", func() bool {
 		if err := publisher.Publish(subject, []byte("recovered")); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
@@ -207,7 +260,7 @@ func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "core role subscription to recover beside a durable that refuses the bind", func() bool {
+	testwait.Eventually(t, "core role subscription to recover beside a durable that refuses the bind", func() bool {
 		if err := publisher.Publish("notifications.role.held-durable", []byte("recovered")); err != nil {
 			t.Fatalf("publish to the core role lane: %v", err)
 		}
@@ -256,13 +309,9 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 			if err := tc.reconnect(client); err != nil {
 				t.Fatalf("reconnect: %v", err)
 			}
-			select {
-			case conn := <-hooked:
-				if conn != client.Conn {
-					t.Fatal("the reconnect hook ran on a connection the client no longer has")
-				}
-			case <-time.After(15 * time.Second):
-				t.Fatal("the reconnect hook never ran while the durable refuses the bind")
+			conn := testwait.Receive(t, "the reconnect hook to run while the durable refuses the bind", hooked)
+			if conn != client.Conn {
+				t.Fatal("the reconnect hook ran on a connection the client no longer has")
 			}
 			if client.SubOK() {
 				t.Fatal("SubOK reports the durable bound while another connection holds it")
@@ -272,7 +321,7 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 			// logged, both retries have had their chance to run the hook again. The retries after it,
 			// which go on while the durable is held, find what the third found: the reconnect covered
 			// and no connection event since, so rewatch finds the hooks not due and runs nothing.
-			waitFor(t, 30*time.Second, "the recovery's third attempt at the refused restore", func() bool {
+			testwait.Eventually(t, "the recovery's third attempt at the refused restore", func() bool {
 				return slices.Contains(logs.attempts("ERROR", "envoy nats recovery resubscribe failed"), 3)
 			})
 			if runs := len(hooked); runs != 0 {
@@ -289,9 +338,10 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 // of its own: a recovery that finds a run in progress waits for it, and starts no run for an event
 // that run covered. Here a recovery waiting out a held durable runs them on the connection it
 // dialed to replace a closed one, and an in-place reconnect of that connection right after the run
-// ends runs them again, while the recovery's next attempt, a second later, lands during the
-// reconnect's run. Two events between runs, two runs, never two at once: a recovery that read the
-// hooks as due while the reconnect's run was still in progress started a third, alongside it.
+// ends runs them again, while the recovery's next attempt lands during the reconnect's run: the run
+// is held until that attempt has begun. Two events between runs, two runs, never two at once: a
+// recovery that read the hooks as due while the reconnect's run was still in progress started a
+// third, alongside it.
 func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
@@ -300,10 +350,9 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	}
 	defer client.Close()
 	waitOutHeldDurable(t, client, uri)
-	// Longer than the recovery's first backoff (1 s), so its second attempt comes during the run
-	// the in-place reconnect starts as the first run ends.
-	const hookTakes = 3 * time.Second
 	var runs, running, mostAtOnce atomic.Int32
+	begun := make(chan struct{}, 8)
+	proceed := make(chan struct{}, 8)
 	ended := make(chan struct{}, 8)
 	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		runs.Add(1)
@@ -313,33 +362,38 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(hookTakes)
+		begun <- struct{}{}
+		<-proceed
 		running.Add(-1)
 		ended <- struct{}{}
 		return nil
 	})
+	// A run the test never let go of, as on a failure, is let go as the test ends.
+	t.Cleanup(func() { close(proceed) })
 
 	client.Conn.Close()
-	select {
-	case <-ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hooks never ran on the connection the recovery dialed")
-	}
+	testwait.Receive(t, "the hooks to run on the connection the recovery dialed", begun)
+	proceed <- struct{}{}
+	testwait.Receive(t, "that run to end", ended)
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect the replacement in place: %v", err)
 	}
-	select {
-	case <-ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hooks never ran for the in-place reconnect")
-	}
+	testwait.Receive(t, "the hooks to run for the in-place reconnect", begun)
+	// The recovery keeps retrying the refused restore; the reconnect's run is held until one of its
+	// attempts has begun, so that attempt reads the hooks while the run is in progress.
+	duringRun := captureBusLogs(t)
+	testwait.Eventually(t, "a recovery attempt to begin during the reconnect's run", func() bool {
+		return len(duringRun.attempts("INFO", "envoy nats recovery attempt")) > 0
+	})
+	proceed <- struct{}{}
+	testwait.Receive(t, "the reconnect's run to end", ended)
 	// The recovery keeps retrying the refused restore, one attempt at a time, and each attempt asks
 	// rewatch for a run before it logs its failure. An attempt that begins after the reconnect's run
 	// has ended finds what every later attempt finds, both events covered and no event since, and the
 	// attempt that came during the run has logged before it began. So once an attempt begun from here
 	// has logged, every chance to run the hooks again has passed.
 	afterRun := captureBusLogs(t)
-	waitFor(t, 30*time.Second, "a recovery attempt begun after the reconnect's run to log its refused restore", func() bool {
+	testwait.Eventually(t, "a recovery attempt begun after the reconnect's run to log its refused restore", func() bool {
 		begun := afterRun.attempts("INFO", "envoy nats recovery attempt")
 		return len(begun) > 0 && slices.Contains(afterRun.attempts("ERROR", "envoy nats recovery resubscribe failed"), begun[0])
 	})
@@ -382,16 +436,12 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	}
 	var recoveryGoroutine uint64
 	for run := 1; run <= 2; run++ {
-		select {
-		case got := <-ran:
-			if got.conn != client.Conn {
-				t.Fatalf("run %d of the reconnect hooks was on a connection the client no longer has", run)
-			}
-			if run == 2 {
-				recoveryGoroutine = got.goroutine
-			}
-		case <-time.After(15 * time.Second):
-			t.Fatalf("the reconnect hooks ran %d time(s) after an in-place reconnect whose first run failed; want them run again", run-1)
+		got := testwait.Receive(t, fmt.Sprintf("run %d of the reconnect hooks after an in-place reconnect whose first run fails", run), ran)
+		if got.conn != client.Conn {
+			t.Fatalf("run %d of the reconnect hooks was on a connection the client no longer has", run)
+		}
+		if run == 2 {
+			recoveryGoroutine = got.goroutine
 		}
 	}
 	if reconnects := client.Conn.Stats().Reconnects; reconnects != 1 {
@@ -401,7 +451,7 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	// run started, the one thing besides a connection event that runs the hooks, and that recovery
 	// looks once more for hooks due after it clears its flag; once its goroutine has returned, every
 	// chance to run them again has passed.
-	waitFor(t, 15*time.Second, "the recovery that ran the hooks again to end", func() bool { return !goroutinetest.Live(recoveryGoroutine) })
+	testwait.Eventually(t, "the recovery that ran the hooks again to end", func() bool { return !goroutinetest.Live(recoveryGoroutine) })
 	if extra := len(ran); extra != 0 {
 		t.Fatalf("the reconnect hooks ran %d more time(s) after a run succeeded", extra)
 	}
@@ -432,18 +482,15 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	})
 
 	client.Conn.Close()
-	var dialed *natsgo.Conn
-	select {
-	case dialed = <-running:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the recovery never ran the hooks on the connection it dialed")
-	}
+	dialed := testwait.Receive(t, "the recovery to run the hooks on the connection it dialed", running)
 	dialed.Close()
-	// The closed callback runs on the connection's callback goroutine and starts its recovery at
-	// once; a second is ample for that recovery to find the first still running.
-	time.Sleep(time.Second)
+	// The closed callback runs on the connection's callback goroutine and starts its recovery, whose
+	// look at the recovery in progress leaves nothing behind: a recovery that finds one running
+	// starts none, records nothing and logs nothing, and no later action reaches it.
+	testwait.Span(t, time.Second, "the closed connection's recovery finds the first one still running and starts none, "+
+		"which leaves no state or report a test could read, so the span gives its goroutine the moment to look")
 	close(finish)
-	waitFor(t, 15*time.Second, "the client to replace the connection that closed as the recovery ended", client.Connected)
+	testwait.Eventually(t, "the client to replace the connection that closed as the recovery ended", client.Connected)
 	if client.Conn == dialed {
 		t.Fatal("the client still holds the connection that closed")
 	}
@@ -458,7 +505,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 // registration left to its bind in flight is the design working, not a failure, so nothing on the
 // way logs an ERROR.
 func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
-	_, uri := startNATS(t)
+	srv, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{proxy.url()})
 	if err != nil {
@@ -474,15 +521,18 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add the durable: %v", err)
 	}
-	hooked := make(chan time.Time, 8)
+	// The order of the hooks' run and the bind's end is read off one sequence the two take their
+	// numbers from as they happen.
+	var order atomic.Int64
+	hooked := make(chan int64, 8)
 	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
-		hooked <- time.Now()
+		hooked <- order.Add(1)
 		return nil
 	})
 	var delivered atomic.Int32
 	type bindResult struct {
 		err error
-		at  time.Time
+		at  int64
 	}
 	bound := make(chan bindResult, 1)
 
@@ -493,43 +543,27 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 			delivered.Add(1)
 			_ = msg.Ack()
 		}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
-		bound <- bindResult{err: err, at: time.Now()}
+		bound <- bindResult{err: err, at: order.Add(1)}
 	}()
-	select {
-	case <-proxy.swallowed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bind's consumer lookup never reached the link")
-	}
-	dropped := time.Now()
+	testwait.Receive(t, "the bind's consumer lookup to reach the link", proxy.swallowed)
 	proxy.drop()
 
-	var hookedAt time.Time
-	select {
-	case hookedAt = <-hooked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect hooks never ran")
-	}
-	var bind bindResult
-	select {
-	case bind = <-bound:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the bind whose lookup was lost never returned")
-	}
+	hookedAt := testwait.Receive(t, "the reconnect hooks to run", hooked)
+	bind := testwait.Receive(t, "the bind whose lookup was lost to return", bound)
 	if bind.err == nil {
 		t.Fatal("the bind whose lookup the link lost succeeded, so nothing was in flight across the reconnect")
 	}
-	if !hookedAt.Before(bind.at) {
-		t.Fatalf("the reconnect hooks ran %s after the link dropped, %s after the bind in flight gave up (%v); want them run while it was still in flight",
-			hookedAt.Sub(dropped).Round(time.Millisecond), hookedAt.Sub(bind.at).Round(time.Millisecond), bind.err)
+	if hookedAt > bind.at {
+		t.Fatalf("the reconnect hooks ran after the bind in flight gave up (%v); want them run while it was still in flight", bind.err)
 	}
 
-	waitFor(t, 30*time.Second, "the recovery to bind the registration the lost bind left", client.SubOK)
+	testwait.Eventually(t, "the recovery to bind the registration the lost bind left", client.SubOK)
 	data, _ := json.Marshal(map[string]string{"test": "bind-in-flight"})
 	if _, err := client.JS().Publish("notifications.github.test.bind-in-flight", data); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the message to reach the bound registration", func() bool { return delivered.Load() >= 1 })
-	time.Sleep(2 * time.Second)
+	testwait.Eventually(t, "the message to reach the bound registration", func() bool { return delivered.Load() >= 1 })
+	requireOneSubscriptionOfTheDurable(t, srv, client, consumer)
 	if count := delivered.Load(); count != 1 {
 		t.Fatalf("the message reached the handler %d times; want once, from one binding", count)
 	}
@@ -557,7 +591,7 @@ func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 	}
 	holderConn := testnats.Connect(t, uri)
 	t.Cleanup(holderConn.Close)
-	holderJS, err := holderConn.JetStream()
+	holderJS, err := holderConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("holder JetStream: %v", err)
 	}
@@ -568,10 +602,11 @@ func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 	// has: nats-server applies the new interest on the consumer's own goroutine afterwards
 	// (updateDeliveryInterest), so until the consumer reports itself push-bound, the consumer info a
 	// second bind reads says it is free, and that bind succeeds.
-	waitFor(t, 10*time.Second, "the durable to be push-bound to the other task", func() bool {
+	testwait.Eventually(t, "the durable to be push-bound to the other task", func() bool {
 		info, err := holderJS.ConsumerInfo(bus.Stream, consumer)
 		return err == nil && info.PushBound
 	})
+
 	_, err = client.Subscribe("", func(msg *natsgo.Msg) { _ = msg.Ack() }, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
 	if err == nil {
 		t.Fatal("bound a durable another connection holds")
@@ -622,7 +657,7 @@ func TestCoreSubscriptionsShareQueueGroup(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush queue test messages: %v", err)
 	}
-	waitFor(t, 5*time.Second, "one queue delivery per role event", func() bool {
+	testwait.Eventually(t, "one queue delivery per role event", func() bool {
 		return received.Load() == 3
 	})
 }
@@ -679,11 +714,8 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 	// which would also close stopCh and prevent recovery.
 	client.Conn.Close()
 
-	// SubOK should become false during recovery.
-	time.Sleep(100 * time.Millisecond)
-
 	// Wait for recovery to complete (recover creates new connection + resubscribes).
-	waitFor(t, 30*time.Second, "SubOK to become true after recovery", client.SubOK)
+	testwait.Eventually(t, "SubOK to become true after recovery", client.SubOK)
 
 	// Publish a message through the recovered connection and verify delivery.
 	// This proves the subscription is functional after recovery — no Publish call
@@ -694,7 +726,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 		t.Fatalf("publish after recovery: %v", err)
 	}
 
-	waitFor(t, 5*time.Second, "message delivered after recovery", func() bool {
+	testwait.Eventually(t, "message delivered after recovery", func() bool {
 		return received.Load() >= 1
 	})
 }
@@ -702,7 +734,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 // TestRecovery_AtMostOneSubscription verifies that after recovery, only one
 // subscription callback is active (no duplicate message delivery).
 func TestRecovery_AtMostOneSubscription(t *testing.T) {
-	_, uri := startNATS(t)
+	srv, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -720,11 +752,11 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 
 	// Trigger recovery by closing the underlying connection.
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "first recovery", client.SubOK)
+	testwait.Eventually(t, "first recovery", client.SubOK)
 
 	// Trigger recovery again.
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "second recovery", client.SubOK)
+	testwait.Eventually(t, "second recovery", client.SubOK)
 
 	// Reset counter and publish a single message.
 	received.Store(0)
@@ -735,12 +767,11 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 	}
 
 	// Wait for delivery.
-	waitFor(t, 5*time.Second, "message delivered", func() bool {
+	testwait.Eventually(t, "message delivered", func() bool {
 		return received.Load() >= 1
 	})
-
-	// Give extra time to detect any duplicate delivery from stale subscriptions.
-	time.Sleep(2 * time.Second)
+	// A duplicate delivery would come from a stale subscription of the durable's deliver subject.
+	requireOneSubscriptionOfTheDurable(t, srv, client, "dedup-sub-test")
 	if count := received.Load(); count != 1 {
 		t.Fatalf("expected exactly 1 delivery (at-most-one subscription), got %d", count)
 	}
@@ -751,7 +782,7 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 // do not spawn competing retry goroutines. The atomic recovering flag ensures
 // at most one recovery goroutine runs at a time.
 func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
-	_, uri := startNATS(t)
+	srv, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -773,7 +804,7 @@ func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
 	// doesn't accumulate stale subscriptions or leak goroutines.
 	for range 3 {
 		client.Conn.Close()
-		waitFor(t, 30*time.Second, "recovery between rapid closes", client.SubOK)
+		testwait.Eventually(t, "recovery between rapid closes", client.SubOK)
 	}
 
 	// After all recovery cycles, publish and verify single delivery.
@@ -784,10 +815,10 @@ func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	waitFor(t, 5*time.Second, "delivery after recovery cycles", func() bool {
+	testwait.Eventually(t, "delivery after recovery cycles", func() bool {
 		return received.Load() >= 1
 	})
-	time.Sleep(2 * time.Second)
+	requireOneSubscriptionOfTheDurable(t, srv, client, "concurrent-test")
 	if count := received.Load(); count != 1 {
 		t.Fatalf("expected exactly 1 delivery after recovery cycles, got %d", count)
 	}
@@ -831,13 +862,8 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("force reconnect: %v", err)
 	}
-	select {
-	case conn := <-hookRan:
-		if conn != client.Conn {
-			t.Fatal("reconnect hook received a stale connection")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("reconnect hook did not run")
+	if conn := testwait.Receive(t, "the reconnect hook to run", hookRan); conn != client.Conn {
+		t.Fatal("reconnect hook received a stale connection")
 	}
 }
 
@@ -862,13 +888,8 @@ func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
 		t.Fatalf("force reconnect: %v", err)
 	}
 	for _, want := range []string{"disconnected", "reconnected"} {
-		select {
-		case got := <-events:
-			if got != want {
-				t.Fatalf("hook ran %q, want %q next", got, want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("the %s hook did not run", want)
+		if got := testwait.Receive(t, fmt.Sprintf("the %s hook to run", want), events); got != want {
+			t.Fatalf("hook ran %q, want %q next", got, want)
 		}
 	}
 }
@@ -998,17 +1019,14 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		t.Helper()
 		return len(byName()[name])
 	}
-	// settle waits up to within for the server to hold want of the client's connections, and fails
-	// with the count it last read.
-	settle := func(want int, within time.Duration, when string) {
+	// settle waits for the server to hold want of the client's connections, and fails with the
+	// count it last read.
+	settle := func(want int, when string) {
 		t.Helper()
-		deadline := time.Now().Add(within)
-		for open := connections(); open != want; open = connections() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%d connection(s) open %s, want %d", open, when, want)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("%d connection(s) open %s", want, when), func() (int, bool) {
+			open := connections()
+			return open, open == want
+		})
 	}
 
 	logs := captureBusLogs(t)
@@ -1058,21 +1076,25 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		key := fmt.Sprintf("after-close-%d", rounds)
 		client.Conn.Close()
 		publishOnce(t, client, key)
-		waitFor(t, 5*time.Second, "the publish after the close to reach the observer", func() bool { return arrivals(key) > 0 })
-		// A second copy would come on the same server's next deliveries: a round trip and a pause
-		// leave it time to, and the discarded connection's callbacks, which run on its own
-		// goroutine, time to log.
-		if err := observer.Flush(); err != nil {
-			t.Fatalf("observer flush: %v", err)
-		}
-		time.Sleep(500 * time.Millisecond)
+		testwait.Eventually(t, "the publish after the close to reach the observer", func() bool { return arrivals(key) > 0 })
+		// A second copy of the publish would reach the observer ahead of a marker the client
+		// publishes after it, on the connection it publishes on now.
+		marker := key + "-marker"
+		publishOnce(t, client, marker)
+		testwait.Eventually(t, "the marker after the close to reach the observer", func() bool { return arrivals(marker) > 0 })
 		if got := arrivals(key); got != 1 {
 			t.Fatalf("the publish after close %d arrived %d times, want 1", rounds, got)
 		}
-		settle(1, 15*time.Second, "once the publish and the recovery have replaced the closed one")
+		settle(1, "once the publish and the recovery have replaced the closed one")
 	}
 	t.Logf("close %d raced: the publish and the recovery each replaced the closed connection", rounds)
-	for _, msg := range []string{"envoy nats connection closed", "envoy nats disconnected", "envoy nats recovery attempt"} {
+	records := []string{"envoy nats connection closed", "envoy nats disconnected", "envoy nats recovery attempt"}
+	testwait.Eventually(t, "a record of each close's callbacks and recovery", func() bool {
+		return !slices.ContainsFunc(records, func(msg string) bool { return logs.count(name, msg) < rounds })
+	})
+	testwait.Span(t, 500*time.Millisecond, "a record the discarded connection's callbacks would add comes from that connection's "+
+		"own callback goroutine, which nats.go ends with no report, so no state or later action shows it has not run")
+	for _, msg := range records {
 		if got := logs.count(name, msg); got != rounds {
 			t.Errorf("%d %q records after %d close(s), want one each: the discarded connection's callbacks ran", got, msg, rounds)
 		}
@@ -1083,7 +1105,7 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 
 	observer.Close()
 	client.Close()
-	settle(0, 5*time.Second, "after Close")
+	settle(0, "after Close")
 }
 
 // A start the server refuses returns no client, so no caller can Close what it dialled: the
@@ -1108,21 +1130,15 @@ func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
 	}
 	// The recovery ends at once either way: cancelled, or successful once it has installed the
 	// replacement it dialled.
-	waitFor(t, 5*time.Second, "the recovery the refused start's close began to end", func() bool {
+	testwait.Eventually(t, "the recovery the refused start's close began to end", func() bool {
 		return logs.count(name, "envoy nats recovery cancelled") > 0 || logs.count(name, "envoy nats recovery successful") > 0
 	})
+
 	if got := logs.count(name, "envoy nats recovery attempt"); got != 0 {
 		t.Errorf("the recovery the refused start's close began made %d attempt(s), want none", got)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, "the server to hold no connection of the refused start", func() ([]uint64, bool) {
 		open := connections()[name]
-		if len(open) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server holds connection(s) %v of the refused start, want none", open)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return open, len(open) == 0
+	})
 }

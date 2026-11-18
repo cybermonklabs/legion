@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,8 +9,33 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
+
+// Option is an optional dependency of a webhook route. The listener builds its routes with none.
+type Option func(*routeOptions)
+
+// routeOptions is what a route's Options set.
+type routeOptions struct{ clock clock.Clock }
+
+// WithClock arms a route's own timers on c rather than on the wall clock: the Slack route's answer
+// budget (slackAnswerBudget) and the GitHub route's body and handle deadlines (githubBodyDeadline,
+// githubHandleDeadline). It is for a test that drives a clocktest.Fake, which answers such a
+// request through an httptest.ResponseRecorder, since a connection's own deadlines are the
+// socket's and stay on the wall clock (extendDeadlines).
+func WithClock(c clock.Clock) Option {
+	return func(o *routeOptions) { o.clock = c }
+}
+
+// clockOf is the clock options names, and clock.Real() when none does.
+func clockOf(options []Option) clock.Clock {
+	var o routeOptions
+	for _, option := range options {
+		option(&o)
+	}
+	return cmp.Or[clock.Clock](o.clock, clock.Real())
+}
 
 // Publisher publishes a webhook's envelopes, each within the context its handler gives it, which
 // carries the request's own end and the route's budget for its caller (*bus.Client.PublishWithin,

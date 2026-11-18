@@ -5,7 +5,7 @@
 // tree through the daemon's own intake and routes, and reads GET /legion/v1/state at each step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration
 // load, the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has — the GitHub envelopes of the ENVOY_NOTIFICATIONS stream and the
@@ -45,7 +45,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -77,6 +79,9 @@ type admissionIssuesLive struct {
 	acceptingPR int
 	// architect is the root's architect session, registered once over the daemon's own routes.
 	architect *admissionIssuesArchitect
+	// obs is this proof's observer of the daemon: the outbox settlements a step waits for before
+	// it reads what the Dispatch stand-in took.
+	obs *observer
 	// seq numbers the check settlements this run publishes, so each carries a snapshot of its own.
 	seq int
 }
@@ -108,6 +113,7 @@ func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
 func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	t.Helper()
 	proof := newLiveProofOn(t, workflowNATS(t))
+	admissionIssuesOwnDatabase(t, &proof)
 	proof.cfg.AdmissionCap = admissionIssuesCap
 	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
 	if err != nil {
@@ -127,9 +133,30 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = admissionIssuesGitHub(t)
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	// The proof's own observer, hooked before the boot's: a settlement it waits for may be
+	// reported before the step that waits for it is reached, and a stream of its own keeps it.
+	r.obs = observing(&o)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.architect = r.registerArchitect()
 	return r
+}
+
+// admissionIssuesOwnDatabase moves the proof onto a migrated database of this test's own
+// (testpg.Clone). Every other test of this binary writes the package's one run database, and
+// this proof judges each step by the whole admission picture GET /legion/v1/state answers: an
+// issue another test recorded in that one database is an issue of this daemon's own store, which
+// the cap this proof measures counts. newLiveProofOn opened the proof's store on the run
+// database, so the clone replaces that store here, before a tree is seeded or a daemon boots.
+func admissionIssuesOwnDatabase(t *testing.T, p *liveProof) {
+	t.Helper()
+	p.cfg.PostgresDSN = testpg.Clone(t, "legion_admission_issues_test")
+	p.st.Close()
+	st, err := store.Open(context.Background(), p.cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open this proof's own database: %v", err)
+	}
+	t.Cleanup(st.Close)
+	p.st = st
 }
 
 // admissionIssuesGitHub is GitHub as this proof's daemon reads it: every repository has default
@@ -138,7 +165,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 // armed to take back. Nothing else is answered, and nothing reaches github.com.
 func admissionIssuesGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {
@@ -325,11 +352,18 @@ func (r *admissionIssuesLive) grant() string {
 	return granted.GrantID
 }
 
-// quoted is GET /legion/v1/state now, with its `admission` member printed under the step as the
-// route served it and one line per issue of the run naming the fields the step turns on. Every
-// assertion of this proof reads the value it returns, so what the run prints is the answer the
-// step was judged on.
-func (r *admissionIssuesLive) quoted(what string) api.State {
+// admissionAnswer is one GET /legion/v1/state: the state the route served, and its `admission`
+// member as the route wrote it. Its String is the member alone, which is what a wait that gives
+// up on a state prints as its last reading.
+type admissionAnswer struct {
+	state     api.State
+	admission json.RawMessage
+}
+
+func (a admissionAnswer) String() string { return string(a.admission) }
+
+// answer is GET /legion/v1/state now.
+func (r *admissionIssuesLive) answer() admissionAnswer {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodGet, "/legion/v1/state", nil, false)
@@ -346,16 +380,30 @@ func (r *admissionIssuesLive) quoted(what string) api.State {
 	if err := json.Unmarshal(body, &state); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	r.note("%s: admission %s", what, served.Admission)
+	return admissionAnswer{state: state, admission: served.Admission}
+}
+
+// noted prints a's `admission` member under the step as the route served it, and one line per
+// issue of the run naming the fields the step turns on, and returns the state it printed. Every
+// assertion of this proof reads the value it returns, so what the run prints is the answer the
+// step was judged on.
+func (r *admissionIssuesLive) noted(what string, a admissionAnswer) api.State {
+	r.note("%s: admission %s", what, a.admission)
 	for _, key := range []string{r.root, r.childOne, r.childTwo, r.accepting} {
-		issue, recorded := state.Issues[key]
+		issue, recorded := a.state.Issues[key]
 		if !recorded {
 			r.note("   issues.%s: the state records no such issue", key)
 			continue
 		}
 		r.note("   issues.%s: phase %s, status %s, tree %s, slot %s", key, issue.Phase, issue.Status, issue.Tree, slotOf(issue))
 	}
-	return state
+	return a.state
+}
+
+// quoted is GET /legion/v1/state now, printed under the step as noted prints it.
+func (r *admissionIssuesLive) quoted(what string) api.State {
+	r.t.Helper()
+	return r.noted(what, r.answer())
 }
 
 // slotOf is an issue's slot as a line of a step's output: its index and the moment it took it, or
@@ -367,20 +415,26 @@ func slotOf(issue api.Issue) string {
 	return fmt.Sprintf("index %d taken %s", issue.Slot.Index, issue.Slot.AdmittedAt.UTC().Format(time.RFC3339))
 }
 
-// waitForState polls GET /legion/v1/state until want holds of it, then prints and returns that
-// answer under the step's heading. A wait that gives up prints the answer it last had, since that
-// is what the step was judged on either way.
+// waitForState reads GET /legion/v1/state until want holds of it, then prints and returns that
+// very answer under the step's heading: the answer the wait accepted is the one each step is
+// judged on, and a second GET would be a later state in which the cap may have moved on. A wait
+// that gives up prints the answer it last read, since that is what the step was judged on either
+// way.
 func (r *admissionIssuesLive) waitForState(what string, want func(api.State) bool) api.State {
 	r.t.Helper()
+	var last admissionAnswer
 	held := false
 	defer func() {
 		if !held {
-			r.quoted("the last answer before the wait for " + what + " gave up")
+			r.noted("the last answer before the wait for "+what+" gave up", last)
 		}
 	}()
-	testwait.Eventually(r.t, what, func() bool { return want(r.d.state()) })
+	accepted := testwait.Until(r.t, what, func() (admissionAnswer, bool) {
+		last = r.answer()
+		return last, want(last.state)
+	})
 	held = true
-	return r.quoted(what)
+	return r.noted(what, accepted)
 }
 
 // holders is the issues `admission.active` names, sorted, which is the set the cap counts.
@@ -487,11 +541,13 @@ func (r *admissionIssuesLive) backwardMoveReturnsAWaitingIssue() {
 		t.Fatalf("admission.active = %v, want the two children still holding the cap", holders(state))
 	}
 	// The transition writes the status through the daemon's outbox, which delivers it to Dispatch
-	// after the record the state above is read from. So the write is waited for, under the shared
-	// hang guard, rather than read once: reading it once fails whenever the delivery has not
-	// landed in the moment between the two, which is what made this row red in CI.
-	testwait.Eventually(t, fmt.Sprintf("the Dispatch stand-in's in_progress write for %s, which the transition must apply whatever the cap says", r.accepting),
-		func() bool { return r.board.wrote(r.accepting, "in_progress") })
+	// after the record the state above is read from. So the step waits for that row to settle and
+	// then reads what the stand-in took: reading the stand-in once fails whenever the delivery has
+	// not landed in the moment between the two, which is what made this row red in CI.
+	r.obs.settled(t, rowOf{issue: r.accepting, kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if !r.board.wrote(r.accepting, "in_progress") {
+		t.Fatalf("the Dispatch stand-in holds no in_progress write for %s once its status row finished: the transition must apply whatever the cap says", r.accepting)
+	}
 	for _, stranded := range state.StrandedClaims {
 		if stranded.Issue == r.accepting {
 			t.Fatalf("%s's %s is reported as a claim nothing will wake: a worker whose start waits for a slot is not stranded", r.accepting, stranded.Role)

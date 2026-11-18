@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // SOCKS5ProxyEnvVar names the variable that sends every bus NATS connection through a SOCKS5
@@ -86,31 +88,34 @@ func dnsName(host string) bool {
 }
 
 // socks5Dialer is the nats.CustomDialer a proxied connect installs. Each Dial is bounded by
-// timeout: the bus's connect timeout, or what remains of a connect's deadline when that is shorter
-// (bounded), since nats.go applies a connect's own timeout only to its default dialer. It records
-// the last error a Dial returned, which connectWithContext names when nats.go reports only
-// ErrNoServers (nats.go discards "connection refused"). The record is shared by every copy bounded
-// makes and is safe for concurrent use: nats.go dials from its own reconnect goroutine
+// timeout, armed on clock: the bus's connect timeout, or what remains of a connect's deadline when
+// that is shorter (bounded), since nats.go applies a connect's own timeout only to its default
+// dialer. It records the last error a Dial returned, which connectWithContext names when nats.go
+// reports only ErrNoServers (nats.go discards "connection refused"). The record is shared by every
+// copy bounded makes and is safe for concurrent use: nats.go dials from its own reconnect goroutine
 // (nats.go@v1.50.0:3038, doReconnect → createConn), and a client's background recovery and a
 // publish's replacement dial can connect at once, each storing while the other loads.
 type socks5Dialer struct {
 	address string              // the proxy's host:port, for the error that names it
 	proxy   proxy.ContextDialer // golang.org/x/net/proxy.SOCKS5 over a net.Dialer
 	timeout time.Duration
+	// clock is what each Dial arms timeout on: clock.Real, which socks5Proxy sets, unless a test of
+	// the bound sets its clocktest.Fake and moves it.
+	clock   clock.Clock
 	lastErr *atomic.Pointer[error]
 }
 
-// bounded is d with its timeout cut to remaining when that is shorter, sharing d's record.
+// bounded is d with its timeout cut to remaining when that is shorter, sharing d's clock and record.
 func (d *socks5Dialer) bounded(remaining time.Duration) *socks5Dialer {
 	if remaining >= d.timeout {
 		return d
 	}
-	return &socks5Dialer{address: d.address, proxy: d.proxy, timeout: remaining, lastErr: d.lastErr}
+	return &socks5Dialer{address: d.address, proxy: d.proxy, timeout: remaining, clock: d.clock, lastErr: d.lastErr}
 }
 
-// Dial connects through the proxy and records the error it returns.
+// Dial connects through the proxy within timeout, on clock, and records the error it returns.
 func (d *socks5Dialer) Dial(network, address string) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
+	ctx, cancel := d.clock.WithTimeout(context.Background(), d.timeout)
 	defer cancel()
 	conn, err := d.proxy.DialContext(ctx, network, address)
 	d.lastErr.Store(&err)
@@ -149,5 +154,5 @@ func socks5Proxy(lookup func(string) (string, bool)) (*socks5Dialer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", SOCKS5ProxyEnvVar, err)
 	}
-	return &socks5Dialer{address: address, proxy: dialer.(proxy.ContextDialer), timeout: connectTimeout, lastErr: new(atomic.Pointer[error])}, nil
+	return &socks5Dialer{address: address, proxy: dialer.(proxy.ContextDialer), timeout: connectTimeout, clock: clock.Real(), lastErr: new(atomic.Pointer[error])}, nil
 }

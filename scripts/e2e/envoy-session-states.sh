@@ -749,13 +749,26 @@ until_true 120 "listener B to read the bucket's $max_age maximum age" \
 note "the session bucket's maximum age is $max_age, written by a listener of the run's own"
 watch_exceptions
 
+# run_psql ARGS… runs psql on the run's own database and answers its status. lib/loopback-dsn.sh's
+# exec_run_database hands psql that database in libpq's own variables (--libpq-env), PGPASSWORD
+# among them, so psql takes no connection string and the run's is in no variable of this shell and
+# no argument list.
+run_psql() {
+  (exec_run_database ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
+    "the run creates and drops a database there" --libpq-env -- psql -X "$@")
+}
+
 if [ -n "$needs_dispatch" ]; then
   database=envoy_session_states_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
   psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
     fail "could not create database $database in ENVOY_SESSION_STATES_PG_DSN"
-  run_database_url database_url ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
-    "the run creates and drops a database there" || fail "$database_url"
-  psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||
+  # The run's own database reaches Dispatch, and the psql of run_psql, through exec_run_database
+  # alone, in the two forms these two checks run first.
+  require_run_database refusal ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
+    "the run creates and drops a database there" || fail "$refusal"
+  require_run_database refusal ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
+    "the run creates and drops a database there" --libpq-env || fail "$refusal"
+  run_psql -q -v ON_ERROR_STOP=1 -c 'create extension if not exists vector' >/dev/null ||
     fail "the database $database has no pgvector; ENVOY_SESSION_STATES_PG_DSN must name a PostgreSQL carrying it"
   mkdir -p "$work/web-dist"
   keep_port dispatch_keeper dispatch_port
@@ -765,9 +778,20 @@ if [ -n "$needs_dispatch" ]; then
   # (roleHolderWindows, roles.NewBuckets), and at its own five-minute default it would call a
   # holder live that both listeners already read unresponsive and forward a role-routed event at a
   # session that answers nothing.
-  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
-    XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent DISPATCH_LISTEN_FD=3 \
-    DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
+  #
+  # Its environment is DATABASE_URL, DISPATCH_LISTEN_FD and the variables `env` names here, as
+  # `env -i` gave it before: exec_run_database's --env-only hands on the run's own database alone,
+  # held-port.py adds DISPATCH_LISTEN_FD, and `env` adds the rest. held-port.py is Python, which
+  # sets LC_CTYPE in its own environment under the C locale (PEP 538), so `env -u LC_CTYPE` takes
+  # that back out. exec_run_database runs first and held-port.py after it, where start_kept would
+  # run held-port.py first, because the DSN reaches the helper in the environment of the subshell
+  # start_process runs. Every exec keeps the pid, so dispatch_pid is Dispatch's.
+  start_process dispatch exec_run_database ENVOY_SESSION_STATES_PG_DSN "$pg_dsn" "$database" \
+    "the run creates and drops a database there" --env-only DATABASE_URL -- \
+    python3 "$root/scripts/e2e/lib/held-port.py" exec --from "$work/dispatch_keeper.sock" \
+    --fd-env DISPATCH_LISTEN_FD -- env -u LC_CTYPE PATH="$PATH" HOME=/nonexistent \
+    XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+    DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" \
     DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
@@ -1345,7 +1369,7 @@ role_forwards_at_least() { [ "$(role_forwards "$1")" -ge "$2" ]; }
 # the comment and is free to answer it on the issue, and a reply of its own quoting the marker
 # would otherwise be a second row of this read and leave every comparison below false.
 outbox_event() {
-  psql "$database_url" -X -At -q -v ON_ERROR_STOP=1 -c \
+  run_psql -At -q -v ON_ERROR_STOP=1 -c \
     "select $3 from events where issue_key = '$1' and type = 'comment.created'
        and actor ->> 'kind' = 'user' and payload::text like '%$2%'"
 }

@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // liveCheck is one check of the harness: the name it prints, what it runs, and — when non-nil —
@@ -130,12 +131,6 @@ const (
 	liveGrace         = 15 * time.Second
 	liveProbeInterval = 10 * time.Second
 	liveAdoptTimeout  = time.Minute
-	// liveRunningLimit bounds a launch's wait for its pod to run and its Sandbox to be Ready.
-	liveRunningLimit = 15 * time.Minute
-	// liveGoneLimit bounds a wait for a pod or an object to be deleted.
-	liveGoneLimit = 5 * time.Minute
-	// liveSettle is how long a check keeps listening for observations it must not see.
-	liveSettle = 2*liveProbeInterval + 5*time.Second
 )
 
 // liveIssueVolume is the issue volume's size, the daemon configuration's default. The run sets no
@@ -479,13 +474,12 @@ type registry struct {
 	pending  map[claim.Token]string
 	accepted []registration
 	refused  map[claim.Token]int
-	changed  chan struct{}
 }
 
 func newRegistry() *registry {
 	return &registry{
 		byToken: map[string]minted{}, current: map[claim.Token]uint64{}, pending: map[claim.Token]string{},
-		refused: map[claim.Token]int{}, changed: make(chan struct{}),
+		refused: map[claim.Token]int{},
 	}
 }
 
@@ -534,29 +528,19 @@ func (g *registry) hello(event stream.Hello) {
 	g.accepted = append(g.accepted, registration{
 		claim: event.Claim, gen: event.Generation, hash: g.pending[event.Claim], at: time.Now(), identity: event.AgentSecrets,
 	})
-	close(g.changed)
-	g.changed = make(chan struct{})
 }
 
-// await is the claim's registration at gen after since, within limit.
-func (g *registry) await(c claim.Token, gen uint64, since time.Time, limit time.Duration) (registration, bool) {
-	deadline := time.After(limit)
-	for {
-		g.mu.Lock()
-		for _, reg := range g.accepted {
-			if reg.claim == c && reg.gen == gen && !reg.at.Before(since) {
-				g.mu.Unlock()
-				return reg, true
-			}
-		}
-		changed := g.changed
-		g.mu.Unlock()
-		select {
-		case <-changed:
-		case <-deadline:
-			return registration{}, false
+// seen is the claim's registration at gen after since, and whether the registry holds one: the
+// read a wait for that hello asks.
+func (g *registry) seen(c claim.Token, gen uint64, since time.Time) (registration, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, reg := range g.accepted {
+		if reg.claim == c && reg.gen == gen && !reg.at.Before(since) {
+			return reg, true
 		}
 	}
+	return registration{}, false
 }
 
 func (g *registry) registrations(c claim.Token) []registration {
@@ -585,17 +569,14 @@ type observed struct {
 }
 
 type observations struct {
-	mu      sync.Mutex
-	list    []observed
-	changed chan struct{}
+	mu   sync.Mutex
+	list []observed
 }
 
 func (o *observations) add(obs runtime.Observation) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.list = append(o.list, observed{Observation: obs, seq: len(o.list) + 1})
-	close(o.changed)
-	o.changed = make(chan struct{})
 }
 
 // mark is the sequence number of the latest observation: what came after it has a larger one.
@@ -611,25 +592,23 @@ func (o *observations) since(after int) []observed {
 	return slices.Clone(o.list[after:])
 }
 
-// await is the first observation after `after` that match accepts, within limit.
-func (o *observations) await(after int, limit time.Duration, match func(runtime.Observation) bool) (observed, bool) {
-	deadline := time.After(limit)
-	for {
+// await is the first observation after `after` that match accepts, waited for through the shared
+// wait: what names the fact, and a wait that gives up prints the last observation it passed over,
+// as the bounded await's callers printed what they had not seen.
+func (o *observations) await(t testing.TB, after int, what string, match func(runtime.Observation) bool) observed {
+	t.Helper()
+	return testwait.Until(t, what, func() (observed, bool) {
 		o.mu.Lock()
+		defer o.mu.Unlock()
+		var last observed
 		for _, obs := range o.list[after:] {
 			if match(obs.Observation) {
-				o.mu.Unlock()
 				return obs, true
 			}
+			last = obs
 		}
-		changed := o.changed
-		o.mu.Unlock()
-		select {
-		case <-changed:
-		case <-deadline:
-			return observed{}, false
-		}
-	}
+		return last, false
+	})
 }
 
 // logRecorder keeps every record the runtime and the listener log, in memory for the checks
@@ -796,7 +775,7 @@ func note(who, format string, args ...any) {
 func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &liveRig{
-		t: t, env: env, ctx: ctx, cancel: cancel, reg: newRegistry(), obs: &observations{changed: make(chan struct{})}, trees: newFakeStore(),
+		t: t, env: env, ctx: ctx, cancel: cancel, reg: newRegistry(), obs: &observations{}, trees: newFakeStore(),
 		enrollments: map[claim.Token]liveEnrollment{}, grants: map[claim.Token]string{},
 		sessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: liveSessionsSecretKey},
 	}
@@ -1091,8 +1070,7 @@ func (r *liveRig) recordSandbox(name string) error {
 // returned as before, on the first try.
 func (r *liveRig) kubectl(args ...string) (string, error) {
 	run := func() (string, error) {
-		ctx, cancel := context.WithTimeout(r.ctx, 2*time.Minute)
-		defer cancel()
+		ctx := testwait.Context(r.t)
 		full := append([]string{"--context", r.env.operatorContext, "-n", r.env.namespace}, args...)
 		var stdout, stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, "kubectl", full...)
@@ -1217,7 +1195,7 @@ func (r *liveRig) assertPodOwnedDisk(c *liveClaim) (liveDisk, error) {
 // awaitDiskGone waits until c's issue pod's disk is gone, which is what a pod's own ephemeral
 // volume does when the pod goes: the kubelet's garbage collection follows the pod's ownership.
 func (r *liveRig) awaitDiskGone(c *liveClaim) error {
-	return r.poll(liveGoneLimit, "the disk "+issueDiskName(c.token)+" of issue "+c.issue+" to go with its pod", func() (bool, error) {
+	return r.pollAPI("the disk "+issueDiskName(c.token)+" of issue "+c.issue+" to go with its pod", func() (bool, error) {
 		_, found, err := r.issueDisk(c)
 		return !found, err
 	})
@@ -1278,8 +1256,7 @@ func (r *liveRig) recordSession(c *liveClaim) error {
 // the devbox this process runs on — never sessionDSNFile, the pod-advertised address a bridge-mode
 // devbox cannot resolve; liveEnv's doc has the reasoning).
 func (r *liveRig) writeSession(path, content string, written time.Time) error {
-	ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	conn, err := ompsessions.Connect(ctx, r.env.sessionDSNLocalFile)
 	if err != nil {
 		return fmt.Errorf("the scratch database (LEGION_E2E_SESSION_DSN_LOCAL_FILE=%s): %w", r.env.sessionDSNLocalFile, err)
@@ -1320,23 +1297,45 @@ func (r *liveRig) initLog(name string) (string, error) {
 	return string(raw), err
 }
 
-// poll re-checks cond every two seconds until it holds, fails, or limit passes.
-func (r *liveRig) poll(limit time.Duration, what string, cond func() (bool, error)) error {
-	deadline := time.Now().Add(limit)
-	for {
+// poll re-reads cond, at the shared wait's own pace, until it holds or a read fails: a read that
+// fails is not "not yet", so its error ends the wait at once and reaches the check, as it did
+// when this helper carried a bound of its own. A condition that never holds fails the run through
+// the shared wait, naming what it waited for. cond reads only what costs the cluster nothing: the
+// test's own records or the runtime's informer stores (Probe, PodDrift, RepositoryCache,
+// storedPod); a condition that asks the API server goes through pollAPI.
+func (r *liveRig) poll(what string, cond func() (bool, error)) error {
+	r.t.Helper()
+	var failed error
+	testwait.Eventually(r.t, what, func() bool {
 		ok, err := cond()
-		if err != nil || ok {
-			return err
+		failed = err
+		return ok || err != nil
+	})
+	return failed
+}
+
+// apiReadEvery is how often a wait's reading asks the cluster's API server again.
+const apiReadEvery = 2 * time.Second
+
+// pollAPI is poll for a condition that asks the cluster's API server (a GET, a PVC read, an exec)
+// and that no informer of the runtime's covers: the condition is asked at most once per
+// apiReadEvery and answers its last reading between, while the wait keeps the shared pace and
+// bound.
+func (r *liveRig) pollAPI(what string, cond func() (bool, error)) error {
+	r.t.Helper()
+	var next time.Time
+	var ok bool
+	var err error
+	return r.poll(what, func() (bool, error) {
+		// The live proofs run against the production API server, which the shared wait's pace
+		// would load at the client's whole rate limit for as long as a wait lasts.
+		if time.Now().Before(next) {
+			return ok, err
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after %s waiting for %s", limit, what)
-		}
-		select {
-		case <-r.ctx.Done():
-			return r.ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
+		next = time.Now().Add(apiReadEvery)
+		ok, err = cond()
+		return ok, err
+	})
 }
 
 // ---- launching, as the machine does -----------------------------------------------------------
@@ -1418,12 +1417,12 @@ func (r *liveRig) resumeWithPlugins(c *liveClaim, file string, plugins *runtime.
 // record, and records the claim's session in the table (recordSession) once all of it holds. The
 // hello only proves the shim dialed in before spawning its child (shim.go:204/317);
 // checkSetupRecord holds the setup line before the agent line and its cwd, uid and parent pid for
-// every successful role launch. A pod that runs and never says hello within one boot interval is a
-// network-path failure, named as one.
+// every successful role launch. A pod that runs and never says hello is a network-path failure,
+// which the wait for the hello reads as its last reading and so prints when it gives up
+// (networkPath).
 func (r *liveRig) awaitRunning(c *liveClaim, since time.Time) (registration, error) {
 	name := SandboxName(c.token)
-	var pod *corev1.Pod
-	err := r.poll(liveRunningLimit, "pod "+name+" to run with its Sandbox Ready", func() (bool, error) {
+	err := r.pollAPI("pod "+name+" to run with its Sandbox Ready", func() (bool, error) {
 		p, err := r.getPod(name)
 		if apierrors.IsNotFound(err) {
 			return false, nil
@@ -1443,18 +1442,19 @@ func (r *liveRig) awaitRunning(c *liveClaim, since time.Time) (registration, err
 			return false, err
 		}
 		ready := s.condition(conditionReady)
-		pod = p
 		return p.Status.Phase == corev1.PodRunning && ready != nil && ready.Status == metav1.ConditionTrue, nil
 	})
 	if err != nil {
 		return registration{}, err
 	}
-	reg, ok := r.reg.await(c.token, c.gen, since, liveBootTimeout)
-	if !ok {
-		return registration{}, r.networkPathFailure(pod)
-	}
+	var reg registration
+	testwait.Until(r.t, fmt.Sprintf("%s's shim to say hello at generation %d", c.name, c.gen), func() (networkPath, bool) {
+		var said bool
+		reg, said = r.reg.seen(c.token, c.gen, since)
+		return networkPath{rig: r, pod: name}, said
+	})
 	wrote := string(c.role) + ":" + c.loc.Incarnation
-	if err := r.poll(liveBootTimeout, "marker "+c.marker+" to hold "+wrote, func() (bool, error) {
+	if err := r.pollAPI("marker "+c.marker+" to hold "+wrote, func() (bool, error) {
 		lines, err := r.markerLines(c)
 		if err != nil {
 			return false, err
@@ -1475,11 +1475,29 @@ func (r *liveRig) awaitRunning(c *liveClaim, since time.Time) (registration, err
 // awaitHelloAgain is c's shim saying hello, since the runtime and listener were replaced at since,
 // with its current generation's boot token: a live claim reconnecting to a new runtime.
 func (r *liveRig) awaitHelloAgain(c *liveClaim, since time.Time) (registration, error) {
-	reg, ok := r.reg.await(c.token, c.gen, since, 2*time.Minute)
-	if !ok || reg.hash != tokenHash(c.bootToken) {
-		return reg, fmt.Errorf("%s's shim did not say hello again with its generation-%d token", c.name, c.gen)
+	reg := testwait.Until(r.t, fmt.Sprintf("%s's shim to say hello again at generation %d", c.name, c.gen),
+		func() (registration, bool) { return r.reg.seen(c.token, c.gen, since) })
+	if reg.hash != tokenHash(c.bootToken) {
+		return reg, fmt.Errorf("%s said hello again at generation %d with another token than the one it was launched on", c.name, c.gen)
 	}
 	return reg, nil
+}
+
+// networkPath is what a wait for a hello reads: a pod that runs and never says hello is a
+// network-path failure, and the text naming what to check (networkPathFailure, which asks the
+// cluster) is built only where the shared wait prints its last reading, so a run that sees its
+// hello asks nothing.
+type networkPath struct {
+	rig *liveRig
+	pod string
+}
+
+func (n networkPath) String() string {
+	pod, err := n.rig.getPod(n.pod)
+	if err != nil {
+		return fmt.Sprintf("no hello, and the pod %s could not be read: %v", n.pod, err)
+	}
+	return n.rig.networkPathFailure(pod).Error()
 }
 
 // networkPathFailure names what a pod that runs but never says hello points at: the address and
@@ -1494,8 +1512,8 @@ func (r *liveRig) awaitHelloAgain(c *liveClaim, since time.Time) (registration, 
 // platform the cluster runs.
 func (r *liveRig) networkPathFailure(pod *corev1.Pod) error {
 	if r.env.podReachability != "aws-private-ip" {
-		return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached tcp://%s:%s within %s; check that the reverse-tunnel bridge is still up (its chisel client and kubectl port-forward processes, and the bridge pod's log, scripts/e2e/lib/bridge-tunnel.sh)",
-			pod.Name, pod.UID, pod.Spec.NodeName, r.env.streamAdvertiseHost, r.env.streamPort, liveBootTimeout)
+		return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached tcp://%s:%s; check that the reverse-tunnel bridge is still up (its chisel client and kubectl port-forward processes, and the bridge pod's log, scripts/e2e/lib/bridge-tunnel.sh)",
+			pod.Name, pod.UID, pod.Spec.NodeName, r.env.streamAdvertiseHost, r.env.streamPort)
 	}
 	nodeClass, err := r.kubectl("get", "node", pod.Spec.NodeName, "-o", `jsonpath={.metadata.labels.karpenter\.k8s\.aws/ec2nodeclass}`)
 	groups := "(unknown: " + fmt.Sprint(err) + ")"
@@ -1506,8 +1524,8 @@ func (r *liveRig) networkPathFailure(pod *corev1.Pod) error {
 			groups = "(unknown: " + err.Error() + ")"
 		}
 	}
-	return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached tcp://%s:%s within %s; the node's security groups are [%s], and the devbox's security group must admit %s from them",
-		pod.Name, pod.UID, pod.Spec.NodeName, r.env.streamAdvertiseHost, r.env.streamPort, liveBootTimeout, groups, r.env.streamPort)
+	return fmt.Errorf("network path: pod %s (uid %s) runs on node %s but no hello reached tcp://%s:%s; the node's security groups are [%s], and the devbox's security group must admit %s from them",
+		pod.Name, pod.UID, pod.Spec.NodeName, r.env.streamAdvertiseHost, r.env.streamPort, groups, r.env.streamPort)
 }
 
 // suspend is a role-process stop. It leaves the issue pod in place; its launcher reports the

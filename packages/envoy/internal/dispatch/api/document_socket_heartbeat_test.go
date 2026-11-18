@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // documentSocketTokenRig is a server whose people sign in with a session cookie, as
@@ -159,19 +160,18 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 
 			// While the cookie resolves the socket outlives several heartbeats and still
 			// answers its editor.
-			time.Sleep(4 * heartbeat)
+			testwait.Quiet(t, "the document socket ending while its cookie resolves", peer.connection().Ended, 4*heartbeat,
+				"each heartbeat resolves the cookie again on the server's own timer, which no state the test "+
+					"reads counts, over a real socket, and no later action of the test is ordered after a heartbeat")
 			peer.barrier(t)
 
 			if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
 				t.Fatalf("sign out: %v", err)
 			}
 			ended := time.Now()
-			select {
-			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after its cookie's session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
-				t.Fatalf("the document socket stayed open %s after its cookie's session ended, kept by %s the broker holds live", time.Since(ended).Round(time.Millisecond), beside.name)
-			}
+			testwait.Receive(t, "the document socket to close once its cookie's session ended, though "+beside.name+
+				" the broker holds live rides beside it", peer.connection().Ended)
+			t.Logf("the document socket closed %s after its cookie's session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
 			// the socket without a close frame.
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
@@ -208,12 +208,9 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 			rig := newDocumentSocketTokenRig(t, heartbeat)
 			peer := rig.openDocument(t, beside.headers(t, rig))
 
-			time.Sleep(4 * heartbeat)
-			select {
-			case <-peer.connection().Ended:
-				t.Fatalf("the document socket closed (code %d) within four heartbeats while its cookie resolved", peer.connection().CloseCode())
-			default:
-			}
+			testwait.Quiet(t, "the document socket ending while its cookie resolves", peer.connection().Ended, 4*heartbeat,
+				"each heartbeat resolves the cookie again on the server's own timer, which no state the test "+
+					"reads counts, over a real socket, and no later action of the test is ordered after a heartbeat")
 			peer.barrier(t)
 			if asked := rig.tokens.broker.Count(); asked != 0 {
 				t.Fatalf("the document socket's heartbeat asked the broker %d times, want 0", asked)
@@ -237,10 +234,12 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 	presented := caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", presentedHeaders(presented)).read()
 
-	client.quiet(t, 3*heartbeat+heartbeat/2, "a live socket whose token the broker holds live")
+	testwait.Span(t, 3*heartbeat+heartbeat/2, "each heartbeat resolves the token again on the server's own timer, "+
+		"which no state the test reads counts, over a real socket, and no later action of the test is ordered after a heartbeat")
+	client.sentNothing(t, "a live socket whose token the broker holds live")
 
 	rig.tokens.broker.Says(token, brokertoken.Introspection{Active: false})
-	if closed := client.closeError(t, brokertoken.AffirmativeCacheTTL+2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
 	}
 }

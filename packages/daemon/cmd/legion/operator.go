@@ -13,6 +13,7 @@ import (
 	"time"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
@@ -34,10 +35,16 @@ type operatorCall struct {
 	// wait is the bound the command's whole call runs under, when the command takes one
 	// (withWait), and until the moment that bound expires, fixed when the flags are parsed. Every
 	// request the command makes is bounded by that one moment, so a command that reads the claims
-	// in a loop is bounded by its --wait and not by --wait per request.
+	// in a loop is bounded by its --wait and not by --wait per request. clock is what both are
+	// measured on (operatorClock).
 	wait  *time.Duration
 	until time.Time
+	clock clock.Clock
 }
+
+// operatorClock is the clock every operator command's --wait, and the poll a suspend waits out
+// inside it, are measured on: clock.Real(), which a test replaces with a clocktest.Fake.
+var operatorClock = clock.Real()
 
 // withWait gives the command a --wait flag bounding its whole call, which every `legion claims`
 // subcommand takes: a command that does not answer is worse than one that refuses, and an
@@ -55,7 +62,7 @@ func (c *operatorCall) bound(ctx context.Context) (context.Context, context.Canc
 	if c.until.IsZero() {
 		return ctx, func() {}
 	}
-	return context.WithDeadline(ctx, c.until)
+	return c.clock.WithDeadline(ctx, c.until)
 }
 
 // newOperatorCall is the `legion <sub>` command's flag set with the three flags every operator
@@ -70,6 +77,7 @@ func newOperatorCall(sub, usage, tokenUsage string, stdout, stderr io.Writer) *o
 		port:       flags.Int("port", 0, "port to reach, overriding the configured one"),
 		stdout:     stdout,
 		stderr:     stderr,
+		clock:      operatorClock,
 	}
 }
 
@@ -94,7 +102,7 @@ func (c *operatorCall) parse(args []string, required ...string) (code int, ok bo
 		}
 	}
 	if c.wait != nil && *c.wait > 0 {
-		c.until = time.Now().Add(*c.wait)
+		c.until = c.clock.Now().Add(*c.wait)
 	}
 	return 0, true
 }

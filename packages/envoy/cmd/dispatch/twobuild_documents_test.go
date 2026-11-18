@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── stored documents ─────────────────────────────────────────────────────
@@ -381,14 +382,17 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 			}
 		}
 	}()
-	select {
-	case answer := <-scopes:
-		socket.scope = strings.TrimPrefix(answer, "scope ")
-	case <-socket.ended:
-		t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the server never answered the document socket's authentication for %s", artifactID)
-	}
+	answer := testwait.Until(t, "the server to answer the document socket's authentication for "+artifactID, func() (string, bool) {
+		select {
+		case answer := <-scopes:
+			return answer, true
+		case <-socket.ended:
+			t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
+		default:
+		}
+		return "", false
+	})
+	socket.scope = strings.TrimPrefix(answer, "scope ")
 	return socket
 }
 
@@ -453,8 +457,17 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 }
 
 // socketOpenFor is how long every socket the corpus row opened must stay open after the last one
-// was admitted: long enough for a server that closes a socket it admitted to have done so.
+// was admitted: long enough for a server that closes a socket it admitted to have done so. It is
+// a span of the row's own (socketsStayOpenWhy).
 const socketOpenFor = 3 * time.Second
+
+// socketsStayOpenWhy is why the corpus row holds socketOpenFor as a span: a server closes a
+// socket it admitted on a decision of its own that it records nowhere the row can read, both
+// builds are child processes so synctest does not reach them, and a message the row sent on a
+// socket would be answered by the document's room, which says nothing of a close still to come.
+const socketsStayOpenWhy = "a server closes a socket it admitted on a decision it records nowhere the row can read, " +
+	"both builds are child processes so synctest does not reach them, and a message sent on the socket is answered " +
+	"by the document's room, which says nothing of a close still to come"
 
 // corpusSkipped are the corpus files this row leaves out, each with why. A corpus file is
 // markdown for the parsers' fixtures, which a server does not have to be able to store.
@@ -507,7 +520,7 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 		}
 		sockets = append(sockets, socket)
 	}
-	time.Sleep(socketOpenFor)
+	testwait.Span(t, socketOpenFor, socketsStayOpenWhy)
 	for _, socket := range sockets {
 		if socket.closed() {
 			t.Errorf("the %s closed the socket it admitted for document %s: %v", reader.name, socket.artifactID, socket.endErr)
@@ -593,38 +606,31 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	reader.process.call(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		`{"selected":["First"],"expected_edited_at":null}`, http.StatusOK)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	carried := testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
+		reader.name, writer.name, dispatchTestLogin, approval.Version), func() ([]servedReview, bool) {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
 		// The carried approval is the person's, and its whole actor crosses the builds but one
 		// field: whether the actor reads proven depends on which of the two builds wrote the carry
 		// and which one lists it (a build that predates the field neither stores nor answers it),
 		// so the comparison leaves that flag out and holds every other field of the actor.
-		var carried model.Actor
+		var actor model.Actor
 		if len(reviews) > 0 {
-			carried = reviews[0].Actor
-			carried.Proven = false
+			actor = reviews[0].Actor
+			actor.Proven = false
 		}
-		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			carried == (model.Actor{Kind: "user", ID: dispatchTestLogin}) {
-			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
-				reader.name, writer.name, dispatchTestLogin, approval.Version, reviews, reader.name, reader.process.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return reviews, len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
+			actor == (model.Actor{Kind: "user", ID: dispatchTestLogin})
+	})
+	t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, carried[0].Version)
 }
 
 // waitForBlockAsk waits for the ask settlement indexed from the decision block blockID of the
 // issue's documents, and returns its id.
 func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string) string {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	var id string
+	testwait.Until(t, fmt.Sprintf("an ask to be indexed from the block %s of %s", blockID, issueKey), func() (string, bool) {
 		var asks []struct {
 			ID      string  `json:"id"`
 			BlockID *string `json:"block_id"`
@@ -632,14 +638,13 @@ func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string)
 		getJSON(t, p, "/api/v1/issues/"+issueKey+"/asks?state=all", &asks)
 		for _, ask := range asks {
 			if ask.BlockID != nil && *ask.BlockID == blockID {
-				return ask.ID
+				id = ask.ID
+				return id, true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no ask was indexed from the block %s of %s within 20s: %+v", blockID, issueKey, asks)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d asks, none from the block", len(asks)), false
+	})
+	return id
 }
 
 // referencesMarkdown is a body holding every reference form of a build's text/testdata that stands
@@ -721,10 +726,22 @@ func documentRefs(t *testing.T, builds *twoBuilds, artifactID string) []string {
 	return refs
 }
 
-// referencesSettle is how long the references row waits after Y's edit before it reads the refs
-// rows again: past the default two-second settle delay, so a settlement that rewrites the document
-// after the edit has rewritten it too.
-const referencesSettle = 4 * time.Second
+// waitForSettled waits until the document owes no settlement. The write that appends an update
+// records a doc_settlements_pending row in its own transaction, so the row is there when the
+// edit's call returns, and the settlement that covers the update deletes it in the transaction
+// that commits the version it writes (migration 0063): a rewrite the settlement makes is in the
+// refs rows by then.
+func waitForSettled(t *testing.T, builds *twoBuilds, artifactID string) {
+	t.Helper()
+	testwait.Eventually(t, "the document's settlement to have run", func() bool {
+		var owed bool
+		if err := builds.database.Pool.QueryRow(context.Background(),
+			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&owed); err != nil {
+			t.Fatalf("read whether the document owes a settlement: %v", err)
+		}
+		return !owed
+	})
+}
 
 // requireReferencesKeptAcrossBuilds creates the body holding every reference form of X's
 // text/testdata on X, appends a paragraph on Y, and checks the refs rows after the rewrite and
@@ -737,7 +754,7 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	}
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+" rewrote the body", writer.name, reader)
-	time.Sleep(referencesSettle)
+	waitForSettled(t, builds, artifactID)
 	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
 	t.Logf("%d of the %d refs rows the %s wrote survived the %s's rewrite", len(written)-len(dropped), len(written), writer.name, reader.name)
 }

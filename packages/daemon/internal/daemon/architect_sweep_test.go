@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -81,8 +80,9 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 	admission := admit.New(records, engine, 1, sweepProject, log)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: sweepProject, bootID: "test-boot", log: log, entrySweep: 10 * time.Millisecond,
+		dispatchProject: sweepProject, bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	swept := func() (n int) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `select count(*) from processed_events
@@ -98,7 +98,7 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
-	testwait.Eventually(t, "the sweep to send the architect its entry's work", func() bool { return len(sweptStarts(t, pool, root.Key)) == 1 })
+	passes.until(t, passEntrySweep, "the sweep to send the architect its entry's work", func() bool { return len(sweptStarts(t, pool, root.Key)) == 1 })
 	first := sweptStarts(t, pool, root.Key)[0]
 	// With the start queued the gate answers that nothing is owed, which is what holds every
 	// later tick back.
@@ -106,8 +106,8 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 		t.Fatalf("the sweep's gate over %s with its start queued answers owed = %t, %v; want nothing owed: a start already on its way is not owed twice",
 			root.Key, owed, err)
 	}
-	// Twenty more periods of the sweep.
-	time.Sleep(20 * w.entrySweep)
+	// Twenty more passes of the sweep, each one the test runs and whose end the daemon reports.
+	passes.passes(t, passEntrySweep, 20)
 	stop()
 	<-done
 	if n := swept(); n != 1 {

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // gate holds one call until the test opens it. reached closes once the call is held; done closes
@@ -37,14 +38,10 @@ func (g *gate) pass(through func()) {
 	close(g.done)
 }
 
-// waitClosed waits for ch, which names what, failing the test after 10 s.
+// waitClosed waits for ch, which names what.
 func waitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
+	testwait.Receive(t, what, ch)
 }
 
 // holdingCache is the registry's cache with a test's gates in front of its hooks: the next apply
@@ -151,8 +148,8 @@ func rebuiltRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, *holdingCache,
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	waitFor(t, 5*time.Second, reg.watcher.Following)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	waitFor(t, "the opened registry's interest copy to complete a read and follow its bucket", reg.watcher.Following)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	reg.watcher.End(ctx)
 	delayed := &delayingKV{KeyValue: reg.watcher.KV().Legacy()}
@@ -200,7 +197,7 @@ func TestTheInterestListIsRefusedUntilAReadCompletes(t *testing.T) {
 	}
 
 	completion.open()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, "the held first read to complete, so the copy follows its bucket", reg.watcher.Following)
 	items, err := reg.List()
 	if err != nil {
 		t.Fatalf("List after the read: %v", err)
@@ -219,7 +216,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	defer cleanup()
 	reg, held, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 	// The old bucket's revisions run well past the new bucket's.
 	for range 20 {
 		putInterest(t, delayed.KeyValue, Interest{SessionID: "ses_filler", MachineID: "m1", Topics: []string{"notifications.filler"}})
@@ -237,7 +234,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	waitClosed(t, read.reached, "the old bucket to answer the read-through")
 	apply.open()
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -249,7 +246,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return reg.watcher.Epoch() == 1 && reg.watcher.Following() })
+	waitFor(t, "the watch on the recreated bucket (epoch 1) to complete its read and follow it", func() bool { return reg.watcher.Epoch() == 1 && reg.watcher.Following() })
 
 	read.open()
 	if err := <-done; err != nil {
@@ -262,7 +259,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 		t.Fatalf("ses_a's new-bucket interest = %+v, want it matched", got)
 	}
 	putInterest(t, recreated, Interest{SessionID: "ses_a", MachineID: "m1", Topics: []string{"notifications.newer"}})
-	pollMatch(t, reg, "m1", "notifications.newer", 1, 5*time.Second)
+	pollMatch(t, reg, "m1", "notifications.newer", 1)
 }
 
 // A read-through that began while the read was under way and answers only after the read's sweep
@@ -297,11 +294,12 @@ func TestAReadThroughSpanningTheReadsCompletionAddsOnlyWhatTheBucketHolds(t *tes
 	deleted := gone[len(gone)-1].Revision()
 
 	completion.open()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, "the read to complete with ses_gone fenced at its delete's revision", func() bool {
 		reg.mu.RLock()
 		defer reg.mu.RUnlock()
 		return reg.watcher.Following() && reg.cache.FenceFor(reg.watcher.Epoch(), "ses_gone") == deleted
 	})
+
 	for _, read := range reads {
 		read.open()
 	}
@@ -356,13 +354,8 @@ func TestTheReaperAsksLivenessOutsideTheCacheLockAndKeepsAnInterestWrittenSince(
 		_, err := reg.Upsert(Interest{SessionID: "ses_rewritten", MachineID: "m1"}, []string{"notifications.ses_rewritten"})
 		written <- err
 	}()
-	select {
-	case err := <-written:
-		if err != nil {
-			t.Fatalf("Upsert while the reaper waits on liveness: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Upsert waited on the reaper's liveness check: the reaper held the cache's lock")
+	if err := testwait.Receive(t, "Upsert to finish while the reaper waits on liveness (the reaper must not hold the cache lock)", written); err != nil {
+		t.Fatalf("Upsert while the reaper waits on liveness: %v", err)
 	}
 	asked.open()
 	if count := <-reaped; count != 1 {
@@ -406,13 +399,13 @@ func TestTheReaperKeepsARowWrittenWhileItsCopyHeldNoRevisionForTheKey(t *testing
 	defer cleanup()
 	reg, held, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	stale := time.Now().Add(-20 * time.Minute).UnixMilli()
 	putInterest(t, delayed.KeyValue, Interest{SessionID: "ses_x", MachineID: "m1", Topics: []string{"notifications.old"}, UpdatedAt: stale})
-	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached("ses_x"); return ok })
+	waitFor(t, "the copy to hold ses_x's stale row", func() bool { _, ok := reg.Cached("ses_x"); return ok })
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -464,12 +457,12 @@ func TestAnUnsubscribeKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
 	defer cleanup()
 	reg, _, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	const sessionID = "ses_unsub"
 	const kept, dropped, added = "notifications.kept", "notifications.dropped", "notifications.added"
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept, dropped}})
-	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached(sessionID); return ok })
+	waitFor(t, "the copy to hold "+sessionID+"'s row", func() bool { _, ok := reg.Cached(sessionID); return ok })
 	// From here the copy is delivered nothing: it holds the row the unsubscribe reads, and the
 	// bucket holds the row another listener's registration stored after it.
 	reg.StopWatch()
@@ -498,13 +491,13 @@ func TestARoleClaimKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
 	defer cleanup()
 	reg, _, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	const sessionID = "ses_role_claim_fence"
 	const kept, added = "notifications.kept", "notifications.added"
 	const role, roleTopic = "legion-controller", "notifications.role.legion-controller"
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept}})
-	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached(sessionID); return ok })
+	waitFor(t, "the copy to hold "+sessionID+"'s row", func() bool { _, ok := reg.Cached(sessionID); return ok })
 	// From here the copy is delivered nothing: it holds the row the claim would merge into, and
 	// the bucket holds the row another listener's registration stored after it.
 	reg.StopWatch()
@@ -534,14 +527,14 @@ func TestAPlannedWriteThatWouldStoreNothingIsRefusedWhenTheRowMoved(t *testing.T
 	defer cleanup()
 	reg, _, delayed := rebuiltRegistry(t, conn)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	waitFor(t, "the rebuilt watcher's first read to complete, so the copy follows its bucket", reg.watcher.Following)
 
 	const sessionID = "ses_planned_skip_fence"
 	const kept, added = "notifications.kept", "notifications.added"
 	// The row is stamped now, so a heartbeat that merges to it is young enough to leave alone
 	// (InterestRefreshAge) and the plan below would store nothing.
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept}, UpdatedAt: time.Now().UnixMilli()})
-	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached(sessionID); return ok })
+	waitFor(t, "the copy to hold "+sessionID+"'s row", func() bool { _, ok := reg.Cached(sessionID); return ok })
 	plan, err := reg.PlanInterest(context.Background(), sessionID, []string{kept})
 	if err != nil {
 		t.Fatalf("plan the registration of %s: %v", sessionID, err)

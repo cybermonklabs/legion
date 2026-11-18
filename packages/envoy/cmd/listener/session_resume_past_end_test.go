@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -181,7 +180,7 @@ func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testi
 		taken = append(taken, item)
 		floor = seq
 	}
-	requireFrames(t, standIn.collect(t, len(taken), 5*time.Second), taken...)
+	requireFrames(t, standIn.collect(t, len(taken)), taken...)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
@@ -206,6 +205,6 @@ func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testi
 	if lines := rig.logLines(t, clampedStartLine, sessionID); len(lines) != 1 {
 		t.Errorf("the listener logged %d lines %q for %s, want one, the first registration's: %v", len(lines), clampedStartLine, sessionID, lines)
 	}
-	requireFrames(t, standIn.collect(t, len(away), 5*time.Second), away...)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, len(away)), away...)
+	standIn.none(t)
 }

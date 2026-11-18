@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -108,7 +109,10 @@ func TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents(t *testing.T) {
 
 func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.T) {
 	listener, sends := closedIssueListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: the comment's lookup of s1 is answered as the listener answers
+	// it and is never left unanswered by its bound (mentionLookupTimeout), so the comment answers
+	// its attempt pinned to s1, which this row reads.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Closed mention", "before")
 	closeIssue(t, handler, issue.Key)
 

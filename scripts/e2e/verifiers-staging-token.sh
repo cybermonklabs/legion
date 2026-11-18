@@ -131,34 +131,42 @@ echo "  issuer=$issuer"
 # An issuer of the same shape that answers 404: what a misconfigured deployment looks like.
 absent_issuer="${issuer%/*}/00000000000000000000000000000000"
 
-echo "== pgvector/pgvector (pinned digest) and the hub's nats-server (lib/nats-image.sh) on ephemeral loopback ports"
+echo "== pgvector/pgvector (pinned digest) on a unix socket and the hub's nats-server (lib/nats-image.sh) on loopback ports the kernel chooses"
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
+# Neither container publishes a port (lib/containers.sh): Postgres listens on a unix socket in a
+# directory of the run's own, and NATS binds loopback ports the kernel chooses (-m -1 for its
+# monitoring) and logs them.
+# shellcheck source-path=SCRIPTDIR source=lib/containers.sh
+. "$root/scripts/e2e/lib/containers.sh"
 docker rm -f -v "$pg_name" "$nats_name" >/dev/null 2>&1 || docker ps >/dev/null # a missing container is fine; a broken docker is not
 trap cleanup EXIT
-docker run -d --name "$pg_name" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+start_postgres_container "$pg_name" pg_sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch \
-  -e POSTGRES_DB=dispatch -p 127.0.0.1::5432 mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
-docker run -d --name "$nats_name" --cpus 1 --memory 512m -p 127.0.0.1::4222 -p 127.0.0.1::8222 "$nats_image" -js -m 8222 >/dev/null
-# Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
-# socket while nothing listens on 5432 yet, and a client that connects then is reset.
+  -e POSTGRES_DB=dispatch -- mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+start_nats_container "$nats_name" --cpus 1 --memory 512m -- "$nats_image" -js -m -1
+# Its second readiness line: the entrypoint's bootstrap server answers on the same socket first,
+# then stops, and a client that connected to it would be reset.
 for i in $(seq 1 60); do
-  docker exec "$pg_name" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch >/dev/null 2>&1 && break
+  postgres_container_ready "$pg_name" && break
   [ "$i" = 60 ] && fail "postgres never became ready"
   sleep 0.5
 done
-pg_port=$(docker port "$pg_name" 5432/tcp | head -1 | sed 's/.*://')
-nats_port=$(docker port "$nats_name" 4222/tcp | head -1 | sed 's/.*://')
-nats_monitor=$(docker port "$nats_name" 8222/tcp | head -1 | sed 's/.*://')
+nats_port='' nats_monitor=''
+for i in $(seq 1 60); do
+  nats_container_ready "$nats_name" nats_port nats_monitor && break
+  [ "$i" = 60 ] && fail "nats never logged its ports"
+  sleep 0.5
+done
 for i in $(seq 1 60); do
   # -fs, not -fsS: a refused connection is this loop's expected state, not an error to print.
   curl -fs -o /dev/null --max-time 5 "http://127.0.0.1:$nats_monitor/healthz" && break
   [ "$i" = 60 ] && fail "nats never became ready"
   sleep 0.5
 done
-echo "  postgres 127.0.0.1:$pg_port, nats 127.0.0.1:$nats_port"
+echo "  postgres on a socket in $pg_sockets, nats 127.0.0.1:$nats_port"
 
-database_url="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch"
+database_url="postgres://dispatch:dispatch@/dispatch?host=$pg_sockets"
 shared_dispatch_token="dispatch-shared-$RANDOM$RANDOM"
 shared_listener_token="listener-shared-$RANDOM$RANDOM"
 

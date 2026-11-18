@@ -25,13 +25,18 @@
     "type": "git",
     "url": "https://github.com/cybermonklabs/legion"
   },
+  "//": [
+    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job).",
+    "The first, 15000: a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox, 5,687.14 ms (the slowest hook, packed-skills.test.ts's beforeAll, 984.92 ms).",
+    "The second, 120000: a turn that ends with a background task running earns no reminder, 19,096.00 ms here; envoy-channel-stall.test.ts runs only with LEGION_E2E_ENVOY_STACK=1, and there its rows took up to 53,001.47 ms (its beforeAll 14,816.41 ms) under the same load."
+  ],
   "scripts": {
     "channel": "bun bin/envoy-channel.ts",
     "verify-build": "bash scripts/verify-build.sh",
     "prepack": "bash scripts/pack-skills.sh",
     "postpack": "bash scripts/pack-skills.sh --restore",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout=60000",
+    "test": "bun test --timeout=15000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='tests/{answers-claude,build-inputs,build-out,envoy-channel-stall,legion-phase-hook-claude}.test.ts' && bun test --timeout=120000 --preload @legion/test-fixtures/row-deadline ./tests/answers-claude.test.ts ./tests/build-inputs.test.ts ./tests/build-out.test.ts ./tests/envoy-channel-stall.test.ts ./tests/legion-phase-hook-claude.test.ts",
     "lint": "bunx biome check src/ hooks/ scripts/"
   },
   "devDependencies": {

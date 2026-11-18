@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
 import { sharedRuns } from "./score";
@@ -11,7 +11,10 @@ import { sharedRuns } from "./score";
 // judge-omp in production), and copies the judge's validated answer into the run directory. The
 // fake runner below records what each judge saw and writes a fixed answer. Every text is invented.
 
-const work = temporaryDirectory("skill-scenarios-judge");
+// On the memory root (memoryRoot): one row calls judgeRun six times on one run here, remaking each
+// judge's directory each time, and the removal takes 695 entries. On the dev box's shared disk that
+// row took 286 ms to 5,602 ms against Bun's 5 s, and 78 ms to 296 ms on tmpfs (dispatch://INFRA-4311).
+const work = temporaryDirectory("skill-scenarios-judge", { root: memoryRoot() });
 beforeAll(() => {
   mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
   writeFileSync(path.join(work, "profiles", "head", "checkout"), "/checkouts/head\n");

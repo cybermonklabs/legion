@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // TestTheAuthorityRefusesFilesItCannotSignWith: a key that is not the certificate's, and a
@@ -100,9 +102,9 @@ func TestOneLeafPerHostSignedOnce(t *testing.T) {
 func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	const host = "api.example.com"
 	authority := newTestAuthority(t)
-	clock := &testClock{now: time.Now()}
-	authority.now = clock.read
-	began := clock.read()
+	fake := clocktest.New(time.Now())
+	authority.clock = fake
+	began := fake.Now()
 
 	first, err := authority.leaf(host)
 	if err != nil {
@@ -110,7 +112,7 @@ func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	}
 	// Well inside the leaf's life: the same certificate, since signing one per connection is
 	// a key generation and a signature per connection.
-	clock.set(began.Add(leafLifetime - 2*leafRenewBefore))
+	fake.Set(began.Add(leafLifetime - 2*leafRenewBefore))
 	again, err := authority.leaf(host)
 	if err != nil {
 		t.Fatalf("the leaf an hour before the renewal window: %v", err)
@@ -120,7 +122,7 @@ func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	}
 
 	// Inside the last hour: signed again, and the new one lasts a leaf's life from now.
-	clock.set(began.Add(leafLifetime - leafRenewBefore/2))
+	fake.Set(began.Add(leafLifetime - leafRenewBefore/2))
 	renewed, err := authority.leaf(host)
 	if err != nil {
 		t.Fatalf("the leaf inside the renewal window: %v", err)
@@ -132,8 +134,8 @@ func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the renewed leaf: %v", err)
 	}
-	if !parsed.NotAfter.After(clock.read().Add(leafLifetime - time.Minute)) {
-		t.Errorf("the renewed leaf ends at %v, with the clock at %v; want a leaf's life from now", parsed.NotAfter, clock.read())
+	if !parsed.NotAfter.After(fake.Now().Add(leafLifetime - time.Minute)) {
+		t.Errorf("the renewed leaf ends at %v, with the clock at %v; want a leaf's life from now", parsed.NotAfter, fake.Now())
 	}
 	if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != host {
 		t.Errorf("the renewed leaf names %v; want %s and nothing else", parsed.DNSNames, host)
@@ -152,7 +154,7 @@ func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	}
 
 	// A day later still: the renewed leaf has had its own life, and the host is signed again.
-	clock.set(began.Add(2 * leafLifetime))
+	fake.Set(began.Add(2 * leafLifetime))
 	third, err := authority.leaf(host)
 	if err != nil {
 		t.Fatalf("the leaf a day after the renewal: %v", err)

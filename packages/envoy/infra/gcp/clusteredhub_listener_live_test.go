@@ -53,20 +53,9 @@ const (
 	// one durable consumer they contend for (bus.ListenerDurable).
 	clusteredHubListenerLiveMachineID = "clustered-hub-live"
 
-	// clusteredHubListenerHealthWindow is how long a listener gets to reach "healthy" on a bus
-	// whose durable nobody holds: it warms its caches first, up to 30 s apiece
-	// (cmd/listener/main.go).
-	clusteredHubListenerHealthWindow = 2 * time.Minute
-
-	// clusteredHubListenerBindDeadline is cmd/listener/durable.go's durableBindDeadline, where a
-	// listener that still cannot bind the durable ends its start, and so the time the hand-over
-	// below has to land inside.
-	clusteredHubListenerBindDeadline = 135 * time.Second
-
-	// clusteredHubListenerHandoverWindow is the window the hand-over is measured in. It is longer
-	// than the deadline on purpose, so a hand-over that took too long is read from the assertion
-	// that measured it rather than from a timeout that measured nothing.
-	clusteredHubListenerHandoverWindow = 150 * time.Second
+	// A listener warms its caches before it answers "healthy" on a bus whose durable nobody
+	// holds, up to 30 s apiece (cmd/listener/main.go), and a hand-over waits for the durable the
+	// listener that held it let go; both are waited out rather than bounded here.
 )
 
 // liveListenerClient reads the listener's HTTP answers. Every read is one answer counted by its
@@ -138,14 +127,14 @@ func liveListenerHealthz(port int) (int, string, error) {
 	return resp.StatusCode, string(body), err
 }
 
-// awaitListenerStatus waits up to window for /healthz to answer 200 with a body holding want, and
-// returns how long that took, the body and how many answers it read on the way. A caller asserts
-// that count, so a wait that read nothing at all cannot stand for a listener that answered.
-func awaitListenerStatus(t *testing.T, process *cmdtest.Process, port int, want string, window time.Duration) (time.Duration, string, int) {
+// awaitListenerStatus waits for /healthz to answer 200 with a body holding want, and returns how
+// long that took, the body and how many answers it read on the way. A caller asserts that count,
+// so a wait that read nothing at all cannot stand for a listener that answered.
+func awaitListenerStatus(t *testing.T, process *cmdtest.Process, port int, want string) (time.Duration, string, int) {
 	t.Helper()
 	var body string
 	answers := 0
-	waited := within(t, window, fmt.Sprintf("the listener's /healthz answers %s", want), func() error {
+	waited := within(t, fmt.Sprintf("the listener's /healthz answers %s", want), func() error {
 		select {
 		case <-process.Exited:
 			return fmt.Errorf("the listener exited before /healthz answered %s:\n%s", want, process.Output.String())
@@ -264,7 +253,7 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 
 	// Nothing of /v1 is read from a listener still answering "starting": the read routes answer
 	// 503 until the caches behind them have filled, and a refusal then would be no fence's doing.
-	waited, healthy, reads := awaitListenerStatus(t, process, port, `"status":"healthy"`, clusteredHubListenerHealthWindow)
+	waited, healthy, reads := awaitListenerStatus(t, process, port, `"status":"healthy"`)
 	answers += reads
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the listener to hold its durable")
 	t.Logf("the listener held its durable after %.1fs: %s", waited.Seconds(), strings.TrimSpace(healthy))
@@ -325,7 +314,7 @@ func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	answers := 0
 	first, firstPort := startLiveListener(t, "the first listener", binary, natsURL)
 	listeners++
-	waited, healthy, reads := awaitListenerStatus(t, first, firstPort, `"status":"healthy"`, clusteredHubListenerHealthWindow)
+	waited, healthy, reads := awaitListenerStatus(t, first, firstPort, `"status":"healthy"`)
 	answers += reads
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the first listener")
 	t.Logf("the first listener held its durable after %.1fs: %s", waited.Seconds(), strings.TrimSpace(healthy))
@@ -354,13 +343,19 @@ func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	// let go.
 	first.Terminate(t)
 	first.WaitExit(t, "SIGTERM")
-	handover, body, reads := awaitListenerStatus(t, second, secondPort, `"status":"healthy"`, clusteredHubListenerHandoverWindow)
+	handover, body, reads := awaitListenerStatus(t, second, secondPort, `"status":"healthy"`)
 	answers += reads
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the hand-over")
 	t.Logf("the hand-over took %.1fs: %s", handover.Seconds(), strings.TrimSpace(body))
-	require.Less(t, handover, clusteredHubListenerBindDeadline,
-		"the hand-over took %.1fs, at or past the %s at which the second listener gives up its start:\n%s",
-		handover.Seconds(), clusteredHubListenerBindDeadline, second.Output.String())
+	// The listener itself judges how long the hand-over may take: past
+	// cmd/listener/durable.go's durableBindDeadline it ends its start, so a hand-over that took
+	// too long shows as the second listener exiting, which awaitListenerStatus fails on and this
+	// reads once more.
+	select {
+	case <-second.Exited:
+		t.Fatalf("the second listener exited rather than binding the durable the first let go:\n%s", second.Output.String())
+	default:
+	}
 
 	t.Logf("%d listener process(es) run, %d HTTP answer(s) read", listeners, answers)
 }

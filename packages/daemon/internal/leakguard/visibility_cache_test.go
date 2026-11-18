@@ -10,19 +10,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// visibilityTestClock is a clocktest.Fake that a wait moves on by its length at once, recording
+// it: Visibility waits on the test's own goroutine, where the Fake's own Sleep would wait for a move
+// nobody makes. Every other timer, ls-remote's own cap among them, waits for the test's move.
 type visibilityTestClock struct {
-	now   time.Time
+	*clocktest.Fake
 	waits []time.Duration
 }
 
-func (c *visibilityTestClock) Now() time.Time { return c.now }
+func newVisibilityTestClock(start time.Time) *visibilityTestClock {
+	return &visibilityTestClock{Fake: clocktest.New(start)}
+}
 
 func (c *visibilityTestClock) Sleep(ctx context.Context, wait time.Duration) error {
 	c.waits = append(c.waits, wait)
-	c.now = c.now.Add(wait)
+	c.Advance(wait)
 	return ctx.Err()
 }
 
@@ -98,20 +105,19 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 	}
 }
 
-// boundPastAWait is a test's bound with room for the guard's wait for a near reset of at most
-// rateLimitWaitBound and the reads after it, which the guard waits only where the caller's bound
-// leaves (waitFits). The test clock's wait itself takes no time.
-func boundPastAWait(t *testing.T) context.Context {
+// boundPastAWait is a caller's bound on clock (boundOn) with room for the guard's wait for a near
+// reset of at most rateLimitWaitBound and the reads after it, which the guard waits only where the
+// caller's bound leaves (waitFits). The guard judges that room on its clock, the test's, so the
+// room is the same however long the machine takes; the test clock's wait itself takes no time.
+func boundPastAWait(t *testing.T, clock *visibilityTestClock) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), rateLimitWaitBound+lsRemoteBound+time.Minute)
-	t.Cleanup(cancel)
-	return ctx
+	return boundOn(t, clock.Fake, rateLimitWaitBound+lsRemoteBound+time.Minute)
 }
 
 // A rate limit reset close enough to the call's bound is waited out once, then the visibility is
 // read again rather than treating an unchecked call as safe.
 func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
 	reset := clock.Now().Add(time.Minute)
 	var reads int
 	visibility, err := New(Options{
@@ -124,7 +130,7 @@ func TestVisibilityRetriesRateLimitAtNearReset(t *testing.T) {
 			}
 			return Public, nil
 		},
-	}).Visibility(boundPastAWait(t), "invented-org/invented-repo")
+	}).Visibility(boundPastAWait(t, clock), "invented-org/invented-repo")
 	if err != nil || visibility != Public {
 		t.Fatalf("read visibility = %q, %v; want public after the reset", visibility, err)
 	}
@@ -163,7 +169,7 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 		{name: "GraphQL is rate-limited and ls-remote fails", graphql: graphQLRateLimited, git: cannotConnect, gitRuns: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+			clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
 			first := clock.Now().Add(time.Minute)
 			latest := first.Add(time.Hour)
 			bin, records := t.TempDir(), t.TempDir()
@@ -181,7 +187,7 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 					}
 					return "", &rateLimitError{reset: latest}
 				},
-			}).Visibility(boundPastAWait(t), "invented-org/invented-repo")
+			}).Visibility(boundPastAWait(t, clock), "invented-org/invented-repo")
 			switch {
 			case tc.want != "":
 				if err != nil || visibility != tc.want {
@@ -245,7 +251,7 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := &visibilityTestClock{now: now}
+			clock := newVisibilityTestClock(now)
 			bin, records := t.TempDir(), t.TempDir()
 			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", graphQLRateLimited(graphql))
@@ -258,7 +264,7 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 					reads++
 					return "", tc.limited
 				},
-			}).Visibility(bound(t), "invented-org/invented-repo")
+			}).Visibility(testwait.Context(t), "invented-org/invented-repo")
 			if err == nil {
 				t.Fatal("the rate-limited visibility read passed")
 			}

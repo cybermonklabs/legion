@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
 // whole runs fit in one test and large enough that every arm of the graph, every size band and

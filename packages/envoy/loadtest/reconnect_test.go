@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveFrameText is one event frame of the events view, as Dispatch sends it.
@@ -182,7 +183,9 @@ func TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart(t *testing.T) 
 	var frames []liveFrame
 	var framesMu sync.Mutex
 	sockets := &liveSockets{
-		url: url, dialer: &websocket.Dialer{}, retry: 10 * time.Millisecond, resume: true, stale: 1,
+		// With resume the wait before each dial is the dashboard's own backoff (nextDelay), as a
+		// run's, so the test sets no wait of its own.
+		url: url, dialer: &websocket.Dialer{}, resume: true, stale: 1,
 		head:         func(context.Context) (int64, error) { return heads.Load(), nil },
 		restartBegun: restarted.Load,
 		refetch: func(context.Context, int) *refetchRec {
@@ -201,23 +204,12 @@ func TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart(t *testing.T) 
 		defer close(done)
 		sockets.run(ctx, 0)
 	}()
-	deadline := time.Now().Add(20 * time.Second)
-	for len(sockets.reconnects()) < 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("no reconnect recorded")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the first reconnect, which resumes from the last id", func() bool { return len(sockets.reconnects()) >= 1 })
 	heads.Store(20000)
 	restarted.Store(true)
-	for len(sockets.reconnects()) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("no stale reconnect recorded")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the stale reconnect after the restart began", func() bool { return len(sockets.reconnects()) >= 2 })
 	cancel()
-	<-done
+	testwait.Receive(t, "the sockets to stop once their context is cancelled", done)
 
 	srv.mu.Lock()
 	resumes := slices.Clone(srv.resumes[:3])

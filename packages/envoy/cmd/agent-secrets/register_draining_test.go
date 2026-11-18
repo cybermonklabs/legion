@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // drainingHelper listens at a fresh socket and answers register DRAINING for its first drains
@@ -54,14 +54,21 @@ func TestRegisterRetriesADrainingHelper(t *testing.T) {
 }
 
 // TestRegisterStopsRetryingDrainingAtItsWait: a helper still draining when the --wait budget runs
-// out is reported, as before, with its DRAINING code, and not before that budget has passed. The
-// upper bound only catches a retry that never stops.
+// out is reported, as before, with its DRAINING code, after more than the one call a register
+// that gave up at once would have made. A retry that never stopped would hold the shared wait
+// below until the test binary's deadline, which fails naming it.
 func TestRegisterStopsRetryingDrainingAtItsWait(t *testing.T) {
-	sock, _ := drainingHelper(t, 1<<30)
-	start := time.Now()
-	_, err := registerWithPatience(sock, helper.Request{WaitSeconds: 1}, 0)
-	elapsed := time.Since(start)
-	if err == nil || !strings.Contains(err.Error(), helper.CodeDraining) || elapsed < time.Second || elapsed > 30*time.Second {
-		t.Fatalf("register against a helper that stays draining = %v after %s; want DRAINING once its 1 s wait passed", err, elapsed)
+	sock, calls := drainingHelper(t, 1<<30)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := registerWithPatience(sock, helper.Request{WaitSeconds: 1}, 0)
+		answered <- err
+	}()
+	err := testwait.Receive(t, "register to stop retrying a helper that stays draining", answered)
+	if err == nil || !strings.Contains(err.Error(), helper.CodeDraining) {
+		t.Fatalf("register against a helper that stays draining = %v; want DRAINING once its 1 s wait passed", err)
+	}
+	if n := calls.Load(); n < 2 {
+		t.Fatalf("the helper saw %d register call(s); want the 1 s wait spent on more than the first", n)
 	}
 }

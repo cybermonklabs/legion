@@ -16,6 +16,9 @@ import (
 func TestBranchActivityReadsOnePageOfTheBranchsRef(t *testing.T) {
 	var reads int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, testToken) {
+			return
+		}
 		reads++
 		if r.URL.Path != "/repos/acme/widgets/activity" {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -35,7 +38,7 @@ func TestBranchActivityReadsOnePageOfTheBranchsRef(t *testing.T) {
 			`"actor":{"login":"octocat","id":1,"type":"User"}}]`))
 	}))
 	t.Cleanup(server.Close)
-	github := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	github := Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}
 
 	got, err := github.BranchActivity(context.Background(), "legion/A-1")
 	if err != nil || len(got) != 2 || reads != 1 {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // buildStands builds the command into a directory of the test's own and returns its path.
@@ -40,7 +41,7 @@ func TestTheStandsServeTheirRecordsAndStopOnASignal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stderr strings.Builder
+	var stderr cmdtest.LockedBuffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the command: %v", err)
@@ -133,14 +134,19 @@ func TestTheStandsServeTheirRecordsAndStopOnASignal(t *testing.T) {
 	stopped = true
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("the command exited %v on SIGTERM; want a clean stop\n%s", err, stderr.String())
+	// A command still running when the wait below gives up goes with the test.
+	defer func() { _ = cmd.Process.Kill() }()
+	var exitErr error
+	testwait.Until(t, "the command to stop on SIGTERM", func() (string, bool) {
+		select {
+		case exitErr = <-done:
+			return "", true
+		default:
+			return "stderr: " + stderr.String(), false
 		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("the command did not stop within 10s of SIGTERM\n%s", stderr.String())
+	})
+	if exitErr != nil {
+		t.Fatalf("the command exited %v on SIGTERM; want a clean stop\n%s", exitErr, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "stands listening records="+out.RecordsURL) {
 		t.Errorf("the command logged %q; want the line naming its recording URL", stderr.String())

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // lapsedMention is the staging unpinnedRoleMentionPastItsLease builds, for the arms that read what
@@ -77,7 +78,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing",
 			holder, got, target)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	testwait.Eventually(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key: no attempt of this comment names that session",
@@ -184,7 +185,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it published: its mention failed, so the outbox owes that session the comment",
 				staged.holder, row.settled, row.published)
 		}
-		waitFor(t, 10*time.Second, "the copy the mention's failure owes", func() bool {
+		testwait.Eventually(t, "the copy the mention's failure owes", func() bool {
 			return len(staged.claimant.received()) > 0
 		})
 		copies := staged.claimant.received()

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // sourceToken is the read-only token the tests' Source mints, and the bearer the fake GitHub
@@ -97,7 +98,7 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 	source := sourceOver(fake.url, &mints)
 
 	const launchers = 8
-	ctx := bound(t)
+	ctx := testwait.Context(t)
 	var ready, finished sync.WaitGroup
 	ready.Add(launchers)
 	start := make(chan struct{})
@@ -125,7 +126,7 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 		t.Fatalf("%d launchers asking together made %d reads and %d mints, want one of each", launchers, reads, minted)
 	}
 
-	if _, err := source.Get(bound(t), theTag); err != nil {
+	if _, err := source.Get(testwait.Context(t), theTag); err != nil {
 		t.Fatalf("a second ask at %s: %v", theTag, err)
 	}
 	if reads, minted := fake.readsOf(theTag), mints.Load(); reads != 1 || minted != 1 {
@@ -133,7 +134,7 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 	}
 
 	const second = "leak-check-v16"
-	other, err := source.Get(bound(t), second)
+	other, err := source.Get(testwait.Context(t), second)
 	if err != nil {
 		t.Fatalf("an ask at %s: %v", second, err)
 	}
@@ -145,7 +146,7 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 	}
 
 	restarted := sourceOver(fake.url, &mints)
-	again, err := restarted.Get(bound(t), theTag)
+	again, err := restarted.Get(testwait.Context(t), theTag)
 	if err != nil {
 		t.Fatalf("a fresh Source's ask at %s: %v", theTag, err)
 	}
@@ -164,7 +165,7 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 	raw := leakguardtest.GitHubTarball(t, files)
 	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(raw) })
 	var mints atomic.Int32
-	got, err := sourceOver(fake.url, &mints).Get(bound(t), theTag)
+	got, err := sourceOver(fake.url, &mints).Get(testwait.Context(t), theTag)
 	if err != nil {
 		t.Fatalf("the read: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	var mints atomic.Int32
 	source := sourceOver(fake.url, &mints)
 	for _, tag := range []string{"", "v15", "leak-check-v0", "leak-check-v015", "leak-check-v15/../../../user", "leak-check-v15\n", "LEAK-CHECK-V15"} {
-		_, err := source.Get(bound(t), tag)
+		_, err := source.Get(testwait.Context(t), tag)
 		want := RefusalPrefix + fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag)
 		if err == nil || err.Error() != want {
 			t.Errorf("the tag %q = %v, want %q", tag, err, want)
@@ -230,14 +231,14 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 			})
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
-			_, err := source.Get(bound(t), theTag)
+			_, err := source.Get(testwait.Context(t), theTag)
 			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
 
 			refuse.Store(false)
-			if _, err := source.Get(bound(t), theTag); err != nil {
+			if _, err := source.Get(testwait.Context(t), theTag); err != nil {
 				t.Fatalf("the ask after a refused read: %v", err)
 			}
 			if reads, minted := fake.readsOf(theTag), mints.Load(); reads != 2 || minted != 2 {
@@ -273,7 +274,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			var mints, forgets atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			source.Forget = func() { forgets.Add(1) }
-			_, err := source.Get(bound(t), theTag)
+			_, err := source.Get(testwait.Context(t), theTag)
 			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
@@ -283,7 +284,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			}
 
 			refuse.Store(false)
-			if _, err := source.Get(bound(t), theTag); err != nil {
+			if _, err := source.Get(testwait.Context(t), theTag); err != nil {
 				t.Fatalf("the ask after the refused read: %v", err)
 			}
 			if reads, minted := fake.readsOf(theTag), mints.Load(); reads != 2 || minted != 2 {
@@ -326,14 +327,14 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 			})
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
-			_, err := source.Get(bound(t), theTag)
+			_, err := source.Get(testwait.Context(t), theTag)
 			want := RefusalPrefix + "the tarball of theorem-labs/agent-infra at " + theTag + " " + tc.want
 			if err == nil || err.Error() != want {
 				t.Fatalf("the tarball = %v, want %q", err, want)
 			}
 
 			empty.Store(false)
-			if _, err := source.Get(bound(t), theTag); err != nil {
+			if _, err := source.Get(testwait.Context(t), theTag); err != nil {
 				t.Fatalf("the ask after the refused tarball: %v", err)
 			}
 			if reads := fake.readsOf(theTag); reads != 2 {
@@ -355,13 +356,13 @@ func TestAFailedMintIsRefusedWithItsSentenceAndNotKept(t *testing.T) {
 		}
 		return sourceToken, nil
 	}}
-	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence {
+	if _, err := source.Get(testwait.Context(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence {
 		t.Fatalf("a failed mint = %v, want %q", err, RefusalPrefix+sentence)
 	}
 	if fake.total() != 0 {
 		t.Fatalf("a failed mint made %d reads, want none", fake.total())
 	}
-	if _, err := source.Get(bound(t), theTag); err != nil {
+	if _, err := source.Get(testwait.Context(t), theTag); err != nil {
 		t.Fatalf("the ask after a failed mint: %v", err)
 	}
 	if minted, reads := mints.Load(), fake.readsOf(theTag); minted != 2 || reads != 1 {
@@ -375,7 +376,7 @@ func TestAReadThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
 	var mints atomic.Int32
 	source := sourceOver(fake.url, &mints)
 	source.ReadBound = 50 * time.Millisecond
-	_, err := source.Get(bound(t), theTag)
+	_, err := source.Get(testwait.Context(t), theTag)
 	want := RefusalPrefix + "the daemon's read of theorem-labs/agent-infra at " + theTag + " did not finish within 50ms"
 	if err == nil || err.Error() != want {
 		t.Fatalf("a read that does not answer = %v, want %q", err, want)
@@ -398,7 +399,7 @@ func TestACallerThatGivesUpDoesNotEndTheReadOthersWaitOn(t *testing.T) {
 	var mints atomic.Int32
 	source := sourceOver(fake.url, &mints)
 
-	waiting := bound(t)
+	waiting := testwait.Context(t)
 	gaveUp, giveUp := context.WithCancel(waiting)
 	first := make(chan error, 1)
 	go func() {
@@ -437,12 +438,18 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 	const downloads = "codeload.leak-check.test"
 	raw := leakguardtest.GitHubTarball(t, theCheck(answersItsHelp))
 	var downloadAuth atomic.Value
+	// The read hands the download host no credential, so the host keeps only a request of the
+	// shape the read sends it, the redirect's target; any other is another process's, answered 404
+	// and kept as nothing (fromTheDaemonWhen).
 	download := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, r.URL.Path == "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/"+theTag) {
+			return
+		}
 		downloadAuth.Store(r.Header.Get("Authorization"))
 		_, _ = w.Write(raw)
 	}})
 	var asked atomic.Value
-	api := githubtest.Server(t, githubtest.Spec{Token: sourceToken,
+	api := githubtest.Server(t, githubtest.Spec{Credential: sourceBearer, Token: sourceToken,
 		Record: func(r *http.Request) { asked.Store(r.Header.Clone()) },
 		Handle: func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != tarballRoute+theTag {
@@ -463,7 +470,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 	source := sourceOver(api, &mints)
 	source.Client = &http.Client{Transport: transport}
 
-	got, err := source.Get(bound(t), theTag)
+	got, err := source.Get(testwait.Context(t), theTag)
 	if err != nil {
 		t.Fatalf("the read through the redirect: %v", err)
 	}

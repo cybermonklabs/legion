@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -12,7 +12,11 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // then did nothing the scenario asks is a failure.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-const work = temporaryDirectory("skill-scenarios-score");
+// The world the hook below stages there is 1,355 directories and 3,649 files, made in that one hook
+// and removed in the fixture's one `afterAll`, so it is on the memory root (memoryRoot): on the dev
+// box's shared disk the staging hook took 3,065 ms to 14,537 ms and timed out against Bun's 5 s
+// (dispatch://INFRA-4311). pushWork, a small git repository, stays under tmpdir().
+const work = temporaryDirectory("skill-scenarios-score", { root: memoryRoot() });
 const runs = path.join(work, "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,

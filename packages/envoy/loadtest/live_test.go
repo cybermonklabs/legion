@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestLiveSocketsFollowTheEventsView serves two sockets the way Dispatch's GET /ws/live does and
@@ -116,15 +118,17 @@ func TestLiveSocketsFollowTheEventsView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	frames := make(chan liveFrame, 16)
 	sockets := &liveSockets{
 		url:    url,
 		dialer: &websocket.Dialer{EnableCompression: true},
 		nonce:  nonce,
-		retry:  10 * time.Millisecond,
-		frame:  func(f liveFrame) { frames <- f },
+		// The run's own wait before a dial that does not resume (run.go), which the test waits
+		// out once, at the 4001 close.
+		retry: time.Second,
+		frame: func(f liveFrame) { frames <- f },
 	}
 	done := make(chan struct{})
 	before := time.Now().UnixNano()
@@ -134,15 +138,10 @@ func TestLiveSocketsFollowTheEventsView(t *testing.T) {
 	}()
 	var got []liveFrame
 	for len(got) < 4 {
-		select {
-		case f := <-frames:
-			got = append(got, f)
-		case <-ctx.Done():
-			t.Fatalf("frames %+v, want 4 before the deadline", got)
-		}
+		got = append(got, testwait.Receive(t, fmt.Sprintf("event frame %d of 4 (got %+v)", len(got)+1, got), frames))
 	}
 	cancel()
-	<-done
+	testwait.Receive(t, "the sockets to stop once their context is cancelled", done)
 	after := time.Now().UnixNano()
 
 	created0 := time.Date(2026, 10, 27, 5, 0, 0, 123456789, time.UTC).UnixNano()

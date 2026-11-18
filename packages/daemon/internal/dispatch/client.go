@@ -12,15 +12,24 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
 
+// requestTimeout bounds each call the client makes, on its clock.
 const requestTimeout = 10 * time.Second
+
+// Clock is the clock a client's calls are bounded on (requestTimeout): a narrowing of clock.Clock,
+// clock.Real unless a test names a clocktest.Fake.
+type Clock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+}
 
 // HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
 type HTTPClient struct {
 	baseURL    string
 	token      string
-	timeout    time.Duration
+	clock      Clock
 	httpClient *http.Client
 }
 
@@ -29,7 +38,7 @@ func New(baseURL, token string) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		token:      token,
-		timeout:    requestTimeout,
+		clock:      clock.Real(),
 		httpClient: &http.Client{},
 	}
 }
@@ -454,7 +463,7 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
-	bounded, cancel := context.WithTimeout(ctx, c.timeout)
+	bounded, cancel := c.clock.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var encoded []byte

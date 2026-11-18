@@ -22,11 +22,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -147,7 +147,7 @@ func TestTheDeregistrationsFallbackSummarizesTheClaimsItCannotReadInOneLinePerCl
 		// carries the first of its own class rather than the first key of the bucket.
 		undecodable := storeUndecodableRoleClaims(t, rawRoles, "unreadable", degradedUndecodableClaims)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
 		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket whose every other claim is a record this build cannot decode: %v, want both of its own claims released and no error", session, err)
@@ -202,7 +202,7 @@ func TestTheDeregistrationsFallbackSummarizesTheClaimsItCannotReadInOneLinePerCl
 		refused := storeRoleClaimsUnderRefusedKeys(t, rawRoles, "ses_legacy_holder", []string{"a", "b", "c", "d", "e"})
 		undecodable := storeUndecodableRoleClaims(t, rawRoles, "unreadable", degradedMixedUndecodable)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
 		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket holding claims of both classes it cannot read: %v, want both of its own claims released and no error", session, err)

@@ -22,7 +22,7 @@ so what a test binary grows to in its last seconds is never seen: the next walk 
 
 Usage: race_memory.py <command> [args...], for example
 
-    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 65m ./internal/dispatch/docs/
 
 It has no options of its own: everything after the script name is the command. RACE_MEM_LIMIT_KB
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
@@ -87,7 +87,9 @@ def tree_statuses(root_pid: int) -> list[str]:
     One pass over /proc reads each process's status once: the text carries the parent pid the tree
     is built from (`PPid:`) along with the sizes. A process that exits between the walk and the
     read is skipped, which is the common case under `go test`: the compiler's children come and go
-    while the sampler walks.
+    while the sampler walks. The text is decoded with replacement, because a process's `Name:`
+    line holds its name's bytes as they are, which need not be UTF-8, while every field read here
+    is ASCII: a strict decode would end the whole wrapper after the command it measured had passed.
     """
     texts: dict[int, str] = {}
     children: dict[int, list[int]] = {}
@@ -95,7 +97,7 @@ def tree_statuses(root_pid: int) -> list[str]:
         if not entry.name.isdigit():
             continue
         try:
-            text = (entry / "status").read_text()
+            text = (entry / "status").read_text(errors="replace")
         except OSError:
             continue
         parent = status_field(text, "PPid")

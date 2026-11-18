@@ -68,6 +68,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -85,13 +86,6 @@ const compactKeepRecentTokens = 1
 // `isSummarization`). A release that rewords that prompt makes a summary request look like a
 // turn, which this proof's first compaction then fails on rather than passing quietly.
 const compactSummaryMarker = "Summarize user"
-
-// compactHeldSummary is how long the held-summary stand-in sits on a compaction's answer in step
-// 5: past `worker_rpc_timeout_seconds`, which bounds every other request on the worker stream,
-// and past 30 s, which is the ladder's first rung. The step reads both of those back and refuses
-// to run on a bound this no longer outlasts, so a configuration or a ladder that grew past it
-// fails the proof rather than passing on a stale literal.
-const compactHeldSummary = 35 * time.Second
 
 // compactSnapcompactMethod is the compaction method this proof must never see on a session the
 // daemon compacted: the image-based archive (omp://compaction.md, "Snapcompact method"), which a
@@ -174,7 +168,6 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/claim-compaction.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/claim-compaction.sh")
 	r := &claimCompactionLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -223,7 +216,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.registerController()
 	r.backends[r.onClaude] = runtime.BackendClaude
 	r.note("worker_backends now runs %s on %s, and the %s claim of %s is stopped and never launched",
@@ -494,7 +487,7 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 	// so a single read of the arming the moment that record lands can fall between the two.
 	turn := r.daemon.count()
 	marker, errored := r.erroredTurn(token, 1)
-	armed := r.awaitLogFrom("the ladder's first rung to be armed", turn, time.Minute, func(record loggedRecord) bool {
+	armed := r.awaitLogFrom("the ladder's first rung to be armed", turn, func(record loggedRecord) bool {
 		return record.Message == "supervise: this provider error can clear; the task goes to the same session again after a wait" &&
 			record.Attrs["claim"] == string(token)
 	})
@@ -509,7 +502,7 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 		t.Fatalf("`legion claims compact` printed %q, want the line a compacted session prints", compacted)
 	}
 	r.note("`legion claims compact --claim %s` printed %q", token, compacted)
-	door := r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+	door := r.awaitLogFrom("the daemon's record of which door asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: the operator compacted a claim's session" && record.Attrs["claim"] == string(token)
 	})
 	if door.Attrs["compacted"] != true {
@@ -517,7 +510,7 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 	}
 	r.note("the daemon holds that the operator asked: %q (compacted %v)", door.Message, door.Attrs["compacted"])
 
-	ended := r.awaitLogFrom("the compaction to end", from, runtime.CompactTimeout, func(record loggedRecord) bool {
+	ended := r.awaitLogFrom("the compaction to end", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(token)
 	})
 	if ended.Attrs["compacted"] != true || ended.Attrs["providerErrorRun"] != float64(0) {
@@ -536,7 +529,7 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 	r.note("the session's compaction entry is method %q with a %d-character text summary %q and no snapcompact archive (preserveData %v)",
 		entry.Method, len(entry.Summary), firstLine(entry.Summary), entry.preserveKeys())
 
-	again := r.awaitLogFrom("the owed task's next turn", from, ladderDelays[0]+time.Minute, func(record loggedRecord) bool {
+	again := r.awaitLogFrom("the owed task's next turn", from, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token)
 	})
 	if !again.at.After(ended.at) {
@@ -592,12 +585,12 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	if !answer.Compacted {
 		t.Fatalf("the controller's compaction answered %+v, want a session compacted", answer)
 	}
-	door := r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+	door := r.awaitLogFrom("the daemon's record of which door asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: the controller compacted a claim's session" && record.Attrs["claim"] == string(token)
 	})
 	r.note("the daemon holds that the controller asked: %q (issue %v, role %v, compacted %v)",
 		door.Message, door.Attrs["issue"], door.Attrs["role"], door.Attrs["compacted"])
-	ended := r.awaitLogFrom("the compaction to end", from, runtime.CompactTimeout, func(record loggedRecord) bool {
+	ended := r.awaitLogFrom("the compaction to end", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(token)
 	})
 	if ended.Attrs["providerErrorRun"] != float64(0) {
@@ -605,7 +598,7 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	}
 	// The owed task the compaction sent again is the first of the six turns that earn the second
 	// notice: it ends in the same 529, so the run starts over at one.
-	r.awaitErroredTurnFrom(token, 1, from, ladderDelays[0]+time.Minute)
+	r.awaitErroredTurnFrom(token, 1, from)
 	r.note("the compaction put the run back to zero and sent the owed task again, whose turn starts the next run at 1")
 	for run := 2; run <= 6; run++ {
 		r.erroredTurn(token, run)
@@ -638,10 +631,10 @@ func (r *claimCompactionLive) architectIsSentNothing() {
 	if !first.Compacted {
 		t.Fatalf("the operator's compaction of the root architect answered %+v, want a session compacted", first)
 	}
-	r.awaitLogFrom("the daemon's record that the operator asked", from, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record that the operator asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: the operator compacted a claim's session" && record.Attrs["claim"] == string(token)
 	})
-	r.awaitLogFrom("the compaction to end", from, runtime.CompactTimeout, func(record loggedRecord) bool {
+	r.awaitLogFrom("the compaction to end", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(token)
 	})
 	entry := r.awaitCompactionEntry(r.claim(token).SessionFile, 1)
@@ -653,15 +646,17 @@ func (r *claimCompactionLive) architectIsSentNothing() {
 	if second.Compacted || second.Reason == "" {
 		t.Fatalf("the second compaction answered %+v, want it not compacted with Oh My Pi's own reason", second)
 	}
-	r.awaitLogFrom("the daemon's record that the controller asked", asked, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record that the controller asked", asked, func(record loggedRecord) bool {
 		return record.Message == "api: the controller compacted a claim's session" &&
 			record.Attrs["claim"] == string(token) && record.Attrs["compacted"] == false
 	})
 	r.note("the controller's compaction of the same session answered 200 with compacted=false, reason %q", second.Reason)
 
-	// Nothing is owed, so nothing goes: watched for liveSettle, which is longer than the send a
-	// compaction's end makes takes to reach the stand-in.
-	time.Sleep(liveSettle)
+	// Nothing is owed, so nothing goes, and the state says so now: the controller's compaction
+	// answered only once its end had run (Machine.Compact returns after compactEnded), and the
+	// first's end ran before it took the claim, so each end's send of what the claim owes
+	// (sendPending) has been decided; a task sent is the claim's Pending until its turn ends, and
+	// a turn the stand-in answered stays counted.
 	if held := r.claim(token); held.Pending != nil {
 		t.Fatalf("%s was sent %+v after its compactions, and it owed nothing", token, held.Pending)
 	}
@@ -669,82 +664,79 @@ func (r *claimCompactionLive) architectIsSentNothing() {
 		t.Fatalf("the root architect's stand-in answered %d turns across its two compactions, want the %d it had: an architect that owes nothing is sent nothing",
 			turns, turnsBefore)
 	}
-	r.note("%s still owes nothing and ran no turn in %s after either compaction: the end of a compaction sends what the claim owes, and it owes none",
-		token, liveSettle)
+	r.note("%s still owes nothing and ran no turn after either compaction, each of whose ends had run: the end of a compaction sends what the claim owes, and it owes none",
+		token)
 }
 
-// heldSummaryOutlastsTheTimeout drives a compaction whose endpoint sits on the summary past
-// `worker_rpc_timeout_seconds` and past the ladder's first rung: the caller still gets the real
-// answer when it arrives, a fresh session asked for while it runs is refused through both doors,
-// and the task the claim owes goes at the compaction's end rather than at the ladder's.
+// heldSummaryOutlastsTheTimeout drives a compaction whose endpoint sits on the summary until the
+// ladder's first rung has come due while the compaction holds the claim, which by the daemon's own
+// records is past `worker_rpc_timeout_seconds` too: the caller still gets the real answer when it
+// arrives, a fresh session asked for while it runs is refused through both doors, and the task the
+// claim owes goes at the compaction's end rather than at the ladder's.
 func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	t := r.t
 	token := r.token(r.refusing, claim.RoleTester)
 	r.awaitReady(token)
 	r.awaitStartTaskAnswered(token)
 	r.answeredTurn(token, "WARM")
-	if compactHeldSummary <= r.cfg.WorkerRPCTimeout || compactHeldSummary <= ladderDelays[0] {
-		t.Fatalf("this step holds the summary for %s, which no longer outlasts worker_rpc_timeout_seconds (%s) or the ladder's first rung (%s)",
-			compactHeldSummary, r.cfg.WorkerRPCTimeout, ladderDelays[0])
-	}
 	_, errored := r.erroredTurn(token, 1)
 	stand := r.pane(token).stand
-	stand.holdSummary(compactHeldSummary)
-	r.note("the stand-in holds every summary answer for %s: past worker_rpc_timeout_seconds (%s), which bounds every other request on the worker stream, and past the ladder's first rung (%s)",
-		compactHeldSummary, r.cfg.WorkerRPCTimeout, ladderDelays[0])
+	stand.holdSummary()
+	r.note("the stand-in holds every summary answer until the ladder's first rung (%s) has come due during the compaction, past worker_rpc_timeout_seconds (%s), which bounds every other request on the worker stream",
+		ladderDelays[0], r.cfg.WorkerRPCTimeout)
 
 	from := r.daemon.count()
-	started := time.Now()
 	answered := make(chan compactRun, 1)
 	go func() {
 		out, err := r.legionClaimsTry("compact", "--claim", string(token))
 		answered <- compactRun{out: out, err: err}
 	}()
-	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
+	taken := r.awaitLogFrom("the claim to be taken for its compaction", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: the claim's session is being compacted; it is busy until the compaction ends" &&
 			record.Attrs["claim"] == string(token)
 	})
-	// Well past the RPC timeout, and while the compaction is still in flight: the fresh session
-	// is refused through both doors, and so is a second compaction, each in its own words.
-	time.Sleep(2 * r.cfg.WorkerRPCTimeout)
+	// The ladder's own first rung, armed by the turn above, comes due while the summary is held,
+	// and the claim, being compacted, is handed nothing.
+	rung := r.awaitLogFrom("the ladder's first rung to come due while the compaction holds the claim", from, func(record loggedRecord) bool {
+		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+			record.Attrs["claim"] == string(token)
+	})
+	// By the daemon's own records the rung came due more than the RPC timeout after the compaction
+	// took the claim, so from here a compaction that timeout bounded would have ended.
+	if held := rung.at.Sub(taken.at); held <= r.cfg.WorkerRPCTimeout {
+		t.Fatalf("the ladder's first rung came due %s after the compaction took the claim, within worker_rpc_timeout_seconds (%s): this step no longer holds the compaction past that timeout",
+			held, r.cfg.WorkerRPCTimeout)
+	}
+	// Past the RPC timeout, and while the compaction is still in flight: the fresh session is
+	// refused through both doors, and so is a second compaction, each in its own words.
 	r.refusedThroughBothDoors("a fresh session asked for while the compaction runs", freshSessionDoors, token, r.refusing, claim.RoleTester,
 		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a fresh session would cut that turn off")
 	r.refusedThroughBothDoors("a second compaction while the first runs", compactDoors, token, r.refusing, claim.RoleTester,
 		http.StatusConflict, "CLAIM_IN_A_TURN", "is being compacted already")
+	stand.releaseSummary()
 
-	run := <-answered
-	waited := time.Since(started)
+	// The stand-in wrote the summary only now, so an answer that is the real one outlasted both.
+	run := testwait.Receive(t, "the held compaction to answer once its summary was released", answered)
 	if run.err != nil {
-		t.Fatalf("the held compaction failed after %s: %v\n%s", waited.Round(time.Second), run.err, run.out)
+		t.Fatalf("the held compaction failed: %v\n%s", run.err, run.out)
 	}
 	if run.out != "compacted; whatever task the claim owed has gone again" {
 		t.Fatalf("the held compaction printed %q, want the line a compacted session prints", run.out)
 	}
-	r.awaitLogFrom("the daemon's record that the operator asked", from, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record that the operator asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: the operator compacted a claim's session" &&
 			record.Attrs["claim"] == string(token) && record.Attrs["compacted"] == true
 	})
-	if waited <= r.cfg.WorkerRPCTimeout || waited <= 30*time.Second {
-		t.Fatalf("the held compaction answered after %s, which is not past worker_rpc_timeout_seconds (%s) and 30 s",
-			waited.Round(time.Millisecond), r.cfg.WorkerRPCTimeout)
-	}
-	r.note("the caller got the real answer %q after %s, past the RPC timeout %s and past 30 s",
-		run.out, waited.Round(time.Second), r.cfg.WorkerRPCTimeout)
-	stand.answerSummary()
+	r.note("the caller got the real answer %q, which the stand-in wrote only once the rung had come due %s after the compaction took the claim: past the RPC timeout %s and the rung's %s",
+		run.out, rung.at.Sub(taken.at).Round(time.Second), r.cfg.WorkerRPCTimeout, ladderDelays[0])
 
-	again := r.awaitLogFrom("the owed task's next turn", from, 2*time.Minute, func(record loggedRecord) bool {
-		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token) && record.at.After(started)
+	again := r.awaitLogFrom("the owed task's next turn", from, func(record loggedRecord) bool {
+		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token)
 	})
 	// Once, and by the daemon's own count of the turns it ran: the ladder's own first rung came
 	// due while the compaction held the claim, and a claim being compacted is handed nothing.
 	if turns := r.erroredTurns(token); len(turns) != 2 {
 		t.Fatalf("the daemon ran %d turns of the owed task, want 2: the first send and the compaction's own", len(turns))
-	}
-	if sends := r.logs(func(record loggedRecord) bool {
-		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
-			record.Attrs["claim"] == string(token) && record.at.After(errored.at) && record.at.Before(again.at)
-	}); len(sends) == 0 {
-		t.Fatalf("the ladder's %s rung never came due inside the %s the summary was held for", ladderDelays[0], compactHeldSummary)
 	}
 	r.note("the ladder's own %s rung came due while the compaction held the claim and sent nothing; the owed task went at the "+
 		"compaction's end, %s after the turn that armed the ladder, once by the daemon's own count of the turns it ran",
@@ -771,14 +763,14 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		t.Fatalf("a refused summary answered %+v, want compacted=false carrying Oh My Pi's own reason", refused)
 	}
 	r.note("the endpoint refused every summary request and the caller was told: 200, compacted=false, reason %q", refused.Reason)
-	ended := r.awaitLogFrom("the refused compaction to end", from, runtime.CompactTimeout, func(record loggedRecord) bool {
+	ended := r.awaitLogFrom("the refused compaction to end", from, func(record loggedRecord) bool {
 		return record.Message == "supervise: the compaction of the claim's session is over" && record.Attrs["claim"] == string(tester)
 	})
 	if ended.Attrs["compacted"] != false || ended.Attrs["providerErrorRun"] == float64(0) {
 		t.Fatalf("the refused compaction ended compacted=%v providerErrorRun=%v, want false and a run it did not reset",
 			ended.Attrs["compacted"], ended.Attrs["providerErrorRun"])
 	}
-	r.awaitErroredTurnFrom(tester, 0, from, ladderDelays[0]+time.Minute)
+	r.awaitErroredTurnFrom(tester, 0, from)
 	r.note("the owed task still went again, and the refused compaction reset no run of provider-error turns (providerErrorRun %v)",
 		ended.Attrs["providerErrorRun"])
 	stand.answerSummary()
@@ -787,13 +779,13 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	// when the request arrives.
 	stand.holdTurn()
 	r.deliver(tester, "Say the word HELD-"+randomSuffix(t)+" and nothing else.")
-	r.await(string(tester)+" to be in a turn", 2*time.Minute, func() bool {
+	r.await(string(tester)+" to be in a turn", func() bool {
 		return r.claim(tester).State == string(supervise.StateWorking)
 	})
 	r.refusedThroughBothDoors("a worker in a turn of its own", compactDoors, tester, r.refusing, claim.RoleTester,
 		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a compaction would abort that turn")
 	stand.releaseTurn()
-	r.await(string(tester)+"'s turn to end", 2*time.Minute, func() bool {
+	r.await(string(tester)+"'s turn to end", func() bool {
 		return r.claim(tester).State != string(supervise.StateWorking)
 	})
 
@@ -829,7 +821,7 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	// that a fresh session is what reaches it instead.
 	implementer := r.token(r.notice, claim.RoleImplementer)
 	r.note("%s", r.legionClaims("suspend", "--claim", string(implementer)))
-	r.await(string(implementer)+" to be suspended", 2*time.Minute, func() bool {
+	r.await(string(implementer)+" to be suspended", func() bool {
 		return r.claim(implementer).State == string(supervise.StateSuspended)
 	})
 	r.refusedThroughBothDoors("a suspended worker", compactDoors, implementer, r.notice, claim.RoleImplementer,
@@ -840,7 +832,7 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	planner := r.token(r.ladder, claim.RolePlanner)
 	r.answeredTurn(planner, "CLEAR")
 	r.note("%s", r.legionClaims("stop", "--claim", string(planner)))
-	r.await(string(planner)+" to retire", 2*time.Minute, func() bool {
+	r.await(string(planner)+" to retire", func() bool {
 		return r.claim(planner).State == string(supervise.StateRetired)
 	})
 	r.refusedThroughBothDoors("a worker an operator stopped", compactDoors, planner, r.ladder, claim.RolePlanner,
@@ -850,7 +842,7 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 	// turn fails the claim rather than going again (supervise's holdsTheIssue).
 	stand.failTurn()
 	r.deliver(tester, "Say the word FAILING-"+randomSuffix(t)+" and nothing else.")
-	r.await(string(tester)+" to fail", 4*time.Minute, func() bool {
+	r.await(string(tester)+" to fail", func() bool {
 		return r.claim(tester).State == string(supervise.StateFailed)
 	})
 	stand.answerTurn()
@@ -875,7 +867,7 @@ func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 	from := r.daemon.count()
 	stopped, retried := r.retryFreshSession(planner)
 	r.note("`legion claims retry --claim %s --fresh-session` on a claim that was %s: %s", planner, stopped.State, retried)
-	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record of which door asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: operator request" && record.Attrs["claim"] == string(planner) &&
 			strings.HasSuffix(fmt.Sprint(record.Attrs["route"]), "/retry")
 	})
@@ -898,7 +890,7 @@ func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 	if status != http.StatusOK {
 		t.Fatalf("the controller's fresh session of %s = %d %s, want 200", architect, status, body)
 	}
-	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record of which door asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(architect)
 	})
 	r.note("the daemon holds that the controller asked for %s's fresh session", architect)
@@ -967,7 +959,7 @@ func (r *claimCompactionLive) plannerComesBackThroughTheOperatorsDoor() {
 	if phaseTask.Phase != at {
 		t.Fatalf("%s was staged with a task of phase %q, want its issue's current phase %q: %q", token, phaseTask.Phase, at, phaseTask.Task)
 	}
-	r.await(string(token)+" to be in a turn of its phase's task", 2*time.Minute, func() bool {
+	r.await(string(token)+" to be in a turn of its phase's task", func() bool {
 		return r.claim(token).State == string(supervise.StateWorking)
 	})
 	r.note("%s runs a turn its stand-in holds open, on %s's own %s task %q", token, r.ladder, at, firstLine(phaseTask.Task))
@@ -984,7 +976,7 @@ func (r *claimCompactionLive) plannerComesBackThroughTheOperatorsDoor() {
 	retried := r.legionClaims("retry", "--claim", string(token), "--fresh-session")
 	r.note("`legion claims retry --claim %s --fresh-session`, asked of a claim stored %s over its dead process, answered: %s",
 		token, dead.State, retried)
-	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record of which door asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: operator request" && record.Attrs["claim"] == string(token) &&
 			strings.HasSuffix(fmt.Sprint(record.Attrs["route"]), "/retry")
 	})
@@ -1016,7 +1008,7 @@ func (r *claimCompactionLive) architectComesBackThroughTheControllersDoor() {
 	stand.holdTurn()
 	held := "Say the word DEAD-ARCHITECT-" + randomSuffix(t) + " and nothing else."
 	r.deliver(token, held)
-	r.await(string(token)+" to be in a turn", 2*time.Minute, func() bool {
+	r.await(string(token)+" to be in a turn", func() bool {
 		return r.claim(token).State == string(supervise.StateWorking)
 	})
 	r.note("%s runs a turn its stand-in holds open, on the task %q", token, held)
@@ -1035,7 +1027,7 @@ func (r *claimCompactionLive) architectComesBackThroughTheControllersDoor() {
 	}
 	r.note("the controller's `fresh_session` of %s, asked of a claim stored %s over its dead process, answered %d %s",
 		token, dead.State, status, strings.TrimSpace(string(body)))
-	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+	r.awaitLogFrom("the daemon's record of which door asked", from, func(record loggedRecord) bool {
 		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(token)
 	})
 	started := r.awaitFreshPane(token, dead.Session)
@@ -1073,7 +1065,7 @@ func (r *claimCompactionLive) killUnderTheRuntimesHold(token claim.Token) (*loca
 	pid := r.rt.killProcessGroup(*dead.Locator)
 	// The worker's connection closes with its process, which is what has the daemon read that
 	// process at all (supervise's closed); the hold is what the read answers.
-	uncertain := r.awaitLogFrom("the daemon's read of "+string(token)+"'s process to answer uncertain", from, time.Minute,
+	uncertain := r.awaitLogFrom("the daemon's read of "+string(token)+"'s process to answer uncertain", from,
 		func(record loggedRecord) bool {
 			return record.Message == "supervise: process uncertain" && record.Attrs["claim"] == string(token)
 		})
@@ -1106,7 +1098,7 @@ func (r *claimCompactionLive) killUnderTheRuntimesHold(token claim.Token) (*loca
 func (r *claimCompactionLive) releaseAtASweepsBoundary(hold *localHold) {
 	r.t.Helper()
 	swept := hold.sweeps()
-	r.await("the observation sweep's next pass over the held claim", 4*localObserveInterval, func() bool {
+	r.await("the observation sweep's next pass over the held claim", func() bool {
 		return hold.sweeps() > swept
 	})
 	hold.release()
@@ -1117,7 +1109,7 @@ func (r *claimCompactionLive) releaseAtASweepsBoundary(hold *localHold) {
 // pending, and a fresh session is refused a claim in a turn.
 func (r *claimCompactionLive) awaitNothingOwed(token claim.Token) {
 	r.t.Helper()
-	r.await(string(token)+" to hold no task and run no turn", 4*time.Minute, func() bool {
+	r.await(string(token)+" to hold no task and run no turn", func() bool {
 		held := r.claim(token)
 		return held.Pending == nil && held.State != string(supervise.StateWorking)
 	})
@@ -1149,7 +1141,7 @@ func (r *claimCompactionLive) answeredTurn(token claim.Token, what string) {
 	marker := what + "-" + randomSuffix(r.t)
 	r.pane(token).stand.answerTurn()
 	r.deliver(token, "Say the word "+marker+" and nothing else.")
-	r.await(string(token)+" to answer the task "+marker, 4*time.Minute, func() bool {
+	r.await(string(token)+" to answer the task "+marker, func() bool {
 		held := r.claim(token)
 		return held.Pending == nil && held.State != string(supervise.StateWorking)
 	})
@@ -1164,7 +1156,7 @@ func (r *claimCompactionLive) awaitStartTaskAnswered(token claim.Token) {
 	r.t.Helper()
 	pane := r.pane(token)
 	task := startTask(pane.role)
-	r.await(string(token)+" to answer the task its start left pending", 4*time.Minute, func() bool {
+	r.await(string(token)+" to answer the task its start left pending", func() bool {
 		held := r.claim(token)
 		return held.Pending == nil && held.State != string(supervise.StateWorking)
 	})
@@ -1184,7 +1176,7 @@ func (r *claimCompactionLive) erroredTurn(token claim.Token, run int) (string, *
 	r.pane(token).stand.errorTurn()
 	from := r.daemon.count()
 	r.deliver(token, "Say the word "+marker+" and nothing else.")
-	return marker, r.awaitErroredTurnFrom(token, run, from, 4*time.Minute)
+	return marker, r.awaitErroredTurnFrom(token, run, from)
 }
 
 // erroredTurns is every turn of the claim the daemon has read a provider error from, oldest
@@ -1196,9 +1188,9 @@ func (r *claimCompactionLive) erroredTurns(token claim.Token) []loggedRecord {
 	})
 }
 
-func (r *claimCompactionLive) awaitErroredTurnFrom(token claim.Token, run, from int, within time.Duration) *loggedRecord {
+func (r *claimCompactionLive) awaitErroredTurnFrom(token claim.Token, run, from int) *loggedRecord {
 	r.t.Helper()
-	errored := r.awaitLogFrom("a turn of "+string(token)+" to end in a provider error", from, within, func(record loggedRecord) bool {
+	errored := r.awaitLogFrom("a turn of "+string(token)+" to end in a provider error", from, func(record loggedRecord) bool {
 		return record.Message == providerErroredMessage && record.Attrs["claim"] == string(token)
 	})
 	if errored.Attrs["httpStatus"] != float64(529) {
@@ -1220,23 +1212,21 @@ func (r *claimCompactionLive) awaitErroredTurnFrom(token claim.Token, run, from 
 // starts again by itself — its issue holds a slot in a worker phase and its claim owes no task,
 // the state admission repairs (internal/admit/admit.go's resumeSlottedWorkers) — so the claim
 // this step asks about may be launching, and the refusal is the daemon's own word that it is
-// not there yet. Every refusal is printed with the failure, so a refusal for any other reason
+// not there yet. The last refusal is printed with the failure, so a refusal for any other reason
 // is read rather than hidden behind the wait.
 func (r *claimCompactionLive) retryFreshSession(token claim.Token) (api.OperatorClaim, string) {
 	r.t.Helper()
-	deadline := time.Now().Add(paneReady)
-	for {
+	type retried struct {
+		before api.OperatorClaim
+		out    string
+		err    error
+	}
+	got := testwait.Until(r.t, fmt.Sprintf("`legion claims retry --fresh-session` on %s to be accepted", token), func() (retried, bool) {
 		before := r.claim(token)
 		out, err := r.legionClaimsTry("retry", "--claim", string(token), "--fresh-session")
-		if err == nil {
-			return before, out
-		}
-		if time.Now().After(deadline) {
-			r.t.Fatalf("`legion claims retry --fresh-session` on %s was refused for %s; it is %s and the last answer was %v:\n%s",
-				token, paneReady, before.State, err, out)
-		}
-		time.Sleep(time.Second)
-	}
+		return retried{before: before, out: out, err: err}, err == nil
+	})
+	return got.before, got.out
 }
 
 // ---- the two doors -------------------------------------------------------------------------------
@@ -1379,7 +1369,7 @@ func (r *claimCompactionLive) heldRefusal(what string, got int, body []byte, sta
 func (r *claimCompactionLive) awaitPendingTask(token claim.Token) api.DeliveryView {
 	r.t.Helper()
 	var task api.DeliveryView
-	r.await(string(token)+" to be sent a task", 2*time.Minute, func() bool {
+	r.await(string(token)+" to be sent a task", func() bool {
 		held := r.claim(token)
 		if held.Pending == nil {
 			return false
@@ -1395,7 +1385,7 @@ func (r *claimCompactionLive) awaitPendingTask(token claim.Token) api.DeliveryVi
 func (r *claimCompactionLive) awaitFreshPane(token claim.Token, old string) api.OperatorClaim {
 	r.t.Helper()
 	var now api.OperatorClaim
-	r.await(string(token)+" to run in a session of its own", paneReady, func() bool {
+	r.await(string(token)+" to run in a session of its own", func() bool {
 		now = r.claim(token)
 		return now.Session != "" && now.Session != old &&
 			(now.State == string(supervise.StateReady) || now.State == string(supervise.StateIdle) ||
@@ -1433,7 +1423,7 @@ func (r *claimCompactionLive) controllerNotices(issue string) []string {
 
 func (r *claimCompactionLive) awaitControllerNotices(issue string, count int) {
 	r.t.Helper()
-	r.await(fmt.Sprintf("%s's provider-errors notices to number %d", issue, count), 3*time.Minute, func() bool {
+	r.await(fmt.Sprintf("%s's provider-errors notices to number %d", issue, count), func() bool {
 		return len(r.controllerNotices(issue)) >= count
 	})
 	if got := r.controllerNotices(issue); len(got) != count {
@@ -1470,7 +1460,7 @@ func (r *claimCompactionLive) awaitCompactionEntry(path string, count int) compa
 	t := r.t
 	t.Helper()
 	var entries []compactionEntry
-	r.await(fmt.Sprintf("%s to hold %d compaction entries", path, count), time.Minute, func() bool {
+	r.await(fmt.Sprintf("%s to hold %d compaction entries", path, count), func() bool {
 		entries = readCompactionEntries(t, path)
 		return len(entries) >= count
 	})
@@ -1667,7 +1657,7 @@ type summaryAnswer int
 const (
 	// summaryAnswers writes the summary at once.
 	summaryAnswers summaryAnswer = iota
-	// summaryHolds writes it after a delay of the step's choosing.
+	// summaryHolds writes it once the step releases it (releaseSummary).
 	summaryHolds
 	// summaryRefuses answers 400, which Oh My Pi reports as `Summarization failed: 400 …` and
 	// does not retry: a 5xx it retries until the daemon's own ten-minute bound runs out.
@@ -1682,13 +1672,13 @@ const (
 type paneStandin struct {
 	*modelStandin
 
-	mu         sync.Mutex
-	turn       turnAnswer
-	summary    summaryAnswer
-	held       time.Duration
-	release    chan struct{}
-	turnBodies []string
-	summaries  int
+	mu             sync.Mutex
+	turn           turnAnswer
+	summary        summaryAnswer
+	summaryRelease chan struct{}
+	release        chan struct{}
+	turnBodies     []string
+	summaries      int
 }
 
 func newPaneStandin(t *testing.T, name string) *paneStandin {
@@ -1713,11 +1703,11 @@ func (s *paneStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if strings.Contains(body, compactSummaryMarker) {
 		s.mu.Lock()
 		s.summaries++
-		mode, held := s.summary, s.held
+		mode, release := s.summary, s.summaryRelease
 		s.mu.Unlock()
 		switch mode {
 		case summaryHolds:
-			time.Sleep(held)
+			<-release
 		case summaryRefuses:
 			writeInvalidRequest(w, anthropicRefusal("the summarizer refuses this request"))
 			return
@@ -1773,16 +1763,27 @@ func (s *paneStandin) releaseTurn() {
 	}
 }
 
-func (s *paneStandin) answerSummary() { s.setSummary(summaryAnswers, 0) }
-func (s *paneStandin) refuseSummary() { s.setSummary(summaryRefuses, 0) }
+func (s *paneStandin) answerSummary() { s.setSummary(summaryAnswers, nil) }
+func (s *paneStandin) refuseSummary() { s.setSummary(summaryRefuses, nil) }
 
-// holdSummary sits on every summary answer for held before writing it.
-func (s *paneStandin) holdSummary(held time.Duration) { s.setSummary(summaryHolds, held) }
+// holdSummary sits on every summary answer until the step releases it (releaseSummary).
+func (s *paneStandin) holdSummary() { s.setSummary(summaryHolds, make(chan struct{})) }
 
-func (s *paneStandin) setSummary(summary summaryAnswer, held time.Duration) {
+func (s *paneStandin) setSummary(summary summaryAnswer, release chan struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.summary, s.held = summary, held
+	s.summary, s.summaryRelease = summary, release
+}
+
+// releaseSummary writes every held summary answer, and answers every later one at once.
+func (s *paneStandin) releaseSummary() {
+	s.mu.Lock()
+	release := s.summaryRelease
+	s.summary, s.summaryRelease = summaryAnswers, nil
+	s.mu.Unlock()
+	if release != nil {
+		close(release)
+	}
 }
 
 // turns is how many of the pane's turns the stand-in has answered, a compaction's summary

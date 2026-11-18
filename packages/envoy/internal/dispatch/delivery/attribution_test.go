@@ -241,20 +241,20 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 }
 
 // TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
-// finder walks it once, and each match reads at most a host name's length of digits and host
-// bytes before its path. The body is 1 MiB with no whitespace in it and an issue path every
-// thirteen bytes, which is the shape a reading that walks back to the nearest space pays the
-// square of: such a walk costs about 1.5 s at 64 KiB and so about 380 s at 1 MiB, where this one
-// costs about a third of a second, nearly all of it the finder's own pass. The deadline is some
-// thirty times that, so a loaded machine stays green and a walking reader cannot pass.
+// finder walks it once, and each match reads back at most a host name's length of digits and of
+// host bytes before its path (AuthorityReads), which the row counts. The body is 1 MiB with no
+// whitespace in it and an issue path every thirteen bytes, which is the shape a reading that
+// walks back to the nearest space pays the square of: such a walk reads back to the body's start
+// at every match, about the body's length each, where this one reads two bytes a match.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
-	const deadline = 10 * time.Second
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	began := time.Now()
+	matches := len(githubIssuePath.FindAllStringIndex(body, -1))
+	before := AuthorityReads()
 	got := citedIssues("acme/widgets", body)
-	if took := time.Since(began); took > deadline {
-		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
+	read := AuthorityReads() - before
+	if allowed := uint64(matches) * 2 * maxHostName; read > allowed {
+		t.Errorf("citedIssues over %d bytes read back %d bytes before its %d matches' paths, past the %d allowed: %d digits and %d host bytes a match", len(body), read, matches, allowed, maxHostName, maxHostName)
 	}
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)

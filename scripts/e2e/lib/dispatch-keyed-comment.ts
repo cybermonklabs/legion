@@ -227,6 +227,10 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
       [process.execPath, CLI, "comment", "--issue", options.issue, "--body", body],
       {
         env: {
+          // HOME is a directory this check made, where Bun would write its runtime transpiler cache
+          // for every large module the command loads, only for the check to remove it: "0" turns
+          // that cache off.
+          BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
           DISPATCH_HOST: "omp",
           DISPATCH_SESSION_ID: options.session,
           DISPATCH_TOKEN: options.bearer,

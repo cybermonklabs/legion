@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 const (
@@ -59,10 +60,13 @@ type Listener struct {
 	// Channels are the channels one LISTEN statement names, spliced into it as written: they are
 	// the caller's own package constants, never a value read from the database or a request.
 	Channels []string
-	// ListenIdle and PingTimeout are DefaultListenIdle and DefaultPingTimeout when zero; a test
-	// sets them lower.
+	// ListenIdle and PingTimeout are DefaultListenIdle and DefaultPingTimeout when zero.
 	ListenIdle  time.Duration
 	PingTimeout time.Duration
+	// Clock is the time the listener waits, pings and backs off on; nil is clock.Real. A test over
+	// a real database drives a clocktest.Fake through it, so it moves the idle period, the ping
+	// timeout and the redial backoff without the test waiting their production spans.
+	Clock clock.Clock
 	// OnConnected runs after the LISTEN succeeds on a new connection, which is where a caller
 	// catches up what it missed while it had none. Nil for a caller with nothing to catch up.
 	OnConnected func()
@@ -99,12 +103,12 @@ func (l *Listener) Run(ctx context.Context) {
 		wait := l.backoffFor(failures)
 		slog.Warn(l.owner()+": a Postgres listener has no connection; redialing",
 			"channels", strings.Join(l.Channels, ","), "error", err, "attempt", failures, "wait_ms", wait.Milliseconds())
-		timer := time.NewTimer(wait)
+		timer := l.clock().NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-timer.C:
+		case <-timer.C():
 		}
 	}
 }
@@ -118,7 +122,7 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 		return false, fmt.Errorf("dial: %w", err)
 	}
 	defer l.close(conn)
-	listenCtx, cancel := context.WithTimeout(ctx, l.pingWait())
+	listenCtx, cancel := l.clock().WithTimeout(ctx, l.pingWait())
 	_, err = conn.Exec(listenCtx, l.statement())
 	cancel()
 	if err != nil {
@@ -127,19 +131,19 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 	// The last round trip this connection proved it could make: the LISTEN above, a notification
 	// it carried, a ping it answered. The ping in the loop below falls due one idle period after
 	// this stamp, so each wait runs only what is left of that period.
-	proven := time.Now()
+	proven := l.clock().Now()
 	if l.OnConnected != nil {
 		l.OnConnected()
 	}
 	for {
-		waitCtx, cancel := context.WithTimeout(ctx, l.idle()-time.Since(proven))
+		waitCtx, cancel := l.clock().WithTimeout(ctx, l.idle()-l.clock().Now().Sub(proven))
 		notification, err := conn.WaitForNotification(waitCtx)
 		reached := errors.Is(waitCtx.Err(), context.DeadlineExceeded)
 		cancel()
 		if notification != nil {
 			// The connection carried it, which is a round trip of its own; stamped before
 			// OnNotify, whose work is the caller's and proves nothing further.
-			proven = time.Now()
+			proven = l.clock().Now()
 			if l.OnNotify != nil {
 				l.OnNotify(notification.Channel, notification.Payload)
 			}
@@ -156,7 +160,7 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 		// The wait ran out the idle period since the last proven round trip. pgx keeps the
 		// connection open when a wait ends at its deadline, so the same connection answers the
 		// ping; one that has gone half-open fails it at pingTimeout.
-		pingCtx, cancel := context.WithTimeout(ctx, l.pingWait())
+		pingCtx, cancel := l.clock().WithTimeout(ctx, l.pingWait())
 		err = conn.Ping(pingCtx)
 		cancel()
 		if err != nil {
@@ -165,7 +169,7 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 			}
 			return true, fmt.Errorf("ping an idle connection: %w", err)
 		}
-		proven = time.Now()
+		proven = l.clock().Now()
 	}
 }
 
@@ -181,7 +185,7 @@ func (l *Listener) statement() string {
 // close closes conn within the ping timeout, so a half-open connection's Terminate cannot hold
 // the listener; closing a connection pgx has already closed does nothing.
 func (l *Listener) close(conn *pgx.Conn) {
-	ctx, cancel := context.WithTimeout(context.Background(), l.pingWait())
+	ctx, cancel := l.clock().WithTimeout(context.Background(), l.pingWait())
 	defer cancel()
 	_ = conn.Close(ctx)
 }
@@ -208,6 +212,14 @@ func (l *Listener) pingWait() time.Duration {
 		return DefaultPingTimeout
 	}
 	return l.PingTimeout
+}
+
+// clock is the listener's clock, clock.Real unless a test set one.
+func (l *Listener) clock() clock.Clock {
+	if l.Clock == nil {
+		return clock.Real()
+	}
+	return l.Clock
 }
 
 func (l *Listener) backoffFor(attempt int) time.Duration {

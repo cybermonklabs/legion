@@ -19,13 +19,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // endableIdentity names one person until their session ends.
@@ -52,8 +52,6 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		StreamHeartbeat: time.Second,
-		// The subscribe below waits on the event feed (eventFeedFrame).
-		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -63,11 +61,11 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).read()
 	subscribeEvents(t, client, "events", nil)
 
 	person.ended.Store(true)
-	if closed := client.closeError(t, 5*time.Second); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the event feed's socket closed with %d %q once its person stopped resolving, want 1008", closed.Code, closed.Text)
 	}
 }
@@ -102,10 +100,10 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	}
 
 	person.ended.Store(true)
-	if closed := client.closeError(t, 5*time.Second); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the agent view's socket closed with %d %q once its viewer stopped resolving, want 1008", closed.Code, closed.Text)
 	}
-	pollUntil(t, 5*time.Second, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	testwait.Eventually(t, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // A person whose session ends while their editor holds a document open loses the live document
@@ -144,7 +142,10 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 			// While they are a member the socket outlives several heartbeats, each resolving them
 			// again, and stays writable: their edit reaches the room.
-			time.Sleep(4 * heartbeat)
+			testwait.Quiet(t, "the member's document socket ending", peer.connection().Ended, 4*heartbeat,
+				"each heartbeat resolves the member again on the document server's own ticker, which no state "+
+					"the test reads counts, over a real socket (no synctest), and no later action of the test is "+
+					"ordered after a heartbeat")
 			peer.appendParagraph(t, "typed while a member")
 			peer.barrier(t)
 			if refreshes := rig.pool.Refreshes(); refreshes != 0 {
@@ -152,13 +153,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 			}
 
 			end(t, rig)
-			ended := time.Now()
-			select {
-			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
-				t.Fatalf("the document socket stayed open %s after its person's session ended", time.Since(ended).Round(time.Millisecond))
-			}
+			testwait.Receive(t, "the document socket to close once its person's session ended", peer.connection().Ended)
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
 			}

@@ -465,11 +465,15 @@ func TestMintCallEndsAtANamedWaitPastWhatIsLeft(t *testing.T) {
 }
 
 // TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait: a caller's deadline that falls before the
-// next wait ends ends the mint at once, with no further attempt and no wait.
+// next wait ends ends the mint at once, with no further attempt and no wait. The deadline is read
+// on the Retry's clock: the row moves that clock a century on, far past the wall clock, and sets
+// the deadline a second past its present, so the fake alone decides that the 2 s wait does not
+// fit, and real time never reaches the deadline while the row runs.
 func TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
 	retry, clock, _ := testRetry(atTheTop)
+	clock.now = clock.now.AddDate(100, 0, 0)
+	ctx, cancel := context.WithDeadline(t.Context(), clock.Now().Add(time.Second))
+	defer cancel()
 	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil))
 	_, err := mintGitHub(ctx, t, up, retry, nil)
 	if len(up.tokenRequests()) != 1 || secrets.MintErrorClass(err) != "upstream" || secrets.MintAttempts(err) != 1 {

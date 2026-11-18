@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The broker-call ops against a real broker that is slow to answer: the helper answers each with
@@ -27,8 +29,9 @@ import (
 // is method and whose path is path, holds the broker's answer for hold before it hands it on: a
 // broker that acted at once and is slow to say so. It watches the request's context while it
 // holds, as a transport waiting on a slow answer does, so the op's bound ends the hold: the
-// answer's body is closed and the context's error returned. held counts the answers it began to
-// hold, so a row can tell that its hold happened.
+// answer's body is closed and the context's error returned. A hold of zero holds the answer until
+// that end alone. held counts the answers it began to hold, so a row can tell that its hold
+// happened.
 type holdingTransport struct {
 	base   http.RoundTripper
 	method string
@@ -56,10 +59,14 @@ func (h *holdingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return resp, err
 	}
 	h.held.Add(1)
-	timer := time.NewTimer(h.hold)
-	defer timer.Stop()
+	var done <-chan time.Time
+	if h.hold > 0 {
+		timer := time.NewTimer(h.hold)
+		defer timer.Stop()
+		done = timer.C
+	}
 	select {
-	case <-timer.C:
+	case <-done:
 		return resp, nil
 	case <-req.Context().Done():
 		resp.Body.Close()
@@ -167,29 +174,35 @@ func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 }
 
 // TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow: the broker makes
-// the enrollment, and its answer would reach the helper 5 s later, past the op's 2 s bound. The
-// bound ends the op, which answers ENROLL_OUTCOME_UNKNOWN with settle's cause, before the bound
-// plus 1 s where brokerCall's timer would answer, while the broker holds the row. The same enroll
-// again (the same key and runtime id), answered at once, gets that row: the broker answers the
-// same key under the same credential and runtime id with its live enrollment, and makes no second
-// one.
+// the enrollment, and the transport holds its answer until the op's bound ends the request. The
+// bound, on the server's clock, ends the op, which answers ENROLL_OUTCOME_UNKNOWN with settle's
+// cause while brokerCall's timer, a second later on that clock, has not fired, and the broker holds
+// the row. The same enroll again (the same key and runtime id), answered at once, gets that row:
+// the broker answers the same key under the same credential and runtime id with its live
+// enrollment, and makes no second one.
 func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow(t *testing.T) {
-	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 5 * time.Second}
+	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments"}
 	cr := heldContractRig(t, held)
-	const bound = 2 * time.Second
-	cr.srv.BrokerCallBound = bound
+	// The helper reads its clock in a broker-call op only once it has read the op's request, which
+	// this goroutine's call writes after this, so the write is ordered before every read.
+	clock := clocktest.New(time.Now())
+	cr.srv.Clock = clock
 	runtimeID := "past-bound-box-" + t.Name()
 	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)}
 
+	const what = "enroll-session-key past its bound"
 	held.holds.Store(1)
-	start := time.Now()
-	first := callBroker(t, cr, req)
-	elapsed := time.Since(start)
+	replies := callInBackground(t, cr.sock, req)
+	armBrokerCall(t, clock, replies, what)
+	// The broker has made the row and answered, and the transport holds that answer.
+	testwait.Eventually(t, "the transport to hold the broker's answer to POST /v1/enrollments", func() bool { return held.held.Load() == 1 })
+	clock.Advance(BrokerCallBound)
+	first := replyOf(t, replies, what)
 	rows := enrollmentsOf(t, cr, runtimeID)
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1; answer %+v, the broker's rows %+v", n, first, rows)
 	}
-	wantSettled(t, fmt.Sprintf("enroll-session-key past its bound (the broker's rows %+v)", rows), first, CodeEnrollUnknown, elapsed, bound+time.Second)
+	wantSettled(t, fmt.Sprintf("%s (the broker's rows %+v)", what, rows), first, CodeEnrollUnknown)
 	live := liveIDs(rows)
 	if len(live) != 1 {
 		t.Fatalf("the broker's rows for %s after the enroll past the bound: %+v; want the one live row it made", runtimeID, rows)

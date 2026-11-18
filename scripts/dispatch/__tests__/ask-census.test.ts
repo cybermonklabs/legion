@@ -349,22 +349,35 @@ describe("ask census", () => {
   });
 
   test("reads every issue when the whole run outlasts one client's deadline", async () => {
-    // Each client's deadline runs 200 times faster: 60 s becomes 300 ms. No read is slow, an issue's
-    // two take a fifth of a deadline, and six waves of ISSUE_CONCURRENCY issues take longer than one.
-    // The clock is real: the deadline is AbortSignal.timeout, which fake timers do not move, and a
-    // clock the stub moves as it serves runs ahead of the clients still reading its answers.
-    const deadline = DISPATCH_TOOL_DEADLINE_MS / 200;
-    const latency = deadline / 10;
-    const timeoutAfter = AbortSignal.timeout.bind(AbortSignal);
-    const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds: number) =>
-      timeoutAfter(milliseconds / 200)
-    );
+    // Each client's deadline is the row's: AbortSignal.timeout hands back a signal the row aborts
+    // on a clock of its own, which each answer moves on by one read's latency, so a deadline lasts
+    // four waves of ISSUE_CONCURRENCY issues' two reads. An issue's own two reads come back within
+    // about two waves of answers, and six waves take a deadline and a half, so a client made for
+    // the whole run, or made before its issue's turn, meets its deadline before its last read.
+    const latency = DISPATCH_TOOL_DEADLINE_MS / (4 * 2 * ISSUE_CONCURRENCY);
+    let clock = 0;
+    const armed: {
+      readonly at: number;
+      readonly milliseconds: number;
+      readonly controller: AbortController;
+    }[] = [];
+    const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds: number) => {
+      const controller = new AbortController();
+      armed.push({ at: clock + milliseconds, milliseconds, controller });
+      return controller.signal;
+    });
     const read: string[] = [];
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      async fetch(request) {
-        await Bun.sleep(latency);
+      fetch(request) {
+        // The answer's latency passes, and with it every deadline it reaches, before it is sent.
+        clock += latency;
+        for (const deadline of armed) {
+          if (deadline.at <= clock && !deadline.controller.signal.aborted) {
+            deadline.controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+          }
+        }
         const { pathname } = new URL(request.url);
         read.push(pathname);
         if (pathname.endsWith("/asks")) return Response.json([approvalAsk(1, 1)]);
@@ -375,7 +388,6 @@ describe("ask census", () => {
     const issues = Array.from({ length: 6 * ISSUE_CONCURRENCY }, (_, index) => `TEST-${index + 1}`);
 
     try {
-      const started = performance.now();
       const census = await censusIssues(
         { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential("token") },
         issues,
@@ -387,7 +399,12 @@ describe("ask census", () => {
         }
       );
 
-      expect(performance.now() - started).toBeGreaterThan(deadline);
+      // The run outlasted the first client's deadline on the row's clock, and each issue's
+      // client armed one deadline of its own, the client's.
+      expect(clock).toBeGreaterThan(armed[0]?.at ?? Number.POSITIVE_INFINITY);
+      expect(armed.map((deadline) => deadline.milliseconds)).toEqual(
+        issues.map(() => DISPATCH_TOOL_DEADLINE_MS)
+      );
       expect(census.map((issue) => issue.issueRow?.issue)).toEqual(issues);
       expect(read).toHaveLength(2 * issues.length);
     } finally {

@@ -6,34 +6,45 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reconnectWaitFixture is a client that reaches NATS through a proxy the test can cut, a subscriber
-// on topic connected to NATS directly, and the envelope to publish there. onTick is what the
-// client's reconnect wait runs at each of its passes, its ticks (bus.WithReconnectWaitTick); nil
-// runs nothing.
+// on topic connected to NATS directly, and the envelope to publish there. onPass is what the
+// client's reconnect wait runs at each of its passes (bus.WithReconnectWaitPass); nil runs nothing.
+//
+// The client's clock is a clocktest.Fake the rows never move (WithClock), so a publish's bound
+// (bus.PublishBound) never ends a publish, however long the reconnect it waits for takes: each
+// publish ends by its caller's cancel, which the bound's context reads at once, or by the
+// reconnect. The reconnect wait's recheck (bus.ReconnectRecheck) is armed on the same fake and
+// never fires either, so the wait reads the connection again only at a connection event
+// (ConnectionChanged).
 type reconnectWaitFixture struct {
 	proxy    *relayProxy
 	client   *bus.Client
 	received *nats.Subscription
 	envelope contracts.Envelope
-	onTick   atomic.Pointer[func()]
+	onPass   atomic.Pointer[func()]
+	// cut says startPublishWhileReconnecting has cut the link before, and hookedAtCut is how many
+	// connection events the client's reconnect hooks had run for when it last did.
+	cut         bool
+	hookedAtCut uint64
 }
 
 func newReconnectWaitFixture(t *testing.T, name string) *reconnectWaitFixture {
 	t.Helper()
 	uri := testnats.URL(t)
 	f := &reconnectWaitFixture{proxy: startRelayProxy(t, uri)}
-	client, err := bus.ConnectOwningStream([]string{f.proxy.url()}, bus.WithReconnectWaitTick(func() {
-		if tick := f.onTick.Load(); tick != nil {
-			(*tick)()
+	client, err := bus.ConnectOwningStream([]string{f.proxy.url()}, bus.WithClock(clocktest.New(fakeStart)), bus.WithReconnectWaitPass(func() {
+		if pass := f.onPass.Load(); pass != nil {
+			(*pass)()
 		}
 	}))
 	if err != nil {
@@ -64,43 +75,54 @@ func newReconnectWaitFixture(t *testing.T, name string) *reconnectWaitFixture {
 	return f
 }
 
-// startPublishWhileReconnecting cuts the link so the client is reconnecting, sets onTick as what
-// the reconnect wait runs after each tick, and starts the publish under ctx, returning where its
-// answer arrives. onTick runs on the publish's goroutine, so it must not fail the test itself.
-func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx context.Context, onTick func()) <-chan error {
+// startPublishWhileReconnecting cuts the link so the client is reconnecting, sets onPass as what
+// the reconnect wait runs at each pass, and starts the publish under ctx, returning where its
+// answer arrives. onPass runs on the publish's goroutine, so it must not fail the test itself.
+//
+// A cut after an earlier one first waits for the client's reconnect hooks to have run for the
+// reconnect that followed it. Those hooks run on nats.go's one callback goroutine and ask the
+// server for the stream (ConnectOwningStream), and a cut while that request is in flight loses it:
+// the goroutine then waits out the JetStream context's ten-second wait before it reports this cut
+// or the reconnect after it, so the reconnect wait, which reads the connection again only at such
+// a report, and the pass that waits for it (ConnectionChanged) would wait those ten seconds out.
+func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx context.Context, onPass func()) <-chan error {
 	t.Helper()
+	if f.cut {
+		testwait.Eventually(t, "the reconnect hooks to have run for the reconnect after the last cut", func() bool {
+			return f.client.HookedConnectionEvents() > f.hookedAtCut
+		})
+	}
+	f.cut, f.hookedAtCut = true, f.client.HookedConnectionEvents()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
-	waitFor(t, 5*time.Second, "the client to start reconnecting", f.client.Conn.IsReconnecting)
-	f.onTick.Store(&onTick)
+	testwait.Eventually(t, "the client to start reconnecting", f.client.Conn.IsReconnecting)
+	f.onPass.Store(&onPass)
 	answer := make(chan error, 1)
 	go func() { answer <- f.client.PublishWithin(ctx, f.envelope) }()
 	return answer
 }
 
-// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish has
-// not answered within 15 s.
+// awaitAnswer returns the publish's answer and clears onPass.
 func (f *reconnectWaitFixture) awaitAnswer(t *testing.T, answer <-chan error) error {
 	t.Helper()
-	defer f.onTick.Store(nil)
-	select {
-	case err := <-answer:
-		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish never returned")
-		return nil
-	}
+	defer f.onPass.Store(nil)
+	return testwait.Receive(t, "the publish's answer", answer)
 }
 
-// requireNothingReceived fails the test if the subscriber receives anything from the publisher.
-// The publisher's connection is flushed first, so a message it sent has reached the server, and
-// been handed on, before the subscriber is read.
+// requireNothingReceived fails the test if the subscriber received anything from the publisher. A
+// marker the publisher's own connection sends after the publish reaches the subscriber behind
+// anything that connection sent before it, so the subscriber's first message being the marker
+// shows the publish sent nothing.
 func (f *reconnectWaitFixture) requireNothingReceived(t *testing.T, what string, publishErr error) {
 	t.Helper()
-	if err := f.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the publisher's connection: %v", err)
+	if err := f.client.Conn.Publish(f.envelope.Topic, []byte("marker")); err != nil {
+		t.Fatalf("publish the marker: %v", err)
 	}
-	if message, err := f.received.NextMsg(500 * time.Millisecond); err == nil {
+	message, err := f.received.NextMsgWithContext(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("the subscriber's first message after %s: %v", what, err)
+	}
+	if string(message.Data) != "marker" {
 		t.Fatalf("the subscriber received %s from %s (publish answered %v)", string(message.Data), what, publishErr)
 	}
 }
@@ -112,7 +134,7 @@ func (f *reconnectWaitFixture) requireNothingReceived(t *testing.T, what string,
 // read of the context immediately before the publish is the backstop, pinned on its own by
 // TestAPublishCancelledAsTheReconnectCompletesSendsNothing.
 //
-// The cancel lands only once the publish is inside the wait: the wait's first tick closes waiting,
+// The cancel lands only once the publish is inside the wait: the wait's first pass closes waiting,
 // and the test cancels once waiting is closed, then lets the link forward again so the reconnect
 // follows.
 //
@@ -130,24 +152,27 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		waiting := make(chan struct{})
 		var once sync.Once
 		answer := f.startPublishWhileReconnecting(t, ctx, func() { once.Do(func() { close(waiting) }) })
-		select {
-		case <-waiting:
-		case err := <-answer:
-			t.Fatalf("the publish answered %v without entering the reconnect wait", err)
-		case <-time.After(5 * time.Second):
-			t.Fatal("the publish never entered the reconnect wait")
-		}
+		testwait.Eventually(t, "the publish to enter the reconnect wait", func() bool {
+			select {
+			case <-waiting:
+				return true
+			case err := <-answer:
+				t.Fatalf("the publish answered %v without entering the reconnect wait", err)
+			default:
+			}
+			return false
+		})
 		release()
 		f.proxy.refuse.Store(false)
 		err := f.awaitAnswer(t, answer)
-		waitFor(t, 10*time.Second, "the client to reconnect", f.client.Conn.IsConnected)
+		testwait.Eventually(t, "the client to reconnect", f.client.Conn.IsConnected)
 		return err
 	}
 
-	// The deadline is a minute out, so publishBound's 5 s is the one PublishCoreContext keeps: still
-	// ahead when the cancel lands one tick into the wait and when the reconnect follows about a
-	// second later.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// The shared wait's context is far later than PublishBound, so PublishBound is the bound
+	// PublishCoreContext keeps, on the client's fake clock, which never moves: still ahead when the
+	// cancel lands one pass into the wait and when the reconnect follows.
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	publishErr := publishDuringReconnect(ctx, cancel)
 	f.requireNothingReceived(t, "a publish cancelled during the reconnect wait", publishErr)
@@ -155,12 +180,10 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		t.Fatalf("publish cancelled during the reconnect wait = %v, want an error naming %v", publishErr, context.Canceled)
 	}
 
-	live, cancelLive := context.WithTimeout(context.Background(), time.Minute)
-	defer cancelLive()
-	if err := publishDuringReconnect(live, func() {}); err != nil {
+	if err := publishDuringReconnect(testwait.Context(t), func() {}); err != nil {
 		t.Fatalf("publish under a live context released by the reconnect: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	if _, err := f.received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish released by the reconnect: %v", err)
 	}
 }
@@ -172,50 +195,50 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 // thing that can refuse it. Without that read the message goes out to a caller that had been told
 // nothing and had gone.
 //
-// The wait's first tick is where it happens: the tick lets the link forward again, waits for the
+// The wait's first pass is where it happens: the pass lets the link forward again, waits for the
 // client to reconnect, and then cancels, so the wait reads a connected connection next and returns.
-// The control is the same publish with the same tick and no cancel: it must be received, so the
+// The control is the same publish with the same pass and no cancel: it must be received, so the
 // cancelled case's silence is the cancel's doing and not a publish that never got past the wait.
 func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 	f := newReconnectWaitFixture(t, "cancel-as-reconnected")
 
 	// publishAsTheReconnectCompletes publishes under ctx while the client is reconnecting; the
-	// wait's first tick reconnects the client and then calls release. It fails the test unless the
-	// tick ran and saw the client reconnected, since a publish that answered without that is not the
-	// case this test is about.
+	// wait's first pass reconnects the client and then calls release. The pass runs on the
+	// publish's goroutine and waits for the reconnect through the client's connection events, and
+	// closes reconnected once it saw the client reconnected, before release. The publish answers
+	// only after its pass has returned, so the test takes the answer first and then reads
+	// reconnected: a pass that saw the reconnect has closed it by then. Reading the two at once
+	// would let a test that looks late, when both are ready, take the answer for one that came
+	// without the pass.
 	publishAsTheReconnectCompletes := func(ctx context.Context, release func()) error {
 		t.Helper()
 		var once sync.Once
-		var reconnected atomic.Bool
-		ticked := make(chan struct{})
+		reconnected := make(chan struct{})
 		answer := f.startPublishWhileReconnecting(t, ctx, func() {
 			once.Do(func() {
-				defer close(ticked)
+				changed := f.client.ConnectionChanged()
 				f.proxy.refuse.Store(false)
-				for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-					if f.client.Conn.IsConnected() {
-						reconnected.Store(true)
-						break
-					}
+				for !f.client.Conn.IsConnected() {
+					<-changed
+					changed = f.client.ConnectionChanged()
 				}
+				close(reconnected)
 				release()
 			})
 		})
 		err := f.awaitAnswer(t, answer)
 		select {
-		case <-ticked:
+		case <-reconnected:
 		default:
-			t.Fatalf("the publish answered %v without entering the reconnect wait", err)
-		}
-		if !reconnected.Load() {
-			t.Fatalf("the client did not reconnect within the wait's tick (publish answered %v)", err)
+			t.Fatalf("the publish answered %v without its wait's first pass seeing the client reconnect", err)
 		}
 		return err
 	}
 
-	// The deadline is a minute out, so publishBound's 5 s is the one PublishCoreContext keeps, and it is
-	// still ahead when the reconnect completes about a second into the wait.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// The shared wait's context is far later than PublishBound, so PublishBound is the bound
+	// PublishCoreContext keeps, on the client's fake clock, which never moves: still ahead when the
+	// reconnect completes inside the wait.
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	publishErr := publishAsTheReconnectCompletes(ctx, cancel)
 	f.requireNothingReceived(t, "a publish cancelled as the reconnect completed", publishErr)
@@ -223,12 +246,10 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 		t.Fatalf("publish cancelled as the reconnect completed = %v, want an error naming %v", publishErr, context.Canceled)
 	}
 
-	live, cancelLive := context.WithTimeout(context.Background(), time.Minute)
-	defer cancelLive()
-	if err := publishAsTheReconnectCompletes(live, func() {}); err != nil {
+	if err := publishAsTheReconnectCompletes(testwait.Context(t), func() {}); err != nil {
 		t.Fatalf("publish under a live context as the reconnect completed: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	if _, err := f.received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish as the reconnect completed: %v", err)
 	}
 }

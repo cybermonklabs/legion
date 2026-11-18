@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -865,12 +866,9 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if err != nil {
 		return err
 	}
-	gone, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+	gone := r.obs.await(r.t, mark, "the negative control's "+negLoc.Incarnation+" to be observed Gone", func(o runtime.Observation) bool {
 		return o.Locator.Claim == worker.token && o.Locator.Incarnation == negLoc.Incarnation && o.Kind == runtime.Gone
 	})
-	if !ok {
-		return fmt.Errorf("no Gone for the negative control's %s within %s", negLoc.Incarnation, liveGoneLimit)
-	}
 	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
 	worker.loc, worker.state = nil, stateDead
 
@@ -1015,12 +1013,9 @@ func (r *liveRig) checkKillRoleInit() error {
 		return err
 	}
 	note("operator", "exec %s -c %s -- kill -KILL %s (the %s's role-init, leading pids %v)", name, runtime.IssuePodContainer, init, worker.role, strings.Fields(tree))
-	gone, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+	gone := r.obs.await(r.t, mark, "the killed "+old.Incarnation+" to be observed Gone", func(o runtime.Observation) bool {
 		return o.Locator.Claim == worker.token && o.Kind == runtime.Gone
 	})
-	if !ok {
-		return fmt.Errorf("no gone for %s within %s", old.Incarnation, liveGoneLimit)
-	}
 	exited := fmt.Sprintf("role %s reports generation %d exited", worker.role, old.Sandbox.Generation)
 	if !sameLocator(gone.Locator, old) || !strings.Contains(gone.Detail, string(old.Sandbox.PodUID)) || !strings.Contains(gone.Detail, exited) || !strings.Contains(gone.Detail, "signal killed") {
 		return fmt.Errorf("the gone carries %s, want the old %s with %q, signal killed: %s", gone.Locator.Incarnation, old.Incarnation, exited, gone.Detail)
@@ -1097,21 +1092,27 @@ func (r *liveRig) checkStaleIncarnation() error {
 	}
 	worker := r.claim("worker")
 	old, fresh := r.killed.old, r.killed.fresh
-	time.Sleep(liveSettle)
-	seen := 0
-	for _, o := range r.obs.since(0) {
-		if o.Locator.Incarnation != fresh.Incarnation {
-			continue
+	// Two probe passes must carry the new incarnation before the reading below, as the two probe
+	// intervals this check used to wait out did: a pass that judged the new process by the old
+	// one's end is then among what is read. The count is the test's, not a clock's.
+	const passes = 2
+	carrying := func() []observed {
+		var own []observed
+		for _, o := range r.obs.since(0) {
+			if o.Locator.Incarnation == fresh.Incarnation {
+				own = append(own, o)
+			}
 		}
-		seen++
+		return own
+	}
+	seen := testwait.Until(r.t, fmt.Sprintf("%d observations carrying the new %s, so each could judge it", passes, fresh.Incarnation),
+		func() ([]observed, bool) { own := carrying(); return own, len(own) >= passes })
+	for _, o := range seen {
 		if o.Kind != runtime.Alive && o.Kind != runtime.Uncertain {
 			return fmt.Errorf("an observation carrying the new %s is %s: %s", fresh.Incarnation, o.Kind, o.Detail)
 		}
 	}
-	if seen == 0 {
-		return fmt.Errorf("no observation carries the new %s after %s, so none could be judged", fresh.Incarnation, liveSettle)
-	}
-	note("runtime", "%d observations carry the new %s, every one alive or uncertain", seen, short(fresh.Incarnation))
+	note("runtime", "%d observations carry the new %s, every one alive or uncertain", len(seen), short(fresh.Incarnation))
 	if r.killed.gone.Locator.Incarnation != old.Incarnation {
 		return fmt.Errorf("the gone carried %s, not the old %s", r.killed.gone.Locator.Incarnation, old.Incarnation)
 	}
@@ -1471,7 +1472,7 @@ func (r *liveRig) checkReAdopt() error {
 	if _, err := r.kubectl("delete", "pod", name, "--wait=false"); err != nil {
 		return err
 	}
-	if err := r.poll(liveGoneLimit, "orphan issue pod "+name+"'s killed uid "+short(oldUID)+" to end", func() (bool, error) {
+	if err := r.pollAPI("orphan issue pod "+name+"'s killed uid "+short(oldUID)+" to end", func() (bool, error) {
 		pod, err := r.getPod(name)
 		if apierrors.IsNotFound(err) {
 			return true, nil
@@ -1496,10 +1497,10 @@ func (r *liveRig) checkReAdopt() error {
 	}
 	note("runtime", "fresh listener and sandbox.New; ReconcileOrphans with %d known claims", len(known))
 
-	gone, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+	gone := r.obs.await(r.t, mark, "the killed "+string(victim.token)+" to be observed ended", func(o runtime.Observation) bool {
 		return o.Locator.Claim == victim.token && o.Kind != runtime.Alive
 	})
-	if !ok || (gone.Kind != runtime.Gone && gone.Kind != runtime.NotRecordedProcess) || !sameLocator(gone.Locator, *victim.loc) {
+	if (gone.Kind != runtime.Gone && gone.Kind != runtime.NotRecordedProcess) || !sameLocator(gone.Locator, *victim.loc) {
 		return fmt.Errorf("the killed claim was not reported dead with its recorded %s: %+v", victim.loc.Incarnation, gone)
 	}
 	note("runtime", "killed claim: %s, stamped %s — %s", gone.Kind, short(gone.Locator.Incarnation), oneLine(firstLine(gone.Detail)))
@@ -1507,11 +1508,11 @@ func (r *liveRig) checkReAdopt() error {
 
 	for _, c := range r.live() {
 		loc := *c.loc
-		alive, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+		alive := r.obs.await(r.t, mark, c.name+" to be observed Alive at its recorded "+loc.Incarnation, func(o runtime.Observation) bool {
 			return o.Locator.Claim == c.token && o.Kind == runtime.Alive
 		})
-		if !ok || !sameLocator(alive.Locator, loc) {
-			return fmt.Errorf("%s never reached alive at its recorded %s within %s", c.name, loc.Incarnation, liveGoneLimit)
+		if !sameLocator(alive.Locator, loc) {
+			return fmt.Errorf("%s reached alive at %s, not its recorded %s", c.name, alive.Locator.Incarnation, loc.Incarnation)
 		}
 		// A role launcher that has not yet redialed the fresh listener — every real launcher
 		// retries every second (internal/launcher/launcher.go's reconnectDelay), and a fresh
@@ -1611,14 +1612,16 @@ func (r *liveRig) checkOrphanSweep() error {
 		}
 	}
 	note("runtime", "sweep with grace 1h, the orphan unrecorded: %s and the suspended %s survive", name, keep)
-	time.Sleep(2 * time.Second)
-	if err := r.rt.ReconcileOrphans(r.ctx, r.known(orphan), time.Second); err != nil {
+	// A grace of none puts every Sandbox past it at once — ReconcileOrphans keeps a Sandbox whose
+	// age is under the grace — so the sweeps below are the "past the grace" sweeps with no age for
+	// the run to wait out.
+	if err := r.rt.ReconcileOrphans(r.ctx, r.known(orphan), 0); err != nil {
 		return err
 	}
 	if s, err := r.getSandbox(name); err != nil || s.DeletionTimestamp != nil {
 		return fmt.Errorf("unrecorded %s of the live tree %s did not survive a sweep past the grace: %v", name, orphan.tree, err)
 	}
-	note("runtime", "sweep with grace 1s while its tree %s is live: %s survives", orphan.tree, name)
+	note("runtime", "sweep with no grace while its tree %s is live: %s survives", orphan.tree, name)
 	r.trees.close(orphan.tree)
 	r.stopRuntime()
 	restarted := time.Now()
@@ -1626,10 +1629,10 @@ func (r *liveRig) checkOrphanSweep() error {
 		return err
 	}
 	note("runtime", "tree %s's cleanup recorded confirmed; listener and runtime replaced", orphan.tree)
-	if err := r.rt.ReconcileOrphans(r.ctx, r.known(orphan), time.Second); err != nil {
+	if err := r.rt.ReconcileOrphans(r.ctx, r.known(orphan), 0); err != nil {
 		return err
 	}
-	if err := r.poll(liveGoneLimit, "orphan Sandbox "+name+" to be deleted", func() (bool, error) {
+	if err := r.pollAPI("orphan Sandbox "+name+" to be deleted", func() (bool, error) {
 		_, err := r.getSandbox(name)
 		return apierrors.IsNotFound(err), ignoreNotFound(err)
 	}); err != nil {
@@ -1644,7 +1647,7 @@ func (r *liveRig) checkOrphanSweep() error {
 			return fmt.Errorf("the sweep past the grace took known claim %s's Sandbox: %v", c.name, err)
 		}
 	}
-	note("runtime", "sweep with grace 1s: %s deleted; every known claim's Sandbox, the suspended %s included, survives", name, keep)
+	note("runtime", "sweep with no grace: %s deleted; every known claim's Sandbox, the suspended %s included, survives", name, keep)
 	if err := r.awaitDiskGone(orphan); err != nil {
 		return err
 	}
@@ -1695,11 +1698,11 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 	// listener the previous check restarted (orphan-sweep waits for every agent's hello, not for
 	// its launcher, whose hello the listener authenticates with a read of the role's Secret the
 	// client may throttle), and an unconnected launcher reads Uncertain; so the root is polled
-	// until Alive, any other verdict failing at once, then probed again after liveSettle, so a root
-	// that reads Alive and dies moments later fails too.
+	// until Alive, any other verdict failing at once, then read over the watch's next passes and
+	// probed once more, so a root that reads Alive and dies moments later fails too.
 	var last runtime.Observation
 	var verdict error
-	err = r.poll(liveGoneLimit, "root "+string(root.token)+" to read Alive after Release("+worker.name+")", func() (bool, error) {
+	err = r.poll("root "+string(root.token)+" to read Alive after Release("+worker.name+")", func() (bool, error) {
 		obs, err := r.rt.Probe(r.ctx, *root.loc)
 		if err != nil {
 			verdict = fmt.Errorf("probe root %s after Release(%s): %w", root.token, worker.name, err)
@@ -1715,6 +1718,7 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 		verdict = fmt.Errorf("root %s after Release(%s) is %s: %s", root.token, worker.name, obs.Kind, obs.Detail)
 		return false, verdict
 	})
+
 	switch {
 	case err == nil:
 	case verdict != nil:
@@ -1724,17 +1728,31 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 	default:
 		return err
 	}
-	select {
-	case <-r.ctx.Done():
-		return r.ctx.Err()
-	case <-time.After(liveSettle):
+	// The passes the watch makes after that reading, rather than a span waited out: each must
+	// carry the root alive, and a verdict that came in between is read here, not passed over.
+	const passes = 2
+	after := r.obs.mark()
+	watched := testwait.Until(r.t, fmt.Sprintf("%d observations of root %s after it read Alive", passes, root.token),
+		func() ([]observed, bool) {
+			var own []observed
+			for _, o := range r.obs.since(after) {
+				if o.Locator.Claim == root.token {
+					own = append(own, o)
+				}
+			}
+			return own, len(own) >= passes
+		})
+	for _, o := range watched {
+		if o.Kind != runtime.Alive {
+			return fmt.Errorf("root %s read Alive after Release(%s), and the watch's next pass is %s: %s", root.token, worker.name, o.Kind, o.Detail)
+		}
 	}
 	settled, err := r.rt.Probe(r.ctx, *root.loc)
 	if err != nil {
-		return fmt.Errorf("probe root %s %s after it read Alive following Release(%s): %w", root.token, liveSettle, worker.name, err)
+		return fmt.Errorf("probe root %s after %d passes following Release(%s): %w", root.token, passes, worker.name, err)
 	}
 	if settled.Kind != runtime.Alive {
-		return fmt.Errorf("root %s read Alive after Release(%s), and %s later is %s: %s", root.token, worker.name, liveSettle, settled.Kind, settled.Detail)
+		return fmt.Errorf("root %s read Alive after Release(%s), and after %d passes is %s: %s", root.token, worker.name, passes, settled.Kind, settled.Detail)
 	}
 	// The released worker and the root are claims of one issue, so either token names its pod's disk.
 	disk, err := r.assertPodOwnedDisk(worker)

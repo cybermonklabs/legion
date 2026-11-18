@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // outboxFailedRoleComment writes a comment on the issue key names that mentions two sessions,
@@ -106,7 +106,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	_, event, firstKey, secondKey := outboxFailedRoleComment(t, database, broker, key, role, first, second)
 	runOutbox(t, harness, database, broker)
 
-	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
+	testwait.Eventually(t, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
 		return publishedEventAt(t, database, event.ID) != nil
 	})
 	kept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", event.ID))
@@ -117,7 +117,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	// The second mentioned session, not the first, is the one that claims the role.
 	lane.register(t, second)
 	lane.claim(t, second, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != second {
 		t.Fatalf("the copy reached %s, want the role's next holder %s", handed[0].holder, second)
@@ -135,15 +135,23 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 			handed[0].msgID, want)
 	}
 	// The whole of what that session's host is handed: its own mention's copy and this forward
-	// under one key, so the comment is shown once.
+	// under one key, so the comment is shown once. A marker of this test's own, published on
+	// that subject once the handover's forward has been, reaches the subscription behind every
+	// frame the handover published, so the keys before it are the whole of what the host saw.
+	marker := listenerTestEnvelope(contracts.LegacyAgentSubject(second), "second-mention-marker")
+	if err := harness.client.Conn.Publish(contracts.LegacyAgentSubject(second), marshalListenerEnvelope(t, marker)); err != nil {
+		t.Fatalf("publish the marker on %s's agent subject: %v", second, err)
+	}
+	if err := harness.client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the marker on %s's agent subject: %v", second, err)
+	}
 	keys := map[string]struct{}{}
-	for reading := true; reading; {
-		select {
-		case frame := <-secondsFrames:
-			keys[frame.DedupeKey] = struct{}{}
-		case <-time.After(2 * time.Second):
-			reading = false
+	for {
+		frame := testwait.Receive(t, "the frames "+second+"'s host was handed, up to this test's marker", secondsFrames)
+		if frame.DedupeKey == marker.DedupeKey {
+			break
 		}
+		keys[frame.DedupeKey] = struct{}{}
 	}
 	if _, ok := keys[firstKey]; ok || len(keys) != 1 {
 		t.Fatalf("%s's host was handed the comment under %v, want its own mention's key %q alone", second, keys, secondKey)

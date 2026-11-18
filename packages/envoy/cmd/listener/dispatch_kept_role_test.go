@@ -20,6 +20,7 @@ import (
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // This file is the one proof that a role message Dispatch's outbox could not deliver reaches the
@@ -104,11 +105,7 @@ func runOutboxThrough(t *testing.T, harness listenerDeliveryHarness, database *d
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-stopped:
-		case <-time.After(10 * time.Second):
-			t.Error("Dispatch's outbox did not stop")
-		}
+		testwait.Receive(t, "Dispatch's outbox to stop", stopped)
 	})
 }
 
@@ -141,7 +138,7 @@ func TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder(t *testing
 	event := outboxRoleEvent(t, database, broker, key, role)
 	runOutbox(t, harness, database, broker)
 
-	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the event of an unheld role", func() bool {
+	testwait.Eventually(t, "Dispatch's outbox to publish the event of an unheld role", func() bool {
 		return publishedEventAt(t, database, event.ID) != nil
 	})
 	kept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", event.ID))
@@ -151,7 +148,7 @@ func TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder(t *testing
 
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != holder {
 		t.Fatalf("the copy reached %s, want the role's next holder %s", handed[0].holder, holder)
@@ -261,7 +258,7 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 	// The outbox publishes the comment's event with the route's copy held back for the mention
 	// still being resent; the resend then fails for good, so the next fallback pass publishes
 	// that copy, which for a role route means keeping it for the role's next holder.
-	waitFor(t, 30*time.Second, "Dispatch's outbox to hold the route's copy of the comment", func() bool {
+	testwait.Eventually(t, "Dispatch's outbox to hold the route's copy of the comment", func() bool {
 		return heldFallbackCopies(t, database, commentID, roleTopic) == 1
 	})
 	if _, err := database.Pool.Exec(context.Background(),
@@ -269,7 +266,7 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 		t.Fatalf("fail the mention's resend: %v", err)
 	}
 	var kept contracts.Envelope
-	waitFor(t, 30*time.Second, "the fallback pass to keep the held copy for the role's next holder", func() bool {
+	testwait.Eventually(t, "the fallback pass to keep the held copy for the role's next holder", func() bool {
 		item, ok := readKeptRoleMessage(t, harness.client, role)
 		kept = item
 		return ok && item.DedupeKey == mentionKey
@@ -281,7 +278,7 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != holder {
 		t.Fatalf("the copy reached %s, want the mentioned session %s, which claimed the role", handed[0].holder, holder)
@@ -360,8 +357,7 @@ func takenForwards(t *testing.T, harness listenerDeliveryHarness, sessionID stri
 // the whole of it rather than its last copy (readKeptRoleMessage).
 func keptRoleCopies(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var copies []contracts.Envelope
 	for seq := uint64(1); ; {
 		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
@@ -418,15 +414,15 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	// over: that walk is what writes the role's drain cursor.
 	first := outboxRoleEvent(t, database, broker, key, role)
 	runOutboxThrough(t, harness, database, broker, publisher)
-	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the first event of an unheld role", func() bool {
+	testwait.Eventually(t, "Dispatch's outbox to publish the first event of an unheld role", func() bool {
 		return publishedEventAt(t, database, first.ID) != nil
 	})
 	firstKept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", first.ID))
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
-	lane.await(t, 1, 30*time.Second)
+	lane.await(t, 1)
 	var drained bus.StoredKeptRoleCursor
-	waitFor(t, 30*time.Second, "the listener's drain to write role "+role+"'s cursor", func() bool {
+	testwait.Eventually(t, "the listener's drain to write role "+role+"'s cursor", func() bool {
 		var err error
 		drained, err = harness.client.ReadKeptRoleCursor(ctx, role)
 		if err != nil {
@@ -444,7 +440,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	}
 	second := outboxIssueEvent(t, database, broker, key, "9f2c6e18-40b7-4d35-8a91-5e07c3b8df42", "the issue's next event")
 
-	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the issue's next event", func() bool {
+	testwait.Eventually(t, "Dispatch's outbox to publish the issue's next event", func() bool {
 		return publishedEventAt(t, database, second.ID) != nil
 	})
 	secondKey := fmt.Sprintf("dispatch-%d", second.ID)
@@ -455,13 +451,8 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	// nothing, not part of what this test holds, so the handover's copy is selected by the event
 	// it carries and every assertion below is made of that frame.
 	var handed contracts.Envelope
-	deadline := time.After(30 * time.Second)
 	for handed.EventID != secondKey {
-		select {
-		case handed = <-taken:
-		case <-deadline:
-			t.Fatalf("the holder was handed no forward of %s on its agent subject within 30s; the listener log says what the handover read:\n%s", secondKey, harness.logs.String())
-		}
+		handed = testwait.Receive(t, "the holder's forward of "+secondKey+" on its agent subject", taken)
 	}
 	if handed.EventID != secondKey || handed.DedupeKey != roleForwardDedupePrefix+secondKey {
 		t.Fatalf("the holder was handed event %q under dedupe key %q, want the role forward of the kept %q",

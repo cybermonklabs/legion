@@ -9,9 +9,11 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // warnings is every WARN or ERROR record, each as its level, message and error.
@@ -32,7 +34,7 @@ func warnings(records []map[string]any) []string {
 // testConsumers lists the test bucket's consumers.
 func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -49,30 +51,20 @@ func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
 func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	held := holdWatch(kv)
+	held := holdWatch(t, kv)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
+	testwait.Receive(t, "the watch to arm its watcher", held.watched)
 	w.Stop()
+	ctx := testwait.Context(t)
 	ended := make(chan struct{})
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 		w.End(ctx)
 		close(ended)
 	}()
-	close(held.release)
-	select {
-	case <-ended:
-	case <-time.After(15 * time.Second):
-		t.Fatal("End never returned")
-	}
+	held.let()
+	testwait.Receive(t, "End to return", ended)
 	if consumers := testConsumers(t, conn); len(consumers) != 0 {
 		t.Fatalf("consumers after End = %v, want none", consumers)
 	}
@@ -87,21 +79,26 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	held := holdWatch(kv)
+	held := holdWatch(t, kv)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	testwait.Receive(t, "the watch to arm its watcher", held.watched)
+	// End's deadline is on a clock of the test's own, so it passes when this test says and never
+	// while End is merely slow to reach its wait.
+	deadline := clocktest.New(time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC))
+	ctx, cancel := deadline.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	w.End(ctx)
-	close(held.release)
-	eventually(t, "the late watch to delete its consumer", func() bool { return len(testConsumers(t, conn)) == 0 })
+	ended := make(chan struct{})
+	go func() {
+		w.End(ctx)
+		close(ended)
+	}()
+	testwait.Eventually(t, "End to wait for the held watch", func() bool { return endsWaiting() == 1 })
+	deadline.Advance(200 * time.Millisecond)
+	testwait.Receive(t, "End to return at its deadline", ended)
+	held.let()
+	testwait.Eventually(t, "the late watch to delete its consumer", func() bool { return len(testConsumers(t, conn)) == 0 })
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end found a watch still starting: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}
@@ -137,21 +134,16 @@ func (w drainingStop) Stop() error {
 func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	held := drainingStopKV{holdWatch(kv)}
+	held := drainingStopKV{holdWatch(t, kv)}
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
+	testwait.Receive(t, "the watch to arm its watcher", held.watched)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(bus.ErrConnectionLost)
 	w.End(ctx)
-	close(held.release)
-	eventually(t, "the late watch's stop to be logged", func() bool { return len(warnings(records())) == 2 })
+	held.let()
+	testwait.Eventually(t, "the late watch's stop to be logged", func() bool { return len(warnings(records())) == 2 })
 	lost := "WARN test cache watcher end found a watch still starting: " + bus.ErrConnectionLost.Error()
 	late := "WARN test cache watcher's consumer was left to the server: the connection was lost before its delete: " +
 		bus.ErrConnectionLost.Error() + ": " + natsgo.ErrConnectionDraining.Error()
@@ -179,18 +171,12 @@ func endsWaiting() int {
 func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	held := holdWatch(kv)
+	held := holdWatch(t, kv)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		close(held.release)
-		t.Fatal("the watch never armed its watcher")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	testwait.Receive(t, "the watch to arm its watcher", held.watched)
+	ctx := testwait.Context(t)
 	ended := make(chan struct{}, 2)
 	for range 2 {
 		go func() {
@@ -198,14 +184,10 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 			ended <- struct{}{}
 		}()
 	}
-	eventually(t, "both Ends to wait for the watch", func() bool { return endsWaiting() == 2 })
-	close(held.release)
+	testwait.Eventually(t, "both Ends to wait for the watch", func() bool { return endsWaiting() == 2 })
+	held.let()
 	for range 2 {
-		select {
-		case <-ended:
-		case <-time.After(5 * time.Second):
-			t.Fatal("an End did not return once the watch it waited for had finished")
-		}
+		testwait.Receive(t, "an End to return once the watch it waited for had finished", ended)
 	}
 	if consumers := testConsumers(t, conn); len(consumers) != 0 {
 		t.Fatalf("consumers after both Ends = %v, want none", consumers)
@@ -223,42 +205,46 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
-	js, err := conn.JetStream()
+	testwait.Eventually(t, "the first scan", w.Ready)
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
 	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
 		t.Fatalf("delete bucket: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	w.End(ctx)
+	w.End(testwait.Context(t))
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: nats: stream not found"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}
 }
 
-// End is bounded by its context: against a server that does not answer, it returns at the
-// deadline and logs the unanswered delete as an ERROR rather than holding the shutdown.
+// End is bounded by its context: against a server that does not answer, it returns when its
+// deadline passes and logs the unanswered delete as an ERROR rather than holding the shutdown.
+// The deadline is on a clock of the test's own, which stands still until the test moves it, so an
+// End that waited for the frozen server's answer instead would never return.
 func TestEndIsBoundedByItsContext(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	_, kv := bucket(t, uri)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 
 	thaw := srv.Freeze(t)
 	t.Cleanup(thaw)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	deadline := clocktest.New(time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC))
+	ctx, cancel := deadline.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	started := time.Now()
-	w.End(ctx)
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("End took %s against an unresponsive server, want it to return at its deadline", elapsed)
-	}
+	ended := make(chan struct{})
+	go func() {
+		w.End(ctx)
+		close(ended)
+	}()
+	testwait.Eventually(t, "End to wait for the frozen server's answer", func() bool { return endsWaiting() == 1 })
+	deadline.Advance(300 * time.Millisecond)
+	testwait.Receive(t, "End to return at its deadline", ended)
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}

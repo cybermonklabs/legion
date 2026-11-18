@@ -36,6 +36,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -67,8 +69,11 @@ var (
 
 // testOptions are the options every test starts from: production's shape — a store that keeps
 // sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), with budgets short enough that
-// a wait the test expects to end never slows the suite.
+// — both pods' reservations at the daemon's defaults (reservations). The boot timeout and the
+// adoption's bound are the daemon's defaults too (worker_boot_timeout_seconds and
+// slow_command_timeout_seconds): every wait they bound ends on its event in a row, which a loaded
+// machine only delays, and a row whose subject is such a bound running out runs in a synctest
+// bubble, whose clock is the row's own, or moves the runtime's own fake past it (withClock).
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -87,17 +92,19 @@ func testOptions() Options {
 			GH: "/usr/local/bin/gh", Git: "/usr/bin/git", JJ: "/usr/local/bin/jj", Legion: "/opt/legion/bin/legion",
 			AgentSecrets: "/opt/legion/bin/agent-secrets",
 		},
-		BootTimeout:           2 * time.Second,
+		BootTimeout:           120 * time.Second,
 		RegistrationIntervals: 3,
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
-		ProbeInterval:         time.Hour,
-		AdoptTimeout:          time.Minute,
-		Tokens:                staticTokens{},
-		GitHubCredential:      staticCredential,
-		ControllerCredential:  staticControllerCredential,
-		GitHubDirs:            func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
-		Conns:                 fake.NewConns(),
+		// An hour, past production's 30 s, keeps the watch's periodic pass away: a row that needs
+		// that pass sets its own interval inside a synctest bubble (watch_test.go).
+		ProbeInterval:        time.Hour,
+		AdoptTimeout:         5 * time.Minute,
+		Tokens:               staticTokens{},
+		GitHubCredential:     staticCredential,
+		ControllerCredential: staticControllerCredential,
+		GitHubDirs:           func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
+		Conns:                fake.NewConns(),
 		RepositoryCache: RepositoryCache{
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
@@ -487,18 +494,26 @@ type rig struct {
 	actions []action
 	// feeds, when set, are the informers' feeds withBreakableFeeds serves.
 	feeds *breakableFeeds
-	uids  atomic.Int64
+	// sandboxFeed, when set, is the gate withLaggingSandboxInformer holds the Sandbox informer's
+	// watch events behind until the test releases it: the pod informer, undelayed, runs ahead.
+	sandboxFeed *laggingSandboxFeed
+	uids        atomic.Int64
 
 	// hold stops the controller creating pods; autoStart makes a pod it creates scheduled on a
 	// node, past workspace-init, and Running at once.
 	hold      atomic.Bool
 	autoStart atomic.Bool
-	// suspendDelay is how long a pod the controller deletes stays terminating first, in
-	// nanoseconds. It is atomic because a test may shorten it while control() is running, to ask
-	// for a pod it has been holding terminating to end now: g.suspendDelay.Store(0) in
-	// TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs (drift_test.go) ends the pod its
-	// replacement is waiting out, as the cluster would.
-	suspendDelay atomic.Int64
+	// terminationLag is how long a pod the controller deletes stays terminating before it ends:
+	// the stand-in's copy of the kubelet stopping the pod's containers, which a cluster gives up to
+	// the pod's terminationGracePeriodSeconds (Options.TerminationGrace) to finish. Zero, the
+	// default, ends it at the controller's next pass. withTerminationLag sets it before the
+	// controller starts.
+	terminationLag time.Duration
+	// holdTerminating keeps every pod the controller has marked terminating there, whatever
+	// terminationLag says, until the test stores false: a gate the test releases, for a test that
+	// reads the window between a suspension landing and its pod ending, as
+	// TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs (drift_test.go) does.
+	holdTerminating atomic.Bool
 	// noController leaves every object as the test wrote it.
 	noController bool
 	// hooks, when set, sees the runtime's Sandbox gets and deletes (withSandboxHooks).
@@ -545,6 +560,30 @@ type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
 
+// withBubbleBoot gives a row that runs in a synctest bubble a boot timeout of 2 s on the bubble's
+// clock. There its length decides nothing but how many of the controller stand-in's 5 ms ticks the
+// row's waits span, and the arithmetic a row states over it holds (launcher_wait_test.go's
+// provisioning bound). Outside a bubble a boot timeout this short would be a real limit a loaded
+// machine passes, which the rig's own (testOptions) keeps away. Inside a bubble too, a boot timeout
+// must outlast the runtime's recheckInterval (500 ms): a launcher's first state frame wakes no wait,
+// so a launch whose pod event came first reads the launcher ready only at the next recheck.
+func withBubbleBoot() rigOption {
+	return withOptions(func(o *Options) { o.BootTimeout = 2 * time.Second })
+}
+
+// withClock runs the runtime's bounded waits on fake (Options.Clock): each wait's deadline then
+// passes only when the row moves fake past it, once the row has read that nothing else will end
+// the wait.
+func withClock(fake *clocktest.Fake) rigOption {
+	return withOptions(func(o *Options) { o.Clock = fake })
+}
+
+// withTerminationLag has the controller stand-in leave each pod it deletes terminating for lag
+// before it ends, as a cluster's kubelet takes a while to stop a pod's containers (terminationLag).
+func withTerminationLag(lag time.Duration) rigOption {
+	return func(g *rig, _ *Options) { g.terminationLag = lag }
+}
+
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
 
@@ -587,7 +626,7 @@ func withCauselessLeakCheck() rigOption {
 // carry and no receiver for a memory guard's reports: the tests that build one drive the launcher
 // protocol itself.
 func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(nil, nil, nil, nil, clock.Real(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation
@@ -843,6 +882,8 @@ func (g *rig) clearActions() {
 func (g *rig) control() {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
+	// terminating is when each pod the controller marked terminating ends: the moment it was
+	// marked, plus terminationLag.
 	terminating := map[types.UID]time.Time{}
 	services := map[string]types.UID{}
 	for {
@@ -887,12 +928,12 @@ func (g *rig) control() {
 				// going to create. That is what red this package's pod-drift row about 4 times in
 				// 100 under load, at every bound it was given, with the controller reading
 				// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
-				if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
+				if ends, ok := terminating[pod.UID]; ok && !g.holdTerminating.Load() && !time.Now().Before(ends) {
 					_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
 				}
 			case s.mode() == modeSuspended && owned:
 				if _, ok := terminating[pod.UID]; !ok {
-					terminating[pod.UID] = time.Now()
+					terminating[pod.UID] = time.Now().Add(g.terminationLag)
 					g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
 				}
 			case s.mode() == modeRunning && pod == nil && !g.hold.Load():
@@ -1038,10 +1079,10 @@ func (g *rig) secret(name string) *corev1.Secret {
 	return object.(*corev1.Secret)
 }
 
-// eventually fails the test unless ok holds within a second.
+// eventually waits, through the shared wait, until ok holds.
 func (g *rig) eventually(what string, ok func() bool) {
 	g.t.Helper()
-	testwait.WithinPolling(g.t, time.Second, 5*time.Millisecond, what, ok)
+	testwait.Eventually(g.t, what, ok)
 }
 
 // spawn launches spec and fails the test on an error.
@@ -1359,10 +1400,61 @@ func modePatched(t *testing.T, body, mode string) bool {
 	return false
 }
 
-// withLaggingSandboxInformer delays every watch event the Sandbox informer receives, as a store
-// that has not caught up with an API write: the pod informer, undelayed, then runs ahead of it.
-func withLaggingSandboxInformer(delay time.Duration) rigOption {
+// laggingSandboxFeed is the gate withLaggingSandboxInformer holds the Sandbox informer's watch
+// events behind: a test opens the race the pod informer, undelayed, wins — the pod store ahead of
+// the Sandbox store, the two informers nothing orders as production's are — by holding the feed
+// (hold), and closes it when it chooses (release). It replaces a wall-clock lag, which only opened
+// that race for a while; the gate holds it open until the test ends it. A fresh feed flows, so a
+// launch the test does not lag runs as any does; hold arms the lag for the launch that follows, and
+// may arm it again for the next, for a test that drives more than one.
+type laggingSandboxFeed struct {
+	mu   sync.Mutex
+	open chan struct{}
+}
+
+func newLaggingSandboxFeed() *laggingSandboxFeed {
+	flowing := make(chan struct{})
+	close(flowing)
+	return &laggingSandboxFeed{open: flowing}
+}
+
+// gate is the channel a forwarder waits on before it passes an event: closed while the feed flows,
+// open while it is held.
+func (f *laggingSandboxFeed) gate() chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.open
+}
+
+// release lets every held Sandbox event through, and every event after, until hold re-arms it.
+func (f *laggingSandboxFeed) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.open:
+	default:
+		close(f.open)
+	}
+}
+
+// hold re-arms the gate so the Sandbox events of the next launch wait again, for a test that drives
+// more than one. A feed already held is left as it is.
+func (f *laggingSandboxFeed) hold() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.open:
+		f.open = make(chan struct{})
+	default:
+	}
+}
+
+// withLaggingSandboxInformer holds every watch event the Sandbox informer receives behind a gate
+// the test releases (laggingSandboxFeed), as a store that has not caught up with an API write: the
+// pod informer, undelayed, then runs ahead of it until the test lets the Sandbox feed through.
+func withLaggingSandboxInformer() rigOption {
 	return func(g *rig, _ *Options) {
+		g.sandboxFeed = newLaggingSandboxFeed()
 		g.dyn.PrependWatchReactor("sandboxes", func(a k8stesting.Action) (bool, watch.Interface, error) {
 			var opts metav1.ListOptions
 			if w, ok := a.(k8stesting.WatchActionImpl); ok {
@@ -1376,7 +1468,7 @@ func withLaggingSandboxInformer(delay time.Duration) rigOption {
 			go func() {
 				defer close(events)
 				for ev := range upstream.ResultChan() {
-					time.Sleep(delay)
+					<-g.sandboxFeed.gate()
 					events <- ev
 				}
 			}()

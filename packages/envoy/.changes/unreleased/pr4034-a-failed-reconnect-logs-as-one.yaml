@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Two failures the listener meets while NATS reconnects log as WARN, not ERROR. A reconnect
+  handshake the server does not answer in time logs `envoy nats reconnect attempt failed`, on the
+  same once-a-minute throttle as a handshake the server closes; a timeout on a connected
+  connection stays an ERROR. A self-health rebuild that fails while the connection is down logs
+  `self-health rebuild failed` at WARN with `connected=false` and counts as the first of that
+  outage's disconnected failures rather than a terminal one; one that fails while connected stays
+  an ERROR.

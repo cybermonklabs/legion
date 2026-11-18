@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reSaveSource runs the settings PUT's own upsert (api/architecture_source.go's
@@ -62,12 +63,7 @@ func TestASettingsReSaveDuringTwoSyncsNeverLeavesTheEarlierHead(t *testing.T) {
 	reSaveSource(t, b)
 	branch.releaseHeld()
 
-	var answer syncAnswer
-	select {
-	case answer = <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the held sync did not end within 30s of its release")
-	}
+	answer := testwait.Receive(t, "the held sync to end once it was released", held)
 	if answer.err != nil {
 		t.Fatalf("the held sync: %v", answer.err)
 	}

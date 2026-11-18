@@ -62,11 +62,11 @@ env:
 jobs:
   plugin-pack:
     runs-on: ubuntu-24.04
-    # The step's own -timeout is 15 minutes, as the daemon's plain step carries, so a hung pack
-    # prints the goroutine dump that names it before the runner cancels the job. Around it are
-    # the Bun install, the two tool installs and the Go build of internal/daemon's test binary,
-    # which the cache restore above makes incremental; 30 minutes leaves that setup room on a
-    # slow runner and still fails inside the hour.
+    # The step's own -timeout 15m must fire before the runner cancels the job, so a hung pack
+    # prints the goroutine dump that names it. The limit is at least the job's sum over its 16
+    # green merge-group runs from #2945, which made it, to 2026-11-16T17:33Z: its other steps at
+    # their longest, 74 s, and the test step's longest 127 s plus its 15 minutes: 1101 s, or
+    # 19 minutes, under the 30.
     timeout-minutes: 30
 
     steps:
@@ -109,7 +109,8 @@ jobs:
 
       # The three tests, by name. .github/scripts/ci_job_reads.py builds this text and the
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
-      # builds.
+      # builds. -timeout 15m against at most 63.227 s in internal/daemon over this job's 16 green
+      # merge-group runs from #2945 to 2026-11-16T17:33Z (run 43852755803).
       - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
         run: go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
         working-directory: packages/daemon

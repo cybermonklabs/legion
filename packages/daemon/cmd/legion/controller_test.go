@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
@@ -222,7 +223,13 @@ func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) 
 		Tokens: opts.tokens, GitHubRepositories: func() []ghrepo.Repository { return opts.repos }, RepositoryRenames: opts.renames,
 		State: fixedStateSource{repositories: opts.repositories}, StateTransactions: fixedStateTransactions{},
 	}).Handler
+	// The daemon records only requests of the shape the command sends, its API routes
+	// (/legion/v1/…); any other is another process's, answered 404 and recorded as nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/legion/v1/") {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read the request body: %v", err)
@@ -851,13 +858,8 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case code := <-held:
-		if code != 0 {
-			t.Fatalf("the held run of legion controller start = %d", code)
-		}
-	case <-time.After(2 * time.Minute):
-		t.Fatal("the held run of legion controller start never ended")
+	if code := testwait.Receive(t, "the held run of legion controller start to end", held); code != 0 {
+		t.Fatalf("the held run of legion controller start = %d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(c.record, "held-prompt"))
 	if err != nil || !strings.Contains(string(got), "Design gate steps: `spec`.") {
@@ -1198,9 +1200,15 @@ func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *t
 		if r.Method == http.MethodGet && r.URL.Path == "/legion/v1/state" {
 			// A contract-11 daemon still serves state with a usable repository mapping: the
 			// repositories fetch, which runs before the mint, must succeed here so the test
-			// reaches the contract refusal it is actually about.
+			// reaches the contract refusal it is actually about. The state read carries no
+			// operator token, and the answer fails nothing whoever asks.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"repositories":{"mapped":[{"repo":"acme/widgets","default":true}]}}`))
+			return
+		}
+		// The secret request carries the operator token; any other request is another process's
+		// (fromTheDaemon).
+		if !fromTheDaemon(t, w, r, controllerOperatorToken) {
 			return
 		}
 		// The contract-11 daemon's controllerSecret: readBody into struct{}, unknown fields refused.
@@ -1796,6 +1804,26 @@ func credentialRequests(t *testing.T, d *controllerDaemon) []api.ControllerCrede
 	return bodies
 }
 
+// controllerOnAFakeClock has the controller's refresh loop tick on a fake clock that moves only
+// when the test moves it (tickRefresh), and answers that clock.
+func controllerOnAFakeClock(t *testing.T) *clocktest.Fake {
+	t.Helper()
+	fake := clocktest.New(time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC))
+	was := controllerClock
+	controllerClock = fake
+	t.Cleanup(func() { controllerClock = was })
+	return fake
+}
+
+// tickRefresh moves clock to the refresh loop's next tick once the loop has armed it.
+func tickRefresh(t *testing.T, clock *clocktest.Fake) {
+	t.Helper()
+	if armed := clock.AwaitArmed(t, "the refresh loop's next tick", 1); !armed[0].Equal(clock.Now().Add(controllerGitHubRefreshInterval)) {
+		t.Fatalf("the refresh loop armed %v, want its tick of %v from %v", armed, controllerGitHubRefreshInterval, clock.Now())
+	}
+	clock.Advance(controllerGitHubRefreshInterval)
+}
+
 // The controller's gh directory holds the review App's read-only token for every owner of the
 // project, as the daemon's credential route rendered them, one directory per owner, written before
 // Oh My Pi starts, whose GH_CONFIG_DIR names the first owner's directory and LEGION_GH_OWNERS_DIR
@@ -1851,13 +1879,10 @@ func TestControllerStartWritesTheControllersGitHubCredentialUnderGh(t *testing.T
 // mints for one owner after Oh My Pi starts reaches that owner's hosts.yml before Oh My Pi exits,
 // the other owner's is not rewritten, every refresh asks for the default the first answer named,
 // and the log records the refresh, naming the owner. The recording Oh My Pi runs until the test
-// releases it, once it has seen the second token land, so the proof does not depend on the
-// machine's speed.
+// releases it, once it has seen the second token land, and the loop's one tick is a step of the
+// test (controllerOnAFakeClock), so the proof does not depend on the machine's speed.
 func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T) {
-	old := controllerGitHubRefreshInterval
-	controllerGitHubRefreshInterval = 50 * time.Millisecond
-	t.Cleanup(func() { controllerGitHubRefreshInterval = old })
-
+	clock := controllerOnAFakeClock(t)
 	tokens := newControllerCredentialTokens("ghs_first")
 	d := newControllerDaemonWithTokens(t, tokens)
 	release := filepath.Join(t.TempDir(), "release")
@@ -1867,11 +1892,10 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		code int
 		errb string
 	}
-	done := make(chan result, 1)
-	go func() {
+	done := inFlight(func() result {
 		code, _, errb := c.run()
-		done <- result{code, errb}
-	}()
+		return result{code, errb}
+	})
 	ghDir := filepath.Join(c.defaultDir, "gh")
 	acme, sjawhar := filepath.Join(ghDir, "acme", "hosts.yml"), filepath.Join(ghDir, "sjawhar", "hosts.yml")
 	// The first write holds the first token; only then does sjawhar's lease turn, so the loop,
@@ -1885,6 +1909,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Fatal(err)
 	}
 	tokens.setOwner("sjawhar", "ghs_second")
+	tickRefresh(t, clock)
 	testwait.Eventually(t, sjawhar+" to hold ghs_second", func() bool {
 		body, err := os.ReadFile(sjawhar)
 		return err == nil && strings.Contains(string(body), "ghs_second")
@@ -1893,12 +1918,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Fatal(err)
 	}
 
-	var r result
-	select {
-	case r = <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("legion controller start did not return")
-	}
+	r := testwait.Receive(t, "legion controller start to return once Oh My Pi exited", done)
 	if r.code != 7 {
 		t.Fatalf("legion controller start = %d, want 7 (Oh My Pi's exit code); stderr %q", r.code, r.errb)
 	}
@@ -1909,8 +1929,8 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 		t.Errorf("acme's hosts.yml was rewritten (%v, %v), want it left as it was", info, err)
 	}
 	requests := credentialRequests(t, d)
-	if len(requests) < 2 || requests[0].Default != "" {
-		t.Fatalf("github-credential requests = %+v, want the first naming no default and a refresh after it", requests)
+	if len(requests) != 2 || requests[0].Default != "" {
+		t.Fatalf("github-credential requests = %+v, want the first naming no default and the one tick's refresh after it", requests)
 	}
 	for _, req := range requests[1:] {
 		if req.Default != "acme" {
@@ -1925,23 +1945,19 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 
 // A superseded capability (a later legion controller start) ends the refresh loop: the gh
 // directory keeps the first tokens, the log records the stop, and no further request reaches the
-// daemon. The recording Oh My Pi runs until the test releases it, once it has seen the stop logged
-// and the requests settle.
+// daemon, since the loop holds no tick armed once it has stopped. The recording Oh My Pi runs until
+// the test releases it, once it has seen the stop logged.
 func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *testing.T) {
-	old := controllerGitHubRefreshInterval
-	controllerGitHubRefreshInterval = 50 * time.Millisecond
-	t.Cleanup(func() { controllerGitHubRefreshInterval = old })
-
+	clock := controllerOnAFakeClock(t)
 	tokens := newControllerCredentialTokens("ghs_first")
 	d := newControllerDaemonWithTokens(t, tokens)
 	release := filepath.Join(t.TempDir(), "release")
 	c := newControllerStart(t, d, controllerOptions{waitForFile: release})
 
-	done := make(chan struct{})
-	go func() {
+	done := inFlight(func() struct{} {
 		c.run()
-		close(done)
-	}()
+		return struct{}{}
+	})
 	hostsFile := filepath.Join(c.defaultDir, "gh", "acme", "hosts.yml")
 	testwait.Eventually(t, hostsFile+" to exist", func() bool {
 		_, err := os.Stat(hostsFile)
@@ -1953,24 +1969,27 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("mint a second capability: status %d, err %v", status, err)
 	}
+	tickRefresh(t, clock)
 	logFile := filepath.Join(c.defaultDir, "github-credential.log")
 	testwait.Eventually(t, logFile+" to hold \"github credential refresh stopped\"", func() bool {
 		body, err := os.ReadFile(logFile)
 		return err == nil && strings.Contains(string(body), "github credential refresh stopped")
 	})
+	// A loop that went on would hold its next tick armed; a stopped one holds none, so no move of
+	// the clock reaches it again.
+	testwait.Until(t, "the stopped refresh loop to hold no tick armed", func() ([]time.Time, bool) {
+		armed := clock.Armed()
+		return armed, len(armed) == 0
+	})
 	before := requestsTo(d, "/legion/v1/controller/github-credential")
-	time.Sleep(10 * controllerGitHubRefreshInterval)
+	clock.Advance(10 * controllerGitHubRefreshInterval)
 	if after := requestsTo(d, "/legion/v1/controller/github-credential"); after != before {
 		t.Fatalf("%d further github-credential requests reached the daemon after the stop, want 0 more", after-before)
 	}
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("legion controller start did not return")
-	}
+	testwait.Receive(t, "legion controller start to return once Oh My Pi exited", done)
 	hosts, err := os.ReadFile(hostsFile)
 	if err != nil || string(hosts) != ghconfig.Hosts("ghs_first-read") {
 		t.Fatalf("hosts.yml = %q, %v; want it to keep the first token", hosts, err)

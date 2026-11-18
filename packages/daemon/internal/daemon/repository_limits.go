@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -88,10 +89,12 @@ func bootReadTransient(err error) bool {
 // of a read GitHub refused for its rate limit (holdLimited, and defaultBranches.Named for any read
 // of a repository read or held before): it says so, naming the repository, the branch, the limit as
 // GitHub's headers gave it and when the hold ends, and asks for a read of the mapping then
-// (requestMappingRead), which reads the repository from GitHub again. A request made before the
+// (requestMappingRead), which reads the repository from GitHub again. The read is asked for on a
+// timer of the runtime's clock (timers), armed for the hold's end. A request made before the
 // refresher runs, during the boot, waits for it.
 func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repository) {
-	time.AfterFunc(time.Until(read.until), func() { w.requestMappingRead() })
+	timers := w.timers()
+	timers.AfterFunc(read.until.Sub(timers.Now()), func() { w.requestMappingRead() })
 	w.log.Warn("workflow: GitHub's rate limit refused the read of a repository's default branch, so the daemon serves it on the default branch it holds and reads it again after the limit's reset",
 		append([]any{"repo", read.mapped.Repo.String(), "defaultBranch", held.DefaultBranch, "readAgainAt", read.until.UTC().Format(time.RFC3339)}, limitAttributes(read)...)...)
 }
@@ -140,16 +143,16 @@ func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead
 
 // recordedBranches is the default branch the project's records hold for each repository a record
 // names (record.Issue.GitHubRepo, in GitHub's spelling, and DefaultBranch), keyed by that name
-// lowercased, read in one read-only transaction bounded by appMintAttempt. A repository several
-// records name takes the first record in the store's order, by key, and not the newest: a record
-// carries no time its repository and default branch were recorded at (both are written once, when
-// the issue is first recorded, and no column dates that), and a key's number says nothing reliable
-// either (LEGION-10 sorts before LEGION-9, and an old issue can be recorded late). Each holds the
-// default branch GitHub named when its issue was recorded, and the one taken is served only until
-// GitHub answers a read of it again. A record from before the record carried its repository holds
-// nothing.
+// lowercased, read in one read-only transaction bounded by appMintAttempt on the runtime's clock
+// (timers). A repository several records name takes the first record in the store's order, by
+// key, and not the newest: a record carries no time its repository and default branch were
+// recorded at (both are written once, when the issue is first recorded, and no column dates that),
+// and a key's number says nothing reliable either (LEGION-10 sorts before LEGION-9, and an old
+// issue can be recorded late). Each holds the default branch GitHub named when its issue was
+// recorded, and the one taken is served only until GitHub answers a read of it again. A record
+// from before the record carried its repository holds nothing.
 func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbranch.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := w.timers().WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	var issues []record.Issue
 	if err := pgx.BeginTxFunc(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -188,7 +191,8 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbr
 // for now (unread), as a repository whose installation read failed is, and read again on
 // installReadRetry until GitHub answers, so the limit costs that repository and not the project's
 // boot. The waits overlap, each for its own limit, so the boot waits as long as the longest of them
-// asks, and the reads after them run mappingReads at a time, as the first reads did.
+// asks, and the reads after them run mappingReads at a time, as the first reads did. Each wait, and
+// each read's bound, runs on the runtime's clock (timers).
 func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRead) (named []mappedRepository, unread []refusedRepository, _ error) {
 	if len(unheld) == 0 {
 		return nil, nil, nil
@@ -198,21 +202,24 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 	failed := make([]error, len(unheld))
 	reading := make(chan struct{}, mappingReads)
 	group, waiting := errgroup.WithContext(ctx)
+	timers := w.timers()
 	for index, read := range unheld {
 		group.Go(func() error {
 			w.log.Warn("workflow: GitHub's rate limit refused the read of a repository's default branch and the daemon holds none for it, so the boot waits as long as GitHub asks and reads it once more",
 				append([]any{"repo", read.mapped.Repo.String(), "waitUntil", read.until.UTC().Format(time.RFC3339)}, limitAttributes(read)...)...)
+			limit := timers.NewTimer(read.until.Sub(timers.Now()))
 			select {
 			case <-waiting.Done():
+				limit.Stop()
 				return waiting.Err()
-			case <-time.After(time.Until(read.until)):
+			case <-limit.C():
 			}
 			select {
 			case <-waiting.Done():
 				return waiting.Err()
 			case reading <- struct{}{}:
 			}
-			attempt, cancel := context.WithTimeout(waiting, appMintAttempt)
+			attempt, cancel := timers.WithTimeout(waiting, appMintAttempt)
 			repository, err := w.defaultBranches.Named(attempt, read.mapped.Repo)
 			cancel()
 			<-reading
@@ -277,14 +284,15 @@ func limitAttributes(read limitedRead) []any {
 // the backoff below. One GitHub's limit refuses with nothing held is waited out as GitHub asks
 // (defaultBranchLimit); one GitHub does not answer (backfillUnanswered) is waited 1 s, doubling to
 // a minute. Each wait is one line naming the issue, the repository and the time it waits until,
-// and the read is made again, until GitHub answers or ctx ends. Any other failure — GitHub's
-// answer about the repository, such as a 404, or a mint refused — is returned and refuses the
-// boot, as before. No record's branch stands in for the read, since what the backfill reads GitHub
-// for is GitHub's spelling of the repository the record will carry.
-func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (ghbranch.Repository, error) {
+// and the read is made again, until GitHub answers or ctx ends. Each wait, and each read's bound,
+// runs on clk. Any other failure — GitHub's answer about the repository, such as a 404, or a mint
+// refused — is returned and refuses the boot, as before. No record's branch stands in for the read,
+// since what the backfill reads GitHub for is GitHub's spelling of the repository the record will
+// carry.
+func backfillRead(ctx context.Context, clk clock.Clock, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (ghbranch.Repository, error) {
 	backoff := time.Second
 	for {
-		attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+		attempt, cancel := clk.WithTimeout(ctx, appMintAttempt)
 		read, err := named.Named(attempt, repo)
 		cancel()
 		if err == nil {
@@ -305,11 +313,13 @@ func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repos
 			return ghbranch.Repository{}, err
 		}
 		log.Warn("workflow backfill: GitHub's rate limit refused the read of a record's repository, or GitHub did not answer it, so the boot waits and reads it again",
-			append(attributes, "waitUntil", time.Now().Add(wait).UTC().Format(time.RFC3339))...)
+			append(attributes, "waitUntil", clk.Now().Add(wait).UTC().Format(time.RFC3339))...)
+		again := clk.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			again.Stop()
 			return ghbranch.Repository{}, ctx.Err()
-		case <-time.After(wait):
+		case <-again.C():
 		}
 	}
 }

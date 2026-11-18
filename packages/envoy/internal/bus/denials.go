@@ -22,7 +22,7 @@ var publishRefusal = regexp.MustCompile(`Publish to ("(?:[^"\\]|\\.)*")`)
 
 // publishDenialRetention is how long a recorded violation can still be read (deniedPublish). It
 // outlasts, with room to spare, every wait a publish of this package makes for the answer a denied
-// publish never gets - publishAcknowledgementTimeout for a window's send, publishBound for
+// publish never gets - publishAcknowledgementTimeout for a window's send, PublishBound for
 // publishJetStream - so a violation recorded the moment the server refused the message is still
 // there when the publish that earned it gives up. It is short enough that a record no publish ever
 // claims, because its caller stopped waiting, is dropped long before the same subject is published

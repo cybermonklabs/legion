@@ -12,53 +12,69 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// stalledRoleKV is a role bucket whose claim read does not answer: a Get waits stall, or until the
-// test ends, and then fails, the way a legacy nats.go KV call waits out the JetStream MaxWait on a
-// bus that has stopped answering. Every other call goes to the real bucket. stall is longer than
-// sendRequestBudget, so a route that waits the call out answers after its budget, and one bounded
-// by its budget answers at it.
+// stalledRoleKV is a role bucket whose claim read does not answer: a Get blocks until the test
+// ends, the way a legacy nats.go KV call waits out the JetStream MaxWait on a bus that has stopped
+// answering. Every other call goes to the real bucket. The route bounds the read by its own budget
+// on the test's fake clock, so a test drives that budget rather than waiting a real stall out.
 type stalledRoleKV struct {
 	nats.KeyValue
 	stallGet bool
-	stall    time.Duration
 	released <-chan struct{}
-}
-
-func (kv stalledRoleKV) wait() {
-	select {
-	case <-kv.released:
-	case <-time.After(kv.stall):
-	}
 }
 
 func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 	if kv.stallGet {
-		kv.wait()
+		<-kv.released
 		return nil, errors.New("the role bucket's read never answered")
 	}
 	return kv.KeyValue.Get(key)
 }
 
-// A role send through the publish route resolves its role's holder within sendRequestBudget of the request's own
-// context, so a role-bucket call that does not answer - the claim read, which takes no context in
-// nats.go - is reported inside the caller's attempt (the client gives each 5 s,
+// soleRecord is the one log line a request wrote, parsed, as serveRecorded reads it for a request
+// this file drives on a goroutine instead.
+func soleRecord(t *testing.T, logs string) map[string]any {
+	t.Helper()
+	written := strings.TrimSpace(logs)
+	lines := strings.Split(written, "\n")
+	if written == "" || len(lines) != 1 {
+		t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("the record line is not JSON: %v\n%s", err, lines[0])
+	}
+	return record
+}
+
+// A role send through the publish route resolves its role's holder within sendRequestBudget of the
+// request's own context, so a role-bucket call that does not answer - the claim read, which takes
+// no context in nats.go - is reported inside the caller's attempt (the client gives each 5 s,
 // packages/envoy-client/src/transport.ts) rather than after it: the bus-unavailable 503 with
-// Retry-After: 1, naming the call that did not answer. It must answer at its budget and before
-// stalledRoleKV's stall: answering before the budget would mean something other than the stalled
-// call ended the request, and answering after it that the resolution waited the call out. A
-// lookup's same case is TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering's.
+// Retry-After: 1, naming the call that did not answer. Its budget runs on the fake clock below, so
+// this test sees that budget armed - answering before it would mean something other than the
+// stalled call ended the request - and the route answers when the test moves the clock past it,
+// never when nats.go's own timeout runs out. A lookup's same case is
+// TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering's.
 func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *testing.T) {
 	const (
 		role   = "reviewer"
 		holder = "ses_unanswered_holder"
-		// within is the bound each answer must land inside: the budget plus scheduling, and well
-		// short of the 6 s stall and of the client's 5 s attempt.
-		within = 4 * time.Second
 	)
+	// The budget ends the role read inside the send window, and the window ends inside one attempt
+	// of the caller (contracts.ListenerCallTimeout, envoy-client's own), so the 503 below reaches a
+	// caller whose attempt still waits for it. The fake clock shows the budget armed and the answer
+	// after it; how soon a loaded machine schedules that answer is no verdict, so the order of the
+	// three bounds is what this test holds the answer to.
+	if !(sendRequestBudget < publishDeliveryWindow && publishDeliveryWindow < contracts.ListenerCallTimeout) {
+		t.Fatalf("sendRequestBudget %s, publishDeliveryWindow %s, contracts.ListenerCallTimeout %s; want sendRequestBudget < publishDeliveryWindow < contracts.ListenerCallTimeout",
+			sendRequestBudget, publishDeliveryWindow, contracts.ListenerCallTimeout)
+	}
 	topic := contracts.RoleTopicPrefix + role
 	for _, tc := range []struct {
 		name       string
@@ -69,8 +85,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 	} {
 		// open seeds a claim whose holder never registered, so a resolution reads the claim, finds
 		// its holder gone and reports it lapsed - taking nothing from it - and then stalls the
-		// role bucket's tc call.
-		open := func(t *testing.T) *listenerDeps {
+		// role bucket's tc call. The route's budget runs on the fake clock it returns.
+		open := func(t *testing.T) (*listenerDeps, *clocktest.Fake, time.Time) {
 			t.Helper()
 			client := setupPublishTestClient(t)
 			registry, sessions := setupSessionsTest(t, nil, nil)
@@ -82,33 +98,38 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 			setRegistryRoleKV(t, registry, stalledRoleKV{
 				KeyValue: registryRoleKV(t, registry),
 				stallGet: tc.stallGet,
-				stall:    6 * time.Second,
 				released: released,
 			})
-			return withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
-		}
-		answeredInTime := func(t *testing.T, elapsed time.Duration) {
-			t.Helper()
-			if elapsed < sendRequestBudget || elapsed >= within {
-				t.Fatalf("answered after %s, want at sendRequestBudget (%s) and inside %s", elapsed, sendRequestBudget, within)
-			}
+			stoodStill := time.Now()
+			held := clocktest.New(stoodStill)
+			return withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions, clock: held}), held, stoodStill
 		}
 		t.Run("publish/"+tc.name, func(t *testing.T) {
-			state := open(t)
-			started := time.Now()
-			recorder, record := serveRecorded(t,
-				func(logger *logging.Logger) http.HandlerFunc { return publishHandler(state, logger) },
-				postJSON("/v1/messages/publish", sendBody(map[string]any{
-					"topic":          topic,
-					"source":         "agent",
-					"source_session": "ses_unanswered_publisher",
-					"message":        "is the holder there?",
-				})))
-			elapsed := time.Since(started)
+			state, held, stoodStill := open(t)
+			logs := &lockedBuffer{}
+			recorder := httptest.NewRecorder()
+			answered := make(chan struct{})
+			go func() {
+				publishHandler(state, logging.NewWithWriter("test", logs)).ServeHTTP(recorder,
+					postJSON("/v1/messages/publish", sendBody(map[string]any{
+						"topic":          topic,
+						"source":         "agent",
+						"source_session": "ses_unanswered_publisher",
+						"message":        "is the holder there?",
+					})))
+				close(answered)
+			}()
+			awaitArmedBeforeReturn(t, held, "the publish route's budget for its read of the stalled role bucket", deadlineArmed(armedAt(stoodStill.Add(sendRequestBudget))), closeReturned(answered, recorderAnswer(recorder)))
+			select {
+			case <-answered:
+				t.Fatalf("the route answered %d before its budget was spent: %s", recorder.Code, recorder.Body.String())
+			default:
+			}
+			held.Advance(sendRequestBudget)
+			testwait.Receive(t, "the publish route's answer once its budget was spent", answered)
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("publish whose role bucket did not answer: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 			}
-			answeredInTime(t, elapsed)
 			if got := recorder.Header().Get("Retry-After"); got != "1" {
 				t.Fatalf("Retry-After = %q, want 1", got)
 			}
@@ -119,7 +140,7 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 			if !strings.HasPrefix(refusal.Error, busUnansweredPrefix) || !strings.Contains(refusal.Error, tc.unanswered) {
 				t.Fatalf("the refusal reads %q, want it to begin %q and name %q", refusal.Error, busUnansweredPrefix, tc.unanswered)
 			}
-			assertRecordFields(t, record, map[string]any{
+			assertRecordFields(t, soleRecord(t, logs.String()), map[string]any{
 				"msg":     "listener publish",
 				"level":   "WARN",
 				"outcome": "bus_unavailable",
@@ -142,8 +163,13 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 	const (
 		role   = "reviewer"
 		holder = "ses_lookup_unanswered_holder"
-		within = 4 * time.Second
 	)
+	// The budget the lookup's claim read runs under ends inside one attempt of the caller
+	// (contracts.ListenerCallTimeout, envoy-client's own), so the 503 below reaches a caller whose
+	// attempt still waits for it, however late a loaded machine schedules it after the budget.
+	if sendRequestBudget >= contracts.ListenerCallTimeout {
+		t.Fatalf("sendRequestBudget %s, contracts.ListenerCallTimeout %s; want sendRequestBudget < contracts.ListenerCallTimeout", sendRequestBudget, contracts.ListenerCallTimeout)
+	}
 	for _, tc := range []struct {
 		name       string
 		stallGet   bool
@@ -162,20 +188,28 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 			setRegistryRoleKV(t, registry, stalledRoleKV{
 				KeyValue: registryRoleKV(t, registry),
 				stallGet: tc.stallGet,
-				stall:    6 * time.Second,
 				released: released,
 			})
-			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+			stoodStill := time.Now()
+			held := clocktest.New(stoodStill)
+			state := &listenerDeps{client: client, registry: registry, sessions: sessions, clock: held}
 
-			started := time.Now()
 			recorder := httptest.NewRecorder()
-			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
-			elapsed := time.Since(started)
+			answered := make(chan struct{})
+			go func() {
+				roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+				close(answered)
+			}()
+			awaitArmedBeforeReturn(t, held, "the lookup route's budget for its read of the stalled role bucket", deadlineArmed(armedAt(stoodStill.Add(sendRequestBudget))), closeReturned(answered, recorderAnswer(recorder)))
+			select {
+			case <-answered:
+				t.Fatalf("the lookup answered %d before its budget was spent: %s", recorder.Code, recorder.Body.String())
+			default:
+			}
+			held.Advance(sendRequestBudget)
+			testwait.Receive(t, "the lookup's answer once its budget was spent", answered)
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("lookup whose role store did not answer: status %d, body %s; want 503 - the bus did not answer, the listener did not fail", recorder.Code, recorder.Body.String())
-			}
-			if elapsed >= within {
-				t.Fatalf("answered after %s, want inside %s", elapsed, within)
 			}
 			if got := recorder.Header().Get("Retry-After"); got != "1" {
 				t.Fatalf("Retry-After = %q, want 1", got)

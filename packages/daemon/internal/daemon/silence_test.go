@@ -695,18 +695,18 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 	}
 }
 
-// The pass is nothing unless the sweep calls it, so this test starts the sweep itself, with a
-// period a test can wait out, and holds one silent phase worker in front of it. It fails if the
-// pass is written and never reached from the loop that rides every claim read (reconcileOrphans).
+// The pass is nothing unless the sweep calls it, so this test starts the sweep itself, runs its
+// passes, and holds one silent phase worker in front of it. It fails if the pass is written and
+// never reached from the loop that rides every claim read (reconcileOrphans).
 func TestReconcileOrphansSweepsForSilentPhaseWorkers(t *testing.T) {
 	rig := aSilentPhaseWorker(t)
 	rig.goesQuiet(claim.RoleImplementer)
-	rig.s.plan.orphanSweep = 10 * time.Millisecond
+	passes := triggeringPlan(&rig.s.plan)
 	ctx, cancel := context.WithCancel(rig.ctx)
 	defer cancel()
 	go rig.s.reconcileOrphans(store.ForConcurrentWorker(ctx))
 
-	testwait.Eventually(t, "the orphan sweep to tell the workflow of the silent phase worker", func() bool {
+	passes.until(t, passOrphans, "the orphan sweep to tell the workflow of the silent phase worker", func() bool {
 		return len(rig.starts()) > 0
 	})
 

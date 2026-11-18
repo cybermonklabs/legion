@@ -1,12 +1,12 @@
 package bus_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The drain cursor's body is read by both writers of a role's kept lane - the listener's walk,
@@ -108,8 +108,7 @@ func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *
 // zero cursor, since every copy on such a lane is past it.
 func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	const role = "cursor-reader"
 
 	unwritten, err := client.ReadKeptRoleCursor(ctx, role)
@@ -120,7 +119,9 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 		t.Fatalf("the cursor of a lane no walk has drained is %+v, want the zero cursor", unwritten)
 	}
 
-	before := time.Now()
+	// at judges each claim below: the stream's own stamp of the write, which is where the claim's
+	// age is measured from, read from the stream itself.
+	at := func(stored time.Time) func() time.Time { return func() time.Time { return stored } }
 	claimed, err := json.Marshal(bus.KeptRoleCursor{Kept: 17, Claiming: 18})
 	if err != nil {
 		t.Fatalf("encode the claim a walk writes: %v", err)
@@ -140,10 +141,14 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	if read.Sequence != seq {
 		t.Fatalf("the cursor is at sequence %d, want the %d the write answered: the next compare-and-swap names it", read.Sequence, seq)
 	}
-	if read.Written.Before(before) || read.Written.After(time.Now()) {
-		t.Fatalf("the stream stored the cursor at %s, want a time within the write: the claim's age is measured from it", read.Written)
+	message, err := client.JS().GetMsg(bus.Stream, seq)
+	if err != nil {
+		t.Fatalf("read the stored cursor: %v", err)
 	}
-	if !read.Cursor.ClaimOutstanding(read.Written, time.Now) {
+	if !read.Written.Equal(message.Time) {
+		t.Fatalf("the cursor reads as stored at %s, want the %s the stream stamped it with: the claim's age is measured from it", read.Written, message.Time)
+	}
+	if !read.Cursor.ClaimOutstanding(read.Written, at(read.Written)) {
 		t.Fatal("the claim just written is not outstanding, want the lane held by the walk that wrote it")
 	}
 
@@ -162,7 +167,7 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	if want := (bus.KeptRoleCursor{Kept: 18}); read.Cursor != want || read.Sequence != next {
 		t.Fatalf("the cursor read back as %+v at %d, want %+v at %d: the newest write is what counts", read.Cursor, read.Sequence, want, next)
 	}
-	if read.Cursor.ClaimOutstanding(read.Written, time.Now) {
+	if read.Cursor.ClaimOutstanding(read.Written, at(read.Written)) {
 		t.Fatal("the confirmed cursor claims a copy, want a lane nothing holds")
 	}
 }

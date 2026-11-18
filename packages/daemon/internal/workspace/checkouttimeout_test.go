@@ -4,35 +4,40 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// checkoutDelay is how long the jj the cases below start sleeps before a checkout, and
-// checkoutBudget the runner's slow-command budget under them: the delay outlasts that budget by
-// three seconds, so neither case turns on how fast this machine is. Every other provisioning
-// command of the fixture's one-commit repository answers in milliseconds, well inside whichever
-// bound it carries.
-const (
-	checkoutDelay  = 8 * time.Second
-	checkoutBudget = 5 * time.Second
-)
+// checkoutBudget is the runner's slow-command budget under the cases below, which bound every
+// command on a fake clock: the checkout's jj holds at a gate until the case releases it, so the
+// case moves the clock past that budget, or to the checkout's own bound, while the checkout runs.
+const checkoutBudget = 5 * time.Second
 
-// slowCheckoutTools is testTools with a jj that sleeps delay whenever its arguments hold `sparse
-// reset`, so the checkout alone outlasts a runner budget shorter than delay. The sleeping script
-// is first on the runner's jj entry and execs testTools' own jj wrapper with every argument it was
-// given, so whatever that wrapper does for GIT_ALLOW_PROTOCOL still happens: the fixture's remote
-// is a local path, which git reaches over its file transport alone. It reads the two words
-// wherever they stand rather than as "$1 $2", because the runner puts its own
-// --config=git.executable-path first on every jj it starts (execRunner.Run); no other jj
-// provisioning runs holds them side by side (`jj sparse list`, `jj sparse set --clear`).
-func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
+// checkoutGate is where the jj of a gated checkout says it holds (held) and what the case writes
+// to let it go on (release).
+type checkoutGate struct {
+	held, release string
+}
+
+// gatedCheckoutTools is testTools with a jj that holds at gate whenever its arguments hold `sparse
+// reset`: it writes gate.held, then waits for gate.release, then execs testTools' own jj wrapper
+// with every argument it was given, so whatever that wrapper does for GIT_ALLOW_PROTOCOL still
+// happens: the fixture's remote is a local path, which git reaches over its file transport alone.
+// It reads the two words wherever they stand rather than as "$1 $2", because the runner puts its
+// own --config=git.executable-path first on every jj it starts (execRunner.Run); no other jj
+// provisioning runs holds them side by side (`jj sparse list`, `jj sparse set --clear`). The wait
+// also ends once the gate's directory is gone, so no held jj outlives its test however it ends.
+func gatedCheckoutTools(t *testing.T, gate checkoutGate) map[string]string {
 	t.Helper()
 	tools := testTools(t)
 	wrapper := filepath.Join(t.TempDir(), "jj")
-	script := "#!/bin/sh\ncase \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
+	script := "#!/bin/sh\ncase \" $* \" in *' sparse reset '*) : >'" + gate.held + "'; " +
+		"while [ ! -e '" + gate.release + "' ] && [ -d '" + filepath.Dir(gate.release) + "' ]; do sleep 0.05; done ;; esac\n" +
+		"exec '" + tools["jj"] + "' \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -40,14 +45,30 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	return tools
 }
 
-// slowCheckoutRunner is newLocalRunner whose jj sleeps delay before a checkout and whose
-// slow-command budget is budget, what the runner gives a command carrying no bound of its own.
-func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRunner {
+// gatedCheckoutRunner is newLocalRunner whose jj holds a checkout at the gate it answers, whose
+// slow-command budget is checkoutBudget, what the runner gives a command carrying no bound of its
+// own, and whose every command is bounded on the fake clock it answers.
+func gatedCheckoutRunner(t *testing.T) (*recordingRunner, *clocktest.Fake, checkoutGate) {
 	t.Helper()
+	dir := t.TempDir()
+	gate := checkoutGate{held: filepath.Join(dir, "held"), release: filepath.Join(dir, "release")}
+	clock := clocktest.New(stopMoment)
 	run := newLocalRunner(t)
-	run.timeout = budget
-	run.runner = NewRunner(budget, slowCheckoutTools(t, delay))
-	return run
+	run.timeout = checkoutBudget
+	run.runner = execRunner{timeout: checkoutBudget, tools: gatedCheckoutTools(t, gate), clock: clock}
+	return run, clock, gate
+}
+
+// heldCheckoutBound waits for the checkout to hold at gate and answers its one deadline armed on
+// clock: the checkout is the one command running then.
+func heldCheckoutBound(t *testing.T, clock *clocktest.Fake, gate checkoutGate) time.Duration {
+	t.Helper()
+	exists(t, "the checkout's jj to hold at its gate", gate.held)
+	armed := clock.AwaitArmed(t, "the checkout's bound", 1)
+	if len(armed) != 1 {
+		t.Fatalf("the provision armed %v while the checkout ran, want the checkout's one bound", armed)
+	}
+	return armed[0].Sub(clock.Now())
 }
 
 // Each provisioning command is given the bound its own class carries: the checkout, the one that
@@ -83,8 +104,8 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 			if commandWith(call.Argv, "jj", "workspace", "update-stale") {
 				stale++
 			}
-			if call.Timeout != testTimeout {
-				t.Errorf("%s: %q was given %s, want the runner's budget %s", round, call.Argv, call.Timeout, testTimeout)
+			if call.Timeout != CommandTimeout {
+				t.Errorf("%s: %q was given %s, want the runner's budget %s", round, call.Argv, call.Timeout, CommandTimeout)
 			}
 		}
 	}
@@ -100,14 +121,31 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 
 // A checkout that outlasts the runner's slow-command budget finishes, and the workspace it wrote
 // holds the whole tree: the checkout is bounded by CheckoutTimeout, an hour, and not by that
-// budget.
+// budget, which the clock passes while the checkout's jj holds.
 func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
-	run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
+	run, clock, gate := gatedCheckoutRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
-	working, err := Provision(context.Background(), run, provisionRequest(t))
-	if err != nil {
-		t.Fatalf("Provision: %v", err)
+	req := provisionRequest(t)
+	type provisioned struct {
+		working Workspace
+		err     error
 	}
+	answered := inFlight(func() provisioned {
+		working, err := Provision(context.Background(), run, req)
+		return provisioned{working, err}
+	})
+	if bound := heldCheckoutBound(t, clock, gate); bound != CheckoutTimeout {
+		t.Fatalf("the checkout is bounded by %s, want CheckoutTimeout %s", bound, CheckoutTimeout)
+	}
+	clock.Advance(checkoutBudget)
+	if err := os.WriteFile(gate.release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := testwait.Receive(t, "Provision to finish the checkout the budget did not end", answered)
+	if got.err != nil {
+		t.Fatalf("Provision: %v", got.err)
+	}
+	working := got.working
 	requireCheckedOut(t, working)
 	// The file list requireCheckedOut read is read again here: what this case proves beyond it is
 	// that the checkout wrote each of those files to disk, and the list is unchanged between the
@@ -122,16 +160,25 @@ func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
 
 // A checkout that outlives its own bound fails the provision, naming the checkout: the checkout
 // is bounded by that bound and by no other, so a request that gives it one second (CheckoutBound)
-// ends the checkout there, inside the five seconds the runner's own budget would have allowed it.
+// arms that second, inside the five seconds the runner's own budget would have allowed it, and its
+// end ends the checkout.
 func TestProvisionFailsWhenTheCheckoutOutlivesItsBound(t *testing.T) {
-	run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
+	run, clock, gate := gatedCheckoutRunner(t)
 	req := provisionRequest(t)
 	req.CheckoutBound = time.Second
 	working, err := Location(req.StateDir, req.Repo, req.Issue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Provision(context.Background(), run, req)
+	answered := inFlight(func() error {
+		_, err := Provision(context.Background(), run, req)
+		return err
+	})
+	if bound := heldCheckoutBound(t, clock, gate); bound != req.CheckoutBound {
+		t.Fatalf("the checkout is bounded by %s, want its CheckoutBound %s", bound, req.CheckoutBound)
+	}
+	clock.Advance(req.CheckoutBound)
+	err = testwait.Receive(t, "Provision to fail once its checkout's bound ended the checkout", answered)
 	want := "check out workspace " + working.Dir + ": command timed out: jj sparse reset"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Provision whose checkout outlived its one-second bound = %v, want an error holding %q", err, want)

@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -45,9 +46,7 @@ func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
 	}()
 
 	issuer := "http://" + silent.Addr().String()
-	start := time.Now()
 	verifier, err := Discover(context.Background(), issuer, "dispatch", 300*time.Millisecond)
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatalf("Discover against a silent issuer returned verifier %#v and no error", verifier)
@@ -55,8 +54,11 @@ func TestDiscoverRefusesAnIssuerThatNeverAnswers(t *testing.T) {
 	if !strings.Contains(err.Error(), issuer) {
 		t.Errorf("Discover error %q does not name the issuer %s", err, issuer)
 	}
-	if elapsed > 5*time.Second {
-		t.Errorf("Discover took %s to give up, want the deadline to bound it", elapsed)
+	// The deadline is what ended it: a Discover that ignored its own timeout would wait on the
+	// silent issuer until this binary's deadline, and one that gave up for another reason would
+	// not carry this.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Discover gave up with %v, want its own deadline to be what ended it", err)
 	}
 }
 

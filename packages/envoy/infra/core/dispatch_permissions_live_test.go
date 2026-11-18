@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -52,8 +52,6 @@ const (
 	// dispatchSessionUser is the NATS user of the session the agent stream checks play, holding
 	// SessionPermissions alone, as a deployment's sessions hold it.
 	dispatchSessionUser = "example-session"
-	// dispatchHealthWindow is how long Dispatch has to migrate its schema and answer /healthz.
-	dispatchHealthWindow = 120 * time.Second
 	// deliveryCreate is the delivery durable's filtered consumer create, the permission the
 	// negative control removes.
 	deliveryCreate = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.delivery-events.>"
@@ -96,7 +94,7 @@ func TestDispatchPermissionsOnRealServers(t *testing.T) {
 				require.NoError(t, live.conn.Flush())
 				require.NoError(t, live.dispatchConn.Publish("notifications.team.deploy-squad", []byte("example ad-hoc message")))
 				require.NoError(t, live.dispatchConn.Flush())
-				team, err := adhoc.NextMsg(5 * time.Second)
+				team, err := adhoc.NextMsgWithContext(testwait.Context(t))
 				require.NoError(t, err, "the ad-hoc publish under Dispatch's grant reached nobody")
 				require.Equal(t, "notifications.team.deploy-squad", team.Subject)
 				require.NoError(t, adhoc.Unsubscribe())
@@ -129,13 +127,18 @@ func TestDispatchPermissionsOnRealServers(t *testing.T) {
 				require.Len(t, grant.Publish.Allow, before-1, "the grant does not hold %s", deliveryCreate)
 				live := startLiveDispatch(t, dispatch, image.Ref, grant)
 
-				requireConsumerMissing(t, live.js, bus.DispatchDeliveryDurable)
-				requireConsumerPushBound(t, live.js, bus.DispatchJobDurable)
+				// The server's refusal of the create, Dispatch's own line about it, and the other
+				// durable's binding are the events the absence is read after: Dispatch asked for
+				// the consumer, was refused, said so, and went on to bind the durable whose create
+				// the grant still holds.
 				want := strings.TrimSuffix(deliveryCreate, ">") + "notifications.github.>"
-				for _, violation := range violationsOnceLogged(t, live.server, want) {
+				logged := violationsOnceLogged(t, live.server, want)
+				live.process.WaitForOutput(t, "dispatch delivery: create NATS consumer")
+				requireConsumerPushBound(t, live.js, bus.DispatchJobDurable)
+				requireConsumerMissing(t, live.js, bus.DispatchDeliveryDurable)
+				for _, violation := range logged {
 					require.Equal(t, []string{"Publish", want}, violation[1:], "the server refused something else: %s", violation[0])
 				}
-				require.Contains(t, live.process.Output.String(), "dispatch delivery: create NATS consumer")
 			})
 		})
 	}
@@ -178,9 +181,9 @@ func startLiveDispatch(t *testing.T, binary, image string, grant core.Permission
 	seedDispatchDeliverySettings(t, databaseURL)
 	github := newDispatchGitHub(t)
 	process, port := startDispatch(t, binary, databaseURL, uri, seeds.dispatch, github.server.URL)
-	requireHealthy(t, process, port, dispatchHealthWindow, dispatchHealthy)
+	requireHealthy(t, process, port, dispatchHealthy)
 	conn, errs := connect(t, uri, seeds.client)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	sessionConn, sessionErrs := connect(t, uri, seeds.session)
 	dispatchConn, dispatchErrs := connect(t, uri, seeds.dispatch)
@@ -295,24 +298,23 @@ func dispatchHealthy(status int, body string) bool {
 	return status == http.StatusOK && strings.Contains(body, `"schema_version":`)
 }
 
-// requireConsumerPushBound waits up to 20 s for the durable to exist with a push subscriber bound.
+// requireConsumerPushBound waits for the durable to exist with a push subscriber bound.
 func requireConsumerPushBound(t *testing.T, js natsgo.JetStreamContext, durable string) {
 	t.Helper()
-	require.Eventuallyf(t, func() bool {
+	testwait.Eventually(t, "consumer "+durable+" to be push-bound", func() bool {
 		info, err := js.ConsumerInfo(bus.Stream, durable)
 		return err == nil && info.PushBound
-	}, 20*time.Second, 100*time.Millisecond, "consumer %s was not push-bound within 20s", durable)
+	})
 }
 
-// requireConsumerMissing watches the durable for 20 s: every read must keep answering that no
-// such consumer exists.
+// requireConsumerMissing requires that the durable does not exist at this moment. Its caller
+// reads it only once the server has refused the create and Dispatch has reported that refusal, so
+// the only way the consumer could be there is a create the grant forbids having been answered.
 func requireConsumerMissing(t *testing.T, js natsgo.JetStreamContext, durable string) {
 	t.Helper()
-	require.Neverf(t, func() bool {
-		_, err := js.ConsumerInfo(bus.Stream, durable)
-		return !errors.Is(err, natsgo.ErrConsumerNotFound)
-	}, 20*time.Second, 100*time.Millisecond,
-		"consumer %s was created despite its missing permission, or its read failed", durable)
+	_, err := js.ConsumerInfo(bus.Stream, durable)
+	require.ErrorIs(t, err, natsgo.ErrConsumerNotFound,
+		"consumer %s is there despite its missing permission, or its read failed", durable)
 }
 
 // requireDurablesAcknowledge publishes one message that both Dispatch durables' filters match and
@@ -324,11 +326,10 @@ func requireDurablesAcknowledge(t *testing.T, js natsgo.JetStreamContext) {
 	ack, err := js.Publish("notifications.github.acme.widgets.job.1.completed", []byte("not an envelope"))
 	require.NoError(t, err)
 	for _, durable := range []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable} {
-		require.Eventuallyf(t, func() bool {
+		testwait.Eventually(t, fmt.Sprintf("consumer %s to acknowledge stream sequence %d", durable, ack.Sequence), func() bool {
 			info, err := js.ConsumerInfo(bus.Stream, durable)
 			return err == nil && info.AckFloor.Stream >= ack.Sequence && info.NumAckPending == 0
-		}, 20*time.Second, 100*time.Millisecond,
-			"consumer %s did not acknowledge stream sequence %d", durable, ack.Sequence)
+		})
 	}
 }
 
@@ -360,8 +361,7 @@ func signInDispatchPerson(t *testing.T, port int) http.CookieJar {
 			return http.ErrUseLastResponse
 		},
 	}
-	signinCtx, cancelSignin := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancelSignin()
+	signinCtx := testwait.Context(t)
 	signin, err := http.NewRequestWithContext(signinCtx, http.MethodGet, dispatchURL(port, "/auth/_dev/signin?login="+dispatchPerson), nil)
 	require.NoError(t, err)
 	response, err := human.Do(signin)
@@ -437,16 +437,19 @@ func requireAgentStreamRelayed(t *testing.T, session *natsgo.Conn, port int) {
 	socket, _, err := dialer.DialContext(t.Context(), "ws://127.0.0.1:"+strconv.Itoa(port)+"/ws/live", nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = socket.Close() })
-	require.NoError(t, socket.SetReadDeadline(time.Now().Add(10*time.Second)))
+	// The read of a frame below ends when every wait of this binary does.
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		require.NoError(t, socket.SetReadDeadline(deadline))
+	}
 	require.NoError(t, socket.WriteJSON(map[string]any{
 		"type": "subscribe", "sub": "agent", "view": map[string]string{"kind": "agent", "session_id": dispatchSessionID},
 	}))
 
-	watch, err := control.NextMsg(10 * time.Second)
-	require.NoError(t, err, "Dispatch sent no agent stream control message within 10s")
+	watch, err := control.NextMsgWithContext(testwait.Context(t))
+	require.NoError(t, err, "Dispatch sent no agent stream control message")
 	require.Equal(t, `{"v":1,"type":"watch"}`, string(watch.Data))
-	replay, err := control.NextMsg(10 * time.Second)
-	require.NoError(t, err, "Dispatch sent no agent stream control message within 10s")
+	replay, err := control.NextMsgWithContext(testwait.Context(t))
+	require.NoError(t, err, "Dispatch sent no agent stream control message")
 	require.Equal(t, `{"v":1,"type":"replay"}`, string(replay.Data))
 	require.NoError(t, replay.Respond(nil))
 	requireAgentFrame(t, socket, "responder", `{"v":1,"responding":true}`)
@@ -503,13 +506,9 @@ func requireWebhookRedeliveryBucket(t *testing.T, conn *natsgo.Conn, js natsgo.J
 		_ = watch.Stop()
 		cancel()
 	})
-	select {
-	case update := <-watch.Updates():
-		require.NotNil(t, update)
-		require.Equal(t, "test", update.Key())
-	case <-time.After(10 * time.Second):
-		t.Fatal("the redelivery bucket watch did not deliver its key")
-	}
+	update := testwait.Receive(t, "the redelivery bucket watch's first update", watch.Updates())
+	require.NotNil(t, update)
+	require.Equal(t, "test", update.Key())
 }
 
 // postDispatchJSON posts body to one of Dispatch's write routes as the session bearer and returns
@@ -580,9 +579,9 @@ func newDispatchGitHub(t *testing.T) *dispatchGitHub {
 
 func (f *dispatchGitHub) requireCalled(t *testing.T, want string) {
 	t.Helper()
-	require.Eventuallyf(t, func() bool {
+	testwait.Eventually(t, "the GitHub fake's "+want, func() bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		return slices.Contains(f.paths, want)
-	}, 20*time.Second, 100*time.Millisecond, "GitHub fake did not receive %s", want)
+	})
 }

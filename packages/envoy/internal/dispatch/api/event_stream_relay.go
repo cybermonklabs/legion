@@ -571,6 +571,7 @@ func (s *server) firstRelayCursor(ctx context.Context) (int64, time.Time, error)
 	if err != nil {
 		return 0, time.Time{}, err
 	}
+	s.relayStartReads.Add(1)
 	if _, err := s.horizon().Await(ctx); err != nil {
 		return 0, time.Time{}, err
 	}

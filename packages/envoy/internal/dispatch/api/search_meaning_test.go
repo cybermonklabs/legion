@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
@@ -26,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeEmbedder is a deterministic, text-keyed stand-in for Cohere (LEGION-549's tests use a fake
@@ -308,19 +311,17 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
-// InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
-// off for the whole test, simulating a backlog saturating the model service's quota for bulk
-// document traffic, while concurrent live search requests keep succeeding non-degraded, because
-// their InputQuery calls go straight to the unwrapped fake embedder and are never subject to
-// that backoff at all.
-func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
+// throttledSearchHandler is a server whose embedder answers every live query while embedqueue's
+// own background drain keeps it throttled and backing off, for as long as the test runs:
+// cmd/dispatch wires embedqueue's own Embedder behind embed.RateLimitedEmbedder and never wraps
+// the one api.Deps holds, so a live search request's own query embedding is never paced or
+// blocked by that limiter, however deep into backoff it currently is. One shared fake embedder
+// whose errFor discriminates by InputType matches how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled, simulating
+// a backlog saturating the model service's quota for bulk document traffic.
+func throttledSearchHandler(t *testing.T) http.Handler {
+	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -340,9 +341,14 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	throttleErr := embedtest.FakeThrottleError{Code: "ThrottlingException"}
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
 	createInteractionIssue(t, handler, "SAT", "Other bulk content that never finishes embedding", "Body.")
+	calls := func() int {
+		embedder.callsMu.Lock()
+		defer embedder.callsMu.Unlock()
+		return embedder.calls
+	}
+	before := calls()
 
-	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	bgCtx, cancel := context.WithCancel(context.Background())
 	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embed.NewRateLimitedEmbedder(embedder)}
 	done := make(chan struct{})
 	go func() {
@@ -353,25 +359,44 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			}
 		}
 	}()
-	// The drain runs until the searches below are done, then stops: waiting out bgCtx's own
-	// deadline would only idle the test.
-	defer func() { cancel(); <-done }()
+	// The drain runs until the searches are done, then stops.
+	t.Cleanup(func() { cancel(); <-done })
 
-	// Give the background goroutine a moment to actually hit a throttle and start backing off
-	// (its very first call is unpaced, at RateLimitedEmbedder's own floor interval).
-	time.Sleep(50 * time.Millisecond)
+	// The background goroutine has hit a throttle once the embedder has been called again: only
+	// it calls before the searches start, and only with InputDocument, which throttles.
+	testwait.Eventually(t, "the background drain to hit a throttle", func() bool { return calls() > before })
+	return handler
+}
 
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority
+// over background work (throttledSearchHandler): concurrent live search requests keep succeeding
+// non-degraded, because their InputQuery calls go straight to the unwrapped fake embedder and are
+// never subject to that backoff at all.
+func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
+	handler := throttledSearchHandler(t)
 	for i := range 5 {
-		started := time.Now()
 		response := searchResponse(t, handler, "q=wibbleflorp")
-		if elapsed := time.Since(started); elapsed > time.Second {
-			t.Errorf("search request %d took %v while embedqueue was throttled/backing off, want well under 1s - it must never wait behind background work", i, elapsed)
-		}
 		if response.Degraded != "" {
 			t.Errorf("search request %d: Degraded = %q, want empty - a live query must stay non-degraded while only background document traffic is throttled", i, response.Degraded)
 		}
 		if len(response.Results) != 1 {
 			t.Errorf("search request %d: Results = %+v, want the one meaning match (proves the query embedding actually ran, not just that nothing errored)", i, response.Results)
+		}
+	}
+}
+
+// TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled is the service level of the row
+// above, a live search answered well under a second while the background drain backs off, which
+// only the timing lane reads (benchtime.TimingEnv): a shared runner's clock is its load as much
+// as the search's work.
+func TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	handler := throttledSearchHandler(t)
+	for i := range 5 {
+		started := time.Now()
+		searchResponse(t, handler, "q=wibbleflorp")
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Errorf("search request %d took %v while embedqueue was throttled/backing off, want well under 1s - it must never wait behind background work", i, elapsed)
 		}
 	}
 }
@@ -1005,6 +1030,16 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
+	// The plan each arm runs is read from the table's statistics, which the template keeps this
+	// test's own (storetest's embeddingsStatistics turns autovacuum off for embeddings). The test
+	// analyzes the table once every vector is in, so the plan is the one these rows call for: an
+	// exact scan and sort of a table this small. Analyzed after the windows were written and
+	// before their vectors, the table reads as holding none, and the planner takes every arm
+	// through embeddings_cosine instead, whose HNSW walk over the long document's hundred
+	// identical vectors can miss the short document's one window, or the comment's.
+	if _, err := database.Pool.Exec(context.Background(), "analyze embeddings"); err != nil {
+		t.Fatalf("analyze embeddings: %v", err)
+	}
 
 	requireNoKeywordHit(t, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
@@ -1530,42 +1565,57 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
 // (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
 // minute learning that, so the savepoint bounds its own wait
-// (embeddingProjectKeysFilledLockWait).
-//
-// The bound asserted here is far looser than the setting and far tighter than the one it
-// replaces: a search that answers inside it is one that gave up waiting, and a search that
-// waits the statement bound out cannot pass it however loaded the server is. The page is
-// asserted too, because a short answer that lost the project's rows would be no better than a
-// slow one.
+// (embeddingProjectKeysFilledLockWait). The page is asserted here, because a short answer that
+// lost the project's rows would be no better than a slow one; the wait itself is the timing
+// lane's row below.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
 	const project = "LCKD"
-	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
-	ctx := context.Background()
-	// The lock is held for the search and released with this transaction, which is rolled back
-	// whatever the test does next: a lock left on that table would stall every later test of
-	// this database.
-	holder, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that holds the lock: %v", err)
-	}
-	defer func() { _ = holder.Rollback(context.Background()) }()
-	if _, err := holder.Exec(ctx, "lock table embeddings_project_key_backfill in access exclusive mode"); err != nil {
-		t.Fatalf("lock the fill's progress row: %v", err)
-	}
-
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
-	started := time.Now()
+	handler, issueKey, commentID := lockedProgressRowSearch(t, project)
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
-	waited := time.Since(started)
-	if waited > 5*time.Second {
-		t.Errorf("the scoped search behind an ACCESS EXCLUSIVE lock on the fill's progress row took %s, want far less than the 15 s the server allows a meaning statement: the read waits out the statement bound instead of its own lock bound",
-			waited)
-	}
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
 	}
 	searchHit(t, response, "issue", issueKey)
 	searchHit(t, response, "comment", commentID)
+}
+
+// TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound is the row above's
+// service level, which only the timing lane reads (benchtime.TimingEnv). The bound asserted is
+// far looser than the setting and far tighter than the one it replaces: a search that answers
+// inside it is one that gave up waiting, and a search that waits the statement bound out cannot
+// pass it.
+func TestAProjectScopedSearchBehindALockedProgressRowAnswersInsideItsLockBound(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	const project = "LCKT"
+	handler, _, _ := lockedProgressRowSearch(t, project)
+	started := time.Now()
+	searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Errorf("the scoped search behind an ACCESS EXCLUSIVE lock on the fill's progress row took %s, want far less than the 15 s the server allows a meaning statement: the read waits out the statement bound instead of its own lock bound",
+			waited)
+	}
+}
+
+// lockedProgressRowSearch is a server whose fill's progress row an ACCESS EXCLUSIVE lock holds
+// until the test ends, with an issue and a comment of project its scoped search answers by
+// meaning alone.
+func lockedProgressRowSearch(t *testing.T, project string) (handler http.Handler, issueKey, commentID string) {
+	t.Helper()
+	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
+	ctx := context.Background()
+	// The lock is held for the search and released with this transaction, which is rolled back
+	// when the test ends: a lock left on that table would stall every later test of this
+	// database.
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, "lock table embeddings_project_key_backfill in access exclusive mode"); err != nil {
+		t.Fatalf("lock the fill's progress row: %v", err)
+	}
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	return handler, issueKey, commentID
 }
 
 // cacheTheProgressRead reads the fill's progress row once on database's connection, which leaves
@@ -1576,10 +1626,8 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 // on a connection that does.
 func cacheTheProgressRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	var done bool
-	if err := database.Pool.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+	if err := database.Pool.QueryRow(testwait.Context(t), embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
 		t.Fatalf("read the fill's progress to prepare its plan: %v", err)
 	}
 }

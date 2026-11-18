@@ -28,7 +28,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // upgradePath is the path these rows upgrade at: the stand-in service answers an upgrade
@@ -171,7 +173,7 @@ func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
 			if _, err := decrypted.Write([]byte(row.request)); err != nil {
 				t.Fatalf("write the request: %v", err)
 			}
-			if err := decrypted.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+			if err := decrypted.SetReadDeadline(readDeadline(t)); err != nil {
 				t.Fatalf("set the read deadline: %v", err)
 			}
 			refused, err := http.ReadResponse(bufio.NewReader(decrypted), &http.Request{Method: http.MethodGet})
@@ -197,14 +199,22 @@ func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
 // on is state the broker holds for nobody.
 func TestTheIdleLimitEndsAQuietUpgradedConnection(t *testing.T) {
 	const idle = 400 * time.Millisecond
-	r := newRig(t, Options{Idle: idle})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Idle: idle, Clock: fake})
 	upgradeStandIn(t, r)
 
-	began := time.Now()
 	upgraded, conn, reader := upgradeThrough(t, r)
 	if upgraded.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("the upgrade answered %d; want 101", upgraded.StatusCode)
 	}
+	// The limit is armed when the proxy accepts the connection and for the whole window, so a
+	// joined connection the limit ended early would be armed for less than idle here. It is
+	// the earliest of the two waits a join arms: the other is the watch of the grant, a whole
+	// watchInterval out.
+	if at := fake.AwaitArmed(t, "the idle limit of the joined connection", 1)[0]; !at.Equal(fake.Now().Add(idle)) {
+		t.Fatalf("the idle limit is armed for %s; want %s, the whole of the %s window", at, fake.Now().Add(idle), idle)
+	}
+	fake.Advance(idle)
 	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatalf("set the read deadline: %v", err)
 	}
@@ -218,14 +228,16 @@ func TestTheIdleLimitEndsAQuietUpgradedConnection(t *testing.T) {
 	if len(rest) != 0 {
 		t.Fatalf("the joined connection carried %q after the upgrade; want nothing", rest)
 	}
-	if quiet := time.Since(began); quiet < idle {
-		t.Fatalf("the joined connection closed after %v; want it to outlive the idle limit %v", quiet, idle)
-	}
 }
 
-// watchFast is Options.Watch for the rows below: short enough that a row does not wait out the
-// real interval, long enough that a handful of them are a handful of reads and not a busy loop.
-const watchFast = 20 * time.Millisecond
+// watchTick moves fake one watch interval on, once the watcher has armed its timer for it, and
+// so makes the proxy read the grant behind a joined connection exactly once more. The arm is
+// what says the watcher is ready for the next read: it re-arms after each one.
+func watchTick(t *testing.T, fake *clocktest.Fake) {
+	t.Helper()
+	fake.AwaitArmed(t, "the watch of a joined connection", 1)
+	fake.Advance(watchInterval)
+}
 
 // frameStand is the stand-in service the rows below pass frames to. airlocktest's own stand
 // answers one frame and lets its connection go, which is the join ending by itself; a row about
@@ -257,11 +269,7 @@ func (f *frameStand) finish() {
 // waitDone waits for that answer to return, woken by the stand's own goroutine.
 func (f *frameStand) waitDone(t *testing.T) {
 	t.Helper()
-	select {
-	case <-f.done:
-	case <-time.After(cutWait):
-		t.Fatalf("the service's answer held %q and had not returned; want it to have returned once the join was over", f.read())
-	}
+	testwait.Receive(t, "the service's answer to return once the join was over", f.done)
 }
 
 // Answer is airlocktest.Answer: 101 at the stand's path, and then one line back for each line
@@ -401,16 +409,19 @@ func TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			const carried = "a frame while the grant carries this connection"
-			r := newRig(t, Options{Watch: watchFast})
+			fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+			r := newRig(t, Options{Clock: fake})
 			stand, conn, reader := joinedThrough(t, r)
 			frame(t, conn, reader, carried)
 
 			row.end(r.grants)
+			watchTick(t, fake)
 			waitClosed(t, conn, reader)
 			// The frame the round-1 probe sent after the refusal, which the service read
-			// then: a closed connection carries it nowhere.
+			// then: a closed connection carries it nowhere. The stand's own answer has
+			// returned by then, so what it holds is all it will ever hold.
 			_, _ = conn.Write([]byte("a frame after the grant stopped carrying it\n"))
-			time.Sleep(5 * watchFast)
+			stand.waitDone(t)
 			if frames := stand.read(); !slices.Equal(frames, []string{carried}) {
 				t.Fatalf("the service read %q; want the one frame from before the grant stopped carrying the connection", frames)
 			}
@@ -446,7 +457,8 @@ func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing
 	// connection read goes on answering this grant while the values read refuses it.
 	refusal := fmt.Errorf("%w: the current policy no longer allows %s", requests.ErrGrantNotLive, workerName)
 	const carried = "a frame while the policy allows this grant"
-	r := newRig(t, Options{Watch: watchFast})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Clock: fake})
 	stand, conn, reader := joinedThrough(t, r)
 	frame(t, conn, reader, carried)
 
@@ -455,9 +467,10 @@ func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing
 	// what the current policy refuses.
 	r.grants.refuseValues(refusal)
 	r.grants.setPolicyVersion("policy-v2")
+	watchTick(t, fake)
 	waitClosed(t, conn, reader)
 	_, _ = conn.Write([]byte("a frame after the policy refused the grant\n"))
-	time.Sleep(5 * watchFast)
+	stand.waitDone(t)
 	if frames := stand.read(); !slices.Equal(frames, []string{carried}) {
 		t.Fatalf("the service read %q; want the one frame from before the policy refused the grant", frames)
 	}
@@ -479,15 +492,17 @@ func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing
 // The named revert: proxy-carry-ignores-slot.
 func TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
 	const carried = "a frame while the broker releases this slot"
-	r := newRig(t, Options{Watch: watchFast})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Clock: fake})
 	r.useGitHubAppGrant()
 	stand, conn, reader := joinedThrough(t, r)
 	frame(t, conn, reader, carried)
 
 	r.removeAcmeInstallation()
+	watchTick(t, fake)
 	waitClosed(t, conn, reader)
 	_, _ = conn.Write([]byte("a frame after the broker stopped releasing the slot\n"))
-	time.Sleep(5 * watchFast)
+	stand.waitDone(t)
 	if frames := stand.read(); !slices.Equal(frames, []string{carried}) {
 		t.Fatalf("the service read %q; want the one frame from before the broker stopped releasing the slot", frames)
 	}
@@ -506,16 +521,19 @@ func TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot(t *testin
 // TestAJoinedConnectionIsClosedAtItsGrantsExpiry: when a grant ends is a time the broker already
 // holds, so a joined connection is closed at it without reading anything.
 func TestAJoinedConnectionIsClosedAtItsGrantsExpiry(t *testing.T) {
-	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
-	expires := clock.read().Add(time.Hour)
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	expires := fake.Now().Add(time.Hour)
 	bounded := testConnection()
 	bounded.Expires = &expires
-	r := newRig(t, Options{Now: clock.read, Watch: watchFast})
+	r := newRig(t, Options{Clock: fake})
 	r.grants.setConnection(workerPlaceholder, bounded)
 	stand, conn, reader := joinedThrough(t, r)
 	frame(t, conn, reader, "a frame before the grant expires")
 
-	clock.set(expires)
+	// The watch's next read falls at the expiry, and the grant has ended by the proxy's own
+	// clock when it runs.
+	fake.AwaitArmed(t, "the watch of the joined connection", 1)
+	fake.Set(expires)
 	waitClosed(t, conn, reader)
 	if frames := stand.read(); len(frames) != 1 {
 		t.Fatalf("the service read %q; want the one frame from before the expiry", frames)
@@ -526,21 +544,22 @@ func TestAJoinedConnectionIsClosedAtItsGrantsExpiry(t *testing.T) {
 // about the grant, so the connection stays open and the error goes to the log. A store down for
 // a minute cutting every WebSocket the airlock carries would be an outage of its own.
 func TestAGrantReadThatFailedLeavesAJoinedConnectionAlone(t *testing.T) {
-	r := newRig(t, Options{Watch: watchFast})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Clock: fake})
 	stand, conn, reader := joinedThrough(t, r)
 	frame(t, conn, reader, "a frame while the store answers")
 
 	before := r.grants.connectionReads()
 	r.grants.refuseConnection(workerPlaceholder, databaseDown)
 	// Three reads that failed, so that what this row reads back is what the watcher did with
-	// them rather than a watcher that has not run yet.
-	deadline := time.Now().Add(10 * time.Second)
-	for r.grants.connectionReads() < before+3 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the grant was read %d times in ten seconds; want three more than the %d before the store went down", r.grants.connectionReads(), before)
-		}
-		time.Sleep(watchFast)
+	// them rather than a watcher that has not run yet. Each tick is one read: the watcher
+	// arms its timer again only once the read it woke for has returned.
+	for range 3 {
+		watchTick(t, fake)
 	}
+	testwait.Eventually(t, "the watcher to have read the grant three more times", func() bool {
+		return r.grants.connectionReads() >= before+3
+	})
 	frame(t, conn, reader, "a frame while the store is down")
 
 	if frames := stand.read(); len(frames) != 2 {
@@ -560,7 +579,8 @@ func TestAGrantReadThatFailedLeavesAJoinedConnectionAlone(t *testing.T) {
 // GitHub's would otherwise cut every WebSocket the airlock carries for them.
 func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T) {
 	upstream := fmt.Errorf("%w: %w: github app 42: installation 7: 502 Bad Gateway", requests.ErrMintFailed, secrets.ErrMintUpstream)
-	r := newRig(t, Options{Watch: watchFast})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Clock: fake})
 	stand, conn, reader := joinedThrough(t, r)
 	frame(t, conn, reader, "a frame while the minter answers")
 
@@ -571,14 +591,12 @@ func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T
 	r.grants.setPolicyVersion("policy-v2")
 	// Three reads the upstream refused, so that what this row reads back is what the watcher
 	// did with them rather than a watcher that has not run yet.
-	deadline := time.Now().Add(10 * time.Second)
-	for r.grants.valueReads(testGrantID) < before+3 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the grant's values were read %d times in ten seconds; want three more than the %d before the upstream went down",
-				r.grants.valueReads(testGrantID), before)
-		}
-		time.Sleep(watchFast)
+	for range 3 {
+		watchTick(t, fake)
 	}
+	testwait.Eventually(t, "the watcher to have read the grant's values three more times", func() bool {
+		return r.grants.valueReads(testGrantID) >= before+3
+	})
 	frame(t, conn, reader, "a frame while the minter's upstream is down")
 
 	if frames := stand.read(); len(frames) != 2 {
@@ -589,10 +607,9 @@ func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T
 	}
 }
 
-// cutWait bounds every wait the row below makes on an event it expects. It is no part of what
-// the row proves: each of those events is one another goroutine makes happen, so the deadline
-// is there to fail the row with what the service does hold rather than to wait an event out.
-const cutWait = 5 * time.Second
+// The waits below take no bound of their own: each event they wait for is one another
+// goroutine makes happen, so a wait that never ends is the shared wait's own failure, naming
+// what it waited for and what the socket or the service held.
 
 // blockedClose is the socket under a joined connection's TLS, with a Close that waits to be
 // released and nothing else of it changed. tls.Conn.Close writes close_notify and closes the
@@ -620,8 +637,7 @@ func (c *blockedClose) Close() error {
 // became readable before the deadline was set, which is what happens about one run in two
 // hundred on a loaded machine. Armed, it is what happens in every run.
 //
-// Read says when a read of the connection under it is in flight and when it has returned, each
-// change signalled, so the row waits on those two events rather than sleeping for them. The
+// Read says when a read of the connection under it is in flight and when it has returned. The
 // counts are monotone, which is what lets a wait be for one named read rather than for a
 // glance at a state the next read may already have left behind.
 type heldConn struct {
@@ -631,7 +647,6 @@ type heldConn struct {
 	mu       sync.Mutex
 	started  int
 	returned int
-	changes  chan struct{}
 }
 
 // arm makes every read deadline set from here on do nothing.
@@ -648,23 +663,11 @@ func (c *heldConn) Read(b []byte) (int, error) {
 	c.mu.Lock()
 	c.started++
 	c.mu.Unlock()
-	c.signal()
 	n, err := c.Conn.Read(b)
 	c.mu.Lock()
 	c.returned++
 	c.mu.Unlock()
-	c.signal()
 	return n, err
-}
-
-// signal wakes whatever waits on the reads of this socket. A signal nobody is waiting for is
-// dropped, as copySink's is: the waiters below read the counts before they wait at all, and a
-// drop happens only while signals are already queued, each of which wakes that read again.
-func (c *heldConn) signal() {
-	select {
-	case c.changes <- struct{}{}:
-	default:
-	}
 }
 
 // waitReading waits until a read of the socket is in flight - the join's copy of the command's
@@ -672,20 +675,11 @@ func (c *heldConn) signal() {
 // which read that is.
 func (c *heldConn) waitReading(t *testing.T) int {
 	t.Helper()
-	deadline := time.After(cutWait)
-	for {
+	return testwait.Until(t, "a read of the socket to be in flight", func() (int, bool) {
 		c.mu.Lock()
-		started, returned := c.started, c.returned
-		c.mu.Unlock()
-		if started > returned {
-			return started
-		}
-		select {
-		case <-c.changes:
-		case <-deadline:
-			t.Fatalf("%d reads of the socket started and %d returned; want one of them still in flight", started, returned)
-		}
-	}
+		defer c.mu.Unlock()
+		return c.started, c.started > c.returned
+	})
 }
 
 // waitReturned waits for the read waitReading answered to return. It waits for that one read
@@ -695,40 +689,17 @@ func (c *heldConn) waitReading(t *testing.T) int {
 // the scheduler ran first.
 func (c *heldConn) waitReturned(t *testing.T, read int) {
 	t.Helper()
-	deadline := time.After(cutWait)
-	for {
+	testwait.Until(t, fmt.Sprintf("read %d of the socket, the one in flight when the cut was decided, to have returned", read), func() (int, bool) {
 		c.mu.Lock()
-		returned := c.returned
-		c.mu.Unlock()
-		if returned >= read {
-			return
-		}
-		select {
-		case <-c.changes:
-		case <-deadline:
-			t.Fatalf("%d reads of the socket returned; want read %d, the one in flight when the cut was decided, to have returned", returned, read)
-		}
-	}
+		defer c.mu.Unlock()
+		return c.returned, c.returned >= read
+	})
 }
 
 // copySink stands for the service at the far end of a join: it holds every byte the copy from
-// the command carried to it, and signals each write, so a row waits for a frame to arrive
-// rather than sleeping for the time one takes. The bytes it holds are logtest.Buffer's.
+// the command carried to it. The bytes it holds are logtest.Buffer's.
 type copySink struct {
 	logtest.Buffer
-	writes chan struct{}
-}
-
-func (s *copySink) Write(p []byte) (int, error) {
-	n, err := s.Buffer.Write(p)
-	// A signal nobody is waiting for is dropped, since the waiter below reads what the
-	// service holds before it waits at all: a drop happens only while signals are already
-	// queued, and each of those wakes that read again.
-	select {
-	case s.writes <- struct{}{}:
-	default:
-	}
-	return n, err
 }
 
 // read is every byte the service has been carried so far, which a row reads while the copy to
@@ -737,20 +708,13 @@ func (s *copySink) read() string {
 	return s.String()
 }
 
-// waitFor waits until the service holds want, woken by the copy's own writes.
+// waitFor waits until the service holds want.
 func (s *copySink) waitFor(t *testing.T, want, when string) {
 	t.Helper()
-	deadline := time.After(cutWait)
-	for {
-		if strings.Contains(s.read(), want) {
-			return
-		}
-		select {
-		case <-s.writes:
-		case <-deadline:
-			t.Fatalf("%s the service read %q; want it to hold %q", when, s.read(), want)
-		}
-	}
+	testwait.Until(t, when+" the service to hold "+want, func() (string, bool) {
+		held := s.read()
+		return held, strings.Contains(held, want)
+	})
 }
 
 // joinedStandIn is one joined connection and nothing else of the proxy: the command's side,
@@ -827,7 +791,7 @@ func newJoinedStandIn(t *testing.T) *joinedStandIn {
 		command: command,
 		joined:  answered.conn,
 		cut:     answered.cut,
-		sink:    &copySink{writes: make(chan struct{}, 8)},
+		sink:    &copySink{},
 		copied:  make(chan struct{}),
 		release: release,
 	}
@@ -844,11 +808,7 @@ func newJoinedStandIn(t *testing.T) *joinedStandIn {
 // is all it will ever hold.
 func (j *joinedStandIn) waitCopied(t *testing.T, when string) {
 	t.Helper()
-	select {
-	case <-j.copied:
-	case <-time.After(cutWait):
-		t.Fatalf("the copy to the service did not return %s", when)
-	}
+	testwait.Receive(t, "the copy to the service to return "+when, j.copied)
 }
 
 // readEnd reads the command's side to the end of the stream, which is the close_notify the
@@ -856,8 +816,10 @@ func (j *joinedStandIn) waitCopied(t *testing.T, when string) {
 // open while it is told, which is the window itself.
 func (j *joinedStandIn) readEnd(t *testing.T) {
 	t.Helper()
-	if err := j.command.SetReadDeadline(time.Now().Add(cutWait)); err != nil {
-		t.Fatalf("set the command's read deadline: %v", err)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		if err := j.command.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set the command's read deadline: %v", err)
+		}
 	}
 	rest, err := io.ReadAll(j.command)
 	if err != nil {
@@ -958,11 +920,9 @@ func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T
 	release := sync.OnceFunc(func() { close(released) })
 
 	held := make(chan *heldConn, 1)
-	r := newRig(t, Options{Watch: watchFast}, func(c net.Conn) net.Conn {
-		socket := &heldConn{
-			Conn:    &blockedClose{Conn: c, release: released},
-			changes: make(chan struct{}, 8),
-		}
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Clock: fake}, func(c net.Conn) net.Conn {
+		socket := &heldConn{Conn: &blockedClose{Conn: c, release: released}}
 		// The send cannot wait, since it runs inside the listener's Accept: the row
 		// opens the one connection and takes the first, and a second would be a
 		// connection this row never meant.
@@ -988,7 +948,8 @@ func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T
 	socket.arm()
 
 	r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-	// The watcher refused on its next tick and cut: this is the close_notify the cut wrote,
+	watchTick(t, fake)
+	// The watcher refused on that tick and cut: this is the close_notify the cut wrote,
 	// read as the end of the stream while the socket under it is still open, which is the
 	// window itself.
 	waitClosed(t, conn, reader)

@@ -9,7 +9,6 @@
 package airlockproxy
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -24,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The azure-login secret behind the airlock: the federated token the broker holds, the
@@ -243,7 +244,7 @@ func secondPod(t *testing.T, r *rig) string {
 		CA:             r.authority,
 		Log:            slog.New(r.logs),
 		Dial:           r.dial,
-		Now:            r.proxy.now,
+		Clock:          r.proxy.clock,
 		Resolve:        r.resolve,
 		UpstreamRoots:  r.service.Authority().Pool(),
 		AzureAuthority: r.proxy.azureAuthority,
@@ -258,9 +259,7 @@ func secondPod(t *testing.T, r *rig) string {
 		}
 	}()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		second.Shutdown(ctx)
+		second.Shutdown(testwait.Context(t))
 	})
 	return listener.Addr().String()
 }
@@ -307,8 +306,8 @@ func TestAnExchangeTheEndpointRefusesKeepsItsStatus(t *testing.T) {
 // so a token within mintAgainBefore of its expiry is exchanged again rather than handed to a
 // call that then fails on it - the same rule a minted value follows.
 func TestAnAccessTokenNearItsExpiryIsExchangedAgain(t *testing.T) {
-	clock := &testClock{now: time.Now()}
-	r, stand := newAzureRig(t, Options{Now: clock.read})
+	fake := clocktest.New(time.Now())
+	r, stand := newAzureRig(t, Options{Clock: fake})
 	// A token of its own for the second exchange, so what leaves says which exchange it came
 	// from.
 	stand.Answers(azureRealAccess, azureNextAccess)
@@ -317,7 +316,7 @@ func TestAnAccessTokenNearItsExpiryIsExchangedAgain(t *testing.T) {
 	client := r.client(azureFederatedPlaceholder)
 
 	// Well inside the token's life: the one this pod holds.
-	clock.set(clock.read().Add(time.Hour - 10*time.Minute))
+	fake.Advance(time.Hour - 10*time.Minute)
 	r.get(client, "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+placeholder)
 	seen := r.requests()
 	if got, want := seen[len(seen)-1].Header.Get("Authorization"), "Bearer "+azureRealAccess; got != want {
@@ -328,7 +327,7 @@ func TestAnAccessTokenNearItsExpiryIsExchangedAgain(t *testing.T) {
 	}
 
 	// Within five minutes of the expiry: exchanged again, and the new token is what leaves.
-	clock.set(clock.read().Add(6 * time.Minute))
+	fake.Advance(6 * time.Minute)
 	r.get(client, "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+placeholder)
 	seen = r.requests()
 	if got, want := seen[len(seen)-1].Header.Get("Authorization"), "Bearer "+azureNextAccess; got != want {

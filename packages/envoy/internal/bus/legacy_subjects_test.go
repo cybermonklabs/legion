@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -54,7 +53,7 @@ func TestASessionConsumerFiltersOnBothFormsOfEachTopic(t *testing.T) {
 			t.Fatalf("delivered %d on %s, want %d", msg.StreamSeq, msg.Subject, seq)
 		}
 	}
-	requireNoMessage(t, pull, time.Second)
+	requireNoMessage(t, consumers, pull, session)
 }
 
 // A topic registered in the new form takes the old form too, while the old form is read: a

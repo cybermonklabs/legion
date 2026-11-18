@@ -32,7 +32,8 @@ import (
 // the timer armed for a row due later, and by the sweep; one issue's lifecycle rows one at a time
 // and its board rows beside them; a running row's lease renewed under it; and a stop that joins
 // every lane. Every test here drives Run on a held clock (heldClock) and waits on what it can
-// observe — Dispatch writes, publishes, Spawn calls, the rows left, the log — never on time.
+// observe — the outbox's report of each row's settlement (observer), Dispatch writes, publishes,
+// Spawn calls, the log — never on time, and reads the rows left once the report has come.
 
 // runLanes starts runner.Run on clock and waits for its boot sweep to arm the first sweep timer,
 // so every row a test writes after it is one the boot sweep never saw. It returns the stop that
@@ -309,7 +310,7 @@ func wakingRecords(runner *outbox) projectRecords {
 // microClock is a held clock at a microsecond, the precision the rows' next_at is stored at, so
 // the wait a lane arms for a later row is exactly the duration the test fires.
 func microClock() *heldClock {
-	return &heldClock{at: time.Now().UTC().Truncate(time.Microsecond)}
+	return heldClockAt(time.Now().UTC().Truncate(time.Microsecond))
 }
 
 // outboxIDs is every row's id, in id order.
@@ -372,8 +373,8 @@ func spawnedRoles(rt *fake.Runtime) []claim.Role {
 // laneTree is one root issue of its own tree whose lifecycle lane a test holds inside its
 // architect's start: the issue, the outbox running on a supervisor whose runtime gates every
 // Spawn, the clock, the store the test writes rows through as the workflow does, the Dispatch
-// client its board rows write and the publisher its notices reach, and how many workspaces its
-// starts provisioned.
+// client its board rows write and the publisher its notices reach, how many workspaces its
+// starts provisioned, and the observer the outbox reports each row's settlement to.
 type laneTree struct {
 	pool       *store.Pool
 	root       record.Issue
@@ -385,13 +386,14 @@ type laneTree struct {
 	client     *blockingDispatch
 	publisher  *holderPublisher
 	provisions atomic.Int32
+	obs        *observer
 }
 
 // startLaneTree records the tree, builds the outbox on a gated runtime with the log given (quiet
 // when nil) and starts its lanes.
 func startLaneTree(t *testing.T, log *slog.Logger) *laneTree {
 	t.Helper()
-	tree := &laneTree{pool: isolatedOutboxPool(t), clock: microClock()}
+	tree := &laneTree{pool: isolatedOutboxPool(t), clock: microClock(), obs: newObserver()}
 	tree.root = record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, tree.pool, record.NewStore(), tree.root)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -405,7 +407,7 @@ func startLaneTree(t *testing.T, log *slog.Logger) *laneTree {
 	}
 	tree.runner = &outbox{
 		pool: tree.pool, dispatchProject: "LEGION", records: record.NewStore(), supervisor: sup, tokens: outboxTokens{}, project: "legion",
-		stateDir: t.TempDir(), dispatch: tree.client, notices: tree.publisher, log: log,
+		stateDir: t.TempDir(), dispatch: tree.client, notices: tree.publisher, log: log, observe: tree.obs.observe,
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			tree.provisions.Add(1)
 			return workspace.Workspace{}, nil
@@ -455,15 +457,17 @@ func TestACommittedRowRunsOnItsLaneWithoutASweep(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client, log: quietLogger(), observe: obs.observe}
 	runLanes(t, runner, clock)
 
 	// The unwoken row goes first, so the woken row's post is the lanes running while it waited.
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-209", record.MessagePost{Body: "written outside the workflow"}, clock.Now()))
 	commitRows(t, pool, wakingRecords(runner), "message", mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "committed by a fact"}, clock.Now()))
-	testwait.Eventually(t, "the committed row's message was posted", func() bool {
-		return client.postsTo("LEGION-208") == 1 && outboxRowsOf(t, pool, "LEGION-208") == 0
-	})
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchMessage, outcome: settledFinished})
+	if posts, left := client.postsTo("LEGION-208"), outboxRowsOf(t, pool, "LEGION-208"); posts != 1 || left != 0 {
+		t.Fatalf("the committed row once it finished: %d posts with %d rows left, want its one post and no row", posts, left)
+	}
 	if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
 		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
 	}
@@ -472,9 +476,10 @@ func TestACommittedRowRunsOnItsLaneWithoutASweep(t *testing.T) {
 	}
 
 	fireSweep(t, clock)
-	testwait.Eventually(t, "the sweep ran the unwoken row", func() bool {
-		return client.postsTo("LEGION-209") == 1 && outboxRows(t, pool) == 0
-	})
+	obs.settled(t, rowOf{issue: "LEGION-209", kind: record.OutboxKindDispatchMessage, outcome: settledFinished})
+	if posts, left := client.postsTo("LEGION-209"), outboxRows(t, pool); posts != 1 || left != 0 {
+		t.Fatalf("the unwoken row once the sweep ran it: %d posts with %d rows left, want its one post and no row", posts, left)
+	}
 }
 
 // enqueuingByID writes rows with their ids, as workflow.EnqueueNaming writes a start or catch-up
@@ -500,7 +505,8 @@ func TestARowWrittenWithItsIDRunsOnItsLaneWithoutASweep(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client, log: quietLogger(), observe: obs.observe}
 	runLanes(t, runner, clock)
 
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "committed with its id"}, clock.Now())
@@ -508,9 +514,10 @@ func TestARowWrittenWithItsIDRunsOnItsLaneWithoutASweep(t *testing.T) {
 		enqueuingByID{records: wakingRecords(runner), rows: []record.OutboxRow{row}}); err != nil {
 		t.Fatalf("commit the row: %v", err)
 	}
-	testwait.Eventually(t, "the row written with its id was posted", func() bool {
-		return client.postsTo("LEGION-208") == 1 && outboxRowsOf(t, pool, "LEGION-208") == 0
-	})
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchMessage, outcome: settledFinished})
+	if posts, left := client.postsTo("LEGION-208"), outboxRowsOf(t, pool, "LEGION-208"); posts != 1 || left != 0 {
+		t.Fatalf("the row written with its id once it finished: %d posts with %d rows left, want its one post and no row", posts, left)
+	}
 	if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
 		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
 	}
@@ -555,9 +562,10 @@ func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
 			task: "Implement it.", at: tree.clock.Now()}); err != nil {
 		t.Fatalf("commit the start: %v", err)
 	}
-	testwait.Eventually(t, "the start launched its worker", func() bool {
-		return fmt.Sprint(spawnedRoles(tree.rt)) == "[implementer]" && outboxRowsOf(t, tree.pool, tree.root.Key) == 0
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if launched, left := fmt.Sprint(spawnedRoles(tree.rt)), outboxRowsOf(t, tree.pool, tree.root.Key); launched != "[implementer]" || left != 0 {
+		t.Fatalf("once the start finished: launched %s with %d rows left, want the implementer and no row", launched, left)
+	}
 	if _, sweeps := tree.clock.armed(outboxLease); sweeps != 1 {
 		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
 	}
@@ -570,7 +578,8 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client, log: quietLogger(), observe: obs.observe}
 	runLanes(t, runner, clock)
 
 	commitRows(t, pool, wakingRecords(runner), "later", mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "due in an hour"}, clock.Now().Add(time.Hour)))
@@ -586,9 +595,10 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 	if fired := clock.fire(time.Hour); fired != 1 {
 		t.Fatalf("hour timers fired = %d, want the lane's", fired)
 	}
-	testwait.Eventually(t, "the row ran at its hour", func() bool {
-		return client.postsTo("LEGION-208") == 1 && outboxRows(t, pool) == 0
-	})
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchMessage, outcome: settledFinished})
+	if posts, left := client.postsTo("LEGION-208"), outboxRows(t, pool); posts != 1 || left != 0 {
+		t.Fatalf("the row once it ran at its hour: %d posts with %d rows left, want its one post and no row", posts, left)
+	}
 	if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
 		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
 	}
@@ -604,7 +614,8 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	architect := architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	clock := microClock()
 	publisher := &holderPublisher{}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion"}
+	obs := newObserver()
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion", observe: obs.observe}
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock)
 
@@ -621,10 +632,15 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	if err := runner.releaseWaiting(context.Background(), architect); err != nil {
 		t.Fatalf("release the architect's notices: %v", err)
 	}
-	testwait.Eventually(t, "the released notice was published and its lane dropped its wait", func() bool {
-		_, delivered := publisher.snapshot()
+	obs.settled(t, rowOf{issue: "LEGION-2", kind: record.OutboxKindNotice, outcome: settledFinished})
+	if _, delivered := publisher.snapshot(); len(delivered) != 1 || outboxRows(t, pool) != 0 {
+		t.Fatalf("once the released notice finished: delivered %+v with %d rows left, want the one notice and no row", delivered, outboxRows(t, pool))
+	}
+	// The lane stops its wait for the hour once its drain has returned, which is after the row
+	// settled.
+	testwait.Eventually(t, "the released notice's lane dropped its wait for the hour", func() bool {
 		live, _ := clock.armed(time.Hour)
-		return len(delivered) == 1 && outboxRows(t, pool) == 0 && live == 0
+		return live == 0
 	})
 	_, delivered := publisher.snapshot()
 	if got := deliveredKinds(t, delivered); fmt.Sprint(got) != "[pr-blocked to LEGION-1]" {
@@ -649,17 +665,19 @@ func TestAStartBlockedOnTheRuntimeHoldsOnlyItsOwnIssuesLifecycleLane(t *testing.
 		return mustOutboxRow(t, "LEGION-209", record.OrdinaryStatusWrite("in_progress", "todo", ""), tree.clock.Now())
 	}
 	tree.commit(t, "other-status", status(t))
-	testwait.Eventually(t, "the other issue's status landed", func() bool {
-		return tree.client.count() == 1 && outboxRowsOf(t, tree.pool, "LEGION-209") == 0
-	})
+	tree.obs.settled(t, rowOf{issue: "LEGION-209", kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if writes, left := tree.client.count(), outboxRowsOf(t, tree.pool, "LEGION-209"); writes != 1 || left != 0 {
+		t.Fatalf("once the other issue's status finished: %d writes with %d of its rows left, want its one write and no row", writes, left)
+	}
 	tree.blocked(t, "after the other issue's status landed")
 
 	tree.commit(t, "own-implementer", tree.start(t, claim.RoleImplementer))
 	// Another write of the other issue lands meanwhile, so the lanes ran while the row waited.
 	tree.commit(t, "other-status-again", status(t))
-	testwait.Eventually(t, "the other issue's second status landed", func() bool {
-		return tree.client.count() == 2 && outboxRowsOf(t, tree.pool, "LEGION-209") == 0
-	})
+	tree.obs.settled(t, rowOf{issue: "LEGION-209", kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if writes, left := tree.client.count(), outboxRowsOf(t, tree.pool, "LEGION-209"); writes != 2 || left != 0 {
+		t.Fatalf("once the other issue's second status finished: %d writes with %d of its rows left, want two writes and no row", writes, left)
+	}
 	ids := outboxIDs(t, tree.pool)
 	if len(ids) != 2 {
 		t.Fatalf("outbox rows = %v, want the blocked start and the implementer's start behind it", ids)
@@ -670,31 +688,46 @@ func TestAStartBlockedOnTheRuntimeHoldsOnlyItsOwnIssuesLifecycleLane(t *testing.
 	tree.blocked(t, "with the implementer's start behind it")
 
 	tree.spawn.gate.open()
-	testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+	tree.obs.settled(t, rowOf{id: ids[0], outcome: settledFinished}, rowOf{id: ids[1], outcome: settledFinished})
+	if left := outboxRows(t, tree.pool); left != 0 {
+		t.Fatalf("once both starts finished %d rows are left, want none", left)
+	}
 	if got := spawnedRoles(tree.rt); fmt.Sprint(got) != "[architect implementer]" || tree.provisions.Load() != 2 {
 		t.Fatalf("launched %v after %d provisions, want the architect then the implementer, each provisioned", got, tree.provisions.Load())
 	}
 }
 
 // A fact of an issue whose lifecycle lane is blocked commits as any fact does: the wake its row
-// registers returns at once rather than waiting on the lane, so the fact is applied within a
-// bound, and the board row it wrote runs beside the blocked start.
+// registers returns at once rather than waiting on the lane, so the fact's commit returns while
+// the lane is still blocked, and the board row it wrote runs beside the blocked start.
 func TestACommitOnABlockedLifecycleLanesIssueReturnsAtOnceAndItsBoardRowRuns(t *testing.T) {
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
-	began := time.Now()
-	tree.commit(t, "own-status", mustOutboxRow(t, tree.root.Key, record.OrdinaryStatusWrite("in_progress", "todo", ""), tree.clock.Now()))
-	if took := time.Since(began); took > 2*time.Second {
-		t.Fatalf("the fact took %s to commit with the issue's lifecycle lane blocked, want it back within 2s", took)
+	// The commit runs on a goroutine of its own: a commit that waited on the blocked lane would
+	// hold that goroutine and not the test, and the lane stays blocked until the gate below opens,
+	// so such a commit never returns before it.
+	row := mustOutboxRow(t, tree.root.Key, record.OrdinaryStatusWrite("in_progress", "todo", ""), tree.clock.Now())
+	committed := make(chan error, 1)
+	go func() {
+		_, err := intake.ApplyFact(context.Background(), tree.pool, "lanes-test", "own-status", intake.DaemonBooted{Boot: 1},
+			enqueuing{records: tree.records, rows: []record.OutboxRow{row}})
+		committed <- err
+	}()
+	if err := testwait.Receive(t, "the commit of a fact whose issue's lifecycle lane is blocked", committed); err != nil {
+		t.Fatalf("commit own-status: %v", err)
 	}
-	testwait.Eventually(t, "the issue's status landed beside its blocked start", func() bool {
-		return tree.client.count() == 1 && outboxRowsOf(t, tree.pool, tree.root.Key) == 1
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if writes, left := tree.client.count(), outboxRowsOf(t, tree.pool, tree.root.Key); writes != 1 || left != 1 {
+		t.Fatalf("once the issue's status finished beside its blocked start: %d writes with %d of its rows left, want its one write and the start", writes, left)
+	}
 	tree.blocked(t, "after the issue's status landed")
 
 	tree.spawn.gate.open()
-	testwait.Eventually(t, "the start ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if left := outboxRows(t, tree.pool); left != 0 {
+		t.Fatalf("once the start finished %d rows are left, want none", left)
+	}
 }
 
 // One issue's status writes reach Dispatch in the order the workflow made them when the lane
@@ -708,7 +741,8 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("testing", "in_progress", ""), now))
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("needs_review", "testing", ""), now))
 	board := &laneBoard{status: "in_progress", failures: 1}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, log: quietLogger(), observe: obs.observe}
 	runLanes(t, runner, clock)
 
 	backoff := retryBackoff(0)
@@ -719,12 +753,16 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 	if landed, left := board.statuses(), outboxRows(t, pool); len(landed) != 0 || left != 2 {
 		t.Fatalf("while the older row backs off: landed %v with %d rows left, want nothing landed and both rows kept", landed, left)
 	}
+	ids := outboxIDs(t, pool)
 
 	clock.advance(backoff)
 	if fired := clock.fire(backoff); fired != 1 {
 		t.Fatalf("backoff timers fired = %d, want the lane's", fired)
 	}
-	testwait.Eventually(t, "both statuses landed", func() bool { return outboxRows(t, pool) == 0 })
+	obs.settled(t, rowOf{id: ids[0], outcome: settledFinished}, rowOf{id: ids[1], outcome: settledFinished})
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("once both statuses finished %d rows are left, want none", left)
+	}
 	if got := board.statuses(); fmt.Sprint(got) != "[testing needs_review]" {
 		t.Fatalf("statuses landed %v, want testing then needs_review", got)
 	}
@@ -741,7 +779,8 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	clock := microClock()
 	publisher := &gatedPublisher{holderPublisher: &holderPublisher{}, gate: newGate()}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion"}
+	obs := newObserver()
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion", observe: obs.observe}
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock, publisher.gate.open)
 
@@ -760,15 +799,18 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	}
 
 	publisher.gate.open()
-	testwait.Eventually(t, "the older notice was published and finished", func() bool {
-		_, delivered := publisher.snapshot()
-		return len(delivered) == 1 && outboxRows(t, pool) == 1
-	})
+	obs.settled(t, rowOf{issue: "LEGION-2", kind: record.OutboxKindNotice, outcome: settledFinished})
+	if _, delivered := publisher.snapshot(); len(delivered) != 1 || outboxRows(t, pool) != 1 {
+		t.Fatalf("once the older notice finished: delivered %+v with %d rows left, want the older alone and the newer's row", delivered, outboxRows(t, pool))
+	}
 	clock.advance(backoff)
 	if fired := clock.fire(backoff); fired != 1 {
 		t.Fatalf("backoff timers fired = %d, want the newer notice's lane's", fired)
 	}
-	testwait.Eventually(t, "the newer notice followed", func() bool { return outboxRows(t, pool) == 0 })
+	obs.settled(t, rowOf{issue: "LEGION-3", kind: record.OutboxKindNotice, outcome: settledFinished})
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("once the newer notice finished %d rows are left, want none", left)
+	}
 	_, delivered := publisher.snapshot()
 	messages := make([]string, len(delivered))
 	for i, published := range delivered {
@@ -796,7 +838,10 @@ func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
 	tree.blocked(t, "with the second start due behind the first")
 
 	tree.spawn.gate.open()
-	testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+	tree.obs.settled(t, rowOf{id: ids[0], outcome: settledFinished}, rowOf{id: ids[1], outcome: settledFinished})
+	if left := outboxRows(t, tree.pool); left != 0 {
+		t.Fatalf("once both starts finished %d rows are left, want none", left)
+	}
 	if got := spawnedRoles(tree.rt); fmt.Sprint(got) != "[architect implementer]" || tree.spawn.gate.entries() != 2 || tree.provisions.Load() != 2 {
 		t.Fatalf("launched %v through %d Spawn calls after %d provisions, want the architect then the implementer, two of each", got, tree.spawn.gate.entries(), tree.provisions.Load())
 	}
@@ -809,17 +854,21 @@ func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testin
 	tree.holdArchitectStart(t)
 
 	tree.commit(t, "own-notice", mustOutboxRow(t, tree.root.Key, record.Notice{Kind: "design-approved", Version: 2}, tree.clock.Now()))
-	testwait.Eventually(t, "the notice was published beside the blocked start", func() bool {
-		_, delivered := tree.publisher.snapshot()
-		return len(delivered) == 1 && outboxRowsOf(t, tree.pool, tree.root.Key) == 1
-	})
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindNotice, outcome: settledFinished})
+	if _, delivered := tree.publisher.snapshot(); len(delivered) != 1 || outboxRowsOf(t, tree.pool, tree.root.Key) != 1 {
+		t.Fatalf("once the notice finished beside the blocked start: delivered %+v with %d of its rows left, want the one notice and the start",
+			delivered, outboxRowsOf(t, tree.pool, tree.root.Key))
+	}
 	if _, delivered := tree.publisher.snapshot(); delivered[0].topic != architectTopic(t, tree.root.Key) {
 		t.Fatalf("the notice went to %s, want the issue's architect's role topic", delivered[0].topic)
 	}
 	tree.blocked(t, "after the notice was published")
 
 	tree.spawn.gate.open()
-	testwait.Eventually(t, "the start ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+	tree.obs.settled(t, rowOf{issue: tree.root.Key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	if left := outboxRows(t, tree.pool); left != 0 {
+		t.Fatalf("once the start finished %d rows are left, want none", left)
+	}
 }
 
 // A row that runs long keeps its lease: every third of the lease a tick moves the lease a whole
@@ -832,7 +881,8 @@ func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var released sync.Once
 	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}, entered: entered, release: release}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), observe: obs.observe}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), clock.Now()))
 	runLanes(t, runner, clock, func() { released.Do(func() { close(release) }) })
 	<-entered
@@ -864,10 +914,12 @@ func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
 	}
 
 	released.Do(func() { close(release) })
-	testwait.Eventually(t, "the row finished and its renewal stopped", func() bool {
-		live, _ := clock.armed(renewEvery)
-		return outboxRows(t, pool) == 0 && live == 0
-	})
+	// The renewal stops before the row settles (runRow), so once the settlement is reported no
+	// renewal is armed.
+	obs.settled(t, rowOf{id: id, outcome: settledFinished})
+	if live, _ := clock.armed(renewEvery); outboxRows(t, pool) != 0 || live != 0 {
+		t.Fatalf("once the row finished: %d rows left and %d renewals armed, want neither", outboxRows(t, pool), live)
+	}
 	if got := client.count(); got != 1 {
 		t.Fatalf("status writes = %d, want the one", got)
 	}
@@ -881,7 +933,8 @@ func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T
 	records := record.NewStore()
 	clock := microClock()
 	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), observe: obs.observe}
 	runLanes(t, runner, clock)
 
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), clock.Now()))
@@ -897,9 +950,10 @@ func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T
 
 	clock.advance(outboxLease)
 	fireSweep(t, clock)
-	testwait.Eventually(t, "the row ran after its lease lapsed", func() bool {
-		return client.count() == 1 && outboxRows(t, pool) == 0
-	})
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if got, left := client.count(), outboxRows(t, pool); got != 1 || left != 0 {
+		t.Fatalf("once the row ran after its lease lapsed: %d writes with %d rows left, want its one write and no row", got, left)
+	}
 }
 
 // The daemon's stop joins its lanes: Run, its context cancelled while a lane holds a row blocked in
@@ -1017,5 +1071,8 @@ func TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong(t *testi
 	tree.blocked(t, "after the held row was logged")
 
 	tree.spawn.gate.open()
-	testwait.Eventually(t, "both starts ran", func() bool { return outboxRows(t, tree.pool) == 0 })
+	tree.obs.settled(t, rowOf{id: running, outcome: settledFinished}, rowOf{id: held, outcome: settledFinished})
+	if left := outboxRows(t, tree.pool); left != 0 {
+		t.Fatalf("once both starts finished %d rows are left, want none", left)
+	}
 }

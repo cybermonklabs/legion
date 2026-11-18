@@ -2,6 +2,7 @@ package kvwatch_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // armed stands in for time.AfterFunc and records what the watcher asked of it: how long it wanted
@@ -122,7 +124,7 @@ const (
 // jetStream is the JetStream context of conn.
 func jetStream(t *testing.T, conn *natsgo.Conn) natsgo.JetStreamContext {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -138,26 +140,16 @@ func deleteTestBucket(t *testing.T, js natsgo.JetStreamContext) {
 	}
 }
 
-// stopNoticeBudget is how long waitForStopWarns waits for a stop. Against a real nats-server
-// v2.11.4 the notice was measured at about 10 s (10.017 s, 10.022 s and 10.006 s) and at 18.81 s
-// twice, so this is six times the usual notice and about three times the worst observed, which
-// leaves a slow runner room.
-const stopNoticeBudget = 60 * time.Second
-
-// waitForStopWarns waits until the stops' WARNs number want: each stop writes one. It polls on
-// its own budget rather than through the package's eventually, because nats.go's ordered consumer
-// reports its stream gone only after two missed 5 s idle heartbeats: the notice was measured at
-// about 10 s, and at 18.81 s, so eventually's 5 s deadline can never see this WARN. Polling ends
-// a passing case as soon as the WARN is written.
+// waitForStopWarns waits until the stops' WARNs number want: each stop writes one. nats.go's
+// ordered consumer reports its stream gone only after two missed 5 s idle heartbeats (the notice
+// was measured at about 10 s against nats-server v2.11.4, and at 18.81 s), a timer inside nats.go
+// that no clock of ours reaches; the shared wait holds for it with no bound of its own, and no
+// verdict here turns on how long it took.
 func waitForStopWarns(t *testing.T, records func() []map[string]any, want int) {
 	t.Helper()
-	deadline := time.Now().Add(stopNoticeBudget)
-	for len(matching(records(), "WARN", stoppedWarn)) != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d stopped watcher WARNs", want)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, fmt.Sprintf("%d stopped-watcher WARNs", want), func() bool {
+		return len(matching(records(), "WARN", stoppedWarn)) == want
+	})
 }
 
 // A stop a Rewatch repairs a moment later is a WARN and nothing more. The repair disarms the wait,
@@ -172,7 +164,7 @@ func TestAWatcherRepairedAfterItsConsumerWentLogsOneWarn(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into,
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
@@ -205,7 +197,7 @@ func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 
 	deleteTestBucket(t, jetStream(t, conn))
 	waitForStopWarns(t, records, 1)
@@ -249,7 +241,7 @@ func TestAWatcherNothingRepairsLogsWhenItsMinutePasses(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 
 	deleteTestBucket(t, jetStream(t, conn))
 	waitForStopWarns(t, records, 1)
@@ -285,7 +277,7 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
@@ -329,11 +321,9 @@ func TestAWatcherStoppedOnPurposeLogsNeither(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	w.End(ctx)
+	w.End(testwait.Context(t))
 
 	if warns := matching(records(), "WARN", stoppedWarn); len(warns) != 0 {
 		t.Fatalf("an ordered stop logged %d %q warnings, want none: %v", len(warns), stoppedWarn, warns)

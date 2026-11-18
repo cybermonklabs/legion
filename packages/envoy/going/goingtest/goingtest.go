@@ -27,9 +27,13 @@ type Reply struct {
 	ToolCalls []going.ToolCall
 	// Chunk is how many runes each frame carries; zero picks a small default.
 	Chunk int
-	// Pause is how long the model waits between frames, so a test can assert the first byte
-	// arrives early.
+	// Pause is how long the model waits between frames, the latency of a model writing its
+	// answer; it is the stand-in's own and runs on the real clock.
 	Pause time.Duration
+	// HoldAfterFirstFrame, when non-nil, holds the model after its first frame until the test
+	// closes it, so a test proves a delta reached its reader while the turn was still open,
+	// reading no clock.
+	HoldAfterFirstFrame <-chan struct{}
 	// Silent never answers: the response is held open until the caller's context ends.
 	Silent bool
 	// Status, when non-zero, is answered with an error body instead of a completion.
@@ -129,7 +133,7 @@ func stream(w http.ResponseWriter, reply Reply) {
 	if chunk <= 0 {
 		chunk = defaultChunk
 	}
-	wrote := false
+	wrote, held := false, false
 	write := func(delta wireDelta) {
 		if wrote && reply.Pause > 0 {
 			time.Sleep(reply.Pause)
@@ -138,6 +142,10 @@ func stream(w http.ResponseWriter, reply Reply) {
 		frame, _ := json.Marshal(wireFrame{Choices: []wireChoice{{Delta: delta}}})
 		_, _ = w.Write([]byte("data: " + string(frame) + "\n\n"))
 		_ = control.Flush()
+		if reply.HoldAfterFirstFrame != nil && !held {
+			held = true
+			<-reply.HoldAfterFirstFrame
+		}
 	}
 	for _, piece := range pieces(reply.Text, chunk) {
 		write(wireDelta{Content: piece})

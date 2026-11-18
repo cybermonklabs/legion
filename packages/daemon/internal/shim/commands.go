@@ -1,7 +1,6 @@
 package shim
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -44,16 +43,16 @@ func (s *shim) answer(command func()) {
 // — and at the head of the drain, so the drain always has that reading; the first call is the one
 // that counts, and the rest cancel an already cancelled context.
 func (s *shim) endCommands() {
-	s.commandsEnded.CompareAndSwap(0, int64(time.Since(s.started)))
+	ended := s.clock.Now()
+	s.commandsEnded.CompareAndSwap(nil, &ended)
 	s.cancelCommands()
 }
 
 // sinceCommandsEnded is how long the commands the daemon asked for have been ended for, read on
-// this process's monotonic clock as the difference of two offsets from s.started
-// (commandsEnded). It answers 0 before endCommands has run.
+// the shim's clock (commandsEnded). It answers 0 before endCommands has run.
 func (s *shim) sinceCommandsEnded() time.Duration {
-	if ended := s.commandsEnded.Load(); ended != 0 {
-		return time.Since(s.started) - time.Duration(ended)
+	if ended := s.commandsEnded.Load(); ended != nil {
+		return s.clock.Now().Sub(*ended)
 	}
 	return 0
 }
@@ -88,12 +87,11 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // reaches — so no further waiting would end it: it is logged and left, and the shim's exit reaches
 // the daemon rather than being held past the stop grace at which the launcher kills it.
 //
-// The two readings the bound is built from are on two clocks, because they have to be: the wait
-// itself is taken from the shim's own clock (s.clock, which a test drives step by step), and
-// Clock hands out waits and has no reading of the time, so what the commands have already spent
-// is read from this process's monotonic clock instead — as an offset from s.started, which keeps
-// a wall clock stepped mid-stop from making that span negative, which would stretch this wait
-// past the bound it means to give, or enormous, which would leave no wait at all.
+// Both readings the bound is built from are the shim's own clock (s.clock), the one its wait is
+// taken from too, so a test that drives that clock step by step drives the bound as well. The
+// real clock's readings carry the monotonic clock, which their difference is taken on, so a wall
+// clock stepped mid-stop can neither make that span negative, which would stretch this wait past
+// the bound it means to give, nor enormous, which would leave no wait at all.
 func (s *shim) drainCommands() {
 	if s.commandsInFlight.Load() == 0 {
 		return
@@ -169,7 +167,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 		return fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to adopt the working copy with", os.Getenv("PATH"))
 	}
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.commands, budget)
+	ctx, cancel := s.clock.WithTimeout(s.commands, budget)
 	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	started := time.Now()

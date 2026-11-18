@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,31 +15,29 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// next is the next observation, failing the test when none arrives within a second.
+// next is the next observation, failing the test when the channel closes instead.
 func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observation {
 	t.Helper()
-	select {
-	case obs, ok := <-observations:
-		if !ok {
-			t.Fatal("the observation channel closed")
-		}
-		return obs
-	case <-time.After(time.Second):
-		t.Fatal("no observation within a second")
+	obs := testwait.Receive(t, "the next observation", observations)
+	if obs.Kind == "" {
+		t.Fatal("the observation channel closed")
 	}
-	return runtime.Observation{}
+	return obs
 }
 
-// quiet fails the test when an observation arrives within the window.
-func quiet(t *testing.T, observations <-chan runtime.Observation, window time.Duration) {
+// nextInBubble is next for a row that runs in a synctest bubble, where the shared wait cannot read
+// the test's deadline: a bare receive, which synctest fails as a deadlock naming every blocked
+// goroutine should the observation never come.
+func nextInBubble(t *testing.T, observations <-chan runtime.Observation) runtime.Observation {
 	t.Helper()
-	select {
-	case obs := <-observations:
-		t.Fatalf("unexpected observation %s of %s at %s: %s", obs.Kind, obs.Locator.Claim, obs.Locator.Incarnation, obs.Detail)
-	case <-time.After(window):
+	obs, open := <-observations
+	if !open {
+		t.Fatal("the observation channel closed")
 	}
+	return obs
 }
 
 func runningPod(token claim.Token, uid string, role claim.Role) *corev1.Pod {
@@ -75,7 +74,14 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 			t.Fatalf("%s at %+v, want Gone at the recorded locator", obs.Kind, obs.Locator)
 		}
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Labels["touched"] = "yes" })
-		quiet(t, observations, 200*time.Millisecond)
+		// A change is evaluated only for a claim the watch holds (notify marks the watched claims,
+		// nextDirty takes only those), and the Gone delivered is what takes the claim out of it
+		// (forgetIf, right after the send): once the watch has let it go, nothing of it is
+		// evaluated or delivered again.
+		g.eventually("the claim to leave the watch once its Gone was delivered", func() bool {
+			_, watched := g.r.recorded(workerToken)
+			return !watched
+		})
 	})
 	t.Run("not the recorded process", func(t *testing.T) {
 		g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
@@ -146,44 +152,41 @@ func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
 // (supervise/machine.go: Uncertain only counts a streak and re-arms the same probe timer — it
 // starts no deadline, suspends nothing, and relaunches nothing). Once the launcher reports in,
 // the very next evaluation is Alive at that same locator, with no write in between: the stage 4a
-// live re-adopt check hit exactly this ordering (LEGION-462).
+// live re-adopt check hit exactly this ordering (LEGION-462). The row runs in a synctest bubble:
+// the watch evaluates again at its probe interval, which passes on the bubble's clock, and its
+// 50 ms keeps the controller stand-in's 5 ms ticks between two evaluations few.
 func TestADisconnectedLauncherAtReadoptionIsUncertainThenAliveNeverRelaunched(t *testing.T) {
-	g := newRig(t, []k8sruntime.Object{runningSandbox(t, rootToken, claim.RoleArchitect), runningPod(rootToken, "uid-pod-root", claim.RoleArchitect)},
-		withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
-	loc := sandboxLocator(rootToken, "uid-pod-root")
-	observations, err := g.r.Observe(g.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: rootToken, Locator: &loc}}, time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	if obs := next(t, observations); obs.Kind != runtime.Uncertain || obs.Locator != loc || !strings.Contains(obs.Detail, "disconnected") {
-		t.Fatalf("%s at %+v (%q), want Uncertain quoting the disconnected launcher at the recorded locator", obs.Kind, obs.Locator, obs.Detail)
-	}
-	g.reportLauncher(rootToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
-	alive := false
-	for range 5 {
-		obs := next(t, observations)
-		if obs.Locator != loc {
-			t.Fatalf("%s at %+v, want every observation at the one recorded locator %s", obs.Kind, obs.Locator, loc.Incarnation)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, []k8sruntime.Object{runningSandbox(t, rootToken, claim.RoleArchitect), runningPod(rootToken, "uid-pod-root", claim.RoleArchitect)},
+			withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
+		loc := sandboxLocator(rootToken, "uid-pod-root")
+		observations, err := g.r.Observe(g.ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
-		switch obs.Kind {
-		case runtime.Alive:
-			alive = true
-		case runtime.Uncertain:
-			continue
-		default:
-			t.Fatalf("%s at %+v, want Uncertain until the launcher reconnects, then Alive — never %s", obs.Kind, obs.Locator, obs.Kind)
+		if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: rootToken, Locator: &loc}}, time.Hour); err != nil {
+			t.Fatal(err)
 		}
-		break
-	}
-	if !alive {
-		t.Fatal("the launcher reported in, but no Alive observation followed within 5 probe intervals")
-	}
-	if writes := g.writes(); len(writes) > 0 {
-		t.Fatalf("a disconnected-then-reconnected launcher wrote %v; re-adoption only observes, it never relaunches", writes)
-	}
+		if obs := nextInBubble(t, observations); obs.Kind != runtime.Uncertain || obs.Locator != loc || !strings.Contains(obs.Detail, "disconnected") {
+			t.Fatalf("%s at %+v (%q), want Uncertain quoting the disconnected launcher at the recorded locator", obs.Kind, obs.Locator, obs.Detail)
+		}
+		g.reportLauncher(rootToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
+		for {
+			obs := nextInBubble(t, observations)
+			if obs.Locator != loc {
+				t.Fatalf("%s at %+v, want every observation at the one recorded locator %s", obs.Kind, obs.Locator, loc.Incarnation)
+			}
+			if obs.Kind == runtime.Alive {
+				break
+			}
+			if obs.Kind != runtime.Uncertain {
+				t.Fatalf("%s at %+v, want Uncertain until the launcher reconnects, then Alive — never %s", obs.Kind, obs.Locator, obs.Kind)
+			}
+		}
+		if writes := g.writes(); len(writes) > 0 {
+			t.Fatalf("a disconnected-then-reconnected launcher wrote %v; re-adoption only observes, it never relaunches", writes)
+		}
+	})
 }
 
 // Suspend drops the claim from the watch, as tmux does: when it returns the watch no longer holds
@@ -217,15 +220,17 @@ func TestSuspendTakesTheClaimOutOfTheWatch(t *testing.T) {
 	if g.pod(loc.Sandbox.Name) == nil {
 		t.Fatal("suspending one role removed the issue pod")
 	}
+	// The observer evaluates and delivers one claim at a time, so whatever of the tester it had
+	// evaluated before Suspend took the claim out arrives before anything of the reviewer, who
+	// joins the watch only now: its first observation closes what the watch still had in flight.
+	g.spawn(testSpec(t, otherToken, claim.RoleReviewer, testTree))
 	var late []runtime.Observation
-	for window := time.After(200 * time.Millisecond); ; {
-		select {
-		case obs := <-observations:
-			late = append(late, obs)
-			continue
-		case <-window:
+	for {
+		obs := next(t, observations)
+		if obs.Locator.Claim == otherToken {
+			break
 		}
-		break
+		late = append(late, obs)
 	}
 	for _, obs := range late {
 		if obs.At.After(returnedAt) {
@@ -242,9 +247,12 @@ func TestSuspendTakesTheClaimOutOfTheWatch(t *testing.T) {
 // run on production hit it: Suspend's shutdown frame ended the pod, Observe began evaluating the
 // death — the log read is its slow step — and Suspend returned before the Gone was sent.
 func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
-	g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
-		withoutController())
+	g := newRig(t, []k8sruntime.Object{
+		runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester),
+		runningSandbox(t, childToken, claim.RoleImplementer), runningPod(childToken, "uid-pod-child", claim.RoleImplementer),
+	}, withoutController())
 	g.reportLauncher(workerToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
+	g.reportLauncher(childToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
 	observations, err := g.r.Observe(g.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -269,40 +277,48 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 	g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 143, "Error")}}
 	})
-	select {
-	case <-reading:
-	case <-time.After(time.Second):
-		t.Fatal("Observe never began evaluating the ended pod")
-	}
+	testwait.Receive(t, "Observe to begin evaluating the ended pod", reading)
 	if err := g.r.Suspend(g.ctx, loc); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
-	quiet(t, observations, 300*time.Millisecond)
+	// The observer evaluates and delivers one claim at a time, so a claim that joins the watch
+	// now is delivered only once the verdict in flight has been sent or dropped: the first thing
+	// delivered after the release must be the joining claim's.
+	child := sandboxLocator(childToken, "uid-pod-child")
+	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: childToken, Locator: &child}}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if obs := next(t, observations); obs.Locator.Claim != childToken {
+		t.Fatalf("unexpected observation %s of %s at %s: %s; want the verdict evaluated across Suspend dropped", obs.Kind, obs.Locator.Claim, obs.Locator.Incarnation, obs.Detail)
+	}
 }
 
 // Every watched claim is evaluated again each probe interval, with no change to its objects: the
-// supervisor retries a waiting delivery on an Alive, as it does at each tmux sweep.
+// supervisor retries a waiting delivery on an Alive, as it does at each tmux sweep. The row runs in
+// a synctest bubble, so the three intervals it reads pass on the bubble's clock, not the machine's.
 func TestEveryWatchedClaimIsEvaluatedEachProbeInterval(t *testing.T) {
-	g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
-		withoutController(), withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
-	loc := sandboxLocator(workerToken, recorded)
-	g.reportLauncher(workerToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
-	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	observations, err := g.r.Observe(g.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		if obs := next(t, observations); obs.Kind != runtime.Alive || obs.Locator != loc {
-			t.Fatalf("%s at %+v, want Alive at the recorded locator", obs.Kind, obs.Locator)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
+			withoutController(), withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
+		loc := sandboxLocator(workerToken, recorded)
+		g.reportLauncher(workerToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
+		if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if _, err := g.r.Observe(g.ctx); err == nil {
-		t.Fatal("a second Observe ran beside the first")
-	}
+		observations, err := g.r.Observe(g.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			if obs := nextInBubble(t, observations); obs.Kind != runtime.Alive || obs.Locator != loc {
+				t.Fatalf("%s at %+v, want Alive at the recorded locator", obs.Kind, obs.Locator)
+			}
+		}
+		if _, err := g.r.Observe(g.ctx); err == nil {
+			t.Fatal("a second Observe ran beside the first")
+		}
+	})
 }
 
 // The daemon's sweep reads its claims unordered against the machines, so it can hand

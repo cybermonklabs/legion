@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The answers hook's record in `ENVOY_ANSWERS_TIMING_FILE`, which only tests set, also holds
+  `refresher`: the pid of the refresher the hook started, or null when it started none. Claude
+  Code never sets the variable, so the hook does the same work as before.

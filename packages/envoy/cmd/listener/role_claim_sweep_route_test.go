@@ -45,6 +45,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -282,7 +283,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 	wantClaims := sweepRouteOtherClaims + sweepRouteClaimsHeld*len(cases)
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	testwait.Eventually(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false
@@ -310,20 +311,16 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(testCase.method, testCase.path, strings.NewReader(testCase.body))
-			started := time.Now()
 			mux.ServeHTTP(recorder, request)
-			elapsed := time.Since(started)
 			// The counts are read before anything else this case does touches the bucket, so they
-			// are the request's own calls and no later read's.
+			// are the request's own calls and no later read's. They are the work the route did:
+			// the Gets and Deletes below must be the roles the session holds, not the claims in
+			// the bucket, which is what the route's budget protected against by time.
 			gets, deletes := handle.totals()
 			body := strings.TrimSpace(recorder.Body.String())
-			t.Logf("%s %s answered %d in %s after %d Gets and %d Deletes on a role bucket of %d claims; body %q",
-				testCase.method, testCase.path, recorder.Code, elapsed, gets, deletes, wantClaims, body)
+			t.Logf("%s %s answered %d after %d Gets and %d Deletes on a role bucket of %d claims; body %q",
+				testCase.method, testCase.path, recorder.Code, gets, deletes, wantClaims, body)
 
-			if elapsed >= sendRequestBudget {
-				t.Fatalf("%s %s answered %d after %s, outside the route's own budget of %s: a deregistration must cost the roles its session holds, not the %d claims in the bucket",
-					testCase.method, testCase.path, recorder.Code, elapsed, sendRequestBudget, wantClaims)
-			}
 			if recorder.Code != testCase.wantStatus {
 				t.Fatalf("%s %s: status %d, body %s; want %d", testCase.method, testCase.path, recorder.Code, recorder.Body.String(), testCase.wantStatus)
 			}
@@ -431,7 +428,7 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotARea
 
 	wantClaims := sweepRouteDegradedOtherClaims + sweepRouteClaimsHeld
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	testwait.Eventually(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false

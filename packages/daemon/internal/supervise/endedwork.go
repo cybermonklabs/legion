@@ -321,15 +321,15 @@ func (m *Machine) endState() ClaimState {
 // before that turn began is no report of that turn (pods.IdleClaim.Reported), though the background
 // work it says ran is kept.
 //
-// The read is bounded by the claim-write deadline, as the writes of a decision are, so a store that
-// has stopped answering costs the record and never holds the let-go: a read that fails, and a daemon
-// that wires no read, are a launch with no report, which the record says rather than reading it as
-// nothing running.
+// The read is bounded by the claim-write deadline, armed on the machine's clock as the writes of a
+// decision are (Machine.write), so a store that has stopped answering costs the record and never
+// holds the let-go: a read that fails, and a daemon that wires no read, are a launch with no
+// report, which the record says rather than reading it as nothing running.
 func (m *Machine) launchActivity(ctx context.Context) (ActivityReport, bool) {
 	if m.deps.ClaimActivity == nil {
 		return ActivityReport{}, false
 	}
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	reading, cancel := m.deps.Clock.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()
 	report, held, err := m.deps.ClaimActivity(reading, m.claim.Token, m.claim.Generation)
 	if err != nil {

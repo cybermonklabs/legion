@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room this process holds for a document another process writes follows that write: the write
@@ -77,24 +78,25 @@ func drain(notes chan string) {
 	}
 }
 
-// waitNote waits for the next note for artifactID, ignoring any other document's.
+// waitNote waits for the next note for artifactID, passing over any other document's.
 func waitNote(t *testing.T, notes chan string, artifactID, what string) {
 	t.Helper()
-	deadline := time.After(roomWait(t))
-	for {
-		select {
-		case room := <-notes:
-			if room == artifactID {
-				return
+	testwait.Eventually(t, what+": a note for "+artifactID, func() bool {
+		for {
+			select {
+			case room := <-notes:
+				if room == artifactID {
+					return true
+				}
+			default:
+				return false
 			}
-		case <-deadline:
-			t.Fatalf("%s: nothing heard for %s within %v", what, artifactID, roomWait(t))
 		}
-	}
+	})
 }
 
-// countNotes is how many notes for artifactID arrive within quiet of each other.
-func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
+// countNotes is how many notes for artifactID notes holds now; it takes them all.
+func countNotes(notes chan string, artifactID string) int {
 	count := 0
 	for {
 		select {
@@ -102,10 +104,24 @@ func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
 			if room == artifactID {
 				count++
 			}
-		case <-time.After(quiet):
+		default:
 			return count
 		}
 	}
+}
+
+// awaitCatchUpLane returns once service's catch-up lane has run everything queued on it now. The
+// lane runs its work in the order it was queued (roomSyncLane), and a notification's decision
+// queues the catch-up it asks for before it notes the decision (roomCatchUps.request), so once a
+// marker queued after the decisions a test heard has run, every catch-up they asked for has read.
+func awaitCatchUpLane(t *testing.T, service *Service) {
+	t.Helper()
+	service.catchUps.mu.Lock()
+	lane := service.catchUps.lane
+	service.catchUps.mu.Unlock()
+	reached := make(chan struct{})
+	lane.push(func(context.Context) { close(reached) })
+	testwait.Receive(t, "the catch-up lane to run a marker queued after the decisions", reached)
 }
 
 // replaceStoredHistory replaces artifactID's stored history with markdown as a rebuild does
@@ -152,7 +168,7 @@ func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *test
 	pair := newProcessPair(t)
 	runCatchUps(t, pair.taskA)
 	browser := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
-	if err := browser.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID), 10*time.Second); err != nil {
+	if err := browser.WaitForText(t, peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID)); err != nil {
 		t.Fatal(err)
 	}
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
@@ -165,7 +181,7 @@ func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *test
 	if !strings.Contains(stored, "Bob writes on the other process.") {
 		t.Fatalf("the stored document after the other process's write = %q, want its paragraph", stored)
 	}
-	if err := browser.WaitForText(peerMarkdown, stored, roomWait(t)); err != nil {
+	if err := browser.WaitForText(t, peerMarkdown, stored); err != nil {
 		t.Fatalf("the browser on task A never saw task B's write: %v", err)
 	}
 	t.Logf("task B's write reached the browser on task A %v after it began", time.Since(started).Round(time.Millisecond))
@@ -177,7 +193,7 @@ func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *test
 	if pair.taskA.srv.GetDoc(pair.artifactID) != room {
 		t.Fatal("task A's room was replaced rather than caught up")
 	}
-	waitFor(t, roomWait(t), "task A's room to stand at the head", func() bool {
+	waitFor(t, "task A's room to stand at the head", func() bool {
 		return !roomBehind(t, pair.taskA, pair.artifactID)
 	})
 	requireRoomStillWrites(t, pair.taskA, pair.artifactID, 3)
@@ -202,7 +218,8 @@ func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
 		waitNote(t, notes.decided, pair.artifactID, fmt.Sprintf("keystroke %d's head announcement", keystroke))
 		waitNote(t, notes.decided, pair.artifactID, fmt.Sprintf("keystroke %d's bare announcement", keystroke))
 	}
-	if reads := countNotes(notes.reads, pair.artifactID, 100*time.Millisecond); reads != 0 {
+	awaitCatchUpLane(t, pair.taskA)
+	if reads := countNotes(notes.reads, pair.artifactID); reads != 0 {
 		t.Fatalf("task A's own appends cost %d catch-up reads, want none", reads)
 	}
 
@@ -375,19 +392,15 @@ func TestARebuildOnTheOtherProcessClosesAResidentRoom(t *testing.T) {
 	pair := newProcessPair(t)
 	runCatchUps(t, pair.taskA)
 	browser := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
-	if err := browser.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID), 10*time.Second); err != nil {
+	if err := browser.WaitForText(t, peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID)); err != nil {
 		t.Fatal(err)
 	}
 
 	replaceStoredHistory(t, pair.database, pair.artifactID, "Rebuilt elsewhere.\n")
-	select {
-	case <-browser.Ended:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the browser's socket was still open %v after the rebuild; its copy holds %q", roomWait(t), peerMarkdown(browser))
-	}
+	testwait.Receive(t, "the browser's socket to end once the rebuild closed its room", browser.Ended)
 	waitForNoLiveDocument(t, pair.taskA, pair.artifactID)
 	again := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
-	if err := again.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID), 10*time.Second); err != nil {
+	if err := again.WaitForText(t, peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID)); err != nil {
 		t.Fatal(err)
 	}
 	if markdown := peerMarkdown(again); !strings.Contains(markdown, "Rebuilt elsewhere.") {
@@ -467,17 +480,13 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 		defer close(caught)
 		service.catchUps.catchUp(ctx, artifactID)
 	}()
-	waitFor(t, roomWait(t), "the catch-up to confirm its verdict under the document's lock", func() bool {
+	waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
 		return waitingAdvisoryLocks(t, database) > 0
 	})
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
-	select {
-	case <-caught:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the catch-up never finished")
-	}
+	testwait.Receive(t, "the catch-up to finish once the write committed", caught)
 	if service.srv.GetDoc(artifactID) != room {
 		t.Fatal("the catch-up closed the room this process was writing")
 	}
@@ -524,16 +533,12 @@ func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing
 			defer close(caught)
 			service.catchUps.catchUp(context.Background(), artifactID)
 		}()
-		waitFor(t, roomWait(t), "the catch-up to confirm its verdict under the document's lock", func() bool {
+		waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
 			return waitingAdvisoryLocks(t, database) > 0
 		})
 	}
 	settleCurrentGeneration(t, service, artifactID)
-	select {
-	case <-caught:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the catch-up never finished once the settlement committed")
-	}
+	testwait.Receive(t, "the catch-up to finish once the settlement committed", caught)
 	if service.srv.GetDoc(artifactID) != room {
 		t.Fatal("the room was closed under this process's own repairing settlement")
 	}
@@ -615,7 +620,7 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 	if pair.taskA.srv.GetDoc(elsewhere) != nil {
 		t.Fatal("the catch-up loaded a room for a document nobody here had open")
 	}
-	if reads := countNotes(notes.reads, elsewhere, 0); reads != 0 {
+	if reads := countNotes(notes.reads, elsewhere); reads != 0 {
 		t.Fatalf("the catch-up read %d time(s) for a document with no room here", reads)
 	}
 }
@@ -652,11 +657,7 @@ func TestARoomLeftBehindWhileTheListenerWasDownIsCaughtUpOnTheReconnect(t *testi
 
 	pair.leaveTaskABehind(t, 2, model.Actor{Kind: "user", ID: "bob"}, "Bob writes while the listener is redialing.\n")
 	close(up)
-	select {
-	case <-connected:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room sync never reconnected")
-	}
+	testwait.Receive(t, "the room sync to reconnect", connected)
 	if roomBehind(t, pair.taskA, pair.artifactID) {
 		t.Fatal("task A's room is still behind the head after the reconnect's sweep")
 	}
@@ -671,7 +672,7 @@ func TestARoomLeftBehindWhileTheListenerWasDownIsCaughtUpOnTheReconnect(t *testi
 func waitForCatchUpsIdle(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
 	catchUps := service.catchUps
-	waitFor(t, roomWait(t), "the room's scheduled catch-up to run", func() bool {
+	waitFor(t, "the room's scheduled catch-up to run", func() bool {
 		catchUps.mu.Lock()
 		defer catchUps.mu.Unlock()
 		_, loading := catchUps.loading[artifactID]
@@ -713,7 +714,7 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 			t.Fatalf("append as an old build: %v", err)
 		}
 	}
-	waitFor(t, roomWait(t), "the burst's announcements to queue on the lane", func() bool {
+	waitFor(t, "the burst's announcements to queue on the lane", func() bool {
 		lane.mu.Lock()
 		defer lane.mu.Unlock()
 		return len(lane.queue) >= burst
@@ -723,7 +724,8 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 		waitNote(t, notes.decided, pair.artifactID, "the burst's announcements")
 	}
 	waitNote(t, notes.reads, pair.artifactID, "the burst's catch-up")
-	if reads := countNotes(notes.reads, pair.artifactID, 300*time.Millisecond); reads != 0 {
+	awaitCatchUpLane(t, pair.taskA)
+	if reads := countNotes(notes.reads, pair.artifactID); reads != 0 {
 		t.Fatalf("a burst of %d bare announcements cost %d catch-up reads, want one", burst, reads+1)
 	}
 	if roomBehind(t, pair.taskA, pair.artifactID) {
@@ -765,11 +767,7 @@ func listenForDocumentChanges(t *testing.T, database *store.Store) <-chan docume
 		cancel()
 		<-done
 	})
-	select {
-	case <-listening:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the test's own listener never listened")
-	}
+	testwait.Receive(t, "the test's own listener to listen", listening)
 	return heard
 }
 
@@ -778,37 +776,38 @@ func listenForDocumentChanges(t *testing.T, database *store.Store) <-chan docume
 func requireAnnouncement(t *testing.T, heard <-chan documentHeadNotification, artifactID string, head int64, sender, what string) {
 	t.Helper()
 	for _, want := range []string{documentHeadChannel, documentChangedChannel} {
-		select {
-		case got := <-heard:
-			if got.channel != want {
-				t.Fatalf("%s: heard %s first, want %s then %s", what, got.channel, documentHeadChannel, documentChangedChannel)
+		got := testwait.Receive(t, fmt.Sprintf("%s: the %s announcement", what, want), heard)
+		if got.channel != want {
+			t.Fatalf("%s: heard %s first, want %s then %s", what, got.channel, documentHeadChannel, documentChangedChannel)
+		}
+		if want == documentChangedChannel {
+			if got.payload != artifactID {
+				t.Fatalf("%s: the bare announcement names %s, want %s", what, got.payload, artifactID)
 			}
-			if want == documentChangedChannel {
-				if got.payload != artifactID {
-					t.Fatalf("%s: the bare announcement names %s, want %s", what, got.payload, artifactID)
-				}
-				continue
-			}
-			var announced documentHead
-			if err := json.Unmarshal([]byte(got.payload), &announced); err != nil {
-				t.Fatalf("%s: decode the head announcement %q: %v", what, got.payload, err)
-			}
-			if announced != (documentHead{R: artifactID, V: head, P: sender}) {
-				t.Fatalf("%s: the head announcement is %+v, want %+v", what, announced, documentHead{R: artifactID, V: head, P: sender})
-			}
-		case <-time.After(roomWait(t)):
-			t.Fatalf("%s: no %s announcement within %v", what, want, roomWait(t))
+			continue
+		}
+		var announced documentHead
+		if err := json.Unmarshal([]byte(got.payload), &announced); err != nil {
+			t.Fatalf("%s: decode the head announcement %q: %v", what, got.payload, err)
+		}
+		if announced != (documentHead{R: artifactID, V: head, P: sender}) {
+			t.Fatalf("%s: the head announcement is %+v, want %+v", what, announced, documentHead{R: artifactID, V: head, P: sender})
 		}
 	}
 }
 
-// requireNoAnnouncement fails when anything is heard within a fifth of a second.
-func requireNoAnnouncement(t *testing.T, heard <-chan documentHeadNotification, what string) {
+// requireNoAnnouncement fails when anything is heard before a marker notification it sends on
+// documentChangedChannel from a transaction of its own: Postgres delivers the notifications of
+// committed transactions in the order they committed, so an announcement sent before the marker is
+// heard before it.
+func requireNoAnnouncement(t *testing.T, database *store.Store, heard <-chan documentHeadNotification, what string) {
 	t.Helper()
-	select {
-	case got := <-heard:
+	marker := "marker after " + what
+	if _, err := database.Pool.Exec(context.Background(), `select pg_notify($1, $2)`, documentChangedChannel, marker); err != nil {
+		t.Fatalf("%s: send the marker notification: %v", what, err)
+	}
+	if got := testwait.Receive(t, what+": the marker notification sent after it", heard); got.channel != documentChangedChannel || got.payload != marker {
 		t.Fatalf("%s: heard %s %q", what, got.channel, got.payload)
-	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -833,12 +832,12 @@ func TestADurableAppendIsAnnouncedOnlyWhenItsTransactionCommits(t *testing.T) {
 		if err != nil {
 			t.Fatalf("append an update: %v", err)
 		}
-		requireNoAnnouncement(t, heard, "before the append's transaction ended")
+		requireNoAnnouncement(t, database, heard, "before the append's transaction ended")
 		if !commit {
 			if err := tx.Rollback(ctx); err != nil {
 				t.Fatalf("roll the append back: %v", err)
 			}
-			requireNoAnnouncement(t, heard, "a rolled-back append")
+			requireNoAnnouncement(t, database, heard, "a rolled-back append")
 			continue
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -875,12 +874,12 @@ func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testin
 		t.Fatal("the transaction did not append twice, so nothing here is tested")
 	}
 	last := int64(write.versions[1])
-	requireNoAnnouncement(t, heard, "before the commit")
+	requireNoAnnouncement(t, service.store, heard, "before the commit")
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	requireAnnouncement(t, heard, artifactID, last, service.ProcessID(), "the joined transaction's commit")
-	requireNoAnnouncement(t, heard, "after the commit's one announcement")
+	requireNoAnnouncement(t, service.store, heard, "after the commit's one announcement")
 }
 
 // A rebuild replaces a document's whole stored history in its own transaction (RebuildTx), and

@@ -31,11 +31,19 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 var _ runtime.Conns = (*Listener)(nil)
+
+// Clock is the time every request's RPC bound and a launcher hello's wait for an acceptor are
+// measured on: a narrowing of clock.Clock, which clock.Real and the tests' clocktest.Fake both
+// satisfy. The hello's own read deadline is the socket's, on the wall clock.
+type Clock interface {
+	NewTimer(d time.Duration) clock.Timer
+}
 
 // ErrListenerClosed is Await on a listener whose context has ended.
 var ErrListenerClosed = errors.New("worker stream listener closed")
@@ -85,6 +93,8 @@ type Options struct {
 	LauncherWait time.Duration
 	// Log receives the listener's lines; nil is slog.Default().
 	Log *slog.Logger
+	// Clock measures the RPC bound and the launcher wait; nil is the wall clock (clock.Real).
+	Clock Clock
 }
 
 // Listener accepts shim connections and keeps the live one for each claim. Its life is the
@@ -96,6 +106,7 @@ type Listener struct {
 	resolve  HelloResolver
 	launcher LauncherResolver
 	timeout  time.Duration
+	clock    Clock
 	log      *slog.Logger
 	events   *eventQueue
 	mu       sync.Mutex
@@ -148,6 +159,10 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 	if log == nil {
 		log = slog.Default()
 	}
+	clk := opts.Clock
+	if clk == nil {
+		clk = clock.Real()
+	}
 	launcherWait := opts.LauncherWait
 	if launcherWait <= 0 {
 		launcherWait = defaultLauncherWait
@@ -157,6 +172,7 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 		ln:                ln,
 		resolve:           resolve,
 		timeout:           opts.RPCTimeout,
+		clock:             clk,
 		log:               log,
 		events:            newEventQueue(),
 		conns:             map[claim.Token]*Conn{},
@@ -480,16 +496,16 @@ func (l *Listener) awaitLauncherResolver(deadline time.Time) (LauncherResolver, 
 	installed := l.launcherInstalled
 	l.mu.Unlock()
 
-	bound := time.Now().Add(l.launcherWait)
-	if deadline.Before(bound) {
-		bound = deadline
+	wait := l.launcherWait
+	if left := time.Until(deadline); left < wait {
+		wait = left
 	}
-	timer := time.NewTimer(time.Until(bound))
+	timer := l.clock.NewTimer(wait)
 	defer timer.Stop()
 	for {
 		select {
 		case <-installed:
-		case <-timer.C:
+		case <-timer.C():
 			return nil, "launcher acceptor unavailable"
 		}
 		l.mu.Lock()
@@ -520,7 +536,7 @@ func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, i
 	if err := nc.SetReadDeadline(time.Time{}); err != nil {
 		return nil, "connection closed before hello_ack"
 	}
-	conn := newConn(nc, token, l.timeout, l.log, l.events)
+	conn := newConn(nc, token, l.timeout, l.clock, l.log, l.events)
 	l.registrations++
 	conn.seq = l.registrations
 	// The ack is written before the connection is registered, so it reaches the shim ahead of any

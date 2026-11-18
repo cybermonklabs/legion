@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A start that finds a bucket with fewer copies than ENVOY_NATS_REPLICAS raises it with an update
@@ -51,14 +52,14 @@ func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	bucket := func(replicas int) *natsgo.KeyValueConfig {
 		return &natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: replicas}
 	}
-	listener, listenerJS, listenerErrs := connectGranted(t, cluster.URL(), listenerSeed, 10*time.Second)
+	listener, listenerJS, listenerErrs := connectGranted(t, cluster.URL(), listenerSeed)
 	// The listener's own grant creates the bucket, the request bus.EnsureKeyValue's create path
 	// sends; through the cluster, so the member each client below is on answers for the bucket
 	// before that client looks it up.
 	cluster.CreateKeyValue(t, listener, bucket(1))
 	testnats.AwaitStreamCopies(t, adminJS, bucketStream, 1)
 
-	refused, refusedJS, refusedErrs := connectGranted(t, cluster.URL(), refusedSeed, 2*time.Second)
+	refused, refusedJS, refusedErrs := connectGranted(t, cluster.URL(), refusedSeed)
 	_, err = bus.EnsureKeyValue(refused, refusedJS, bucket(3))
 	require.Error(t, err, "a client without the bucket's stream update raised it")
 	refusedRaise := "raise KV_" + bus.InterestBucket + ": " + bus.ReplicasEnvVar + "=3: "
@@ -79,10 +80,16 @@ func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	}
 }
 
+// raiseAnswer bounds each JetStream request the clients of this test make: nats.go's own request
+// timer, lengthened from its five seconds so that a slow answer on a loaded machine is not read as
+// the refusal this test looks for. A refused raise is proven by the server's permissions violation
+// (requirePublishRefused), never by this running out.
+const raiseAnswer = 10 * time.Second
+
 // connectGranted connects to uri as the nkey user whose seed is seed, with JetStream requests that
-// wait up to maxWait, and returns the connection, its JetStream context, and the asynchronous
-// errors the server sends it, a permissions violation among them.
-func connectGranted(t *testing.T, uri, seed string, maxWait time.Duration) (*natsgo.Conn, natsgo.JetStreamContext, <-chan error) {
+// wait raiseAnswer, and returns the connection, its JetStream context, and the asynchronous errors
+// the server sends it, a permissions violation among them.
+func connectGranted(t *testing.T, uri, seed string) (*natsgo.Conn, natsgo.JetStreamContext, <-chan error) {
 	t.Helper()
 	errs := make(chan error, 16)
 	conn, err := testnats.ConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
@@ -93,26 +100,21 @@ func connectGranted(t *testing.T, uri, seed string, maxWait time.Duration) (*nat
 	}))
 	require.NoError(t, err)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(maxWait))
+	js, err := conn.JetStream(natsgo.MaxWait(raiseAnswer))
 	require.NoError(t, err)
 	return conn, js, errs
 }
 
-// requirePublishRefused waits up to 10 s for the server's permissions violation of a publish to
-// subject among errs.
+// requirePublishRefused waits for the server's permissions violation of a publish to subject among
+// errs, passing over the other asynchronous errors it sends.
 func requirePublishRefused(t *testing.T, errs <-chan error, subject string) {
 	t.Helper()
 	want := `Publish to "` + subject + `"`
-	timeout := time.After(10 * time.Second)
 	for {
-		select {
-		case err := <-errs:
-			if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), want) {
-				return
-			}
-			t.Logf("another asynchronous error: %v", err)
-		case <-timeout:
-			t.Fatalf("the server reported no permissions violation of the publish to %s", subject)
+		err := testwait.Receive(t, "the server's permissions violation of the publish to "+subject, errs)
+		if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), want) {
+			return
 		}
+		t.Logf("another asynchronous error: %v", err)
 	}
 }

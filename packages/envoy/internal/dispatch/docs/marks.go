@@ -198,7 +198,7 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 		s.afterReadWarm(artifactID)
 	}
 
-	timer := time.NewTimer(s.markWait)
+	timer := s.clock.NewTimer(s.markWait)
 	defer timer.Stop()
 	final := false
 	for {
@@ -219,7 +219,7 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 
 		select {
 		case <-updates:
-		case <-timer.C:
+		case <-timer.C():
 			final = true
 		case <-ctx.Done():
 			return Anchored{}, ctx.Err()

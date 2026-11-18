@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -56,6 +58,9 @@ func TestProvisionsOfTwoIssuesOverlapAndTheirStoreStepsDoNot(t *testing.T) {
 	var once sync.Once
 	locks := map[string]sync.Locker{}
 	var locksMu sync.Mutex
+	// The wait for the other provision to begin carries the shared wait's bound, so a provision
+	// that never overlaps another ends with its own message rather than at the binary's alarm.
+	bound := testwait.Context(t)
 	r := &outbox{
 		stateDir: t.TempDir(), tokens: outboxTokens{}, log: quietLogger(),
 		provision: func(_ context.Context, request workspace.Request) (workspace.Workspace, error) {
@@ -68,7 +73,7 @@ func TestProvisionsOfTwoIssuesOverlapAndTheirStoreStepsDoNot(t *testing.T) {
 			}
 			select {
 			case <-overlapped:
-			case <-time.After(20 * time.Second):
+			case <-bound.Done():
 				return workspace.Workspace{}, fmt.Errorf("the provision of %s never overlapped another's", request.Issue)
 			}
 			storeStep(t, request, &inStore, &worst)
@@ -109,53 +114,54 @@ func TestProvisionsOfTwoIssuesOverlapAndTheirStoreStepsDoNot(t *testing.T) {
 }
 
 // At most provisionConcurrency checkouts run at once: one more waits for a running one to end. Each
-// provision is handed the wait for a place, which it takes around its checkout.
+// provision is handed the wait for a place, which it takes around its checkout. The provisions run
+// in a synctest bubble: each blocks on a channel (the test's release, or the wait for a place), so
+// once synctest.Wait returns every one has run as far as it can, and the count of the running is
+// final.
 func TestCheckoutsAreBoundedByTheirConcurrency(t *testing.T) {
-	var running, most atomic.Int32
-	release := make(chan struct{})
-	r := &outbox{
-		stateDir: t.TempDir(), tokens: outboxTokens{}, log: quietLogger(),
-		provision: func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
-			if request.CheckoutSlot == nil {
-				return workspace.Workspace{}, fmt.Errorf("the provision of %s was handed no checkout place to wait for", request.Issue)
-			}
-			done, err := request.CheckoutSlot(ctx)
-			if err != nil {
-				return workspace.Workspace{}, err
-			}
-			defer done()
-			now := running.Add(1)
-			defer running.Add(-1)
-			for seen := most.Load(); now > seen && !most.CompareAndSwap(seen, now); seen = most.Load() {
-			}
-			<-release
-			return workspace.Workspace{}, nil
-		},
-	}
-	repo := ghrepo.MustParse("acme/widgets")
-	var wg sync.WaitGroup
-	for i := range provisionConcurrency + 1 {
-		wg.Add(1)
-		go func(key string) {
-			defer wg.Done()
-			if err := r.provisionIn(context.Background(), key, repo, "main", false); err != nil {
-				t.Errorf("provision %s: %v", key, err)
-			}
-		}(fmt.Sprintf("WIDGETS-%d", i+1))
-	}
-	deadline := time.Now().Add(20 * time.Second)
-	for running.Load() < provisionConcurrency && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if got := running.Load(); got != provisionConcurrency {
-		t.Errorf("%d checkouts run at once with %d asked for, want %d", got, provisionConcurrency+1, provisionConcurrency)
-	}
-	close(release)
-	wg.Wait()
-	if got := most.Load(); got != provisionConcurrency {
-		t.Errorf("at most %d checkouts ran at once, want %d", got, provisionConcurrency)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var running, most atomic.Int32
+		release := make(chan struct{})
+		r := &outbox{
+			stateDir: t.TempDir(), tokens: outboxTokens{}, log: quietLogger(),
+			provision: func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
+				if request.CheckoutSlot == nil {
+					return workspace.Workspace{}, fmt.Errorf("the provision of %s was handed no checkout place to wait for", request.Issue)
+				}
+				done, err := request.CheckoutSlot(ctx)
+				if err != nil {
+					return workspace.Workspace{}, err
+				}
+				defer done()
+				now := running.Add(1)
+				defer running.Add(-1)
+				for seen := most.Load(); now > seen && !most.CompareAndSwap(seen, now); seen = most.Load() {
+				}
+				<-release
+				return workspace.Workspace{}, nil
+			},
+		}
+		repo := ghrepo.MustParse("acme/widgets")
+		var wg sync.WaitGroup
+		for i := range provisionConcurrency + 1 {
+			wg.Add(1)
+			go func(key string) {
+				defer wg.Done()
+				if err := r.provisionIn(context.Background(), key, repo, "main", false); err != nil {
+					t.Errorf("provision %s: %v", key, err)
+				}
+			}(fmt.Sprintf("WIDGETS-%d", i+1))
+		}
+		synctest.Wait()
+		if got := running.Load(); got != provisionConcurrency {
+			t.Errorf("%d checkouts run at once with %d asked for, want %d", got, provisionConcurrency+1, provisionConcurrency)
+		}
+		close(release)
+		wg.Wait()
+		if got := most.Load(); got != provisionConcurrency {
+			t.Errorf("at most %d checkouts ran at once, want %d", got, provisionConcurrency)
+		}
+	})
 }
 
 // A provision waiting on its repository's store lock holds no checkout place: with one provision
@@ -200,19 +206,15 @@ func TestAProvisionOfAnotherRepositoryIsNotBlockedByProvisionsWaitingOnOneStoreL
 			}
 		}(fmt.Sprintf("WIDGETS-%d", i+1))
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for waiting.Load() < provisionConcurrency+1 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, "every provision of acme/widgets at its store lock", func() bool {
+		return waiting.Load() >= provisionConcurrency+1
+	})
 	other := make(chan error, 1)
 	go func() { other <- r.provisionIn(context.Background(), "GADGETS-1", gadgets, "main", false) }()
-	select {
-	case err := <-other:
-		if err != nil {
-			t.Errorf("provision of acme/gadgets: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Errorf("a provision of acme/gadgets waited 10s behind %d provisions of acme/widgets (%d of them waiting on its store lock), want it to check out at once", provisionConcurrency+1, waiting.Load()-1)
+	// A provision of acme/gadgets that waited for a place the waiting provisions of acme/widgets
+	// held would wait as long as they do, which is until the test lets the first one go.
+	if err := testwait.Receive(t, "a provision of acme/gadgets to check out while every provision of acme/widgets waits on its store lock", other); err != nil {
+		t.Errorf("provision of acme/gadgets: %v", err)
 	}
 	close(hold)
 	wg.Wait()

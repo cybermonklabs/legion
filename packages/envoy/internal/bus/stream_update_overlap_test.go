@@ -111,12 +111,12 @@ func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
 	startOnCluster(t, cluster, WithReplicas(3))
 	deployed := testnats.AwaitStreamCopies(t, js, Stream, 3).Config
 
-	members := make([]nats.JetStreamContext, 0, len(cluster.URLs()))
-	for i, url := range cluster.URLs() {
-		memberJS, err := testnats.Connect(t, url).JetStream()
-		if err != nil {
-			t.Fatalf("member %d JetStream: %v", i, err)
-		}
+	// Each member's context is a program's (memberJetStream): updateStream reads the stream again
+	// when an update draws no answer, which a member that is not the stream's leader leaves
+	// unanswered while the group elects one, so each send ends at the program's own bound.
+	members := make([]nats.JetStreamContext, 0, len(cluster.Servers))
+	for i := range cluster.Servers {
+		_, memberJS := memberJetStream(t, cluster, i)
 		members = append(members, memberJS)
 	}
 

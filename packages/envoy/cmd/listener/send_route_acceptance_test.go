@@ -12,12 +12,14 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sendBody is one send request's JSON, written the way a client writes it, so each test below
@@ -59,6 +61,37 @@ func serveRecorded(t *testing.T, build func(*logging.Logger) http.HandlerFunc, r
 		t.Fatalf("the record line is not JSON: %v\n%s", err, lines[0])
 	}
 	return recorder, record
+}
+
+// serveRecordedOnGoroutine serves request on a goroutine, so a test may drive a fake clock while
+// the handler is in flight, and returns a finish func the test calls to wait for the answer and
+// read it with its one record line, and the handler's return as awaitArmedBeforeReturn reads it.
+// The log is parsed by finish, on the test's own goroutine, so a request that writes other than
+// one line still fails from there.
+func serveRecordedOnGoroutine(t *testing.T, build func(*logging.Logger) http.HandlerFunc, request *http.Request) (func() (*httptest.ResponseRecorder, map[string]any), func() (string, bool)) {
+	t.Helper()
+	logs := &cmdtest.LockedBuffer{}
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		build(logging.NewWithWriter("test", logs)).ServeHTTP(recorder, request)
+	}()
+	finish := func() (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		testwait.Receive(t, "the handler's answer once the test moved its clock", done)
+		written := strings.TrimSpace(logs.String())
+		lines := strings.Split(written, "\n")
+		if written == "" || len(lines) != 1 {
+			t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs.String())
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+			t.Fatalf("the record line is not JSON: %v\n%s", err, lines[0])
+		}
+		return recorder, record
+	}
+	return finish, closeReturned(done, recorderAnswer(recorder))
 }
 
 // assertRecordFields compares the named fields of one record line, field by field, as the
@@ -176,35 +209,38 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if _, err := sessions.Get(target); err != nil {
 		t.Fatalf("the listener's cache does not hold %s (%v): the 503 below could come from the session read", target, err)
 	}
-	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-	send := func() (*httptest.ResponseRecorder, time.Duration) {
+	now := clocktest.Held()
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, clock: now}
+	send := func() *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		started := time.Now()
 		sendHandler(state, logging.New("test")).ServeHTTP(recorder, postJSON("/v1/messages/send", sendBody(map[string]any{
 			"target_session": target,
 			"source":         "agent",
 			"source_session": "ses_cut_bus_sender",
 			"message":        "is the bus there?",
 		})))
-		return recorder, time.Since(started)
+		return recorder
 	}
 
-	if reachable, _ := send(); reachable.Code != http.StatusOK {
+	if reachable := send(); reachable.Code != http.StatusOK {
 		t.Fatalf("the same send with the bus reachable: status %d, body %s; want 200", reachable.Code, reachable.Body.String())
 	}
 
 	relay.cut()
 	// nats.go notices the closed link from its own read loop, so the send below is issued on a
-	// connection already known to be down rather than on one that is about to be: the measured
-	// time is the handler's, not the client's time to notice.
-	for deadline := time.Now().Add(5 * time.Second); client.Conn.IsConnected(); {
-		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected 5s after the relay cut every link")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// connection already known to be down rather than on one that is about to be.
+	testwait.Eventually(t, "the NATS client to report itself disconnected after the relay cut every link", func() bool {
+		return !client.Conn.IsConnected()
+	})
 
-	recorder, elapsed := send()
+	// The route's own bounds run on a fake clock, so the send ends when this test moves the clock
+	// past its budget rather than when the machine's clock reaches it: a route that left its
+	// calls to the down bus to nats.go's own timeout would arm nothing here.
+	answers := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answers <- send() }()
+	awaitArmedBeforeReturn(t, now, "the send's own budget on its calls to the unreachable bus", timersArmed(1), answerReturned(answers))
+	now.Advance(sendRequestBudget)
+	recorder := testwait.Receive(t, "the send's answer once its budget was spent", answers)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send with the bus unreachable: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
@@ -218,10 +254,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1: the sender is being asked to try the same route again", got)
 	}
-	if elapsed >= 4*time.Second {
-		t.Fatalf("the 503 took %s, past the 4s that leaves the caller's 5s attempt time to read it", elapsed)
-	}
-	t.Logf("bus unreachable: 503 in %s: %s", elapsed, refusal.Error)
+	t.Logf("bus unreachable: 503 once the budget was spent: %s", refusal.Error)
 }
 
 // A bus that goes silent without closing the connection - a partition, or a hub host that stops
@@ -242,7 +275,6 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 	const (
 		target = "ses_frozen_bus_target"
 		sender = "ses_frozen_bus_sender_with_no_interest_record"
-		within = 4 * time.Second
 	)
 	for _, route := range []struct {
 		name    string
@@ -289,25 +321,27 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			if _, err := sessions.Get(target); err != nil {
 				t.Fatalf("the listener's cache does not hold %s (%v): the target's read could be what fails", target, err)
 			}
-			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-			serve := func() (*httptest.ResponseRecorder, time.Duration) {
+			now := clocktest.Held()
+			state := &listenerDeps{client: client, registry: registry, sessions: sessions, clock: now}
+			serve := func() *httptest.ResponseRecorder {
 				recorder := httptest.NewRecorder()
-				started := time.Now()
 				route.handler(state).ServeHTTP(recorder, postJSON(route.path, sendBody(route.body)))
-				return recorder, time.Since(started)
+				return recorder
 			}
-			if reachable, _ := serve(); reachable.Code != http.StatusOK {
+			if reachable := serve(); reachable.Code != http.StatusOK {
 				t.Fatalf("the same %s with the bus answering: status %d, body %s; want 200", route.name, reachable.Code, reachable.Body.String())
 			}
-
 			// The next protocol line the client writes arms the swallow; every byte after it is
-			// discarded and the connection stays open.
+			// discarded and the connection stays open. The route's own bounds run on the fake
+			// clock, so the 503 comes when this test moves it past the budget, not when the
+			// machine's clock reaches it: a route that left the frozen reads to nats.go's own
+			// timeout would arm nothing here.
 			relay.arm("\r\n", 1)
-			recorder, elapsed := serve()
-			if elapsed >= within {
-				t.Fatalf("the %s answered after %s (status %d, body %s), want inside %s - a bus that stopped answering must be refused inside the caller's 5 s attempt, not left to its timeout",
-					route.name, elapsed, recorder.Code, recorder.Body.String(), within)
-			}
+			answers := make(chan *httptest.ResponseRecorder, 1)
+			go func() { answers <- serve() }()
+			awaitArmedBeforeReturn(t, now, "the "+route.name+"'s own budget on its calls to the frozen bus", timersArmed(1), answerReturned(answers))
+			now.Advance(sendRequestBudget)
+			recorder := testwait.Receive(t, "the "+route.name+"'s answer once its budget was spent", answers)
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route.name, recorder.Code, recorder.Body.String())
 			}
@@ -386,29 +420,42 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 	// The next protocol line the client writes arms the swallow; every byte after it is discarded
 	// and the connection stays open.
 	relay.arm("\r\n", 1)
+	now := clocktest.Held()
 	for _, want := range []struct {
-		sender string
-		title  string
-		within time.Duration
-		reads  string
+		sender  string
+		title   string
+		windows int
+		reads   string
 	}{
-		{sender: cached, within: 500 * time.Millisecond, title: title, reads: "every row it stamps is in a cache, so it reads the frozen bus not at all"},
-		{sender: noSession, within: 1500 * time.Millisecond, reads: "its title is one read through to the frozen bucket: one window, not two"},
-		{sender: nothing, within: 1500 * time.Millisecond, reads: "its interest record and its title share the one window the stamp spends"},
+		{sender: cached, windows: 0, title: title, reads: "every row it stamps is in a cache, so it reads the frozen bus not at all"},
+		{sender: noSession, windows: 1, reads: "its title is one read through to the frozen bucket: one window, not two"},
+		{sender: nothing, windows: 1, reads: "its interest record and its title share the one window the stamp spends"},
 	} {
-		started := time.Now()
-		stamp := senderStamp(context.Background(), registry, sessions, want.sender)
-		elapsed := time.Since(started)
+		stamps := make(chan *contracts.EnvelopeSender, 1)
+		go func() { stamps <- senderStamp(context.Background(), now, registry, sessions, want.sender) }()
+		// A stamp that reads the frozen bus arms its one read window; this test moves the clock
+		// past that one window and no further, so a stamp that spent a second window on its title
+		// read would still be waiting when it is received below. A stamp whose every row is cached
+		// (cached) arms nothing the test must move and answers with the clock held where it is.
+		if want.windows > 0 {
+			awaitArmedBeforeReturn(t, now, "the stamp of "+want.sender+"'s one read window on the frozen bus", timersArmed(1), func() (string, bool) {
+				select {
+				case stamp := <-stamps:
+					return fmt.Sprintf("the stamp returned %+v", stamp), true
+				default:
+					return "", false
+				}
+			})
+			now.Advance(senderStampReadTimeout)
+		}
+		stamp := testwait.Receive(t, "the stamp of "+want.sender, stamps)
 		if stamp == nil || stamp.SessionID != want.sender {
 			t.Fatalf("stamp of %s = %+v, want the sender itself", want.sender, stamp)
 		}
 		if stamp.Title != want.title {
 			t.Fatalf("stamp of %s carries the title %q, want %q", want.sender, stamp.Title, want.title)
 		}
-		if elapsed >= want.within {
-			t.Fatalf("the stamp of %s took %s, want inside %s: %s", want.sender, elapsed, want.within, want.reads)
-		}
-		t.Logf("stamp of %s in %s (%s)", want.sender, elapsed, want.reads)
+		t.Logf("stamp of %s once its %d read window(s) on the frozen bus were spent (%s)", want.sender, want.windows, want.reads)
 	}
 }
 
@@ -751,21 +798,19 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	const target = "ses_unanswered_store_read"
 	const sender = "ses_unanswered_store_sender"
 	_, observer := trailingListeners(t)
-	send := func() (*httptest.ResponseRecorder, map[string]any, time.Duration) {
-		t.Helper()
-		started := time.Now()
-		recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc {
-			return sendHandler(observer, logger)
-		}, postJSON("/v1/messages/send", sendBody(map[string]any{
+	now := clocktest.Held()
+	observer.clock = now
+	request := func() *http.Request {
+		return postJSON("/v1/messages/send", sendBody(map[string]any{
 			"target_session": target,
 			"source":         "agent",
 			"source_session": sender,
 			"message":        "is the pane there?",
-		})))
-		return recorder, record, time.Since(started)
+		}))
 	}
+	build := func(logger *logging.Logger) http.HandlerFunc { return sendHandler(observer, logger) }
 
-	answered, answeredRecord, _ := send()
+	answered, answeredRecord := serveRecorded(t, build, request())
 	if answered.Code != http.StatusNotFound {
 		t.Fatalf("a send whose bucket read answered that the key is gone: status %d, body %s; want 404", answered.Code, answered.Body.String())
 	}
@@ -785,7 +830,15 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	})
 
 	stallSessionReads(t, observer.sessions)
-	unanswered, unansweredRecord, elapsed := send()
+	// The read's own bound (sendSessionReadTimeout) is what ends this request, a fraction of the
+	// whole send budget: both run on the fake clock, so the 503 comes when this test moves the
+	// clock past that read window and not past the budget. A handler that waited the bucket out
+	// would arm no window of its own shorter than the budget, so the wait below would never see
+	// the two deadlines, and advancing one window would not answer it.
+	finish, returned := serveRecordedOnGoroutine(t, build, request())
+	awaitArmedBeforeReturn(t, now, "the send's own budget and the shorter window of its target read", timersArmed(2), returned)
+	now.Advance(sendSessionReadTimeout)
+	unanswered, unansweredRecord := finish()
 	if unanswered.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a send whose bucket read never answered: status %d, body %s; want 503, since nothing was learned about %s", unanswered.Code, unanswered.Body.String(), target)
 	}
@@ -801,12 +854,6 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	}
 	if got := unanswered.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1: the sender is being asked to try the same route again", got)
-	}
-	// The read's own bound (sendSessionReadTimeout) is what ends this request, and it is a
-	// fraction of the whole send budget: a handler that waited the bucket out would spend the
-	// caller's attempt on a read that was never going to answer.
-	if elapsed >= sendRequestBudget {
-		t.Fatalf("the 503 took %s, past the whole send budget %s, for a read bounded at %s", elapsed, sendRequestBudget, sendSessionReadTimeout)
 	}
 	assertRecordFields(t, unansweredRecord, map[string]any{
 		"msg":            "listener send",

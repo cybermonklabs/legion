@@ -124,7 +124,7 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	defer stop()
 	// The deadline is the flight's own, counted from when it began rather than
 	// from when its first caller arrived.
-	syncCtx, cancel := context.WithTimeout(base, syncTimeout)
+	syncCtx, cancel := i.clock.WithTimeout(base, syncTimeout)
 	defer cancel()
 	for {
 		source, err := i.syncOnce(syncCtx, base, project, repo, flight)

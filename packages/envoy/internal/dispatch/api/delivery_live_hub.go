@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -79,7 +80,7 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		}
 	}
 
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	g := h.generation
@@ -264,25 +265,17 @@ type hubGeneration struct {
 	known bool
 }
 
-// hubClock is the hub's clock: what time it is, and a timer that calls f once the clock reaches
-// at, at once when it already has. The timer names a moment rather than a wait, so a clock that
-// moves between the hub's read of it and the arm (a test's, which moves forward without waiting)
-// fires the timer all the same.
+// hubClock is the hub's clock, a narrowing of clock.Clock: clock.Real in production and a test's
+// clocktest.Fake. The worker arms its one timer for a moment as the wait from the clock's present
+// at the arm, so a clock that moved between the worker's read of it and the arm fires the timer at
+// that moment all the same.
 type hubClock interface {
 	Now() time.Time
-	At(at time.Time, f func()) hubTimer
+	AfterFunc(d time.Duration, f func()) clock.Timer
 }
 
-type hubTimer interface{ Stop() bool }
-
-// deliveryHubClock is the real clock.
-type deliveryHubClock struct{}
-
-func (deliveryHubClock) Now() time.Time { return time.Now().UTC() }
-
-func (deliveryHubClock) At(at time.Time, f func()) hubTimer {
-	return time.AfterFunc(time.Until(at), f)
-}
+// now is the hub's clock in UTC, where its days and their midnights are counted.
+func (h *deliveryHub) now() time.Time { return h.clock.Now().UTC() }
 
 // deliveryView is one view the open pages show, shared by every sub that names it.
 type deliveryView struct {

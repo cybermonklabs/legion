@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import {
   existsSync,
   linkSync,
@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import type { ActiveDispatchConfig } from "../dispatch-config";
@@ -21,7 +22,6 @@ import {
   renderSessionAnswerItem,
   renderSessionAnswers,
   renderSessionAnswersList,
-  SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
   type SessionAnswersRead,
   sessionAnswersChanged,
@@ -35,6 +35,23 @@ const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOStrin
 /** Where a read at `NOW` starts its window: 72 hours before it. */
 const SINCE = hoursAgo(72);
 const stateDir = temporaryDirectories("session-answers");
+
+// A row on Bun's fake clock that fails part way would leave the next row on it.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+/**
+ * Lets every job already queued run before a row on Bun's fake clock reads what they did. The
+ * stand-in Dispatch answers in promise jobs alone and the cache is written synchronously, so by
+ * the event loop's next turn (`setImmediate`, which Bun's fake timers leave real) a read has gone
+ * as far as it can without the clock.
+ */
+async function settle(): Promise<void> {
+  const turn = Promise.withResolvers<void>();
+  setImmediate(turn.resolve);
+  await turn.promise;
+}
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -980,16 +997,14 @@ describe("readSessionAnswers", () => {
     expect((await readSessionAnswers(options)).source).toBe("cache");
   });
 
-  // The deadline is a real timer in the code under test, so this row waits on real time, but it
-  // reads no clock: the answer its two reads must not wait for never comes, and the second read's
-  // own deadline is 120 s, four times the row's 30 s limit, so a read that waited on either fails
-  // the row by that limit instead of by what the machine cost. The limit is that discriminator
-  // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and, under 16
-  // busy loops (8 x nproc), 0.45 s at most in a whole-suite run and 0.10 s with this file alone.
-  // The 30 s stays on the row rather than taking the suite's default, because the row's claim is
-  // that number. The second read's own reason says which path answered it: a read that answers by
-  // another path fails on that reason, and a read that waits still fails by the limit.
+  // The deadline is a real timer in the code under test, so the row runs the reads that wait on it
+  // on Bun's fake clock, and reads what each one answered at the moments it moves the clock to.
+  // The answer they wait on never comes until the row gives it: the first read gives up when the
+  // clock reaches its 50 ms, and the second, whose own deadline is 120 s, answers with the clock
+  // not moved at all, which a read that waited on the one in flight could not do. Its reason says
+  // which path answered it.
   test("waits at most the deadline, does not wait again on a read past it, and the late answer fills the cache", async () => {
+    jest.useFakeTimers();
     const session = newSession();
     const dispatch = dispatchAt();
     const hung = deferred<Response>();
@@ -997,7 +1012,16 @@ describe("readSessionAnswers", () => {
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
     const options = { session, dispatch, env: envAt(stateDir()), fetchImpl, now: () => NOW };
 
-    const first = await readSessionAnswers({ ...options, deadlineMs: 50 });
+    let first: SessionAnswersRead | undefined;
+    void readSessionAnswers({ ...options, deadlineMs: 50 }).then((read) => {
+      first = read;
+    });
+    await settle();
+    jest.advanceTimersByTime(49);
+    await settle();
+    expect(first).toBeUndefined();
+    jest.advanceTimersByTime(1);
+    await settle();
     expect(first).toEqual({
       text: sessionAnswersFailureLine("Dispatch did not answer within 50 ms"),
       source: "failure",
@@ -1005,16 +1029,25 @@ describe("readSessionAnswers", () => {
     });
 
     // The read in flight already cost one request its deadline: the next does not wait on it.
-    const second = await readSessionAnswers({ ...options, deadlineMs: 120_000 });
-    expect(second.source).toBe("failure");
-    expect(second.reason).toBe("an earlier read is still waiting on Dispatch");
+    let second: SessionAnswersRead | undefined;
+    void readSessionAnswers({ ...options, deadlineMs: 120_000 }).then((read) => {
+      second = read;
+    });
+    await settle();
+    expect(second?.source).toBe("failure");
+    expect(second?.reason).toBe("an earlier read is still waiting on Dispatch");
     expect(calls).toHaveLength(1);
 
-    // The background read answers, and the cache holds its list.
+    // The background read answers, and the cache holds its list. No deadline is in play from
+    // here, so the row is back on the real clock.
+    jest.useRealTimers();
     hung.resolve(listed(recent));
-    await sessionAnswersSettled(session);
+    await settled("the background read", sessionAnswersSettled(session));
     respond = () => json({ code: "INTERNAL", error: "database is down" }, 500);
-    const third = await readSessionAnswers({ ...options, deadlineMs: 2_000 });
+    const third = await settled(
+      "a read that the cache answers",
+      readSessionAnswers({ ...options, deadlineMs: 2_000 })
+    );
     expect(calls).toHaveLength(2);
     expect(third.source).toBe("cache");
     expect(third.text).toBe(
@@ -1023,7 +1056,7 @@ describe("readSessionAnswers", () => {
         cached: { readAt: new Date(NOW).toISOString(), reason: "INTERNAL: database is down" },
       })
     );
-  }, 30_000);
+  });
 
   test("the request's own abort ends its wait at once, and the shared read goes on", async () => {
     const session = newSession();
@@ -1096,26 +1129,33 @@ describe("readSessionAnswers", () => {
     expect(calls).toHaveLength(2);
   });
 
+  // On the request path the read's client asks once and lets that answer through: the read's
+  // own 5-minute back-off is its answer to a release rolling out, so no request waits out
+  // attempts of a route this Dispatch has not got. The read's deadline and the client's wait
+  // before an attempt again are both timers in the code under test, so the row runs the read on
+  // Bun's fake clock and never moves it: the read answers with the clock where it started, which
+  // a read that waited for its deadline or for a second attempt could not do. No fake sleep here:
+  // the client's own wait is the one on the clock.
   test("Dispatch's own no-route 404 is unavailable within the deadline, from one ask", async () => {
-    // On the request path the read's client asks once and lets that answer through: the read's
-    // own 5-minute back-off is its answer to a release rolling out, so no request waits out
-    // attempts of a route this Dispatch has not got. No fake clock and no fake sleep here.
+    jest.useFakeTimers();
     const dispatch = dispatchAt();
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
-    const startedAt = Date.now();
-    const read = await readSessionAnswers({
+    let read: SessionAnswersRead | undefined;
+    void readSessionAnswers({
       session: newSession(),
       dispatch,
       env: envAt(stateDir()),
       fetchImpl,
+    }).then((answered) => {
+      read = answered;
     });
+    await settle();
     expect(read).toEqual({
       text: undefined,
       source: "unavailable",
       reason: NO_ANSWERS_ROUTE_REASON,
       notice: noRouteNotice(dispatch.url),
     });
-    expect(Date.now() - startedAt).toBeLessThan(SESSION_ANSWERS_DEADLINE_MS);
     expect(calls).toHaveLength(1);
   });
 

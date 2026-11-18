@@ -46,10 +46,10 @@
 # The delay is 0 or a value from 1000 to 2500, and the run refuses anything else by name. The two
 # ends are measured rather than chosen: below 1000 the ack can reach the server before the clean
 # stop reads the floor, so the run asserts the re-offer case and a correct build fails it (1 ms
-# does, review round 33), and above 2500 a window's own waits run out on the injection. In the
-# no-delay case the ordering is not left to chance at all: the run waits until the server says the
-# consumer owes no ack for what the transport offered it (wait_for_acks_settled) before each
-# delete.
+# does, review round 33), and above 2500 the delays, one per frame, would spend the run's guard,
+# which is read from runs with no delay. In the no-delay case the ordering is not left to chance at
+# all: the run waits until the server says the consumer owes no ack for what the transport offered
+# it (wait_for_acks_settled) before each delete.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -69,7 +69,7 @@ readonly ack_delay_ms="${E2E_SESSION_ACK_DELAY_MS:-0}"
 if [[ ! "$ack_delay_ms" =~ ^(0|[1-9][0-9]{0,3})$ ]] ||
   { ((ack_delay_ms != 0)) &&
     ((ack_delay_ms < ack_delay_min_ms || ack_delay_ms > ack_delay_max_ms)); }; then
-  printf 'ERR: E2E_SESSION_ACK_DELAY_MS is %s; it must be 0, or a decimal from %s to %s written without a leading zero. Below %s the ack can reach the server before the clean stop reads the consumer floor, so this run would assert the re-offer case against a build that is right; above %s the windows own waits run out on the injection.\n' \
+  printf 'ERR: E2E_SESSION_ACK_DELAY_MS is %s; it must be 0, or a decimal from %s to %s written without a leading zero. Below %s the ack can reach the server before the clean stop reads the consumer floor, so this run would assert the re-offer case against a build that is right; above %s the delays would spend the run'\''s guard, which is read from runs with no delay.\n' \
     "$ack_delay_ms" "$ack_delay_min_ms" "$ack_delay_max_ms" "$ack_delay_min_ms" "$ack_delay_max_ms" >&2
   exit 2
 fi
@@ -109,6 +109,79 @@ case "${1:-}" in
     ;;
 esac
 
+# ---- the run's guard and its one wait ----------------------------------------------------------
+# The run sets its guard once, below, with the reading beside it, and every wait of the run goes
+# through wait_for, which gives up proof_margin_seconds before the guard's deadline. The guard arms
+# nothing: the CI job's timeout-minutes is what stops a run that hangs outside a wait.
+# scripts/e2e/lib/rig.sh holds the same pair for the proofs under scripts/e2e; this script
+# sources nothing of that tree, since its job reads packages/envoy's own files.
+# LEGION_PROOF_DEADLINE_MS, which proof_guard exports, is the moment every wait gives up by, in
+# epoch milliseconds, the deadline @legion/test-fixtures/wait reads in a Bun process outside
+# `bun test`.
+readonly proof_margin_seconds=30
+proof_guard_seconds=''
+wait_impossible=''
+
+# proof_now_ms prints the wall clock in epoch milliseconds.
+proof_now_ms() {
+  local now=${EPOCHREALTIME/[.,]/}
+  printf '%s\n' "$((10#$now / 1000))"
+}
+
+# proof_guard SECONDS gives the run SECONDS from here and exports LEGION_PROOF_DEADLINE_MS, that
+# deadline less proof_margin_seconds.
+proof_guard() {
+  [[ -n "${EPOCHREALTIME:-}" ]] || {
+    printf 'ERR: bash 5 or later is required (EPOCHREALTIME).\n' >&2
+    exit 3
+  }
+  proof_guard_seconds=$1
+  export LEGION_PROOF_DEADLINE_MS=$(($(proof_now_ms) + ($1 - proof_margin_seconds) * 1000))
+}
+
+# wait_seconds_left prints the whole seconds left before the waits' deadline, and at least 1: the
+# bound of a `read -t` that blocks on a pipe rather than polling.
+wait_seconds_left() {
+  local left=$(((LEGION_PROOF_DEADLINE_MS - $(proof_now_ms)) / 1000))
+  printf '%s\n' "$((left > 0 ? left : 1))"
+}
+
+# wait_for WHAT COMMAND... runs COMMAND in this shell every quarter second until it succeeds, and
+# gives up at LEGION_PROOF_DEADLINE_MS: it ends the run with a line that names WHAT, and the last
+# output of COMMAND under it. A wait that starts past that moment runs COMMAND once. It takes no
+# bound and no pace, so a step that is only slow never fails the run. COMMAND's output goes to
+# wait_output, where the last poll's stays for a caller to read. COMMAND runs in this shell, so it
+# can set variables; one that finds the fact can no longer happen (its process is gone) sets
+# wait_impossible to why, and the run ends at once saying so. A poll that never returns would
+# hold the wait past its deadline, so every remote call a COMMAND makes carries its own timeout.
+wait_for() {
+  local what=$1 polls=0
+  shift
+  while :; do
+    polls=$((polls + 1))
+    wait_impossible=''
+    if "$@" >"$wait_output" 2>&1; then return 0; fi
+    if [[ -n "$wait_impossible" ]]; then
+      printf 'ERR: %s (waiting for %s)\n' "$wait_impossible" "$what" >&2
+      tail -n 40 "$wait_output" >&2
+      exit 1
+    fi
+    (($(proof_now_ms) < LEGION_PROOF_DEADLINE_MS)) || break
+    sleep 0.25
+  done
+  printf 'ERR: gave up waiting for %s after %s polls, %ss before the run'\''s guard of %ss; its last output:\n' \
+    "$what" "$polls" "$proof_margin_seconds" "$proof_guard_seconds" >&2
+  tail -n 40 "$wait_output" >&2
+  exit 1
+}
+
+# Twice the longest green run on record, rounded up past a cold Go build: 105 green
+# envoy-e2e-local jobs in ci.yaml's 150 newest green runs up to 2026-11-14, the longest
+# "Local end-to-end acceptance" step 25 s (run 43553453390) with the job's Go cache restored. The
+# build of the listener and natsd below is inside the guard, and the e2e.yaml proofs, which build
+# with no cache, took up to 159 s to build two Envoy binaries and run.
+proof_guard 300
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
 envoy_dir="$(cd "${script_dir}/.." && pwd)"
@@ -119,6 +192,8 @@ fixture_dir="${script_dir}/fixtures/github"
 readonly fixture_dir
 out_dir="${envoy_dir}/out/e2e"
 readonly out_dir
+# The last poll's output of the wait running now, or of the last one (wait_for).
+readonly wait_output="${out_dir}/wait-for.out"
 
 webhook_secret="e2e-local"
 readonly webhook_secret
@@ -282,10 +357,10 @@ rm -rf "$nats_store_dir"
 : >"$nocursor_frames_file"
 : >"$nocursor_offers_file"
 # Every log file is created before the process that writes it, so a wait that reads one cannot
-# race the redirect that creates it: wait_for_listener's jq and wait_for_nats's grep would
-# otherwise read a file that is not there yet — jq exits non-zero on it, which under set -e ends
-# the whole run at "waiting for the listener address". The waits themselves are untouched: each
-# still fails the moment its own process is gone, and still fails on its own deadline.
+# race the redirect that creates it: listener_address's jq and nats_answers's grep would
+# otherwise read a file that is not there yet, and listener_address's jq would fail on it. Each
+# wait still fails the moment its own process is gone, and otherwise gives up at the run's
+# deadline (wait_for).
 : >"$nats_log_file"
 : >"$listener_log_file"
 : >"$session_log_file"
@@ -315,46 +390,35 @@ stop_nats() {
   nats_pid=""
 }
 
-# wait_for_nats returns once the server this script started is answering, and sets nats_port to the
-# port that server reports; it fails otherwise. It must never pass on another server: something
+# nats_answers is wait_for's reading of the server this script started: it sets nats_port to the
+# port that server reports once it answers. It must never pass on another server: something
 # already holding an E2E_NATS_PORT — a run left behind, or another program — greets a connection
 # exactly as ours would, while ours exits with "address already in use". So the port is read from
 # our own server's log once it says it is ready, and the wait ends the moment our own process is
-# gone.
-wait_for_nats() {
-  local deadline=$((SECONDS + 30))
+# gone. Each poll prints that log, which is what a wait that ends shows.
+nats_answers() {
   local banner port
-  while ((SECONDS < deadline)); do
-    if ! kill -0 "$nats_pid" 2>/dev/null; then
-      printf 'ERR: the NATS server this script started ended before it was ready.\n' >&2
-      cat "$nats_log_file" >&2
-      return 1
-    fi
-    if grep -q 'Server is ready' "$nats_log_file"; then
-      port="$(sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$nats_log_file")"
-      if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-        printf 'ERR: the NATS server this script started is ready but named no client port.\n' >&2
-        cat "$nats_log_file" >&2
-        return 1
-      fi
-      # A NATS server greets every connection it accepts with its INFO line; curl's telnet
-      # scheme reads that greeting, then waits out its own --max-time, so only the text proves
-      # the port answers.
-      banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${port}" </dev/null 2>/dev/null || true)"
-      if [[ "$banner" == 'INFO '* ]]; then
-        nats_port="$port"
-        return 0
-      fi
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: the NATS server this script started did not accept connections within 30 seconds.\n' >&2
-  cat "$nats_log_file" >&2
-  return 1
+  cat "$nats_log_file"
+  if ! kill -0 "$nats_pid" 2>/dev/null; then
+    wait_impossible='the NATS server this script started ended before it was ready.'
+    return 1
+  fi
+  grep -q 'Server is ready' "$nats_log_file" || return 1
+  port="$(sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$nats_log_file")"
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    wait_impossible='the NATS server this script started is ready but named no client port.'
+    return 1
+  fi
+  # A NATS server greets every connection it accepts with its INFO line; curl's telnet scheme
+  # reads that greeting, then waits out its own --max-time, so only the text proves the port
+  # answers.
+  banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${port}" </dev/null 2>/dev/null || true)"
+  [[ "$banner" == 'INFO '* ]] || return 1
+  nats_port="$port"
 }
 
 printf 'waiting for NATS\n'
-wait_for_nats
+wait_for 'the NATS server this script started to accept connections' nats_answers
 readonly nats_port
 nats_url="nats://127.0.0.1:${nats_port}"
 readonly nats_url
@@ -371,51 +435,39 @@ PORT="${E2E_PORT:-0}" \
   "$listener_binary" >"$listener_log_file" 2>&1 &
 listener_pid=$!
 
-# wait_for_listener returns once the listener this script started logs the address it is bound to,
-# and sets listener_url from it; it fails the moment that process is gone, as it is when E2E_PORT
-# is already in use.
-wait_for_listener() {
-  local deadline=$((SECONDS + 30))
+# listener_address is wait_for's reading of the listener this script started: it sets
+# listener_url once the listener logs the address it is bound to, and ends the wait the moment
+# that process is gone, as it is when E2E_PORT is already in use.
+listener_address() {
   local addr
-  while ((SECONDS < deadline)); do
-    addr="$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$listener_log_file")"
-    if [[ -n "$addr" ]]; then
-      listener_url="http://${addr}"
-      return 0
-    fi
-    if ! kill -0 "$listener_pid" 2>/dev/null; then
-      printf 'ERR: the listener this script started ended before it was listening.\n' >&2
-      cat "$listener_log_file" >&2
-      return 1
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: the listener did not report its address within 30 seconds.\n' >&2
-  cat "$listener_log_file" >&2
+  addr="$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$listener_log_file")"
+  if [[ -n "$addr" ]]; then
+    listener_url="http://${addr}"
+    return 0
+  fi
+  cat "$listener_log_file"
+  kill -0 "$listener_pid" 2>/dev/null ||
+    wait_impossible='the listener this script started ended before it was listening.'
   return 1
 }
 
 printf 'waiting for the listener address\n'
-wait_for_listener
+wait_for 'the listener to report its address' listener_address
 readonly listener_url
 printf 'listener: %s\n' "$listener_url"
 
-wait_for_health() {
-  local deadline=$((SECONDS + 30))
+listener_answers_healthy() {
   local body
-  while ((SECONDS < deadline)); do
-    if body="$(curl -fsS "${listener_url}/healthz" 2>/dev/null)" && [[ "$body" == *'"status":"healthy"'* ]]; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: listener did not become healthy within 30 seconds.\n' >&2
-  cat "$listener_log_file" >&2
+  if body="$(curl -fsS --max-time 2 "${listener_url}/healthz" 2>&1)" && [[ "$body" == *'"status":"healthy"'* ]]; then
+    return 0
+  fi
+  printf '%s\n' "$body"
+  cat "$listener_log_file"
   return 1
 }
 
 printf 'waiting for listener health\n'
-wait_for_health
+wait_for 'the listener to answer healthy' listener_answers_healthy
 
 # The session: a NATS consumer stand-in, which is what every shipped plugin is. The listener opens
 # no connection to a session at all, so the session takes each stored message of its agent subject
@@ -520,7 +572,7 @@ start_session_standin() {
     ' >"$ready_fifo" 2>"$log_file"
   ) &
   standin_pid=$!
-  if ! IFS= read -r -t 10 ready <"$ready_fifo" || [[ "$ready" != "ready" ]]; then
+  if ! IFS= read -r -t "$(wait_seconds_left)" ready <"$ready_fifo" || [[ "$ready" != "ready" ]]; then
     printf 'ERR: the session consumer stand-in for %s did not become ready.\n' "$standin_session_id" >&2
     cat "$log_file" >&2
     exit 3
@@ -571,7 +623,7 @@ session_pid=$standin_pid
 ) &
 subscriber_pid=$!
 
-if ! IFS= read -r -t 5 subscriber_ready <"$subscriber_ready_fifo" || [[ "$subscriber_ready" != "ready" ]]; then
+if ! IFS= read -r -t "$(wait_seconds_left)" subscriber_ready <"$subscriber_ready_fifo" || [[ "$subscriber_ready" != "ready" ]]; then
   printf 'ERR: NATS capture subscriber did not become ready.\n' >&2
   cat "$subscriber_log_file" >&2
   exit 3
@@ -672,20 +724,16 @@ post_github() {
   fi
 }
 
-wait_for_topic_count() {
-  local topic=$1
-  local expected=$2
-  local deadline=$((SECONDS + 20))
+# topic_captures_reach TOPIC EXPECTED: the capture holds EXPECTED envelopes on TOPIC, or more.
+topic_captures_reach() {
   local count
-  while ((SECONDS < deadline)); do
-    count="$(jq -rs --arg topic "$topic" '[.[] | select(.topic == $topic)] | length' "$envelopes_file")"
-    if ((count >= expected)); then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: expected %s captures on %s within 20 seconds.\n' "$expected" "$topic" >&2
-  return 1
+  count="$(jq -rs --arg topic "$1" '[.[] | select(.topic == $topic)] | length' "$envelopes_file")"
+  printf '%s captures on %s, want %s\n' "$count" "$1" "$2"
+  ((count >= $2))
+}
+
+wait_for_topic_count() {
+  wait_for "${2} captures on ${1}" topic_captures_reach "$1" "$2"
 }
 
 # wait_for_consumer_frame_count returns once a session has taken at least expected frames of its
@@ -693,25 +741,85 @@ wait_for_topic_count() {
 # frame arrives and answers done after it, so this wait says the frames reached the session and
 # says nothing about their acks; wait_for_acks_settled below is what reads those.
 # The file is the run's own session's unless one is named, as the no-cursor window below names its
-# own. The budget is 20 seconds and, under E2E_SESSION_ACK_DELAY_MS, one delay per frame on top: a
-# run that holds each answer back to drive the repeat above the recorded floor (the stand-in)
-# takes that long to reach the same count, and a budget that did not carry it would fail the run
-# on its own injection.
+# own. Under E2E_SESSION_ACK_DELAY_MS each answer is held back, so the frames come slower; the
+# wait ends at the run's guard, which is no budget of its own the injection could run out.
+frames_reach() {
+  local count
+  count="$(wc -l <"$2")"
+  printf '%s frames in %s, want %s\n' "$count" "$2" "$1"
+  ((count >= $1))
+}
+
 wait_for_consumer_frame_count() {
   local expected=$1
   local frames_file=${2:-$session_frames_file}
-  local budget=$((20 + (expected * ack_delay_ms) / 1000))
-  local deadline=$((SECONDS + budget))
-  local count
-  while ((SECONDS < deadline)); do
-    count="$(wc -l <"$frames_file")"
-    if ((count >= expected)); then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: expected %s consumer frames in %s within %s seconds.\n' "$expected" "$frames_file" "$budget" >&2
-  return 1
+  wait_for "${expected} consumer frames in ${frames_file}" frames_reach "$expected" "$frames_file"
+}
+
+# consumer_state SESSION prints, as one JSON line, the server's own record of the session's
+# consumer: what it has still to deliver (pending), what it delivered and has had no ack for
+# (ack_pending) and its ack floor's stream sequence (floor). It reads them with one JetStream
+# CONSUMER.INFO request over a NATS connection of its own ($JS.API.CONSUMER.INFO.<stream>.<consumer>),
+# the request a monitoring endpoint answers from as well, so it needs no second listening socket, no
+# flag of natsd and no parse of a log line for a port. It exits 1 when the request has no answer (a
+# timeout, a server that answers nothing, a connection that drops), which a wait asks again, and 3
+# when the server sent an answer this cannot use, a JetStream error such as "consumer not found"
+# or a reply that is no JSON, which asking again would meet the same way; the line says which.
+consumer_state() {
+  (
+    cd "$repo_root"
+    exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$1" bun -e '
+      import { connect, StringCodec } from "nats";
+
+      const sessionID = process.env.E2E_SESSION_ID;
+      const codec = StringCodec();
+      const connection = await connect({ servers: process.env.E2E_NATS_URL, name: `envoy-e2e-consumer-${sessionID}` });
+      const subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
+      let reply;
+      try {
+        // One poll of a wait, so it carries its own bound, as every remote call of a poll here
+        // does: a request with no answer is asked again on the next poll.
+        reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
+      } catch (error) {
+        console.log(`the consumer info request had no answer: ${String(error)}`);
+        await connection.close();
+        process.exit(1);
+      }
+      await connection.close();
+      let answer;
+      try {
+        answer = JSON.parse(codec.decode(reply.data));
+      } catch {
+        console.log(`the consumer info reply of ${sessionID} is no JSON`);
+        process.exit(3);
+      }
+      if (answer.error) {
+        console.log(`the server refused the consumer info of ${sessionID}: ${JSON.stringify(answer.error)}`);
+        process.exit(3);
+      }
+      console.log(JSON.stringify({
+        pending: answer.num_pending ?? 0,
+        ack_pending: answer.num_ack_pending ?? 0,
+        floor: answer.ack_floor?.stream_seq ?? 0,
+      }));
+    '
+  )
+}
+
+# consumer_reads SESSION FILTER: the session's consumer state (consumer_state) reads as the jq
+# FILTER wants. An answer the server sent and this cannot use ends the wait.
+consumer_reads() {
+  local state status=0
+  state="$(consumer_state "$1")" || status=$?
+  printf '%s\n' "$state"
+  case $status in
+    0) jq -e "$2" <<<"$state" >/dev/null ;;
+    1) return 1 ;;
+    *)
+      wait_impossible="$state"
+      return 1
+      ;;
+  esac
 }
 
 # wait_for_acks_settled returns once the server says a session consumer has nothing left to ack
@@ -722,7 +830,7 @@ wait_for_consumer_frame_count() {
 # line that says what the session acked, and ends the run by name when the acks never settle, so
 # no caller carries a branch of its own.
 #
-# What proves settlement is the consumer's own num_ack_pending standing at 0: while a frame it
+# What proves settlement is the consumer's own ack_pending standing at 0: while a frame it
 # delivered is unacked that count is 1 or more, whatever this wait was told to expect, so the
 # refusal below holds even against a target set too low. The target is the second check, and it
 # is the highest sequence of the session's offers file, which the stand-in writes as each frame
@@ -730,19 +838,6 @@ wait_for_consumer_frame_count() {
 # read here, since the stand-in writes that one after it answers done, which is the very event
 # this waits for. An offers file this cannot read a sequence from ends the run by name, since the
 # target would otherwise be a number this wait invented (review round 34).
-#
-# The observable is the consumer own state, read with a JetStream CONSUMER.INFO request over the
-# NATS connection this helper opens ($JS.API.CONSUMER.INFO.<stream>.<consumer>), which is the
-# request a monitoring endpoint answers from as well. It is read this way rather than from a
-# monitor port because it needs no second listening socket, no flag of natsd and no parse of a log
-# line for a port: the rig already speaks this protocol, and the answer is the consumer record
-# itself. A request that fails to answer is asked again - a timeout, a server that answers
-# nothing, a connection that drops - so a slow or lost answer under load costs a retry rather than
-# the run; an answer the server did send and this cannot use ends the wait at once instead, a
-# JetStream error such as "consumer not found" and a reply that is no JSON alike, since asking
-# again would meet the same answer. The deadline is read after the connection is made and a
-# request already under way runs its own 2 s out, with a 100 ms pause behind it, so a wait that
-# runs out ends about 17 seconds after it starts, by name rather than by hanging.
 wait_for_acks_settled() {
   local settle_session_id=$1
   local offers_file=$2
@@ -755,51 +850,9 @@ wait_for_acks_settled() {
       "$offers_file" "$settle_session_id" >&2
     exit 1
   fi
-  settled="$(
-    cd "$repo_root"
-    exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$settle_session_id" E2E_TARGET_SEQ="$target" bun -e '
-      import { connect, StringCodec } from "nats";
-
-      const url = process.env.E2E_NATS_URL;
-      const sessionID = process.env.E2E_SESSION_ID;
-      // The target this reads is the one the shell refused anything but a plain sequence for,
-      // naming the file it came from, so there is no second rule for it here.
-      const target = Number(process.env.E2E_TARGET_SEQ);
-      const codec = StringCodec();
-      const connection = await connect({ servers: url, name: `envoy-e2e-acks-${sessionID}` });
-      const subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
-      const deadline = Date.now() + 15000;
-      let last = "no answer";
-      while (Date.now() < deadline) {
-        let reply;
-        try {
-          reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
-        } catch (error) {
-          // A request that did not answer is asked again inside this same bound; an answer the
-          // server did send and this cannot use ends the wait below, at once.
-          last = `the consumer info request failed: ${String(error)}`;
-          await Bun.sleep(100);
-          continue;
-        }
-        const answer = JSON.parse(codec.decode(reply.data));
-        if (answer.error) throw new Error(`the server refused the consumer info of ${sessionID}: ${JSON.stringify(answer.error)}`);
-        const pending = answer.num_ack_pending ?? 0;
-        const floor = answer.ack_floor?.stream_seq ?? 0;
-        last = `num_ack_pending ${pending}, ack floor ${floor}, wanted 0 and at least ${target}`;
-        if (pending === 0 && floor >= target) {
-          process.stdout.write(`${floor}\n`);
-          await connection.close();
-          process.exit(0);
-        }
-        await Bun.sleep(100);
-      }
-      await connection.close();
-      throw new Error(`the consumer of ${sessionID} did not settle its acks within 15 s: ${last}`);
-    '
-  )" || {
-    printf 'ERR: the acks of %s had not settled before %s.\n' "$settle_session_id" "$before" >&2
-    exit 1
-  }
+  wait_for "the consumer of ${settle_session_id} to owe no ack and stand at sequence ${target} or above before ${before}" \
+    consumer_reads "$settle_session_id" ".ack_pending == 0 and .floor >= ${target}"
+  settled="$(jq -r '.floor' "$wait_output")"
   printf '%s acked through sequence %s before %s\n' "$settle_session_id" "$settled" "$before"
 }
 
@@ -901,18 +954,19 @@ count_listener_records() {
 # Each record is written after its response is sent, so the assertion can reach the log a moment
 # before the line lands: wait for the first match rather than racing it, and fail on anything but
 # exactly one, a second line being as wrong as none.
+listener_records_logged() {
+  local count
+  count="$(count_listener_records "$1")"
+  printf '%s matching records in %s\n' "$count" "$listener_log_file"
+  ((count != 0))
+}
+
 wait_for_listener_record() {
   local description=$1
   local selector=$2
-  local deadline=$((SECONDS + 10))
-  local count=0
-  while ((SECONDS < deadline)); do
-    count="$(count_listener_records "$selector")"
-    if ((count != 0)); then
-      break
-    fi
-    sleep 0.25
-  done
+  local count
+  wait_for "the listener's ${description} record" listener_records_logged "$selector"
+  count="$(count_listener_records "$selector")"
   if ((count != 1)); then
     printf 'ERR: expected exactly one %s record in the listener log; found %s.\n' "$description" "$count" >&2
     return 1
@@ -991,27 +1045,29 @@ count_kept_forwards() {
 # capture of the forward and the session's own frame are written by two processes of their own, so
 # this waits for both to arrive rather than racing either, and then fails on any count but one — a
 # control notice delivered twice is as wrong as one never delivered.
+kept_delivery_arrived() {
+  local frames forwards
+  frames="$(count_session_frames "$1")"
+  forwards="$(count_kept_forwards "$1")"
+  printf '%s session frames and %s forwards carrying kept_at of %s\n' "$frames" "$forwards" "$1"
+  ((frames != 0 && forwards != 0))
+}
+
 wait_for_kept_delivery() {
   local window=$1
   local event_id=$2
-  local deadline=$((SECONDS + 20))
-  local frames=0
-  local forwards=0
-  while ((SECONDS < deadline)); do
-    frames="$(count_session_frames "$event_id")"
-    forwards="$(count_kept_forwards "$event_id")"
-    if ((frames != 0 && forwards != 0)); then
-      break
-    fi
-    sleep 0.25
-  done
+  local frames forwards
+  wait_for "the ${window} kept message ${event_id} to reach the session and the capture" \
+    kept_delivery_arrived "$event_id"
+  frames="$(count_session_frames "$event_id")"
+  forwards="$(count_kept_forwards "$event_id")"
   if ((frames != 1)); then
-    printf 'ERR: the %s kept message %s reached the session %s times within 20 seconds, not exactly once.\n' \
+    printf 'ERR: the %s kept message %s reached the session %s times, not exactly once.\n' \
       "$window" "$event_id" "$frames" >&2
     return 1
   fi
   if ((forwards != 1)); then
-    printf 'ERR: the %s kept message %s was forwarded carrying kept_at %s times within 20 seconds, not exactly once.\n' \
+    printf 'ERR: the %s kept message %s was forwarded carrying kept_at %s times, not exactly once.\n' \
       "$window" "$event_id" "$forwards" >&2
     return 1
   fi
@@ -1025,23 +1081,30 @@ wait_for_kept_delivery() {
 # same way (liveSessionEntry, through a cache the delete evicts), so this is the point from which
 # a claim that names that session is a lapsed one rather than a live holder, and the point from
 # which a clean stop has taken the session's consumer with its record.
+registration_gone() {
+  local status
+  status="$(curl -sS --max-time 2 -o "$2" -w '%{http_code}' "${listener_url}/v1/registry/$1")" || status=000
+  printf 'HTTP %s\n' "$status"
+  cat "$2" 2>/dev/null || true
+  [[ "$status" == 404 ]]
+}
+
 wait_for_unregistered() {
   local unregistered_session_id=${1:-$session_id}
   local response_file=${2:-$lapsed_registry_response_file}
-  local deadline=$((SECONDS + 20))
-  local status=""
-  while ((SECONDS < deadline)); do
-    status="$(curl -sS -o "$response_file" -w '%{http_code}' \
-      "${listener_url}/v1/registry/${unregistered_session_id}")"
-    if [[ "$status" == 404 ]]; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: the listener still answered HTTP %s for the deleted registration of %s after 20 seconds.\n' \
-    "$status" "$unregistered_session_id" >&2
-  cat "$response_file" >&2
-  return 1
+  wait_for "the listener to report the registration of ${unregistered_session_id} gone" \
+    registration_gone "$unregistered_session_id" "$response_file"
+}
+
+# cursor_names_last_offer CURSOR_FILE OFFERS_FILE: the session's cursor, which its stand-in
+# rewrites after each answer, names the highest sequence the transport offered it.
+cursor_names_last_offer() {
+  [[ -s "$1" ]] || {
+    printf 'no cursor in %s yet\n' "$1"
+    return 1
+  }
+  jq -en --slurpfile cursor "$1" --slurpfile offers "$2" \
+    '$cursor[0].seq == ($offers | map(.seq) | max)'
 }
 
 # Window (i): nobody holds the role. The publish is answered 202 with the envelope the listener
@@ -1646,11 +1709,16 @@ if [[ -z "$nocursor_floor" || "$nocursor_start" != "$((nocursor_floor + 1))" ]];
   cat "$nocursor_relaunch_response_file" >&2
   exit 1
 fi
-# 5 seconds of the window's own: a frame offered again would arrive well inside it, since the
-# first took milliseconds, and this window's assertions are the ones that read an absence. Under
-# E2E_SESSION_ACK_DELAY_MS it also covers the delay itself, so the session's own cursor below is
-# the one its ack wrote.
-sleep 5
+# What would offer the frame again is the relaunched consumer, so the window's absence is read
+# from that consumer's own state rather than off a span: once it has nothing left to deliver and
+# nothing it delivered awaits an ack, the transport has made every offer it will make, the one
+# repeat E2E_SESSION_ACK_DELAY_MS drives and its delayed answer included. The session's cursor,
+# which its stand-in writes after each answer, then names the last frame it was offered, which is
+# what the cursor read below takes.
+wait_for "the relaunched consumer of ${nocursor_session_id} to have delivered everything and been answered for it" \
+  consumer_reads "$nocursor_session_id" '.pending == 0 and .ack_pending == 0'
+wait_for "the cursor of ${nocursor_session_id} to name the last frame it was offered" \
+  cursor_names_last_offer "$nocursor_cursor_file" "$nocursor_offers_file"
 if [[ "$(wc -l <"$nocursor_frames_file")" != "1" ]]; then
   printf 'ERR: %s wrote %s frames after a registration carrying no resume, not the one this window pins: it took a message twice. A session writes a frame once, whatever the transport offers it.\n' \
     "$nocursor_session_id" "$(wc -l <"$nocursor_frames_file")" >&2
@@ -1715,12 +1783,21 @@ stop_nats
 
 # --max-time 5 is the sending client's own per-attempt deadline (LISTENER_CALL_TIMEOUT_MS in
 # packages/contracts/src/envoy-session.ts): an answer that arrives after it is, to that caller, no
-# answer at all. The listener's own budget (sendRequestBudget, 3.5 s) is what keeps it inside.
+# answer at all, and curl ends this send there and says so. The listener's own budget
+# (sendRequestBudget, 3.5 s) is what keeps it inside.
 printf 'posting a direct message with the bus down\n'
+bus_down_curl=0
 curl --max-time 5 -sS -o "$bus_down_response_file" -D "$bus_down_headers_file" \
   -w '%{http_code}\n%{time_total}\n' \
   -X POST -H 'Content-Type: application/json' \
-  "${listener_url}/v1/messages/send" -d "$direct_body" >"$bus_down_result_file"
+  "${listener_url}/v1/messages/send" -d "$direct_body" >"$bus_down_result_file" || bus_down_curl=$?
+if ((bus_down_curl == 28)); then
+  printf 'ERR: the bus-down send had no answer within the sending client deadline (curl --max-time 5).\n' >&2
+  exit 1
+elif ((bus_down_curl != 0)); then
+  printf 'ERR: the bus-down send failed in curl (exit %s).\n' "$bus_down_curl" >&2
+  exit 1
+fi
 { IFS= read -r bus_down_status; IFS= read -r bus_down_seconds; } <"$bus_down_result_file"
 if [[ "$bus_down_status" != 503 ]]; then
   printf 'ERR: a send with the bus down answered HTTP %s, not 503.\n' "$bus_down_status" >&2
@@ -1739,12 +1816,6 @@ grep -qiE '^retry-after:[[:space:]]*1[[:space:]]*$' "$bus_down_headers_file" || 
   cat "$bus_down_headers_file" >&2
   exit 1
 }
-# Whole seconds only: curl prints time_total with a fraction (behind whichever separator the
-# locale asks for), and all that is asserted is that the answer beat the client deadline.
-if ((${bus_down_seconds%%[.,]*} >= 5)); then
-  printf 'ERR: the bus-down answer took %s seconds, past the sending client deadline.\n' "$bus_down_seconds" >&2
-  exit 1
-fi
 printf 'bus-down send: HTTP %s in %s seconds\n' "$bus_down_status" "$bus_down_seconds"
 
 # The same refusal through the client a session actually sends with. It retries a >= 500 answer

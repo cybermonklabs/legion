@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -256,10 +255,10 @@ func TestAnEndWhoseSandboxCannotBeReadIsUncertain(t *testing.T) {
 // The pod store and the Sandbox store are fed by two informers that nothing orders, so the pod's
 // end can reach the runtime before the Suspended patch that names it does. A final verdict on a
 // role whose cached Sandbox does not name its pod is confirmed with one read of the Sandbox
-// itself before it is reported: with the Sandbox store 300 ms behind, the tester whose pod the
+// itself before it is reported: with the Sandbox store held behind, the tester whose pod the
 // reviewer's launch replaced is still reported Displaced, never a death to charge.
 func TestADisplacementIsConfirmedPastALaggingSandboxStore(t *testing.T) {
-	g := newRig(t, nil, withLaggingSandboxInformer(300*time.Millisecond))
+	g := newRig(t, nil, withLaggingSandboxInformer())
 	testerLoc := g.spawn(workerSpec(t))
 	if err := g.kube.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("secrets"), testNamespace, roleSecretName(testerLoc.Sandbox.Name, claim.RoleReviewer)); err != nil {
 		t.Fatal(err)
@@ -270,6 +269,11 @@ func TestADisplacementIsConfirmedPastALaggingSandboxStore(t *testing.T) {
 	}
 	reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	g.launcher(reviewer.Claim)
+	// Hold the Sandbox feed so the reviewer's displacing Suspended patch, which names the pod it
+	// replaced, lags the pod store: the tester's end reaches the runtime over the pod informer while
+	// the cached Sandbox is still the one from before the displacement, so the verdict must read the
+	// Sandbox itself to confirm the displacement.
+	g.sandboxFeed.hold()
 	spawned := make(chan error, 1)
 	go func() {
 		_, err := g.r.Spawn(g.ctx, reviewer)
@@ -280,6 +284,9 @@ func TestADisplacementIsConfirmedPastALaggingSandboxStore(t *testing.T) {
 	if !ended.Displaced || ended.Locator != testerLoc {
 		t.Errorf("the tester's end behind a lagging Sandbox store: %s, Displaced %t, at %+v (%s); want it displaced at its recorded locator", ended.Kind, ended.Displaced, ended.Locator, ended.Detail)
 	}
+	// Let the Sandbox store catch up so the reviewer's launch, which waits for its own Running patch
+	// there, can return.
+	g.sandboxFeed.release()
 	if err := <-spawned; err != nil {
 		t.Fatalf("Spawn the reviewer: %v", err)
 	}

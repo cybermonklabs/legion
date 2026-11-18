@@ -611,7 +611,7 @@ requests still in flight`), and gets `documentShutdownTimeout`, 5 s more than it
 The database pool closes once every request has answered and no connection of the shared, document-rooms or room-appends pool is in use.
 While the database answers, nothing but the runtime's kill bounds that wait, as with the deferred close of the pool this replaced:
 a write still waiting on a lock commits and is answered if it finishes before the kill.
-The database has stopped answering once three health probes in a row (`silentProbes`, each `store.Pool.Healthy`'s two seconds) have failed with no connection of those pools taken back while they ran;
+The database has stopped answering once three health probes in a row (`silentProbes`, each `store.Pool.HealthyOn`'s two seconds, on the shutdown's clock) have failed with no connection of those pools taken back while they ran;
 a probe that answers, or a connection taken back, starts the count again.
 Then Dispatch exits without the connections waiting on it (`dispatch: exit with
 database connections still in use once the database stopped answering`), and the database rolls back what they held open;
@@ -935,7 +935,7 @@ the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-g
 The tests of those two packages that the race build cannot run, or runs smaller, have one plain run each:
 the `docs` package's few in `envoy-go`'s step "Test what the race build cannot run at all or at full size", and the API's source guards, which carry `//go:build !race`, in the `text-checks` job's step "Test the Dispatch API's source guards (no database)".
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
-— `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
+— `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 65-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
 
 A cleanup this package registers captures nothing that reaches the document it is attached to.
@@ -946,7 +946,7 @@ A running Dispatch process keeps one service for its whole life, so there the cy
 a pointer to a field of the service, such as a listing, counts as the service, and dies with that one allocation.
 The rule covers the cleanup's argument alike, so an argument reaching the document is the same cycle:
 `keepInstance` once passed its `*roomLoad`, which reaches a document by two routes through `roomInstance.unstored`: each `queuedClass`'s `UpdateCredit` carries the `service`, and it carries the `state` whose `roomState.reservedFor` is a `*crdt.Doc`, so it holds the load weakly too and passes an empty struct.
-`envoy-go-docs-finalizers` runs `GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/` on the same `envoy_go_race_docs` filter, and fails on `is reachable from cleanup or cleanup argument` and then `fatal error: detected possible issues with cleanups and/or finalizers`;
+`envoy-go-docs-finalizers` runs `GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 45m ./internal/dispatch/docs/` on the same `envoy_go_race_docs` filter, and fails on `is reachable from cleanup or cleanup argument` and then `fatal error: detected possible issues with cleanups and/or finalizers`;
 its `-v` also carries this package's leak line, `docs: <built> services built, <alive> still alive after <duration>`, which names each test that built a service and never shut it down, so a test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
 A service that was shut down is still alive at that line, too, when a callback of one of its stopped timers holds it, which is why a settlement timer's callback holds the service and the room's state weakly (`scheduleSettleAfterLocked`, `docs/service.go`).
 `Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs.
@@ -3830,7 +3830,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   so a record another listener wrote is compared as this listener's watcher last delivered it, the throttle holds across every listener once each one's watcher has delivered the others' writes, and a write made before that compares an older copy and costs at most one write of a record the bucket already holds.
   A clean stop is written whatever the throttle would say (`session.KnownSessions.TouchWithin`):
   a running session rewrites its record at least once per refresh age, so an unchanged-content write at its stop would be skipped and leave `last_seen` up to a refresh age before the stop, which a send to the stopped session answers and both tools print.
-  A failed write is a WARN and nothing else: the route answers whatever the write did.
+  A registration is answered `200` only once its record is written (`answerRegistration`, `cmd/listener/api.go`), the write bounded on its own (`knownRecordWriteTimeout`, one second) so the registration's other store work, which shares `sendRequestBudget`, cannot spend it;
+  a write that does not land is the bus-unavailable `503` with `Retry-After: 1`, which every client retries, since a session registered with no record is one a send cannot be stored for once its entry is gone.
+  A listener whose bucket is not open writes nothing and answers the registration `200`, as below.
+  Any other failed write is a WARN and nothing else: the interest change and the clean stop answer whatever the write did.
   The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants it to the listener, to the host user a host's sessions share and to Dispatch (`packages/envoy/infra/core/permissions.go`, and `packages/envoy/infra/README.md` for what that widens).
 
 - A listener whose NATS user may not open that bucket, a listener on any hub whose grant does not carry it, logs one WARN naming the bucket and runs without it:
@@ -6744,13 +6747,13 @@ agent-secrets-helper predates drain, …`, and exits 0.
 `unregister` also calls the broker, but its answer is local, and no other op calls the broker before it answers.
 The helper gives a connection 5 s to read its request and to write its answer (`Server.handle`), and a `register` with `wait_seconds` its wait plus 5 s.
 A broker-call op runs under a bound instead (`Server.brokerCall`).
-Its context ends at the bound, `Server.BrokerCallBound`, which is `helper.DefaultBrokerCallBound` (20 s) when it is zero, as `cmd/agent-secrets-helper` leaves it.
+Its context ends at the bound, `helper.BrokerCallBound` (20 s).
 The helper answers by the bound plus 1 s (21 s), whatever the op is doing.
 It sets the connection's deadline to the bound plus 5 s (25 s), so the connection stays open after the latest answer.
 A client waits `helper.BrokerCallWait` (30 s, the dial included) for the answer of a broker-call op:
 `agent-secrets enroll --helper` on each of its `DRAINING` tries, `agent-secrets unenroll --helper`, and the `login` call of `agent-secrets machine login`.
 `login-status` reads the helper's own state and calls no broker, so each `login-status` call still waits 10 s.
-`DefaultBrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
+`BrokerCallBound` is `BrokerCallWait` less 10 s, so the answer reaches every client inside its 30 s: a dial of up to 2 s (`helper.Call`), the 20 s bound and the 5 s to write the answer come to 27 s.
 Every released `agent-secrets` that has `enroll --helper` and `unenroll --helper` (`legion-envoy-v3.12.0` to `legion-envoy-v30.20.0`, read on 2026-11-15) also waits 30 s for them.
 Those from `legion-envoy-v10.0.0` on ask the helper's `enroll-session-key` and `unenroll-session-key`, so they get the answer too; an older one asks `enroll-box` and `unenroll-box`, which this helper answers `unknown op`.
 
@@ -7752,6 +7755,7 @@ The Postgres-backed tests skip, rather than fail, when `BROKER_TEST_DATABASE_URL
 one refresh token and one device code each raced against both processes, both migrating one empty database at once, a retag one process is told to reread being enforced by the other through the fan-out, that fan-out spending no rate-limit token on the pod it reaches, and a signalled process failing readiness while it serves a request out past the old ten-second shutdown budget.
 CI's `broker-multiprocess` job runs them
 — `go test -tags multiprocess -count=1 -timeout 20m ./cmd/broker` in `packages/envoy` — in a job of its own, since each row waits out tens of seconds and `envoy-go`'s unit step runs under go test's default ten-minute package deadline.
+That command runs the package's untagged tests beside the two-process tests, so its 20 minutes are 2.2 times the two together over CI's 20 newest green merge-group runs up to 2026-11-15: 477.995 s in `envoy-go`'s unit step (run 43687633216) and 60.731 s in `broker-multiprocess` (run 43582507175), whose own step runs the two-process tests alone under the same 20 minutes.
 The job runs only when a file its `broker_multiprocess` filter in `.github/workflows/ci.yaml` names changes;
 see Critical conventions for what keeps that filter current.
 Every client-facing lane's own test mounts the real broker handlers (`api.Register` with real, Postgres-backed services) rather than a hand-rolled fake standing in for broker behavior

@@ -14,12 +14,12 @@ package main
 // the feature answers is what a subscriber receives and in which order.
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rename this file configures, and the one pull request every event of it names. The number
@@ -63,11 +64,6 @@ var (
 	renameOldRepoMen = contracts.GithubSubject("sjawhar", "legion", "mention")
 	renameOldComment = contracts.GithubSubject("sjawhar", "legion", "pr."+renamePR+".comment")
 )
-
-// renameWait bounds every wait this file makes: a subscriber's next frame, the stream's next
-// message, and the CI settlement, which the summary loop emits a few one-second ticks after the
-// listener turns healthy (TestAListenerWithAGitHubRouteSettlesTheCIBucket measures the same wait).
-const renameWait = 30 * time.Second
 
 // renameQuiet is how long the negative control gives a copy that must never come. It runs after
 // every event has already reached the stream and the current name's subscriber, so a copy would
@@ -109,26 +105,26 @@ func TestRenameFansOutUnderTheFormerName(t *testing.T) {
 
 	// S1 subscribed to the former name, as a session that registered before the rename did: it
 	// receives every event of the repository, each as the copy published under that name.
-	assertRenameSubjects(t, rig.listener, "S1 (the former name)", renameMsgSubjects(rig.s1.take(t, rig.listener, 5)), []string{
+	assertRenameSubjects(t, rig.listener, "S1 (the former name)", renameMsgSubjects(rig.s1.take(t, 5)), []string{
 		renameOldChecks, renameOldPR, renameOldReview, renameOldMention, renameOldComment,
 	})
 
 	// S2 holds the one shape five live subscriptions hold, pr.<n>.review alone, and receives that
 	// event's copy and nothing else.
-	assertRenameSubjects(t, rig.listener, "S2 (the former name's reviews)", renameMsgSubjects(rig.s2.take(t, rig.listener, 1)), []string{
+	assertRenameSubjects(t, rig.listener, "S2 (the former name's reviews)", renameMsgSubjects(rig.s2.take(t, 1)), []string{
 		renameOldReview,
 	})
 
 	// S3 subscribed to the current name and receives every event under it, unchanged by the
 	// rename: the copy is published beside the original, never in its place.
-	assertRenameSubjects(t, rig.listener, "S3 (the current name)", renameMsgSubjects(rig.s3.take(t, rig.listener, 5)), []string{
+	assertRenameSubjects(t, rig.listener, "S3 (the current name)", renameMsgSubjects(rig.s3.take(t, 5)), []string{
 		renameCurChecks, renameCurPR, renameCurReview, renameCurMention, renameCurComment,
 	})
 
 	// S4 subscribed to both names, so it receives each event twice. It is a raw NATS subscription
 	// with no client-side dedupe, so the two frames are what a real client is handed; what makes
 	// that client show one card and not two is that both frames carry one event_id.
-	both := rig.s4.take(t, rig.listener, 10)
+	both := rig.s4.take(t, 10)
 	assertRenameSubjects(t, rig.listener, "S4 (both names)", renameMsgSubjects(both), []string{
 		renameCurChecks, renameOldChecks,
 		renameCurPR, renameOldPR,
@@ -160,17 +156,17 @@ func TestRenameUnsetPublishesTheCurrentNameAlone(t *testing.T) {
 
 	// S3 receives every event: the rig drove all four, so a silent S1 and S2 below is the absent
 	// copy and not an absent event.
-	assertRenameSubjects(t, rig.listener, "S3 (the current name)", renameMsgSubjects(rig.s3.take(t, rig.listener, 5)), []string{
+	assertRenameSubjects(t, rig.listener, "S3 (the current name)", renameMsgSubjects(rig.s3.take(t, 5)), []string{
 		renameCurChecks, renameCurPR, renameCurReview, renameCurMention, renameCurComment,
 	})
-	assertRenameSubjects(t, rig.listener, "S4 (both names)", renameMsgSubjects(rig.s4.take(t, rig.listener, 5)), []string{
+	assertRenameSubjects(t, rig.listener, "S4 (both names)", renameMsgSubjects(rig.s4.take(t, 5)), []string{
 		renameCurChecks, renameCurPR, renameCurReview, renameCurMention, renameCurComment,
 	})
 
 	// One wait, not two: every event reached the stream and S3 before this line, so a copy would
 	// have been published before the wait began, and after S1's three seconds of silence nothing
 	// is on its way to S2 either.
-	rig.s1.quiet(t, rig.listener, renameQuiet)
+	rig.s1.quiet(t)
 	rig.s2.empty(t, rig.listener)
 }
 
@@ -280,18 +276,11 @@ func (c *renameCase) drive(t *testing.T, copies bool) []bus.StoredMessage {
 // notifications.github.> and returns them in stream order.
 func (c *renameCase) awaitStream(t *testing.T, count int) []bus.StoredMessage {
 	t.Helper()
-	deadline := time.Now().Add(renameWait)
-	for {
-		frames := renameStreamFrames(t, c.client)
-		if len(frames) >= count {
-			return frames
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the stream holds %d messages on notifications.github.> after %s, want %d; it holds %v\n%s",
-				len(frames), renameWait, count, renameStoredSubjects(frames), c.listener.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	return testwait.Until(t, fmt.Sprintf("the stream to hold %d messages on notifications.github.>", count),
+		func() ([]bus.StoredMessage, bool) {
+			frames := renameStreamFrames(t, c.client)
+			return frames, len(frames) >= count
+		})
 }
 
 // renameStreamFrames reads every message the notification stream holds on notifications.github.>,
@@ -300,10 +289,9 @@ func (c *renameCase) awaitStream(t *testing.T, count int) []bus.StoredMessage {
 func renameStreamFrames(t *testing.T, client *bus.Client) []bus.StoredMessage {
 	t.Helper()
 	var frames []bus.StoredMessage
+	ctx := testwait.Context(t)
 	for seq := uint64(1); ; {
-		ctx, cancel := context.WithTimeout(context.Background(), renameWait)
 		message, err := client.NextStoredMessage(ctx, "notifications.github.>", seq)
-		cancel()
 		if errors.Is(err, natsgo.ErrMsgNotFound) {
 			return frames
 		}
@@ -342,32 +330,21 @@ func subscribeRename(t *testing.T, client *bus.Client, name string, subjects ...
 	return sub
 }
 
-// take waits for the subscriber's next count frames, each within renameWait, and returns them in
-// arrival order.
-func (s *renameSub) take(t *testing.T, listener *listenerProcess, count int) []*natsgo.Msg {
+// take waits for the subscriber's next count frames and returns them in arrival order.
+func (s *renameSub) take(t *testing.T, count int) []*natsgo.Msg {
 	t.Helper()
 	got := make([]*natsgo.Msg, 0, count)
 	for len(got) < count {
-		select {
-		case message := <-s.msgs:
-			got = append(got, message)
-		case <-time.After(renameWait):
-			t.Fatalf("%s received %d of %d frames within %s; it has %v and is still waiting\n%s",
-				s.name, len(got), count, renameWait, renameMsgSubjects(got), listener.Output.String())
-		}
+		got = append(got, testwait.Receive(t, fmt.Sprintf("%s frame %d of %d", s.name, len(got)+1, count), s.msgs))
 	}
 	return got
 }
 
-// quiet requires that nothing reaches the subscriber within grace.
-func (s *renameSub) quiet(t *testing.T, listener *listenerProcess, grace time.Duration) {
+// quiet requires that nothing reaches the subscriber within renameQuiet.
+func (s *renameSub) quiet(t *testing.T) {
 	t.Helper()
-	select {
-	case message := <-s.msgs:
-		t.Fatalf("%s received %q within %s with ENVOY_GITHUB_REPOSITORY_RENAMES unset, want nothing: the listener published under the former name with no rename configured\n%s",
-			s.name, message.Subject, grace, listener.Output.String())
-	case <-time.After(grace):
-	}
+	testwait.Quiet(t, s.name+" receiving a frame with ENVOY_GITHUB_REPOSITORY_RENAMES unset", s.msgs, renameQuiet,
+		"the listener published under the former name with no rename configured; the frames are a core subscription's, which neither this test's state nor a later action of its own reaches")
 }
 
 // empty requires that nothing is already waiting for the subscriber, without waiting itself. It

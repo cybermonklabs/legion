@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
@@ -81,27 +83,26 @@ func (c *StatementCounter) Count() int64 {
 	return c.count.Load()
 }
 
-// AwaitQuiet waits until counter has counted no statement for quiet, failing once within passes.
-func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet, within time.Duration) {
+// AwaitQuiet waits until counter counts no statement over a span of quiet, which is how a loop
+// that writes nothing shows it has gone idle. Each span is a testwait.Span held for why, which
+// says why neither the state the code leaves, synctest.Wait nor a later action's effect shows the
+// idle instead.
+func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet time.Duration, why string) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	last, since := counter.Count(), time.Now()
-	for time.Since(since) < quiet {
-		if time.Now().After(deadline) {
-			t.Fatalf("statements did not stop for %v within %v", quiet, within)
-		}
-		time.Sleep(20 * time.Millisecond)
-		if n := counter.Count(); n != last {
-			last, since = n, time.Now()
-		}
-	}
+	testwait.Eventually(t, fmt.Sprintf("a span of %v in which no statement starts", quiet), func() bool {
+		before := counter.Count()
+		testwait.Span(t, quiet, why)
+		return counter.Count() == before
+	})
 }
 
-// RequireNoStatements fails if counter counts any statement over window.
-func RequireNoStatements(t testing.TB, counter *StatementCounter, window time.Duration, what string) {
+// RequireNoStatements fails if counter counts any statement over a span of window, a
+// testwait.Span held for why, which says why neither the state the code leaves, synctest.Wait nor
+// a later action's effect proves the absence instead.
+func RequireNoStatements(t testing.TB, counter *StatementCounter, window time.Duration, what, why string) {
 	t.Helper()
 	before := counter.Count()
-	time.Sleep(window)
+	testwait.Span(t, window, why)
 	if made := counter.Count() - before; made != 0 {
 		t.Errorf("%s: %d statements over %v, want none", what, made, window)
 	}

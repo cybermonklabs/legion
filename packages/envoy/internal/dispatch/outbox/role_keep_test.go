@@ -33,8 +33,7 @@ import (
 // exactly as one the listener kept.
 func keptCopies(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var copies []contracts.Envelope
 	for seq := uint64(1); ; {
 		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
@@ -173,10 +172,14 @@ func (p *keepRecorder) keeps() []keptPublish {
 // no resolution releases one (dispatch://INFRA-392).
 type roleClaimStub struct {
 	holder string
-	// lastSeen, when it is not zero, is the holder's last registration: a stub that names one
-	// answers that record, so the resolution judges the holder by its own state rather than by
-	// the absence of a record.
-	lastSeen int64
+	// seenAgo, when it is not zero, is how long before the moment the holder is judged its last
+	// registration was: a stub that names one answers that record, so the resolution judges the
+	// holder by its own state rather than by the absence of a record. The record is dated when it
+	// is read, on the clock windows judge it at, so no moment from before the test reaches the
+	// verdict, however long the test process has run.
+	seenAgo time.Duration
+	// windows are what the holder's record is judged by (EntryState) and the clock it is dated on.
+	windows roles.Windows
 }
 
 const retainedHolder = "ses_restored"
@@ -186,8 +189,9 @@ const retainedHolder = "ses_restored"
 // claim - nothing here releases one, and the listener's role-claim reaper is the one caller that
 // ever does - so nothing is kept for it either.
 var unresponsiveClaim = roleClaimStub{
-	holder:   retainedHolder,
-	lastSeen: time.Now().Add(-(session.LiveWindow + time.Minute)).UnixMilli(),
+	holder:  retainedHolder,
+	seenAgo: session.LiveWindow + time.Minute,
+	windows: roles.Windows{Now: time.Now},
 }
 
 // unclaimedRoles is the store in which no role is claimed.
@@ -198,14 +202,14 @@ func (s roleClaimStub) RoleClaim(context.Context, string) (envoystore.RoleClaim,
 }
 
 func (s roleClaimStub) Holder(context.Context, string) (session.SessionEntry, error) {
-	if s.lastSeen == 0 {
+	if s.seenAgo == 0 {
 		return session.SessionEntry{}, natsgo.ErrKeyNotFound
 	}
-	return session.SessionEntry{MachineID: "test-machine", UpdatedAt: s.lastSeen}, nil
+	return session.SessionEntry{MachineID: "test-machine", UpdatedAt: s.windows.Now().Add(-s.seenAgo).UnixMilli()}, nil
 }
 
-func (roleClaimStub) EntryState(entry session.SessionEntry) session.State {
-	return roles.Windows{}.EntryState(entry)
+func (s roleClaimStub) EntryState(entry session.SessionEntry) session.State {
+	return s.windows.EntryState(entry)
 }
 
 func (roleClaimStub) LastSeen(string) int64 { return 0 }
@@ -443,25 +447,16 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 	return nil
 }
 
-// handedNow is the forward a scan that has returned handed the holder, waited for with the
-// shared bound (testwait.Eventually). The forward's send returns on the stream's acknowledgement
-// (roleForward.forward, a request whose reply is the stream's PubAck), and the holder's own
-// subscription is handed the same message on its own connection, which can arrive just after
-// that acknowledgement on a busy machine. No listener runs in the tests that read it, so nothing
-// but the scan's own forward can reach the holder, and the wait proves no more than that the
-// scan sent it.
+// handedNow is the forward a scan that has returned handed the holder, received from the holder's
+// own subscription (recv.arrived) through the shared wait (testwait.Receive). The forward's send
+// returns on the stream's acknowledgement (roleForward.forward, a request whose reply is the
+// stream's PubAck), and the holder's own subscription is handed the same message on its own
+// connection, which can arrive just after that acknowledgement on a busy machine. No listener runs
+// in the tests that read it, so nothing but the scan's own forward can reach the holder, and the
+// wait proves no more than that the scan sent it.
 func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 	t.Helper()
-	var forward contracts.Envelope
-	testwait.Eventually(t, what+": the holder takes the forward the scan sent", func() bool {
-		select {
-		case forward = <-recv.arrived:
-			return true
-		default:
-			return false
-		}
-	})
-	return forward
+	return testwait.Receive(t, what+": the holder takes the forward the scan sent", recv.arrived)
 }
 
 // A role claimed while the keep was in flight is handed the kept copy by the keep itself, in the
@@ -664,7 +659,8 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	received := recv.receivedNow(t, rig.client)
+	recv.settle(t)
+	received := recv.received()
 	if len(received) != 2 || received[0].EventID != firstKey || received[1].EventID != secondKey {
 		t.Fatalf("the holder received %d forwards (%v) in the scan that kept both copies, want %s and then %s: the second copy is the one the batch's own handover record frees",
 			len(received), eventIDs(received), firstKey, secondKey)
@@ -740,7 +736,8 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	if taken := toFirstHolder.receivedNow(t, rig.client); len(taken) != 1 || taken[0].EventID != firstKey {
+	toFirstHolder.settle(t)
+	if taken := toFirstHolder.received(); len(taken) != 1 || taken[0].EventID != firstKey {
 		t.Fatalf("the session that claimed the role under the first keep received %v, want %s alone: the handover behind that keep is the one that reached it",
 			eventIDs(taken), firstKey)
 	}

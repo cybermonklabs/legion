@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart: http.Server.Shutdown counts no
@@ -88,19 +89,15 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 	close(start)
 	// Every page has opened a socket beside the wait before the signal closes the ones it serves.
 	for range pages {
-		<-dialed
+		testwait.Receive(t, "a page's first socket opened beside the wait", dialed)
 	}
 	rig.stop()
-	select {
-	case <-returned:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the shutdown's wait for the sockets had not returned 10s after the signal")
-	}
+	testwait.Receive(t, "the shutdown's wait for the sockets to return after the signal", returned)
 	waitReturned()
 
 	opened, last := 0, make([]*gws.Conn, 0, pages)
 	for range pages {
-		run := <-runs
+		run := testwait.Receive(t, "a page's sockets to end, its last opened after the wait returned", runs)
 		opened += run.opened
 		if run.last != nil {
 			last = append(last, run.last)
@@ -124,7 +121,7 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 		t.Fatalf("%d sockets in the server's set after its wait returned", len(open))
 	}
 	for i, client := range serving {
-		if code, _ := client.closeCode(t, 5*time.Second); code != gws.CloseServiceRestart {
+		if code, _ := client.closeCode(t); code != gws.CloseServiceRestart {
 			t.Errorf("socket %d, open at the signal, closed with %d, want 1012", i, code)
 		}
 	}
@@ -144,9 +141,9 @@ func dialLiveSocketAsAlice(url string) (*gws.Conn, error) {
 }
 
 // endsWithServiceRestart reads conn until Dispatch ends it, answering nil for a close with 1012
-// (service restart) and an error for any other end.
+// (service restart) and an error for any other end. It sets no read deadline: the test waits for
+// the page that reads it through the shared wait (testwait.Receive of runs).
 func endsWithServiceRestart(conn *gws.Conn) error {
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			if gws.IsCloseError(err, gws.CloseServiceRestart) {

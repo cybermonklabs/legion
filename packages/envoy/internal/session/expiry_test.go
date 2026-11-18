@@ -9,6 +9,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -16,10 +18,18 @@ import (
 // newTestRegistry is a registry with the given TTL built from a struct literal, as the cache's unit
 // tests build one: no NATS, no watcher, and no expiry heap or timer until its first write. With no
 // watcher the copy counts as following its bucket (SessionRegistry.following), so rows expire by
-// their deadlines alone.
+// their deadlines alone. Its clock is a fake that stands where the wall clock is until the test
+// moves it, so a deadline passes when the test says and the expiry timer fires then (newTestRegistryOn).
 func newTestRegistry(ttl time.Duration) *SessionRegistry {
+	return newTestRegistryOn(ttl, clocktest.New(time.Now()))
+}
+
+// newTestRegistryOn is newTestRegistry on c, for a test that moves the clock its rows expire on:
+// an Advance past a row's deadline fires the registry's expiry timer and returns once the
+// callback it runs has finished, so what that callback did is done when Advance returns.
+func newTestRegistryOn(ttl time.Duration, c clock.Clock) *SessionRegistry {
 	r := &SessionRegistry{
-		now:      time.Now,
+		clock:    c,
 		ttl:      ttl,
 		lastSeen: map[string]lastSeenSession{},
 	}
@@ -73,16 +83,10 @@ func watchedDelete(key string, revision uint64) watchedEntry {
 	return watchedEntry{key: key, revision: revision, created: time.Now(), op: natsgo.KeyValueDelete}
 }
 
-// waitUntil polls condition until it holds, failing the test after five seconds.
-func waitUntil(t *testing.T, condition func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, 5*time.Second, 5*time.Millisecond, "the registry's expiry", condition)
-}
-
 // waitForCacheSize waits, reading only CacheSize, until the cache holds want entries.
 func waitForCacheSize(t *testing.T, r *SessionRegistry, want int) {
 	t.Helper()
-	waitUntil(t, func() bool { return r.CacheSize() == want })
+	testwait.Eventually(t, "the registry to settle", func() bool { return r.CacheSize() == want })
 }
 
 // lastSeenHeld reports whether the registry still holds a lastSeen record for id, expired or not.
@@ -103,28 +107,30 @@ func fence(r *SessionRegistry, id string) (uint64, bool) {
 }
 
 // TestRegistryReadsRaceWatchedWritesAndExpiry runs Get, List, LastSeen and LiveCount from several
-// goroutines while one applies watcher puts and deletes and a short TTL keeps the expiry callback
-// removing entries, for the race detector. Every read answers an entry that was written, and once
-// the writes stop every entry, lastSeen record and fence leaves at its deadline.
+// goroutines while one applies watcher puts and deletes and moves the registry's clock past the
+// TTL, which keeps the expiry callback removing entries beside them, for the race detector. Every
+// read answers an entry that was written, and once the writes stop every entry, lastSeen record
+// and fence leaves at its deadline. The writer counts the work the race runs for, so the test
+// does the same amount of it on any machine.
 func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
-	const ttl = 20 * time.Millisecond
-	r := newTestRegistry(ttl)
+	const (
+		ttl    = 20 * time.Millisecond
+		writes = 1000
+	)
+	now := clocktest.New(time.Now())
+	r := newTestRegistryOn(ttl, now)
 	ids := make([]string, 40)
 	puts := make([]watchedEntry, len(ids))
 	for i := range ids {
 		ids[i] = fmt.Sprintf("ses_race_%02d", i)
-		puts[i] = watchedPut(t, ids[i], 0, time.Time{}, SessionEntry{Port: i + 1, UpdatedAt: time.Now().UnixMilli()})
+		puts[i] = watchedPut(t, ids[i], 0, time.Time{}, SessionEntry{Port: i + 1, UpdatedAt: now.Now().UnixMilli()})
 	}
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Go(func() {
+		defer close(stop)
 		revision := uint64(0)
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		for i := range writes {
 			revision++
 			j := i % len(ids)
 			if i%7 == 0 {
@@ -132,8 +138,13 @@ func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
 				continue
 			}
 			put := puts[j]
-			put.revision, put.created = revision, time.Now()
+			put.revision, put.created = revision, now.Now()
 			r.applyWatched(put)
+			if i%11 == 0 {
+				// Past the deadlines of the rows written a TTL ago: the expiry callback runs
+				// here, on the clock's own goroutine, while the readers below are reading.
+				now.Advance(ttl)
+			}
 		}
 	})
 	for range 3 {
@@ -163,11 +174,14 @@ func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
 			}
 		})
 	}
-	time.Sleep(300 * time.Millisecond)
-	close(stop)
 	wg.Wait()
 
-	waitUntil(t, func() bool {
+	// A row leaves at its own deadline and leaves a last-seen record whose deadline is a
+	// retention later, so each move of the clock can schedule the next deadline: the wait moves
+	// it a TTL at a time until nothing is left, which is the registry's own progress and not the
+	// machine's.
+	testwait.Eventually(t, "every row and last-seen record to leave at its deadline", func() bool {
+		now.Advance(ttl)
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		return r.cache.Len() == 0 && len(r.lastSeen) == 0
@@ -184,31 +198,41 @@ func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
 }
 
 // TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback holds the registry's write lock
-// across an entry's deadline, so the expiry callback waits, and writes the session's next heartbeat
-// as the watcher would. When the callback runs it must find the newer entry and keep it.
+// while the entry's deadline passes, so the expiry callback waits on that lock, and writes the
+// session's next heartbeat as the watcher would. When the callback runs it must find the newer
+// entry and keep it.
 func TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback(t *testing.T) {
 	const ttl = time.Minute
-	r := newTestRegistry(ttl)
+	clk := clocktest.New(time.Now())
+	r := newTestRegistryOn(ttl, clk)
 	const id = "ses_rewritten"
-	deadline := time.Now().Add(100 * time.Millisecond)
-	r.applyWatched(watchedPut(t, id, 1, deadline.Add(-ttl), SessionEntry{Port: 1, UpdatedAt: deadline.Add(-ttl).UnixMilli()}))
+	created := clk.Now()
+	r.applyWatched(watchedPut(t, id, 1, created, SessionEntry{Port: 1, UpdatedAt: created.UnixMilli()}))
 
 	r.mu.Lock()
-	time.Sleep(time.Until(deadline) + 50*time.Millisecond)
-	now := time.Now()
-	fresh := SessionEntry{Port: 2, UpdatedAt: now.UnixMilli()}
+	// The deadline passes while this test holds the write lock. The fake runs the timer's
+	// callback on a goroutine of its own and waits for it, so the Advance goes on a goroutine of
+	// its own too: the callback is queued on the lock this one holds.
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		clk.Advance(ttl + time.Second)
+	}()
+	// The heartbeat that lands between the old deadline and its callback: it was written past
+	// that deadline, so its own is a TTL further on and the callback must keep it.
+	rewritten := created.Add(ttl + time.Second)
+	fresh := SessionEntry{Port: 2, UpdatedAt: rewritten.UnixMilli()}
 	// What applyWatched does with the watcher's next put; it takes the lock this test holds.
 	value, err := json.Marshal(fresh)
 	if err != nil {
 		t.Fatalf("marshal %s: %v", id, err)
 	}
-	if err := r.cache.Delivered(kvwatch.Entry{Key: id, Value: value, Revision: 2, Created: now}); err != nil {
+	if err := r.cache.Delivered(kvwatch.Entry{Key: id, Value: value, Revision: 2, Created: rewritten}); err != nil {
 		t.Fatalf("deliver %s: %v", id, err)
 	}
 	r.mu.Unlock()
-	// The timer's callback runs once the lock is free; run it here too, so it has certainly run
-	// after the write.
-	r.expireDue()
+	// The callback runs once the lock is free, and the move ends when it returns.
+	testwait.Receive(t, "the old deadline's expiry callback to run", passed)
 
 	got, err := r.Get(id)
 	if err != nil {
@@ -232,12 +256,13 @@ func TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback(t *testing.
 // at the record's deadline, and a replay after that stays absent on its age alone (decodeLocked).
 func TestRevisionFenceLeavesWithAReadAndAStaleReplayStaysAbsent(t *testing.T) {
 	const ttl = 100 * time.Millisecond
-	r := newTestRegistry(ttl)
+	clk := clocktest.New(time.Now())
+	r := newTestRegistryOn(ttl, clk)
 	// The live window is this registry's TTL, as production's is the bucket's maximum age today,
 	// so a record past its deadline is past its live window too and reads live nowhere.
 	r.liveWindow = ttl
 	const id = "ses_fenced"
-	created := time.Now()
+	created := clk.Now()
 	stale := watchedPut(t, id, 5, created, SessionEntry{Port: 1, UpdatedAt: created.UnixMilli()})
 	r.applyWatched(stale)
 	r.applyWatched(watchedDelete(id, 6))
@@ -249,7 +274,9 @@ func TestRevisionFenceLeavesWithAReadAndAStaleReplayStaysAbsent(t *testing.T) {
 		t.Fatalf("Get(%s) after a replay the fence holds off = %v, want ErrKeyNotFound", id, err)
 	}
 
-	waitUntil(t, func() bool { return !lastSeenHeld(r, id) })
+	// One retention after the delete took the row, the record it left leaves with it.
+	clk.Advance(ttl + time.Millisecond)
+	testwait.Eventually(t, "the registry to settle", func() bool { return !lastSeenHeld(r, id) })
 	if r.LastSeen(id) != 0 {
 		t.Fatalf("LastSeen %d after the record left; want 0", r.LastSeen(id))
 	}
@@ -270,7 +297,8 @@ func TestRevisionFenceLeavesWithAReadAndAStaleReplayStaysAbsent(t *testing.T) {
 		t.Fatalf("LiveCount %d after a stale replay; want 0", live)
 	}
 	waitForCacheSize(t, r, 0)
-	waitUntil(t, func() bool { return r.LastSeen(id) == 0 })
+	clk.Advance(ttl + time.Millisecond)
+	testwait.Eventually(t, "the registry to settle", func() bool { return r.LastSeen(id) == 0 })
 }
 
 // TestRevisionFencesStayBoundedAsSessionsComeAndGo registers waves of sessions, deletes half of
@@ -278,13 +306,14 @@ func TestRevisionFenceLeavesWithAReadAndAStaleReplayStaysAbsent(t *testing.T) {
 // the registry holds no entry, lastSeen record, fence or deadline for any of them (R3).
 func TestRevisionFencesStayBoundedAsSessionsComeAndGo(t *testing.T) {
 	const ttl = 50 * time.Millisecond
-	r := newTestRegistry(ttl)
+	clk := clocktest.New(time.Now())
+	r := newTestRegistryOn(ttl, clk)
 	revision := uint64(0)
 	for wave := range 3 {
 		for i := range 100 {
 			id := fmt.Sprintf("ses_wave%d_%03d", wave, i)
 			revision++
-			now := time.Now()
+			now := clk.Now()
 			r.applyWatched(watchedPut(t, id, revision, now, SessionEntry{Port: i + 1, UpdatedAt: now.UnixMilli()}))
 			if i%2 == 0 {
 				revision++
@@ -292,12 +321,17 @@ func TestRevisionFencesStayBoundedAsSessionsComeAndGo(t *testing.T) {
 			}
 		}
 	}
-	waitUntil(t, func() bool {
+	// Past every row's deadline, and then past the retention of the record each row left as it
+	// went: one TTL, since this registry sets no retention of its own.
+	clk.Advance(ttl + time.Millisecond)
+	clk.Advance(ttl + time.Millisecond)
+	testwait.Eventually(t, "the registry to settle", func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		return r.cache.Len() == 0 && len(r.lastSeen) == 0 &&
 			len(r.expiries) == 0 && len(r.expiryIndex) == 0
 	})
+
 	// Each wave's fences leave with the next completed read of the bucket, so nothing it holds
 	// outlives the bucket's own keys (kvwatch.Copy.CompleteRead).
 	r.sweep()
@@ -313,12 +347,15 @@ func TestRevisionFencesStayBoundedAsSessionsComeAndGo(t *testing.T) {
 func TestNonPositiveTTLNeverRemovesOrSchedules(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Second} {
 		t.Run(ttl.String(), func(t *testing.T) {
-			r := newTestRegistry(ttl)
-			old := time.Now().Add(-time.Hour)
+			clk := clocktest.New(time.Now())
+			r := newTestRegistryOn(ttl, clk)
+			old := clk.Now().Add(-time.Hour)
 			r.applyWatched(watchedPut(t, "ses_kept", 1, old, SessionEntry{Port: 1, UpdatedAt: old.UnixMilli()}))
 			r.applyWatched(watchedPut(t, "ses_deleted", 2, old, SessionEntry{Port: 2, UpdatedAt: old.UnixMilli()}))
 			r.applyWatched(watchedDelete("ses_deleted", 3))
-			time.Sleep(20 * time.Millisecond)
+			// A day on the registry's clock: with no TTL there is no deadline for it to pass, and
+			// no timer of the registry's it could fire.
+			clk.Advance(24 * time.Hour)
 
 			if _, err := r.Get("ses_kept"); err != nil {
 				t.Fatalf("Get(ses_kept): %v", err)
@@ -341,6 +378,9 @@ func TestNonPositiveTTLNeverRemovesOrSchedules(t *testing.T) {
 			if scheduled != 0 || timer != nil {
 				t.Fatalf("scheduled %d deadlines (timer %v), want none", scheduled, timer)
 			}
+			if armed := clk.Armed(); len(armed) != 0 {
+				t.Fatalf("the registry armed %v on its clock, want nothing with no TTL", armed)
+			}
 		})
 	}
 }
@@ -354,22 +394,25 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 		ttl       = 50 * time.Millisecond
 		retention = time.Second
 	)
-	r := newTestRegistry(ttl)
+	clk := clocktest.New(time.Now())
+	r := newTestRegistryOn(ttl, clk)
 	r.lastSeenRetention = retention
-	created := time.Now()
+	created := clk.Now()
 	heartbeat := created.UnixMilli()
 	stale := watchedPut(t, "ses_deleted", 1, created, SessionEntry{Port: 1, UpdatedAt: heartbeat})
 	r.applyWatched(watchedPut(t, "ses_expired", 2, created, SessionEntry{Port: 2, UpdatedAt: heartbeat}))
 	r.applyWatched(stale)
-	deleted := time.Now()
 	r.applyWatched(watchedDelete("ses_deleted", 3))
+	// Past the TTL, which takes the row the delete left and the one that expires.
+	clk.Advance(ttl + time.Millisecond)
 	waitForCacheSize(t, r, 0)
+	left := clk.Now()
 
 	// Several TTLs after both left, well inside the retention.
-	time.Sleep(4 * ttl)
+	clk.Advance(4 * ttl)
 	for _, id := range []string{"ses_expired", "ses_deleted"} {
 		if got := r.LastSeen(id); got != heartbeat {
-			t.Fatalf("LastSeen(%s) %s after it left = %d, want its heartbeat %d", id, time.Since(created), got, heartbeat)
+			t.Fatalf("LastSeen(%s) %s after it left = %d, want its heartbeat %d", id, clk.Now().Sub(created), got, heartbeat)
 		}
 	}
 	if revision, ok := fence(r, "ses_deleted"); !ok || revision != 3 {
@@ -383,14 +426,23 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 		t.Fatalf("LastSeen(ses_deleted) after a replay the fence holds off = %d, want %d", got, heartbeat)
 	}
 
-	waitUntil(t, func() bool {
+	// Each record is kept the whole retention from the moment its row left: the delete's row left
+	// at once and the expired one at its deadline, so a tick short of the retention after the
+	// delete both are still held, and a tick past the retention after the later of the two
+	// departures both are gone.
+	clk.Set(created.Add(retention - time.Millisecond))
+	for _, id := range []string{"ses_expired", "ses_deleted"} {
+		if got := r.LastSeen(id); got != heartbeat {
+			t.Fatalf("LastSeen(%s) a tick short of the retention = %d, want its heartbeat %d", id, got, heartbeat)
+		}
+	}
+	clk.Set(left.Add(retention + time.Millisecond))
+	testwait.Eventually(t, "every last-seen record to leave at its retention", func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		return len(r.lastSeen) == 0 && len(r.expiries) == 0
 	})
-	if gone := time.Since(deleted); gone < retention {
-		t.Fatalf("records and fences left %s after ses_deleted was removed, before the retention %s", gone, retention)
-	}
+
 	for _, id := range []string{"ses_expired", "ses_deleted"} {
 		if got := r.LastSeen(id); got != 0 {
 			t.Fatalf("LastSeen(%s) after the retention = %d, want 0", id, got)
@@ -402,25 +454,29 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 // record is still kept one TTL, and the fence stays until a completed read of the bucket drops it.
 func TestLastSeenRetentionShorterThanTheTTLKeepsOneTTL(t *testing.T) {
 	const ttl = 500 * time.Millisecond
-	r := newTestRegistry(ttl)
+	clk := clocktest.New(time.Now())
+	r := newTestRegistryOn(ttl, clk)
 	r.lastSeenRetention = time.Millisecond
-	now := time.Now()
+	now := clk.Now()
 	r.applyWatched(watchedPut(t, "ses_deleted", 1, now, SessionEntry{Port: 1, UpdatedAt: now.UnixMilli()}))
-	deleted := time.Now()
 	r.applyWatched(watchedDelete("ses_deleted", 2))
 
 	// Many retentions later, well inside one TTL.
-	time.Sleep(50 * time.Millisecond)
+	clk.Advance(50 * time.Millisecond)
 	if got := r.LastSeen("ses_deleted"); got != now.UnixMilli() {
-		t.Fatalf("LastSeen(ses_deleted) %s after it left = %d, want its heartbeat %d", time.Since(deleted), got, now.UnixMilli())
+		t.Fatalf("LastSeen(ses_deleted) %s after it left = %d, want its heartbeat %d", clk.Now().Sub(now), got, now.UnixMilli())
 	}
 	if revision, ok := fence(r, "ses_deleted"); !ok || revision != 2 {
 		t.Fatalf("fence for ses_deleted = %d (held %v), want 2 within one TTL", revision, ok)
 	}
-	waitUntil(t, func() bool { return !lastSeenHeld(r, "ses_deleted") })
-	if gone := time.Since(deleted); gone < ttl {
-		t.Fatalf("the record left %s after the delete, before one TTL %s", gone, ttl)
+	// A tick short of one TTL after the delete the record is still held, and a tick past it the
+	// record leaves: the retention it was given is shorter than the TTL, and the TTL wins.
+	clk.Set(now.Add(ttl - time.Millisecond))
+	if !lastSeenHeld(r, "ses_deleted") {
+		t.Fatalf("the record left a tick short of one TTL (%s) after the delete", ttl)
 	}
+	clk.Advance(2 * time.Millisecond)
+	testwait.Eventually(t, "the registry to settle", func() bool { return !lastSeenHeld(r, "ses_deleted") })
 	r.sweep()
 	if revision, ok := fence(r, "ses_deleted"); ok {
 		t.Fatalf("a completed read left fence %d", revision)
@@ -445,9 +501,10 @@ func rowDeadline(r *SessionRegistry, id string) (time.Time, bool) {
 // at once through the expiry timer, which keeps its last heartbeat as any other expiry does.
 func TestSetTTLMovesEveryCachedRowsDeadline(t *testing.T) {
 	const id = "ses_maxage"
-	r := newTestRegistry(time.Hour)
+	clk := clocktest.New(time.Now())
+	r := newTestRegistryOn(time.Hour, clk)
 	r.lastSeenRetention = time.Minute
-	created := time.Now()
+	created := clk.Now()
 	r.applyWatched(watchedPut(t, id, 1, created, SessionEntry{Port: 1, UpdatedAt: created.UnixMilli()}))
 	if got, ok := rowDeadline(r, id); !ok || !got.Equal(created.Add(time.Hour)) {
 		t.Fatalf("the row's deadline = %v (held %v), want one TTL past its record %v", got, ok, created.Add(time.Hour))
@@ -461,7 +518,10 @@ func TestSetTTLMovesEveryCachedRowsDeadline(t *testing.T) {
 		t.Fatalf("the row's deadline after the raise = %v (held %v), want %v", got, ok, created.Add(2*time.Hour))
 	}
 
-	// A maximum age shorter than the row's age: its new deadline has already passed.
+	// A maximum age shorter than the row's age: a second on the clock, well inside the minute
+	// this registry keeps a last-seen record for, leaves the row a second old, so the cut puts
+	// its new deadline in the past and the timer takes it at once.
+	clk.Advance(time.Second)
 	r.SetTTL(time.Millisecond)
 	waitForCacheSize(t, r, 0)
 	if got := r.LastSeen(id); got != created.UnixMilli() {

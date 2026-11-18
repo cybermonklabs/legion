@@ -13,6 +13,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
+// podReplaceBudget bounds one pod replacement a finished update round calls for (ReplacePod): the
+// minute the sweep that makes it runs on (orphanSweepInterval), so a replacement the runtime never
+// answers is given up before the next sweep reaches the same round again.
+const podReplaceBudget = time.Minute
+
 // reconcilePodUpdates carries every update round of this project one step, over the claims the
 // orphan sweep already read this tick. A running issue pod whose configuration has drifted is
 // never replaced where it is found: that ends every role process in it mid-turn and deletes the
@@ -610,7 +615,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod, "reading", int(reading.wait))
 		return
 	}
-	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
+	limited, done := s.plan.clock.WithTimeout(ctx, podReplaceBudget)
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn, which is the
 	// read the replacement is made on. It stays the zero roundEnd, which no bound made, where the

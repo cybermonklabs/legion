@@ -3,9 +3,9 @@
 package core_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests in this file run the callout's ping lines (calloutPingLines: ping_interval 20 s,
@@ -36,10 +37,11 @@ const (
 	calloutQueue = "example-auth-service"
 	// replicaA is the name of the replica that hangs, as the server's /connz lists it.
 	replicaA = "example-replica-a"
-	// hungReplicaDeadline is how long after the hang the test waits for the server to close A.
-	// With ping_interval 20 s and ping_max 2 the server closes a replica that hangs 40 to 80 s
-	// later: 2 to 3 intervals if it sent nothing in the interval before, 3 to 4 if it sent data up
-	// to the hang (core/nats_callout.go calloutPingLines). With the defaults it is 4 to 8 minutes.
+	// hungReplicaDeadline is how long after the hang, on the server's own clock, the test waits
+	// for the server to close A. With ping_interval 20 s and ping_max 2 the server closes a replica
+	// that hangs 40 to 80 s later: 2 to 3 intervals if it sent nothing in the interval before, 3 to
+	// 4 if it sent data up to the hang (core/nats_callout.go calloutPingLines). With the defaults
+	// it is 4 to 8 minutes.
 	hungReplicaDeadline = 81 * time.Second
 	// clientsAfterTheHang is how many clients connect once A is closed or the deadline has passed.
 	// With A still in the group, each goes to A with even odds, so all of them reaching B by chance
@@ -59,20 +61,19 @@ const (
 // where http.Get would block the row until the package's -timeout.
 var monitorHTTP = &http.Client{Timeout: 2 * time.Second}
 
-// startHubOn runs the hub's image with rig's authorization rendered without its callout, with its
-// monitoring port open, then reconfigures it on config (calloutRig.reconfigure). It returns the
-// client URL and the monitoring endpoint.
+// startHubOn runs the hub's image with rig's authorization rendered without its callout, then
+// reconfigures it on config (calloutRig.reconfigure). It returns the client URL and the monitoring
+// endpoint of the restarted server, which StartImageConfig opens on a port the kernel chooses.
 func startHubOn(t *testing.T, rig *calloutRig, config string) (uri, monitor string) {
 	t.Helper()
-	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js", "-m", "8222"}, false)
+	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js"}, false)
 	uri = rig.reconfigure(t, ctr, config)
-	monitor, err := ctr.PortEndpoint(context.Background(), "8222/tcp", "http")
-	require.NoError(t, err)
-	return uri, monitor
+	return uri, ctr.MonitorURL(t)
 }
 
-// hangOutcome is what a hung replica left: whether the server still listed A when the test stopped
-// waiting, and the errors of the clients that connected afterwards that the server refused.
+// hangOutcome is what a hung replica left: whether the server had not closed A by
+// hungReplicaDeadline after the hang on its own clock, and the errors of the clients that
+// connected afterwards that the server refused.
 type hangOutcome struct {
 	stillConnected bool
 	refused        []error
@@ -80,8 +81,9 @@ type hangOutcome struct {
 
 // hangAReplica runs the hub's image on config, rig's authorization rendered, starts replicas A
 // (through a testnats.Proxy) and B in the callout's queue group as rig's service user, freezes A
-// for good, waits up to hungReplicaDeadline for the server to close A, and then connects
-// clientsAfterTheHang clients presenting the admitted token, one at a time.
+// for good, waits for the server to report A closed or its clock to pass hungReplicaDeadline after
+// the hang, and then connects clientsAfterTheHang clients presenting the admitted token, one at a
+// time.
 func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 	t.Helper()
 	uri, monitor := startHubOn(t, rig, config)
@@ -98,17 +100,24 @@ func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 	require.True(t, listed, "the server does not list replica A before the hang")
 
 	proxy.Freeze()
-	hung := time.Now()
+	// What closes A is the server's ping timer, which runs on the server's own clock, so the wait
+	// is for what the server reports: A among its closed connections, or its clock past
+	// hungReplicaDeadline since the hang with A still open. A closed connection carries the moment
+	// the server closed it, so a close the wait saw only after the deadline still counts as late.
+	hung := serverNow(t, monitor)
+	var since time.Duration
+	testwait.Until(t, fmt.Sprintf("the server to close %s, or its clock to pass %s after the hang", replicaA, hungReplicaDeadline), func() (string, bool) {
+		since = serverNow(t, monitor).Sub(hung)
+		_, open := connection(t, monitor, "open", replicaA)
+		return fmt.Sprintf("open %v, %s after the hang on the server's clock", open, since), !open || since >= hungReplicaDeadline
+	})
 	outcome := hangOutcome{stillConnected: true}
-	for outcome.stillConnected && time.Since(hung) < hungReplicaDeadline {
-		time.Sleep(250 * time.Millisecond)
-		_, outcome.stillConnected = connection(t, monitor, "open", replicaA)
-	}
-	if outcome.stillConnected {
-		t.Logf("the server still listed %s %s after the hang", replicaA, time.Since(hung).Round(100*time.Millisecond))
+	if closed, ok := closedConnection(t, monitor, replicaA); ok {
+		require.False(t, closed.Stop.IsZero(), "the server's record of the closed %s carries no stop", replicaA)
+		outcome.stillConnected = closed.Stop.Sub(hung) > hungReplicaDeadline
+		t.Logf("the server closed %s %s after the hang on its clock, as %q", replicaA, closed.Stop.Sub(hung).Round(100*time.Millisecond), closed.Reason)
 	} else {
-		reason, _ := connection(t, monitor, "closed", replicaA)
-		t.Logf("the server had closed %s %s after the hang, as %q", replicaA, time.Since(hung).Round(100*time.Millisecond), reason)
+		t.Logf("the server still listed %s %s after the hang on its clock", replicaA, since.Round(100*time.Millisecond))
 	}
 	for i := range clientsAfterTheHang {
 		start := time.Now()
@@ -145,7 +154,15 @@ func stallAClient(t *testing.T, rig *calloutRig, config string) stallOutcome {
 	require.True(t, listed, "the server does not list the client before the stall")
 
 	proxy.Freeze()
-	time.Sleep(clientStall)
+	// The stall is clientStall on the server's own clock, the one its ping timer runs on: the wait
+	// ends once that clock has passed it, or once the server reports the client closed, which ends
+	// the stall's question before its length is out.
+	frozen := serverNow(t, monitor)
+	testwait.Until(t, fmt.Sprintf("the server's clock to pass %s of the stall, or the server to close %s", clientStall, stalledClient), func() (string, bool) {
+		stalled := serverNow(t, monitor).Sub(frozen)
+		_, closed := connection(t, monitor, "closed", stalledClient)
+		return fmt.Sprintf("%s of the stall on the server's clock, closed %v", stalled, closed), closed || stalled >= clientStall
+	})
 	proxy.Restore()
 	err = conn.FlushTimeout(5 * time.Second)
 	_, listed = connection(t, monitor, "open", stalledClient)
@@ -161,24 +178,61 @@ func stallAClient(t *testing.T, rig *calloutRig, config string) stallOutcome {
 // the reason the server gives for it ("" for an open one) and whether it lists it.
 func connection(t *testing.T, monitor, state, name string) (reason string, listed bool) {
 	t.Helper()
+	for _, c := range connections(t, monitor, state) {
+		if c.Name == name {
+			return c.Reason, true
+		}
+	}
+	return "", false
+}
+
+// closedConnection is the server's record of the closed connection named name, and whether it
+// holds one: the reason it gives and the moment, on its own clock, it closed it.
+func closedConnection(t *testing.T, monitor, name string) (connz, bool) {
+	t.Helper()
+	for _, c := range connections(t, monitor, "closed") {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return connz{}, false
+}
+
+// connz is one connection of the server's /connz.
+type connz struct {
+	Name   string    `json:"name"`
+	Reason string    `json:"reason"`
+	Stop   time.Time `json:"stop"`
+}
+
+// connections is the server's /connz in state, open or closed.
+func connections(t *testing.T, monitor, state string) []connz {
+	t.Helper()
 	response, err := monitorHTTP.Get(monitor + "/connz?limit=1024&state=" + state)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	require.NoError(t, err)
 	var page struct {
-		Connections []struct {
-			Name   string `json:"name"`
-			Reason string `json:"reason"`
-		} `json:"connections"`
+		Connections []connz `json:"connections"`
 	}
 	require.NoError(t, json.Unmarshal(body, &page), "%s", body)
-	for _, c := range page.Connections {
-		if c.Name == name {
-			return c.Reason, true
-		}
+	return page.Connections
+}
+
+// serverNow is the server's own clock as its /varz reports it: the clock its ping timers run on,
+// which the rows' waits on those timers are measured by.
+func serverNow(t *testing.T, monitor string) time.Time {
+	t.Helper()
+	response, err := monitorHTTP.Get(monitor + "/varz")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	var varz struct {
+		Now time.Time `json:"now"`
 	}
-	return "", false
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&varz))
+	require.False(t, varz.Now.IsZero(), "the server's /varz reports no now")
+	return varz.Now
 }
 
 // renderedWithPing is rig's authorization rendered with its callout, which ends with the ping lines

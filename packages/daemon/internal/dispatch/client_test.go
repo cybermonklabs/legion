@@ -13,12 +13,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const dispatchToken = "dispatch-test-token"
 
 func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues", r.Method, r.URL.Path)
 		}
@@ -28,13 +31,13 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 		if got := r.URL.Query().Get("status"); got != "" {
 			t.Fatalf("status query = %q, want no server-side status filter", got)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		writeJSON(t, w, []map[string]any{
 			{"key": "LEGION-1", "title": "Triage", "status": "triage", "rank": "a"},
 			{"key": "LEGION-3", "title": "First todo", "status": "todo", "rank": "b", "labels": []string{"frontend", "Legion"}},
 			{"key": "LEGION-2", "title": "Second todo", "status": "todo", "rank": "c", "parent": "LEGION-1", "labels": []string{}},
 		})
-	}))
+	})
 	defer server.Close()
 
 	issues, err := New(server.URL, dispatchToken).ListIssues(context.Background(), "LEGION", []string{"todo"})
@@ -53,11 +56,11 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 }
 
 func TestGetIssueReturnsWorkflowFields(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-8" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-8", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		writeJSON(t, w, map[string]any{
 			"key":                 "LEGION-8",
 			"project":             "LEGION",
@@ -69,7 +72,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 			"primary_artifact_id": "artifact-8",
 			"last_seq":            47,
 		})
-	}))
+	})
 	defer server.Close()
 
 	issue, err := New(server.URL, dispatchToken).GetIssue(context.Background(), "LEGION-8")
@@ -88,7 +91,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 // An issue's resolved repository is Dispatch's to compute (its own, else its nearest ancestor's,
 // else the project's default); the list and the detail carry it, and null reads as none.
 func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/issues":
 			writeJSON(t, w, []map[string]any{
@@ -100,7 +103,7 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	client := New(server.URL, dispatchToken)
 
@@ -123,17 +126,17 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 // The repository mapping is every project's (GET /api/v1/settings/repo-projects), each mapping
 // with its project and whether it is that project's default; the daemon keeps its own project's.
 func TestListRepoProjectsReadsEveryMappingWithItsDefault(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/settings/repo-projects" {
 			t.Fatalf("request = %s %s, want GET /api/v1/settings/repo-projects", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		writeJSON(t, w, []map[string]any{
 			{"repo": "acme/gadgets", "project": "LEGION", "default": false, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
 			{"repo": "acme/widgets", "project": "LEGION", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
 			{"repo": "other/thing", "project": "OTHER", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
 		})
-	}))
+	})
 	defer server.Close()
 
 	mappings, err := New(server.URL, dispatchToken).ListRepoProjects(context.Background())
@@ -153,8 +156,8 @@ func TestListRepoProjectsReadsEveryMappingWithItsDefault(t *testing.T) {
 // Whether Dispatch's GitHub App is installed on a repository is its app-installation route's
 // answer; a Dispatch older than the route answers 404, which the caller tells apart (Missing).
 func TestWebhookAppInstalledReadsDispatchsAnswer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertBearer(t, r)
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
+		assertAccept(t, r)
 		switch r.URL.Path {
 		case "/api/v1/github/app-installation/acme/widgets":
 			writeJSON(t, w, map[string]bool{"installed": true})
@@ -163,7 +166,7 @@ func TestWebhookAppInstalledReadsDispatchsAnswer(t *testing.T) {
 		default:
 			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "not found"})
 		}
-	}))
+	})
 	defer server.Close()
 	client := New(server.URL, dispatchToken)
 
@@ -181,11 +184,11 @@ func TestWebhookAppInstalledReadsDispatchsAnswer(t *testing.T) {
 // A hand-over is one PATCH carrying the status and an additive legion label under the daemon's
 // actor, so concurrent labels survive and the one event it makes carries both.
 func TestHandOverWritesTheStatusAndTheLabelsInOnePatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/issues/LEGION-4" {
 			t.Fatalf("request = %s %s, want PATCH /api/v1/issues/LEGION-4", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		var body struct {
 			Status           string   `json:"status"`
 			LabelsAdd        []string `json:"labels_add"`
@@ -201,7 +204,7 @@ func TestHandOverWritesTheStatusAndTheLabelsInOnePatch(t *testing.T) {
 			t.Fatalf("hand-over request = %#v, want todo with additive legion at sequence 7 from legion-daemon:LEGION", body)
 		}
 		writeJSON(t, w, map[string]string{"status": "todo"})
-	}))
+	})
 	defer server.Close()
 
 	if err := New(server.URL, dispatchToken).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "in_progress", Labels: []string{"repo:x"}, LastSeq: 7}, "todo"); err != nil {
@@ -213,7 +216,7 @@ func TestHandOverWritesTheStatusAndTheLabelsInOnePatch(t *testing.T) {
 // precondition: expected_sequence, so a person's park between the daemon's read and its write is
 // refused (ISSUE_CHANGED) rather than overwritten. It adds no label, since the issue carries one.
 func TestHandOverOfALabelledIssueWritesTheStatusAtItsSequence(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]json.RawMessage
 		decodeJSON(t, r, &body)
 		_, labelsAdd := body["labels_add"]
@@ -221,7 +224,7 @@ func TestHandOverOfALabelledIssueWritesTheStatusAtItsSequence(t *testing.T) {
 			t.Fatalf("hand-over request of a labelled issue = %v, want status todo at expected_sequence 9 and no labels_add", body)
 		}
 		writeJSON(t, w, map[string]string{"status": "todo"})
-	}))
+	})
 	defer server.Close()
 
 	if err := New(server.URL, dispatchToken).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "testing", Labels: []string{"Legion"}, HandedOver: true, LastSeq: 9}, "todo"); err != nil {
@@ -233,11 +236,11 @@ func TestHandOverOfALabelledIssueWritesTheStatusAtItsSequence(t *testing.T) {
 // the issue's fields at the top level, beside Dispatch's write advice, at the sequence of the event
 // the write made.
 func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/issues/LEGION-4" {
 			t.Fatalf("request = %s %s, want PATCH /api/v1/issues/LEGION-4", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		var body struct {
 			Status string `json:"status"`
 			Actor  struct {
@@ -254,7 +257,7 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 			"last_seq": 12, "resolved_repo": "acme/widgets", "blocked_by": []string{"LEGION-2"}, "claim": nil,
 			"advice": map[string]any{"suggestions": []any{}},
 		})
-	}))
+	})
 	defer server.Close()
 
 	written, err := New(server.URL, dispatchToken).SetStatus(context.Background(), "LEGION-4", "testing")
@@ -272,11 +275,11 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 // with no JSON body would be refused before it reached the claim. A claim this caller may not
 // release comes back as Dispatch's 409.
 func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete || r.URL.EscapedPath() != "/api/v1/issues/LEGION-4/claim" {
 			t.Fatalf("request = %s %s, want DELETE /api/v1/issues/LEGION-4/claim", r.Method, r.URL.EscapedPath())
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("Content-Type = %q, want application/json so Dispatch's route decodes the body", got)
 		}
@@ -296,7 +299,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 			t.Fatalf("release actor = %#v, want the session legion-daemon:LEGION", sender)
 		}
 		writeJSON(t, w, map[string]any{"key": "LEGION-4", "claim": nil})
-	}))
+	})
 	defer server.Close()
 
 	if err := New(server.URL, dispatchToken).ReleaseClaim(context.Background(), "LEGION-4"); err != nil {
@@ -331,11 +334,11 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 		{name: "a deployment that gates nothing", steps: nil, want: []string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPut || r.URL.Path != "/api/v1/projects/LEGION/gated-steps" {
 					t.Fatalf("request = %s %s, want PUT /api/v1/projects/LEGION/gated-steps", r.Method, r.URL.Path)
 				}
-				assertBearer(t, r)
+				assertAccept(t, r)
 				var body map[string]json.RawMessage
 				decodeJSON(t, r, &body)
 				raw, named := body["steps"]
@@ -360,7 +363,7 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 					t.Fatalf("publish actor = %#v, want the legion daemon session", actor)
 				}
 				writeJSON(t, w, map[string]any{"project": "LEGION", "steps": tc.want})
-			}))
+			})
 			defer server.Close()
 
 			if err := New(server.URL, dispatchToken).PutGatedSteps(context.Background(), "LEGION", tc.steps); err != nil {
@@ -371,11 +374,11 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 }
 
 func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/messages" {
 			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-5/messages", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		var body map[string]json.RawMessage
 		decodeJSON(t, r, &body)
 		var message string
@@ -399,7 +402,7 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 			t.Fatalf("message actor = %#v, want legion daemon session", actor)
 		}
 		writeJSON(t, w, map[string]string{"id": "message-5"})
-	}))
+	})
 	defer server.Close()
 
 	if err := New(server.URL, dispatchToken).PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
@@ -409,16 +412,16 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 
 // The issue's artifact list is read for each one's slug, which is what a message's link names.
 func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		writeJSON(t, w, []map[string]any{
 			{"id": "artifact-1", "slug": "plan-md", "name": "plan.md", "kind": "doc"},
 			{"id": "artifact-2", "slug": "rescue-pod-9d3f0c7a", "name": "rescue-pod-9d3f0c7a", "kind": "doc"},
 		})
-	}))
+	})
 	defer server.Close()
 
 	slugs, err := New(server.URL, dispatchToken).ArtifactSlugs(context.Background(), "LEGION-5")
@@ -450,11 +453,11 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 		},
 	}
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
 			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("Content-Type = %q, want application/json, the upload Dispatch reads as a markdown document", got)
 		}
@@ -487,7 +490,7 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 		}
 		answers[requests](w)
 		requests++
-	}))
+	})
 	defer server.Close()
 
 	client := New(server.URL, dispatchToken)
@@ -507,8 +510,8 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 // The artifact read carries the approval Dispatch derives, who gave the review it shows, the latest
 // review's time and its event's sequence (none from a Dispatch that predates the sequence).
 func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertBearer(t, r)
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
+		assertAccept(t, r)
 		if r.Method != http.MethodGet {
 			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
 		}
@@ -525,7 +528,7 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	client := New(server.URL, dispatchToken)
 
@@ -558,7 +561,7 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 // While an approval request is open the artifact read names it and whose turn it waits on; once a
 // review answered it, the ask Dispatch still names is no open request, and the read names none.
 func TestApprovalNamesOnlyAnOpenRequest(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/artifacts/artifact-7":
 			writeJSON(t, w, map[string]any{"id": "artifact-7", "issue_key": "LEGION-7", "approval": map[string]any{
@@ -569,7 +572,7 @@ func TestApprovalNamesOnlyAnOpenRequest(t *testing.T) {
 		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	client := New(server.URL, dispatchToken)
 	awaiting, err := client.Approval(context.Background(), "artifact-7")
@@ -594,7 +597,7 @@ func TestApprovalNamesOnlyAnOpenRequest(t *testing.T) {
 func TestReadsCarryTheClaimHolder(t *testing.T) {
 	claimed := map[string]any{"actor": map[string]any{"kind": "user", "id": "alice"}, "at": "2026-10-23T18:00:00Z"}
 	actorless := map[string]any{"actor": map[string]any{"kind": "user"}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/issues":
 			writeJSON(t, w, []map[string]any{
@@ -611,7 +614,7 @@ func TestReadsCarryTheClaimHolder(t *testing.T) {
 		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 	client := New(server.URL, dispatchToken)
 
@@ -664,8 +667,8 @@ func TestChangesRequestedLatestNamesOnlyTheLatestVersion(t *testing.T) {
 // Dispatch answers with is not the daemon's to read. A record Dispatch does not have is Missing.
 func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	const id = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertBearer(t, r)
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
+		assertAccept(t, r)
 		if r.Method != http.MethodGet {
 			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
 		}
@@ -678,7 +681,7 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 			"author":     map[string]any{"kind": "session", "id": "ses_implementer_6", "origin": map[string]any{"title": "implementer"}},
 			"created_at": "2026-10-26T08:00:00Z", "body": `{"schemaVersion":1}`,
 		})
-	}))
+	})
 	defer server.Close()
 
 	client := New(server.URL, dispatchToken)
@@ -727,6 +730,8 @@ func TestClientReturnsDispatchErrorFor5xx(t *testing.T) {
 	}
 }
 
+// Every call is bounded at requestTimeout on the client's clock: a call Dispatch holds unanswered
+// ends with the deadline once the clock reaches it.
 func TestClientBoundsEveryCall(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -735,24 +740,28 @@ func TestClientBoundsEveryCall(t *testing.T) {
 	}))
 	defer server.Close()
 
+	clock := clocktest.New(time.Now())
 	client := New(server.URL, dispatchToken)
-	client.timeout = 20 * time.Millisecond
-	_, err := client.GetIssue(context.Background(), "LEGION-11")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("get issue error = %v, want context deadline exceeded", err)
+	client.clock = clock
+	answered := make(chan error, 1)
+	go func() {
+		_, err := client.GetIssue(context.Background(), "LEGION-11")
+		answered <- err
+	}()
+	testwait.Receive(t, "the server to receive the bounded request", started)
+	if armed, want := clock.Armed(), []time.Time{clock.Now().Add(requestTimeout)}; !slices.Equal(armed, want) {
+		t.Fatalf("armed %v, want the call's own bound alone, at %v", armed, want)
 	}
-	select {
-	case <-started:
-	default:
-		t.Fatal("server never received the bounded request")
+	clock.Advance(requestTimeout)
+	if err := testwait.Receive(t, "the call to end at its bound", answered); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("get issue error = %v, want context deadline exceeded", err)
 	}
 }
 
-func assertBearer(t *testing.T, r *http.Request) {
+// assertAccept fails the test unless r asks for JSON. Its bearer is standIn's to check: a request
+// without the client's bearer never reaches a handler.
+func assertAccept(t *testing.T, r *http.Request) {
 	t.Helper()
-	if got := r.Header.Get("Authorization"); got != "Bearer "+dispatchToken {
-		t.Fatalf("Authorization = %q, want Dispatch bearer", got)
-	}
 	if got := r.Header.Get("Accept"); got != "application/json" {
 		t.Fatalf("Accept = %q, want application/json", got)
 	}
@@ -791,11 +800,11 @@ func mustJSON(t *testing.T, body any) string {
 func TestMessageBodiesSincePagesNewestFirstUntilTheOutboxWindow(t *testing.T) {
 	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/events" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/events", r.Method, r.URL.Path)
 		}
-		assertBearer(t, r)
+		assertAccept(t, r)
 		requests++
 		switch requests {
 		case 1:
@@ -818,7 +827,7 @@ func TestMessageBodiesSincePagesNewestFirstUntilTheOutboxWindow(t *testing.T) {
 		default:
 			t.Fatalf("unexpected request %d", requests)
 		}
-	}))
+	})
 	defer server.Close()
 
 	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
@@ -837,8 +846,8 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	whole := strings.Repeat("x", 40000) + "\n\n<!-- legion-outbox:7 -->"
 	reads := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertBearer(t, r)
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
+		assertAccept(t, r)
 		switch r.URL.Path {
 		case "/api/v1/issues/LEGION-5/events":
 			writeJSON(t, w, []map[string]any{
@@ -853,7 +862,7 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 		default:
 			t.Fatalf("request = %s %s, want the issue's events or its cut message", r.Method, r.URL.Path)
 		}
-	}))
+	})
 	defer server.Close()
 
 	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
@@ -909,7 +918,7 @@ func TestAnUnknownFieldRefusalIsRiddenOutUntilDispatchKnowsTheField(t *testing.T
 // sequence read is refused rather than read again.
 func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	var afters []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := standIn(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/issues/LEGION-1/events" || r.URL.Query().Get("limit") != "200" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.String())
 		}
@@ -924,7 +933,7 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 			page = append(page, map[string]any{"seq": seq, "type": "comment.created", "issue_key": "LEGION-1"})
 		}
 		writeJSON(t, w, page)
-	}))
+	})
 	defer server.Close()
 
 	events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -478,26 +479,19 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 
 	var got cancelled
 	var finished bool
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, "the cancel to finish or to wait for the park's serializer", func() bool {
 		select {
 		case got = <-done:
 			finished = true
 		default:
 		}
-		if finished || waitingOnTheSerializer(t, st) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the cancel neither finished nor waited for the park's serializer")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return finished || waitingOnTheSerializer(t, st)
+	})
 	if err := park.Commit(ctx); err != nil {
 		t.Fatalf("commit the park: %v", err)
 	}
 	if !finished {
-		got = <-done
+		got = testwait.Receive(t, "the cancel to return once the park committed", done)
 	}
 	if got.err != nil {
 		t.Fatalf("carry the cancel out: %v", got.err)

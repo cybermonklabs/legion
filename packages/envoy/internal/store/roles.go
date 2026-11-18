@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -117,18 +118,74 @@ const (
 // A snapshot short of the bucket is missing claims that are in it, and each one it misses is a
 // restored holder that loses its grace and is released a session TTL early, so an incomplete scan
 // fails the caller, and only a complete one logs. A scan that delivers nothing for idle is one.
-func roleRevisions(kv bus.KeyValue, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
-	revisions := map[string]uint64{}
-	scan, err := kvwatch.ScanExistingKeys(context.Background(), kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
-		revisions[entry.Key] = entry.Revision
-		return nil
-	}, jetstream.MetaOnly())
-	if err != nil {
-		return nil, err
+// ctx is the scan's own (kvwatch.ScanExistingKeys): context.Background for every open but one
+// given a wait of its own (WithRequestWait), whose deadline bounds the whole scan.
+//
+// The scan's consumer create is one of the open's requests. On a ctx with no deadline nats.go
+// holds each create to scanCreateWait. A create that drew no answer in its wait, or met the
+// connection reconnecting (scanCreateUnanswered), is a server slow to answer, as a loaded
+// machine's is, and no failure of the open: each such attempt is a WARN naming it, and the scan
+// is made again, no sooner than scanCreateWait after that attempt began, for as long as the server
+// leaves the create unanswered. No bound of the open's own ends that wait: the server's answer is
+// what the open needs, and a bound can only end the start over a create the server has not
+// refused. So the open, and the listener's start with it, waits, while the listener answers
+// /healthz "starting" (cmd/listener publishes its readiness only once Open has returned). The wait
+// ends when the server answers the create, or when the create fails any other way, which fails
+// the scan at once: a refusal the server answered, or a connection that closed, which is how a
+// stopping listener's open ends. Each attempt starts from no revisions, so the attempt that
+// completes keeps exactly what a first attempt that completed would. A ctx with a deadline
+// (WithRequestWait) bounds every attempt together, wait: once it has ended, a scan whose consumer
+// was never created fails naming that and the wait,
+// `role revisions: create the scan's consumer: context deadline exceeded (waited 10s)`.
+func roleRevisions(ctx context.Context, kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger, wait time.Duration) (map[string]uint64, error) {
+	for attempt := 1; ; attempt++ {
+		began := c.Now()
+		revisions := map[string]uint64{}
+		scan, err := kvwatch.ScanExistingKeys(ctx, c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
+			revisions[entry.Key] = entry.Revision
+			return nil
+		}, jetstream.MetaOnly())
+		if err == nil {
+			log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
+			return revisions, nil
+		}
+		if !scanCreateUnanswered(err) {
+			return nil, err
+		}
+		if ctx.Err() == nil {
+			log.Warn(roleRevisionCreateUnanswered, slog.Int("attempt", attempt), slog.String("error", err.Error()))
+			if rest := scanCreateWait - c.Now().Sub(began); rest > 0 {
+				// Only ctx's end cuts the pause short, and that is read below.
+				_ = c.Sleep(ctx, rest)
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w (waited %s)", err, wait)
+		}
 	}
-	log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
-	return revisions, nil
 }
+
+// roleRevisionCreateUnanswered is the WARN of each attempt of the role-revision scan whose
+// consumer create the server left unanswered, before the scan is made again (roleRevisions).
+const roleRevisionCreateUnanswered = "role revisions: the scan's consumer create drew no answer; the open makes the scan again and waits for it"
+
+// scanCreateUnanswered reports whether err, a role-revision scan's, is a scan whose consumer create
+// the server left unanswered (kvwatch.ErrScanNotCreated): a wait that ran out, nats.go's own
+// (context.DeadlineExceeded, nats.ErrTimeout), or a create made while the connection was
+// reconnecting, which nats.go refuses itself. Those are the failures the registry's watchers make
+// their first watch again on (kvwatch.Watcher.Start, WithFirstWatchRetry). A refusal the server
+// answered, a closed connection, and a scan that ended after its consumer was made are not.
+func scanCreateUnanswered(err error) bool {
+	return errors.Is(err, kvwatch.ErrScanNotCreated) &&
+		(errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) ||
+			errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, nats.ErrConnectionReconnecting) ||
+			errors.Is(err, nats.ErrDisconnected))
+}
+
+// scanCreateWait is how long nats.go waits for a scan's consumer create on a context with no
+// deadline: the request wait of the bucket handle's legacy push context (bus.KeyValue.WatchKeys).
+// The role-revision scan makes its attempts no oftener than this (roleRevisions).
+const scanCreateWait = 5 * time.Second
 
 // scannedRoleClaim is one role claim record as a scan of the role bucket delivered it: the key it
 // is stored under, the claim decoded from its value with the entry's revision stamped on it, and
@@ -176,7 +233,7 @@ type scannedRoleClaim struct {
 // claim's two strings and its two numbers - which at the fleet's ~5,000 claims is under about 1 MB.
 func (r *Registry) roleClaimsUntil(ctx context.Context) ([]scannedRoleClaim, error) {
 	claims := map[string]scannedRoleClaim{}
-	_, err := kvwatch.ScanExistingKeys(context.Background(), r.roles(), jetstream.AllKeys, "role claims", kvwatch.ScanIdleTimeout, r.logger(), func(entry kvwatch.Entry) error {
+	_, err := kvwatch.ScanExistingKeys(context.Background(), r.clock, r.roles(), jetstream.AllKeys, "role claims", kvwatch.ScanIdleTimeout, r.logger(), func(entry kvwatch.Entry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -298,7 +355,7 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
 	r.roleRepair.sweep(&r.roleHolders)
-	found := r.roleRepair.complete(read, r.now())
+	found := r.roleRepair.complete(read, r.clock.Now())
 	r.holdersMu.Unlock()
 	if found.putBack > 0 || found.tookOut > 0 {
 		r.logger().Info(fmt.Sprintf("role claim repair put back %d claims and took out %d", found.putBack, found.tookOut),
@@ -701,7 +758,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		return Interest{}, err
 	}
 
-	now := r.now().UnixMilli()
+	now := r.clock.Now().UnixMilli()
 	claim := RoleClaim{
 		HolderSessionID:   req.SessionID,
 		ClaimedAt:         now,

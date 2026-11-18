@@ -79,3 +79,25 @@ func WithScheduledRead(interval time.Duration) Option {
 func WithStaleBound(bound time.Duration) Option {
 	return func(w *Watcher) { w.staleBound = bound }
 }
+
+// WithFirstWatchRetry has Start make its first watch again when its failure was transient (a
+// request that went unanswered, a connection reconnecting), after rereadDelay on the watcher's
+// AfterFunc, up to firstWatchAttempts attempts, each a WARN, before the one ERROR a failed first
+// watch logs (Start). The three watchers a listener starts take it: the store's interest registry
+// and role claim watchers (store.Open, store.Registry.newRoleWatcher) and the session registry's
+// (session.OpenSessionRegistry): a loaded listener's first watch can run out of its consumer
+// create's wait, or meet its connection reconnecting, and recover a moment later. Without it a
+// first watch that fails is the ERROR at once, and the listener's self-health rebuild repairs the
+// copy.
+func WithFirstWatchRetry() Option {
+	return func(w *Watcher) { w.firstRetry = true }
+}
+
+// WithFirstWatchRepairedByOwner is for a watcher whose owner repairs a first watch that failed and
+// itself reports a repair that has not come within bus.RepairGrace: Start logs that failure at
+// WARN rather than ERROR, and records it and releases readiness as it always does, which is what
+// the owner's repair reads. The known-session store takes it (session.KnownSessions.startWatch,
+// awaitOpened).
+func WithFirstWatchRepairedByOwner() Option {
+	return func(w *Watcher) { w.ownerRepairs = true }
+}

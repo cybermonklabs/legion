@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Leases is the slice of a connection pool a lease needs, named here so this package depends on no
@@ -218,9 +220,10 @@ const leaseCallTimeout = 5 * time.Second
 // LeaseCall is the context of one statement on a session lock's own connection: a lease's, any
 // lock FreeSessionLock gives back, and the rollback a room's batch of browser updates sends on
 // that connection before its unlock (internal/dispatch/docs, appendRoomTx), which must be bounded
-// for the same reason the unlock is (leaseCallTimeout).
-func LeaseCall() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), leaseCallTimeout)
+// for the same reason the unlock is (leaseCallTimeout). The bound runs on c: clock.Real for a
+// caller nothing drives, and a test's clocktest.Fake for one whose test fires the bound.
+func LeaseCall(c clock.Clock) (context.Context, context.CancelFunc) {
+	return c.WithTimeout(context.Background(), leaseCallTimeout)
 }
 
 // ExclusiveFunc is Exclusive's signature. A loop that gates its passes on a lease takes one of
@@ -281,7 +284,7 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		return false
 	}
 	var held bool
-	takeCtx, cancelTake := LeaseCall()
+	takeCtx, cancelTake := LeaseCall(clock.Real())
 	err = conn.QueryRow(takeCtx, takeLease, leaseNamespace, name).Scan(&held)
 	cancelTake()
 	if err != nil {
@@ -302,7 +305,7 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	if ctx.Err() != nil {
 		return false
 	}
-	readCtx, cancelRead := LeaseCall()
+	readCtx, cancelRead := LeaseCall(clock.Real())
 	boundary, served, err := periodServed(readCtx, conn, name, due, period)
 	cancelRead()
 	if err != nil {
@@ -429,7 +432,7 @@ func recordPassOn(conn *pgxpool.Conn, name string, boundary time.Time, period ti
 	if period <= 0 {
 		return
 	}
-	ctx, cancel := LeaseCall()
+	ctx, cancel := LeaseCall(clock.Real())
 	defer cancel()
 	if _, err := conn.Exec(ctx, recordPass, passKey(name, period), boundary, period.Nanoseconds(), name); err != nil {
 		slog.Error("dispatch duty: record the pass", "lease", name, "error", err)
@@ -459,7 +462,7 @@ func reportFailure(name, message string, err error) {
 // connection is closed before its unlock only by a statement under LeaseCall that failed, so the
 // line says the lease went with its session rather than by its unlock.
 func freeLeaseOn(conn *pgxpool.Conn, name string) {
-	if err := FreeSessionLock(conn, freeLease, leaseNamespace, name); err != nil {
+	if err := FreeSessionLock(clock.Real(), conn, freeLease, leaseNamespace, name); err != nil {
 		slog.Error("dispatch duty: free the lease", "lease", name, "error", err)
 	}
 }

@@ -4,13 +4,13 @@ package core_test
 
 import (
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests in this file start nats-server containers through testnats, so they run only under the
@@ -86,13 +86,9 @@ func connect(t *testing.T, uri, seed string, opts ...natsgo.Option) (*natsgo.Con
 func requireViolation(t *testing.T, conn *natsgo.Conn, errs <-chan error, want string) {
 	t.Helper()
 	require.NoError(t, conn.Flush())
-	select {
-	case err := <-errs:
-		require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
-		require.EqualError(t, err, "nats: permissions violation: Permissions Violation for "+want)
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the server reported no permissions violation within 5s, want one for %s", want)
-	}
+	err := testwait.Receive(t, "the server's permissions violation for "+want, errs)
+	require.ErrorIs(t, err, natsgo.ErrPermissionViolation)
+	require.EqualError(t, err, "nats: permissions violation: Permissions Violation for "+want)
 }
 
 // The rendered block, as a server's whole configuration, on both the 2.10 image and the hub's.
@@ -193,12 +189,16 @@ func TestSubscribeDenyOnRealServers(t *testing.T) {
 			require.NoError(t, pub.Publish("secret.x", []byte("denied")))
 			require.NoError(t, pub.Publish("public.x", []byte("allowed")))
 			require.NoError(t, pub.Flush())
-			msg, err := allowed.NextMsg(5 * time.Second)
+			msg, err := allowed.NextMsgWithContext(testwait.Context(t))
 			require.NoError(t, err, "the allowed subscription receives what the publisher sent")
 			require.Equal(t, "allowed", string(msg.Data))
+			// The publisher sent secret.x before public.x on one connection, and the server
+			// delivers a connection's messages in the order it took them, so a message the deny
+			// should have stopped is queued on its subscription by the time public.x has arrived.
 			for _, sub := range []*natsgo.Subscription{queued, plain} {
-				_, err := sub.NextMsg(500 * time.Millisecond)
-				require.ErrorIs(t, err, natsgo.ErrTimeout, "a denied subscription to %q receives nothing", sub.Subject)
+				pending, _, err := sub.Pending()
+				require.NoError(t, err)
+				require.Zero(t, pending, "a denied subscription to %q holds a message", sub.Subject)
 			}
 		})
 	}

@@ -6,11 +6,11 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -21,9 +21,9 @@ import (
 //
 // The daemon is held at the moment that decides it: the seam the boot offers a test
 // (overrides.beforeServingLatched) runs once the goroutine that serves the API has begun and
-// before the readiness latch is set, so the daemon answers HTTP — /healthz is 200, which is what
-// startDaemon waited for — while /readyz must still refuse, naming what it waits for. Released,
-// the latch is set and the same read is 200.
+// before the readiness latch is set, so the daemon answers HTTP — it has reported itself ready to
+// serve, which is what startDaemon waited for, before the seam runs — while /readyz must still
+// refuse, naming what it waits for. Released, the latch is set and the same read is 200.
 //
 // That 200 is answered while the daemon's pool has no free connection, which is what proves the
 // route reads no database. The daemon's DSN gives its pool one connection and nothing else shares
@@ -58,13 +58,8 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	}
 	d := startDaemon(t, cfg, o)
 
-	held, cancelHeld := context.WithTimeout(context.Background(), testwait.Bounded(t, 30*time.Second, time.Second))
-	defer cancelHeld()
-	select {
-	case <-serving:
-	case <-held.Done():
-		t.Fatalf("the daemon answered /healthz but never reached the seam before its latch: %v", held.Err())
-	}
+	held := testwait.Context(t)
+	testwait.Receive(t, "the daemon reaching the seam before its readiness latch", serving)
 	if status, body := d.request(http.MethodGet, "/readyz", nil, false); status != http.StatusServiceUnavailable || !strings.Contains(string(body), "the daemon to serve") {
 		t.Fatalf("GET /readyz while the daemon has not latched = %d %s, want 503 naming the serving it waits for", status, body)
 	}
@@ -87,14 +82,12 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	})
 
 	close(release)
-	var status int
-	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, 10*time.Second, time.Second), 20*time.Millisecond, func() bool {
-		status, body = d.request(http.MethodGet, "/readyz", nil, false)
-		return status == http.StatusOK
-	}) {
-		t.Fatalf("GET /readyz once the daemon serves = %d %s, want 200", status, body)
-	}
+	// The subject here is /readyz's own answer once the latch is released, so the answer is what
+	// the test reads.
+	testwait.Until(t, "GET /readyz to answer 200 once the daemon's latch is released", func() (string, bool) {
+		status, body := d.request(http.MethodGet, "/readyz", nil, false)
+		return fmt.Sprintf("%d %s", status, body), status == http.StatusOK
+	})
 	select {
 	case answered := <-state:
 		t.Fatalf("the state request answered %d before the readiness read, so the daemon's connection was free for it", answered)
@@ -109,13 +102,8 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	if err := tx.Commit(held); err != nil {
 		t.Fatalf("commit the locking transaction: %v", err)
 	}
-	select {
-	case answered := <-state:
-		if answered != http.StatusOK {
-			t.Fatalf("GET the state once the lock was released = %d, want 200", answered)
-		}
-	case <-held.Done():
-		t.Fatalf("the state request never answered after the lock was released: %v", held.Err())
+	if answered := testwait.Receive(t, "the state request's answer once the lock was released", state); answered != http.StatusOK {
+		t.Fatalf("GET the state once the lock was released = %d, want 200", answered)
 	}
 }
 

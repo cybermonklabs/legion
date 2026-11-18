@@ -8,10 +8,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theHost is the one refusable literal these tests need: a Tailscale MagicDNS host built out of
@@ -59,15 +59,6 @@ func guardWith(t *testing.T, check string, visibility Visibility, extra ...strin
 		Visibility: answers(visibility, nil),
 		Env:        append(fixtureenv.Isolated(t.TempDir()), extra...),
 	})
-}
-
-// bound is a context every call of these tests runs under, so that a stand-in that hangs fails
-// the test rather than the package's ten minutes.
-func bound(t *testing.T) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	t.Cleanup(cancel)
-	return ctx
 }
 
 // refusal is err as a *Refusal, failing the test where it is anything else, and failing it where
@@ -162,7 +153,7 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 		},
 	} {
 		t.Run(entry.name, func(t *testing.T) {
-			ctx := bound(t)
+			ctx := testwait.Context(t)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			if err := entry.checked(ctx, guard, false); err != nil {
 				t.Fatalf("a clean write: %v", err)
@@ -208,7 +199,7 @@ exit 0
 `
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), asksForStdin), Public, "STANDIN_RECORD="+record)
 	body := "a body gh reads on its standard input"
-	answer, err := guard.GhCall(bound(t), GhRequest{
+	answer, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: strings.NewReader(body),
 		Repo:  "invented-org/invented-repo",
@@ -235,7 +226,7 @@ exit 0
 func TestTheGhShapeScansWhatItBuffered(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
 	body := "a body naming " + theHost + "\n"
-	answer, err := guard.GhCall(bound(t), GhRequest{
+	answer, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: strings.NewReader(body),
 		Repo:  "invented-org/invented-repo",
@@ -253,7 +244,7 @@ func TestTheGhShapeScansWhatItBuffered(t *testing.T) {
 // component of the path that matched, and nothing the engine itself printed.
 func TestTheReportNamesTheRecordAndTheClass(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	err := guard.Rules(bound(t), Record{Label: "commit 1a2b3c4 message", Text: "deployed from " + theHost + " this morning"})
+	err := guard.Rules(testwait.Context(t), Record{Label: "commit 1a2b3c4 message", Text: "deployed from " + theHost + " this morning"})
 	refused := refusal(t, err)
 	want := []string{"commit 1a2b3c4 message: " + theClass}
 	if !slices.Equal(refused.Lines, want) {
@@ -274,7 +265,7 @@ func TestTheReportMasksAPathComponent(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// A path record is read twice over, as a path by the path rules and as a text by the content
 	// rules, so a path that names the deployment repository earns both of that class's wordings.
-	refused := refusal(t, guard.Rules(bound(t), Record{Label: path, Text: path}))
+	refused := refusal(t, guard.Rules(testwait.Context(t), Record{Label: path, Text: path}))
 	const class = "names the private deployment repository or its Dispatch project key"
 	want := []string{"packages/<name>/main.go: " + class, "packages/<name>/main.go: " + class + " in its path"}
 	if !slices.Equal(refused.Lines, want) {
@@ -296,7 +287,7 @@ func TestAVisibilityThatCannotBeReadRefuses(t *testing.T) {
 		},
 		Env: fixtureenv.Isolated(t.TempDir()),
 	})
-	err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+	err := guard.Text(testwait.Context(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 	failed := setupFailure(t, err)
 	if !strings.Contains(failed.Why, "visibility") {
 		t.Errorf("the setup failure is %q, want it to name the visibility", failed.Error())
@@ -317,7 +308,7 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 				Env:        append(fixtureenv.Isolated(t.TempDir()), "LEAK_CHECK_RECORD="+record),
 			})
 			text := "a title naming " + theHost + "\n"
-			if err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: text}); err != nil {
+			if err := guard.Text(testwait.Context(t), TextRequest{Repo: "invented-org/invented-repo", Text: text}); err != nil {
 				t.Fatalf("a write to a %s repository: %v", visibility, err)
 			}
 			if _, err := os.Stat(record); err != nil {
@@ -342,7 +333,7 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 			return Public, nil
 		}
 		for range 2 {
-			visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
+			visibility, err := New(Options{Visibility: read, Env: env}).Visibility(testwait.Context(t), "invented-org/invented-repo")
 			if err != nil || visibility != Public {
 				t.Fatalf("read visibility = %q, %v; want public", visibility, err)
 			}
@@ -362,7 +353,7 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 					return expected, nil
 				}
 				for range 2 {
-					visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
+					visibility, err := New(Options{Visibility: read, Env: env}).Visibility(testwait.Context(t), "invented-org/invented-repo")
 					if err != nil || visibility != expected {
 						t.Fatalf("read visibility = %q, %v; want %q", visibility, err, expected)
 					}
@@ -384,10 +375,10 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 			}
 			return Public, nil
 		}
-		if _, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err == nil {
+		if _, err := New(Options{Visibility: read, Env: env}).Visibility(testwait.Context(t), "invented-org/invented-repo"); err == nil {
 			t.Fatal("the first visibility read passed, want its failure")
 		}
-		if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Public {
+		if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(testwait.Context(t), "invented-org/invented-repo"); err != nil || visibility != Public {
 			t.Fatalf("the second visibility read = %q, %v; want public", visibility, err)
 		}
 		if reads != 2 {
@@ -406,14 +397,14 @@ func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
 		reads++
 		return Private, nil
 	}
-	if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Private {
+	if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(testwait.Context(t), "invented-org/invented-repo"); err != nil || visibility != Private {
 		t.Fatalf("read visibility = %q, %v; want private", visibility, err)
 	}
 	err := New(Options{
 		Check:      leakguardtest.Write(t, t.TempDir(), passes),
 		Visibility: read,
 		Env:        env,
-	}).Push(bound(t), PushRequest{
+	}).Push(testwait.Context(t), PushRequest{
 		Dir:    t.TempDir(),
 		Remote: "origin",
 		URL:    "https://github.com/invented-org/invented-repo.git",
@@ -436,7 +427,7 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 			Visibility: answers(Public, nil),
 			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()),
 		})
-		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+		err := guard.Text(testwait.Context(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
 		if failed.Why != whyNoCheck {
 			t.Errorf("the setup failure is %q, want the missing check", failed.Error())
@@ -444,7 +435,7 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 	})
 	t.Run("the check exits 2", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), cannotFinish), Public)
-		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+		err := guard.Text(testwait.Context(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
 		if !strings.Contains(failed.Why, "exit 2") {
 			t.Errorf("the setup failure is %q, want it to name the status", failed.Error())

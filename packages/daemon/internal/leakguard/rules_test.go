@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The embedded rules compile, and they are the eight private-names.toml holds: the four classes
@@ -135,7 +136,7 @@ func TestRepoFromURL(t *testing.T) {
 func TestTheInlineAllowCommentIsInert(t *testing.T) {
 	const escape = "gitleaks" + ":allow"
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	err := guard.Rules(bound(t), Record{
+	err := guard.Rules(testwait.Context(t), Record{
 		Label: "commit 1a2b3c4 message",
 		Text:  "moved the run to " + theHost + " # " + escape,
 	})

@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // tableRows splits a table the CLI printed into its header's columns and each row's fields.
@@ -52,13 +54,9 @@ func loggedInElsewhere(t *testing.T, rig *brokertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
-	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Until(t, host+"'s login to issue", func() (any, bool) {
+		return b.LoginStatus(), b.HasCredential()
+	})
 	return b, id
 }
 
@@ -246,8 +244,10 @@ type grantSessionResult struct {
 // replaces it, so it and its children are one registered machine session, and every CLI command
 // it runs as its own child resolves to that session (the real case a session ending its own grant
 // is). It reads one JSON array of arguments per line from stdin, runs the built CLI with them,
-// and appends one JSON grantSessionResult line per command to the results file, so the parent can
-// read each command's outcome without racing the test binary's own stdout.
+// and writes one JSON grantSessionResult line per command to the results file, so the parent can
+// read each command's outcome without racing the test binary's own stdout. The parent polls that
+// file, so each write renames a finished file holding every line so far into place
+// (writeFileAtomic): a line appended in place can be read before all of it is there.
 func TestGrantSessionHelper(t *testing.T) {
 	if os.Getenv("AGENT_SECRETS_GRANT_HELPER") == "" {
 		t.Skip("subprocess helper")
@@ -255,6 +255,7 @@ func TestGrantSessionHelper(t *testing.T) {
 	binary := os.Getenv("AGENT_SECRETS_GRANT_BINARY")
 	resultsPath := os.Getenv("AGENT_SECRETS_GRANT_RESULTS")
 	in := bufio.NewScanner(os.Stdin)
+	var results []byte
 	for in.Scan() {
 		var args []string
 		if json.Unmarshal(in.Bytes(), &args) != nil {
@@ -265,11 +266,8 @@ func TestGrantSessionHelper(t *testing.T) {
 		cmd.Stdout, cmd.Stderr = &so, &se
 		_ = cmd.Run()
 		line, _ := json.Marshal(grantSessionResult{Code: cmd.ProcessState.ExitCode(), Stdout: so.String(), Stderr: se.String()})
-		f, err := os.OpenFile(resultsPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-		if err == nil {
-			_, _ = f.Write(append(line, '\n'))
-			_ = f.Close()
-		}
+		results = append(append(results, line...), '\n')
+		_ = writeFileAtomic(resultsPath, results, 0o600)
 	}
 }
 
@@ -319,18 +317,13 @@ func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 	go func() { _ = cmd.Wait(); close(waited) }()
 	t.Cleanup(func() {
 		_ = stdin.Close()
-		select {
-		case <-waited:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-		<-waited
+		testwait.Receive(t, "the session's process to exit once its stdin closed", waited)
 	})
 	return &grantSession{t: t, stdin: stdin, resultsPath: results}
 }
 
 // run runs one CLI command inside the session and returns its outcome, waiting for the helper to
-// append the result line for it.
+// write the result line for it.
 func (s *grantSession) run(args ...string) grantSessionResult {
 	s.t.Helper()
 	line, err := json.Marshal(args)
@@ -341,24 +334,22 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	line = []byte(testwait.Until(s.t, fmt.Sprintf("the session to report a result for %v", args), func() (string, bool) {
 		data, _ := os.ReadFile(s.resultsPath)
-		if len(data) > 0 {
-			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-			if len(lines) >= s.seen {
-				var res grantSessionResult
-				if err := json.Unmarshal([]byte(lines[s.seen-1]), &res); err != nil {
-					s.t.Fatalf("the session's result for %v was %q: %v", args, lines[s.seen-1], err)
-				}
-				return res
-			}
+		if len(data) == 0 {
+			return "", false
 		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v", args)
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(lines) < s.seen {
+			return "", false
 		}
-		time.Sleep(20 * time.Millisecond)
+		return lines[s.seen-1], true
+	}))
+	var res grantSessionResult
+	if err := json.Unmarshal(line, &res); err != nil {
+		s.t.Fatalf("the session's result for %v was %q: %v", args, line, err)
 	}
+	return res
 }
 
 // requestAutoSecret asks for TEST_AUTO_SECRET from inside the session and returns the id of the

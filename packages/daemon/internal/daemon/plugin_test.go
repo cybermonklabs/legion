@@ -52,7 +52,7 @@ func newPluginSupervisor(t *testing.T, contract int, relaunchable bool) (*superv
 	rt := fake.NewRuntime()
 	sup := newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: rt, Conns: fake.NewConns(), Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:     contract,
@@ -185,7 +185,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 	)
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	passes := triggering(&o)
 	var refuse atomic.Bool
 	refuse.Store(true)
 	var asked atomic.Int64
@@ -200,7 +200,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 
 	startDaemonLogging(t, cfg, o, jsonLogger(logs))
 
-	testwait.Eventually(t, "the launch gate asked more than once while refusing "+string(stale), func() bool {
+	passes.until(t, passOrphans, "the launch gate asked more than once while refusing "+string(stale), func() bool {
 		return asked.Load() > 1
 	})
 	if c := storedClaim(t, cfg, stale); c.PluginRelaunchFor != 0 || c.State != supervise.StateIdle || c.Generation != 1 {
@@ -218,7 +218,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 
 	refuse.Store(false)
 
-	testwait.Eventually(t, "the sweep's retry of "+string(stale), func() bool {
+	passes.until(t, passOrphans, "the sweep's retry of "+string(stale), func() bool {
 		return len(resumesOf(rt, stale)) == 1
 	})
 	resume := resumesOf(rt, stale)[0]
@@ -329,6 +329,41 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	}
 	if calls := rt.Methods(); len(calls) > 0 {
 		t.Fatalf("asked the runtime %v, want nothing", calls)
+	}
+}
+
+// A credited stale-plugin post the pass cannot queue gives its admission's credit straight back.
+// The claim is one this daemon does not supervise, so supervisor.post drops the event and no
+// decision of a machine will give the credit back at its end (endRefreshLane); the pass reads that
+// its post was not queued and releases the credit where it took it. Because the correction no
+// longer resets the gate's count (supervise.RefreshGate.Correct, dispatch://INFRA-3149), a credit
+// left out here would be held for the gate's life, and K of them would stop the lane for good.
+//
+// The negative control is the release removed from refreshStalePlugins (its `if !post` branch):
+// the gate then holds the dropped credit, and the admission this test takes after the pass is
+// refused.
+func TestACreditedRefreshPostThatReachesNoMachineGivesItsCreditBack(t *testing.T) {
+	sup, _ := newPluginSupervisor(t, 24, true)
+	project, _ := claim.ProjectToken("legion")
+	token, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
+	// A stale idle claim the pass admits and posts, and which this supervisor holds no machine
+	// for — restore is never called — so the post reaches nothing.
+	stale := supervise.Claim{
+		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleImplementer,
+		Generation: 1, State: supervise.StateIdle, Session: "ses_implementer",
+		SessionFile: "/sessions/implementer.jsonl", PluginContract: 23, Locator: pluginTestLocator(token),
+	}
+	gate := supervise.NewRefreshGate(1)
+	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{stale},
+		plan: plan{pluginRelaunchable: true}, refreshGate: gate}
+
+	s.refreshStalePlugins(s.claims, "sweep")
+
+	if _, ok := sup.Machine(token); ok {
+		t.Fatal("the stale claim is supervised; this test needs a credited post that reaches no machine")
+	}
+	if !gate.Admit() {
+		t.Fatal("the gate refused an admission after a dropped post, want the dropped credit given back: a credit no machine releases must come back at the pass")
 	}
 }
 

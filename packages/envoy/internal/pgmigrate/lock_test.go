@@ -9,12 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What the watch reports after a sequence of readings. One empty reading of a wait that named its
@@ -185,16 +185,19 @@ func startForwarder(t *testing.T, dsn string) *stallingForwarder {
 }
 
 // stallAtTheCleanup stalls the forwarder at the first statement run on a context other than the
-// one the diagnosis's reads ran on. Every statement of the diagnosis - its transaction, each
-// holder's savepoint, the diagnosis query and that savepoint's rollback - runs on the one context
-// diagnoseHolders reads under, and the cleanup's rollback is the first that does not, because
-// diagnoseHolders gives the rollback and the close a context of their own
-// (diagnosisCleanupTimeout). So the stall begins once the diagnosis has been read and before any
-// byte of the cleanup leaves pgx, which traces a statement before it writes it. Nothing here
-// reads the wire: what the cleanup sends, and whether pgx sends anything at all, does not decide
-// when the forwarder stops.
+// one the diagnosis's reads ran on, and holds that statement at its start until the test releases
+// it. Every statement of the diagnosis - its transaction, each holder's savepoint, the diagnosis
+// query and that savepoint's rollback - runs on the one context diagnoseHolders reads under, and
+// the cleanup's rollback is the first that does not, because diagnoseHolders gives the rollback
+// and the close a context of their own (diagnosisCleanupTimeout). So the hold begins once the
+// diagnosis has been read and before any byte of the cleanup leaves pgx, which traces a statement
+// before it writes it, and the stall then swallows what the cleanup sends once released. Nothing
+// here reads the wire: what the cleanup sends, and whether pgx sends anything at all, does not
+// decide when the forwarder stops.
 type stallAtTheCleanup struct {
 	forwarder *stallingForwarder
+	// release lets the held cleanup statement go on, into the stalled forwarder.
+	release chan struct{}
 
 	mu    sync.Mutex
 	armed bool
@@ -212,26 +215,33 @@ func (s *stallAtTheCleanup) arm() {
 
 func (s *stallAtTheCleanup) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	cleanup := false
 	switch {
 	case !s.armed:
 	case !s.seen:
 		s.seen, s.reads = true, ctx.Done()
 	case ctx.Done() != s.reads:
 		s.forwarder.stall()
+		cleanup = true
+	}
+	s.mu.Unlock()
+	if cleanup {
+		<-s.release
 	}
 	return ctx
 }
 
 func (s *stallAtTheCleanup) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// A diagnosis whose cleanup cannot finish returns anyway, with what it read. diagnoseHolders rolls
-// its read-only transaction back and closes its connection on a context of their own, bounded by
-// diagnosisCleanupTimeout, so a transport that takes the rollback and answers it never - neither
-// completing nor failing - holds the runner up a second at most, not for as long as that
-// transport lives, and the holder the diagnosis read before the stall is still named. The stall
-// outlives the answer: the forwarder is released only by its own cleanup, after the checks below,
-// and those checks fail a call that came back with nothing of its cleanup still held.
+// A diagnosis returns what it read without waiting for its cleanup, and that cleanup ends on its
+// own bound when its transport answers never. diagnoseHolders rolls its read-only transaction back
+// and closes its connection on a goroutine and a context of their own, bounded by
+// diagnosisCleanupTimeout: the tracer holds the cleanup's first statement, so diagnoseHolders
+// returning at all is a return made before its cleanup had sent a byte, and a cleanup run in line
+// would never let it return. Released, the cleanup's rollback goes into a forwarder that takes it
+// and answers never - neither completing nor failing - and the cleanup still ends, by its own
+// bound, while the forwarder holds it: the forwarder is released only by its own cleanup, after
+// the checks below.
 func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 	ctx := context.Background()
 	dsn := testpg.URL(t)
@@ -256,8 +266,12 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 	// URL named and would reach the server behind its back, and TLS over a loopback hop buys
 	// nothing.
 	config.TLSConfig, config.Fallbacks = nil, nil
-	tracer := &stallAtTheCleanup{forwarder: forwarder}
+	tracer := &stallAtTheCleanup{forwarder: forwarder, release: make(chan struct{})}
 	config.Tracer = tracer
+	// A check below that fails before the release still lets the held cleanup go, so its
+	// goroutine ends with the test.
+	letGo := sync.OnceFunc(func() { close(tracer.release) })
+	t.Cleanup(letGo)
 	dial := func(ctx context.Context) (*pgx.Conn, error) {
 		conn, err := pgx.ConnectConfig(ctx, config)
 		if err == nil {
@@ -266,29 +280,32 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 		return conn, err
 	}
 
-	// What the whole call may take: the diagnosis's own reads, a handful of round trips on a
-	// local server, and then the cleanup, which diagnosisCleanupTimeout bounds at one second. The
-	// three seconds are that second and two more for a loaded machine, written out rather than
-	// read from diagnosisCleanupTimeout so that raising that bound reddens this row instead of
-	// moving it: a cleanup left to LockTimeout's five seconds has to fail here.
-	const bound = 3 * time.Second
-	start := time.Now()
-	done := make(chan []string, 1)
-	go func() { done <- diagnoseHolders(ctx, dial, []Session{{PID: pid}}) }()
+	type diagnosis struct {
+		read    []string
+		cleaned <-chan struct{}
+	}
+	done := make(chan diagnosis, 1)
+	go func() {
+		read, cleaned := diagnoseHolders(ctx, dial, []Session{{PID: pid}})
+		done <- diagnosis{read: read, cleaned: cleaned}
+	}()
+	got := testwait.Receive(t, "diagnoseHolders to return while the tracer holds its cleanup's first statement", done)
+	want := fmt.Sprintf("diagnosis of pid %d, read when refused: ", pid)
+	if len(got.read) != 1 || !strings.HasPrefix(got.read[0], want) {
+		t.Fatalf("diagnoseHolders returned %q, want one diagnosis starting %q", got.read, want)
+	}
+	// The cleanup's rollback is held at its start until the release below, so a cleanup that had
+	// ended already would be one that never sent its rollback at all.
 	select {
-	case diagnoses := <-done:
-		returned := time.Since(start)
-		// The forwarder is released by its own cleanup, which runs after this check, so a
-		// forwarder still holding the bytes of the rollback is one this call never waited for.
-		if !forwarder.holding() {
-			t.Fatalf("diagnoseHolders returned after %v and the forwarder had swallowed nothing: the cleanup was never held open, so this row says nothing about its bound", returned)
-		}
-		want := fmt.Sprintf("diagnosis of pid %d, read when refused: ", pid)
-		if len(diagnoses) != 1 || !strings.HasPrefix(diagnoses[0], want) {
-			t.Fatalf("diagnoseHolders returned %q after %v, want one diagnosis starting %q", diagnoses, returned, want)
-		}
-	case <-time.After(bound):
-		t.Fatalf("diagnoseHolders has not returned in %v: its cleanup is waiting on a transport that passes nothing", bound)
+	case <-got.cleaned:
+		t.Fatal("diagnoseHolders' cleanup ended before its rollback was let go: it never rolled the diagnosis back")
+	default:
+	}
+
+	letGo()
+	testwait.Receive(t, "the cleanup to end on its own bound, its rollback taken by a transport that answers never", got.cleaned)
+	if !forwarder.holding() {
+		t.Fatal("the cleanup ended and the forwarder had swallowed nothing: its rollback never met the transport that answers never, so this row says nothing about the cleanup's bound")
 	}
 }
 

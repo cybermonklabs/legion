@@ -6,13 +6,14 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // storeRoleClaim stores claim under role through the bucket's own handle, which is how a case
@@ -113,9 +114,9 @@ func clockedColdRegistry(t *testing.T) (reg *Registry, roles natsgo.KeyValue, st
 	t.Cleanup(cleanup)
 	reg, _ = coldRegistry(t, conn)
 	start = time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
-	var elapsed atomic.Int64
-	reg.now = func() time.Time { return start.Add(time.Duration(elapsed.Load())) }
-	return reg, reg.roleKV.Legacy(), start, func(since time.Duration) { elapsed.Store(int64(since)) }
+	fake := clocktest.New(start)
+	reg.clock = fake
+	return reg, reg.roleKV.Legacy(), start, func(since time.Duration) { fake.Set(start.Add(since)) }
 }
 
 // The rule this change restores, over the very claim that made a wider rule look necessary: one
@@ -251,7 +252,7 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -261,18 +262,18 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	}
 	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	seed(raw, start)
-	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
+	fake := clocktest.New(start)
+	reg, err := Open(conn, WithReplicas(1), WithClock(fake))
 	if err != nil {
 		t.Fatalf("open a registry over the stored claims: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ready, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := reg.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
-	return reg, func(since time.Duration) { elapsed.Store(int64(since)) }
+	return reg, func(since time.Duration) { fake.Set(start.Add(since)) }
 }
 
 // The restart grace is untouched by the rule above it. A registry that restored a claim at its
@@ -574,11 +575,7 @@ func TestTheRoleClaimReaperEndsThePassWhenItsContextEnds(t *testing.T) {
 	defer endLoop()
 	failRoleClaimDeletesAndEndTheContext(t, reg, endLoop)
 	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, 10*time.Millisecond, 0, 0)
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the role claim reaper loop is still running after its context ended")
-	}
+	testwait.Receive(t, "the role claim reaper loop to end after its context", done)
 	if got := logLines(logs, releaseFailure); got != 0 {
 		t.Fatalf("the loop's pass wrote %d lines for claims it could not release, over %d roles; want none", got, len(roles))
 	}
@@ -743,23 +740,13 @@ func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotRe
 		sweep, err := reg.ReapRoleClaims(passCtx, func(string) bool { return false }, 0, 0)
 		answers <- passAnswer{sweep: sweep, err: err}
 	}()
-	select {
-	case <-deletes.sent:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the pass has not reached its delete of the first key it cannot read")
-	}
+	testwait.Receive(t, "the pass to reach its delete of the first key it cannot read", deletes.sent)
 	endPass()
 
-	// Far longer than a pass that answers at its context's end needs, and finite because the
-	// delete it is waiting on answers only when this case releases it: a pass that waits for the
-	// bucket waits here for good.
-	const answerBound = 30 * time.Second
-	var answered passAnswer
-	select {
-	case answered = <-answers:
-	case <-time.After(answerBound):
-		t.Fatalf("the pass is still inside the delete of a key it cannot read %s after its context ended; want it to answer at the context's end, which is what bus.Bounded around that delete is for", answerBound)
-	}
+	// The pass answers at its context's end; the delete it is parked on answers only when the test
+	// releases it, so a pass that instead waited for the bucket would never answer and the shared
+	// wait would end naming it (bus.Bounded around that delete is what makes it answer the context).
+	answered := testwait.Receive(t, "the pass to answer once its context ended under the parked delete", answers)
 	if !errors.Is(answered.err, context.Canceled) {
 		t.Fatalf("a pass whose context ended under its parked delete of an unreadable key = %+v, %v; want it to end with the context's error", answered.sweep, answered.err)
 	}
@@ -803,14 +790,10 @@ func TestTheRoleClaimReaperLogsAPassThatFailedUnderALiveLoopAtError(t *testing.T
 	defer endLoop()
 	const cycleFailed = "role claim reaper cycle failed"
 	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, 10*time.Millisecond, 0, 0)
-	waitFor(t, 30*time.Second, func() bool { return logLines(logs, cycleFailed) > 0 })
+	waitFor(t, "the live loop to log its first "+cycleFailed+" line", func() bool { return logLines(logs, cycleFailed) > 0 })
 	line := logLine(t, logs, cycleFailed)
 	endLoop()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the role claim reaper loop is still running after its context ended")
-	}
+	testwait.Receive(t, "the role claim reaper loop to end after its context", done)
 
 	for _, want := range []string{"level=ERROR", "reaped=0", "skipped=0"} {
 		if !strings.Contains(line, want) {

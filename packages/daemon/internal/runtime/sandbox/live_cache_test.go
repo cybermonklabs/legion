@@ -9,7 +9,6 @@
 package sandbox
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -36,10 +36,11 @@ var cacheStreamLine = regexp.MustCompile(`workspace-init fetch: ([0-9,]+) bytes 
 // cache's Sandbox, selecting the hash of its name, and headless with no external name, the shape
 // the launch checked before telling
 // the root's pod the cache's address. Asked inside the cache's own pod, its /healthz answers with
-// no token, ready with a fetch no older than its refresh and two minutes, at the head GitHub named
-// for the repository's default branch at that fetch (headAtFetch), and its /tar refuses a request
-// without its token, 401 naming nothing, and answers its own token, which reaches curl on its
-// standard input (`-H @-`) from the file the pod mounts, never in a process's argv.
+// no token, ready with a fetch its own pod made — not one a volume carried from a cache pod before
+// it — at the head GitHub named for the repository's default branch at that fetch (headAtFetch),
+// and its /tar refuses a request without its token, 401 naming nothing, and answers its own token,
+// which reaches curl on its standard input (`-H @-`) from the file the pod mounts, never in a
+// process's argv.
 func (r *liveRig) checkRepositoryCache() error {
 	name := CacheSandboxName(r.env.project, r.env.repo)
 	status, err := r.awaitCacheReady()
@@ -68,8 +69,15 @@ func (r *liveRig) checkRepositoryCache() error {
 	if !health.Ready || health.Repo != r.env.repo.String() || health.Bytes <= 0 || health.LastFetchAt.IsZero() {
 		return fmt.Errorf("the cache's /healthz answered %+v, want ready for %s", health, r.env.repo)
 	}
-	if refresh := liveRepositoryCache().Refresh; time.Since(health.LastFetchAt) > refresh+2*time.Minute {
-		return fmt.Errorf("the cache's last fetch was at %s, more than its %s refresh and two minutes ago", health.LastFetchAt.Format(time.RFC3339), refresh)
+	// The fetch is this cache pod's own: its moment and the pod's start are both read from the
+	// clock of the node the cache runs on, so a cache that answered Ready carrying a fetch from
+	// the pod before it — a value restored from the volume rather than one it made — is caught.
+	cachePod, err := r.getPod(name)
+	if err != nil {
+		return err
+	}
+	if cachePod.Status.StartTime == nil || health.LastFetchAt.Before(cachePod.Status.StartTime.Time) {
+		return fmt.Errorf("the cache's /healthz reports its last fetch at %s, which its own pod (started %v) did not make", health.LastFetchAt.Format(time.RFC3339), cachePod.Status.StartTime)
 	}
 	if err := r.headAtFetch(r.defaultBranch, head, health); err != nil {
 		return err
@@ -370,8 +378,7 @@ func (r *liveRig) deleteBranchAt(branch, sha string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	var ref struct {
 		Object struct {
 			SHA string `json:"sha"`
@@ -427,7 +434,7 @@ func printedCount(printed string) int64 {
 // it, which is what an issue pod's launch reads.
 func (r *liveRig) awaitCacheReady() (CacheStatus, error) {
 	var status CacheStatus
-	err := r.poll(liveRunningLimit, "the repository cache of "+r.env.repo.String()+" to be Ready", func() (bool, error) {
+	err := r.poll("the repository cache of "+r.env.repo.String()+" to be Ready", func() (bool, error) {
 		var found bool
 		status, found = r.rt.RepositoryCache(r.env.repo)
 		return found && status.Ready, nil
@@ -526,8 +533,7 @@ func (r *liveRig) deleteBranch(branch string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, github.API+"/git/refs/heads/"+branchPath(branch), nil)
 	if err != nil {
 		return err

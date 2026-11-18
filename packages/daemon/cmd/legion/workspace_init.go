@@ -12,6 +12,7 @@ import (
 	"time"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -22,12 +23,12 @@ const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> -
 // provisionTokenFileEnv points `workspace-init fetch` at the mounted provisioning token.
 const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 
-// provisionBudget is the runner's slow-command budget for `provision`, workspace.CommandTimeout:
-// what the runner gives a command carrying no bound of its own, the commands that carry one being
-// the exceptions workspace.CommandTimeout names. A test shortens it to prove the issue's checkout
-// takes no part of it, holding workspace.CheckoutTimeout of its own instead (workspace.Provision,
-// Request.CheckoutBound).
-var provisionBudget = workspace.CommandTimeout
+// provisionClock is the clock `provision`'s runner measures each command's bound and the grace of
+// its stop on: clock.Real(), which a test replaces with a clocktest.Fake. Every command but those
+// workspace.CommandTimeout names as carrying a bound of their own runs under the runner's
+// slow-command budget, workspace.CommandTimeout; the issue's checkout takes no part of it, and
+// holds workspace.CheckoutTimeout of its own instead (workspace.Provision, Request.CheckoutBound).
+var provisionClock clock.Clock = clock.Real()
 
 // secretFileFromEnv is the secret file the environment variable name points at, once it reads
 // (config.ReadSecretPointer); an error when name is not set or its file does not read.
@@ -173,7 +174,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	if err := workspace.RemoveStaleGitLocks(located, time.Now(), log); err != nil {
 		return err
 	}
-	run := workspace.NewRunner(provisionBudget, tools)
+	run := workspace.NewRunnerOn(workspace.CommandTimeout, tools, provisionClock)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.FromFeed(feed), Log: log,

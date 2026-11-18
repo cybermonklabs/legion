@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -113,17 +115,13 @@ func (c *claudeRig) row(path string) (string, bool) {
 	return string(content), ok
 }
 
-// awaitRow waits, past a few saves, for the table to hold want at path.
+// awaitRow waits, past as many saves as it takes, for the table to hold want at path.
 func (c *claudeRig) awaitRow(path, want string) {
 	c.t.Helper()
-	var got string
-	var ok bool
-	if !testwait.Holds(4*saveInterval, 20*time.Millisecond, func() bool {
-		got, ok = c.row(path)
-		return ok && got == want
-	}) {
-		c.t.Fatalf("the table holds %q (row %t) at %s, want %q", got, ok, path, want)
-	}
+	testwait.Until(c.t, fmt.Sprintf("the table to hold %q at %s", want, path), func() (string, bool) {
+		got, ok := c.row(path)
+		return fmt.Sprintf("%q (row %t)", got, ok), ok && got == want
+	})
 }
 
 // seed saves content at path as an earlier generation's launcher would have.
@@ -201,19 +199,39 @@ func TestAClaudeResumeRestoresBeforeTheChildStartsAndNeverShortensALongerFile(t 
 }
 
 // A fresh transcript is saved as it grows, and only up to its last newline: a line Claude Code has
-// begun and not finished is never in the table, and joins it once finished.
+// begun and not finished is never in the table, and joins it once finished. The launcher's clock is
+// the test's, so each save below is one the test moved the clock past and saw finish.
 func TestAClaudeSaveEndsAtANewline(t *testing.T) {
-	c := newClaudeRig(t, Config{})
+	clk := clocktest.New(time.Now())
+	c := newClaudeRig(t, Config{Clock: clk})
 	c.launch(1, "exec sleep 600", false)
 	write(t, c.transcript, "{\"n\":1}\n{\"n\":", time.Now())
-	c.awaitRow(c.transcript, "{\"n\":1}\n")
-	time.Sleep(saveInterval + saveInterval/2)
-	if got, _ := c.row(c.transcript); got != "{\"n\":1}\n" {
-		t.Fatalf("with a line half written the table holds %q, want the lines before it alone", got)
+	for range 2 {
+		keeperSave(t, clk)
+		if got, _ := c.row(c.transcript); got != "{\"n\":1}\n" {
+			t.Fatalf("with a line half written the table holds %q, want the lines before it alone", got)
+		}
 	}
 	appendTo(t, c.transcript, "2}\n")
-	c.awaitRow(c.transcript, "{\"n\":1}\n{\"n\":2}\n")
+	keeperSave(t, clk)
+	if got, _ := c.row(c.transcript); got != "{\"n\":1}\n{\"n\":2}\n" {
+		t.Fatalf("once the line was finished the table holds %q, want both lines", got)
+	}
 	c.stop(1)
+}
+
+// keeperSave moves clk past the keeper's next periodic save and waits for that save to finish:
+// the keeper arms its next save a whole saveInterval ahead once the one before it has returned, so
+// that save's tick alone pending on clk, with no save's own bound beside it, says it has.
+func keeperSave(t *testing.T, clk *clocktest.Fake) {
+	t.Helper()
+	nextArmed := func() ([]time.Time, bool) {
+		armed := clk.Armed()
+		return armed, len(armed) == 1 && armed[0].Equal(clk.Now().Add(saveInterval))
+	}
+	testwait.Until(t, "the keeper's next save to be armed", nextArmed)
+	clk.Advance(saveInterval)
+	testwait.Until(t, "the keeper's save to finish and arm the one after it", nextArmed)
 }
 
 // A launcher saves over only what it last saved: once another writer has moved the row, a writer
@@ -229,13 +247,9 @@ func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, c.transcript, "{\"n\":2}\n")
-	deadline := time.Now().Add(4 * saveInterval)
-	for !strings.Contains(c.stderr.String(), "stops saving "+c.transcript) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Next(t, "the launcher's line that it stops saving "+c.transcript, c.stderr.Stream(), func(line string) bool {
+		return strings.Contains(line, "stops saving "+c.transcript)
+	})
 	c.stop(1)
 	if got, _ := c.row(c.transcript); got != "{\"n\":1}\n"+other {
 		t.Errorf("the table holds %q, want the other writer's row %q untouched", got, "{\"n\":1}\n"+other)
@@ -300,9 +314,11 @@ func TestAClaudeResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheLastSave(t *t
 // A fresh transcript is marked saved only once the table holds it, which is what claude-envoy
 // waits for before the daemon records it: while the session database refuses the save, here by
 // holding a lock the save waits on, no marker is written and the child runs on; once the save
-// commits the marker follows.
+// commits the marker follows. The launcher's clock is the test's, which moves it past one save and
+// reads that save waiting on the lock in pg_locks before it looks for the marker.
 func TestAClaudeSaveMarksAFreshTranscriptOnlyAfterItsFirstCommit(t *testing.T) {
-	c := newClaudeRig(t, Config{})
+	clk := clocktest.New(time.Now())
+	c := newClaudeRig(t, Config{Clock: clk})
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	c.launch(1, sleeping(pidFile), false)
 	pid := pidOf(t, pidFile)
@@ -316,7 +332,18 @@ func TestAClaudeSaveMarksAFreshTranscriptOnlyAfterItsFirstCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, c.transcript, "{\"n\":1}\n", time.Now())
-	time.Sleep(saveInterval + saveInterval/2)
+	testwait.Until(t, "the keeper's first save to be armed", func() ([]time.Time, bool) {
+		armed := clk.Armed()
+		return armed, len(armed) == 1 && armed[0].Equal(clk.Now().Add(saveInterval))
+	})
+	clk.Advance(saveInterval)
+	testwait.Eventually(t, "the keeper's save to wait on the session table's lock", func() bool {
+		var waiting int
+		if err := tx.QueryRow(ctx, "select count(*) from pg_locks where not granted and relation = 'omp_session_files'::regclass").Scan(&waiting); err != nil {
+			t.Fatalf("read pg_locks: %v", err)
+		}
+		return waiting > 0
+	})
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the transcript was marked saved while no save could commit (%v)", err)
 	}
@@ -447,7 +474,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	go func() { _ = command.Wait(); close(exited) }()
 	kill = func() {
 		_ = command.Process.Signal(syscall.SIGKILL)
-		<-exited
+		testwait.Receive(t, "the launcher process's exit after its SIGKILL", exited)
 	}
 	t.Cleanup(kill)
 	g = &rig{t: t, listener: listener, private: private, result: make(chan error, 1), stderr: &lockedBuffer{}}
@@ -506,11 +533,11 @@ func TestClaudeKeeperRefusesASessionIDThatIsNoUUID(t *testing.T) {
 		claudeSession + "/..",
 		"..",
 	} {
-		if _, err := newClaudeKeeper(env(session), "", "", io.Discard); err == nil || !strings.Contains(err.Error(), claudelaunch.SessionVariable) {
+		if _, err := newClaudeKeeper(env(session), "", "", io.Discard, clock.Real()); err == nil || !strings.Contains(err.Error(), claudelaunch.SessionVariable) {
 			t.Errorf("newClaudeKeeper(session %q) refused with %v, want a refusal naming %s", session, err, claudelaunch.SessionVariable)
 		}
 	}
-	k, err := newClaudeKeeper(env(claudeSession), "", "", io.Discard)
+	k, err := newClaudeKeeper(env(claudeSession), "", "", io.Discard, clock.Real())
 	if err != nil || k == nil {
 		t.Fatalf("newClaudeKeeper(session %q) made a keeper: %v, err %v; want a keeper", claudeSession, k != nil, err)
 	}
@@ -560,7 +587,7 @@ func newKeeperRig(t *testing.T, dsnFile string) *keeperRig {
 		record:     filepath.Join(configDir, "legion-phase-stall-"+claudeSession+".json")}
 	env := []string{"CLAUDE_CONFIG_DIR=" + configDir, claudelaunch.SessionVariable + "=" + claudeSession,
 		ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + dsnFile}
-	if c.k, err = newClaudeKeeper(env, "", "", c.log); err != nil {
+	if c.k, err = newClaudeKeeper(env, "", "", c.log, clock.Real()); err != nil {
 		t.Fatal(err)
 	}
 	c.k.appendRow, c.k.replaceRow = c.faulty(ompsessions.Append), c.faulty(ompsessions.Replace)
@@ -592,15 +619,13 @@ func (c *keeperRig) faulty(write rowWrite) rowWrite {
 
 // save is one of the keeper's periodic saves.
 func (c *keeperRig) save() {
-	ctx, cancel := context.WithTimeout(context.Background(), saveTimeout)
-	defer cancel()
-	c.k.save(ctx)
+	c.k.periodicSave()
 }
 
 // finish ends the keeping as the child's exit does, its last save included.
 func (c *keeperRig) finish() {
 	go c.k.run()
-	c.k.finish(time.Now().Add(saveTimeout))
+	c.k.finish(c.k.clock.Now().Add(saveTimeout))
 }
 
 // wantRow fails the test unless the table holds want at path.

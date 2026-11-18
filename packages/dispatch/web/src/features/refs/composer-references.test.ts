@@ -1,15 +1,10 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 
+import { referenceTrimReads } from "./reference-spans";
 import { composerReferences } from "./routes";
 
 const origin = "https://dispatch.test";
-
-/** A wall-clock budget, not one of the machine-sensitive waits this package's defaults cover
- *  (`web/src/__tests__/setup.ts`): the regression the rows that read it guard, catastrophic
- *  backtracking, costs minutes rather than milliseconds, so a budget far above what any loaded
- *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
-const BACKTRACKING_BUDGET_MS = 2_000;
 
 // The dashboard's half of the shared text table: the composer's reference pills and unfurl cards
 // cite exactly what the server's `text.Extract` indexes for the same body, so the dashboard and
@@ -27,8 +22,12 @@ test.each(
 // A body near the server's 1 MiB request cap that trails a reference with a run of closing
 // parentheses, alone or between the emphasis delimiters the trim also drops, still cites that
 // reference, and a long run of closers followed by anything else is read in one pass too. The
-// bound is generous for a loaded machine: a trim that rescans the run for every start, as an
-// end-anchored regular expression does, takes over ten seconds on the 64 KiB body alone.
+// pass is counted rather than timed (`referenceTrimReads`): each body is one span, so its one
+// trim reads every character of it once to count the parentheses and walks back over at most
+// as many again. A trim that rescans the run for every start, as an end-anchored regular
+// expression does, took over ten seconds on the 64 KiB body alone; written as a loop it reads
+// about the square of the body, and handed to a regular expression it reads nothing here, and
+// either way the count below fails, naming the count read and the bound it broke.
 test.each([
   ["parentheses", `dispatch://CORE-1${")".repeat(1 << 20)}`, ["dispatch://CORE-1"]],
   [
@@ -43,11 +42,10 @@ test.each([
   ],
   ["parentheses then a letter", `dispatch://CORE-1${")".repeat(1 << 16)}x`, []],
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
-  const start = performance.now();
+  const before = referenceTrimReads();
   const cited = composerReferences(body, origin).map((item) => item.reference);
-  // These four rows read 0.08 s, 0.06 s, 0.04 s and 0.00 s idle on a 2-core pod, and 0.14 s,
-  // 0.13 s, 0.10 s and 0.00 s loaded; the budget is 12 times the slowest loaded reading, so no
-  // loaded pod can fail it by being slow.
-  expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
+  const read = referenceTrimReads() - before;
+  expect(read).toBeGreaterThanOrEqual(body.length);
+  expect(read).toBeLessThanOrEqual(2 * body.length);
   expect(cited).toEqual([...refs]);
 });

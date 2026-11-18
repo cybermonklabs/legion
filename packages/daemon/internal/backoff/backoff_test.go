@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -30,16 +31,43 @@ func TestEachWaitLiesBetweenHalfItsStepAndTheWholeOfIt(t *testing.T) {
 }
 
 // Sleep returns at once when its context has ended, with that context's error, and otherwise after
-// the whole wait with none.
+// the whole wait with none. The row runs in a synctest bubble, whose clock moves only once every
+// goroutine in it waits: "at once" is returning before the clock moves at all, and "the whole wait"
+// is still waiting a nanosecond before the wait ends and done once it has.
 func TestSleepEndsWithItsContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	start := time.Now()
-	if err := Sleep(ctx, time.Hour); !errors.Is(err, context.Canceled) || time.Since(start) > time.Second {
-		t.Fatalf("Sleep on an ended context = %v after %s, want context.Canceled at once", err, time.Since(start))
-	}
-	start = time.Now()
-	if err := Sleep(context.Background(), 20*time.Millisecond); err != nil || time.Since(start) < 20*time.Millisecond {
-		t.Fatalf("Sleep(20ms) = %v after %s, want nil after the whole wait", err, time.Since(start))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ended := make(chan error, 1)
+		go func() { ended <- Sleep(ctx, time.Hour) }()
+		synctest.Wait()
+		select {
+		case err := <-ended:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Sleep on an ended context = %v, want context.Canceled", err)
+			}
+		default:
+			t.Fatalf("Sleep on an ended context still waits before the clock has moved, want context.Canceled at once")
+		}
+
+		slept := make(chan error, 1)
+		go func() { slept <- Sleep(context.Background(), 20*time.Millisecond) }()
+		time.Sleep(20*time.Millisecond - time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-slept:
+			t.Fatalf("Sleep(20ms) = %v a nanosecond before its wait ended, want it still waiting", err)
+		default:
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-slept:
+			if err != nil {
+				t.Fatalf("Sleep(20ms) = %v after the whole wait, want nil", err)
+			}
+		default:
+			t.Fatalf("Sleep(20ms) still waits once its whole wait has passed")
+		}
+	})
 }

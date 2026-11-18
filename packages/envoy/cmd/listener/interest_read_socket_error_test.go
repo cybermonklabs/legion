@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -11,13 +10,13 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // brokenPipeReadKV is an interest bucket whose reads fail with the raw socket error nats.go v1.50.0
@@ -49,8 +48,7 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 	watcher.Set(reflect.ValueOf(replacement))
 	t.Cleanup(replacement.Stop)
 	replacement.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := replacement.WaitComplete(ctx); err != nil {
 		t.Fatalf("the watcher reading through the broken handle never completed a read of the bucket: %v", err)
 	}

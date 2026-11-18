@@ -12,7 +12,9 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A stored-message read returns the first message at or after its sequence on a subject its filter
@@ -36,8 +38,7 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
@@ -46,8 +47,12 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	if stored.Sequence != third || stored.Subject != "notifications.dispatch.issue.KEY-1.ask.answered" || string(stored.Data) != `{"n":3}` {
 		t.Fatalf("stored = %+v, want seq %d on the answered subject with its body", stored, third)
 	}
-	if time.Since(stored.Time) > time.Minute || stored.Time.After(time.Now()) {
-		t.Fatalf("stored time %s is not when it was stored", stored.Time)
+	message, err := js.GetMsg(Stream, third)
+	if err != nil {
+		t.Fatalf("read the stored message: %v", err)
+	}
+	if !stored.Time.Equal(message.Time) {
+		t.Fatalf("stored time %s is not the %s the stream stamped the message with", stored.Time, message.Time)
 	}
 
 	if _, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {
@@ -87,7 +92,8 @@ func requestCoreClient(t *testing.T) (*Client, *nats.Conn) {
 // subscriber and returns that subscriber's reply; a subject nobody subscribes is
 // nats.ErrNoResponders, and one whose subscriber keeps silent waits out the caller's deadline and
 // returns ctx's error. These are the three answers the send route reads a session's connection
-// from: connected, stopped and connected.
+// from: connected, stopped and connected. The silent subscriber's deadline is on a fake clock the
+// row moves once that subscriber holds the request.
 func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 	client, responder := requestCoreClient(t)
 	heard := make(chan *nats.Msg, 1)
@@ -97,15 +103,15 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subscribe the answering subject: %v", err)
 	}
-	if _, err := responder.SubscribeSync(DeliverSubject("ses_silent")); err != nil {
+	silent, err := responder.SubscribeSync(DeliverSubject("ses_silent"))
+	if err != nil {
 		t.Fatalf("subscribe the silent subject: %v", err)
 	}
 	if err := responder.Flush(); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), probeHeader); err != nil {
 		t.Fatalf("request to a subscriber that answers = %v, want its reply", err)
 	}
@@ -122,9 +128,19 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("request to a subject nobody subscribes = %v, want nats.ErrNoResponders", err)
 	}
 
-	silentCtx, silentCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	fake := clocktest.New(time.Now())
+	silentCtx, silentCancel := fake.WithTimeout(context.Background(), time.Second)
 	defer silentCancel()
-	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {
+	answered := make(chan error, 1)
+	go func() {
+		_, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), probeHeader)
+		answered <- err
+	}()
+	if _, err := silent.NextMsgWithContext(ctx); err != nil {
+		t.Fatalf("the silent subscriber never heard the request: %v", err)
+	}
+	fake.Advance(time.Second)
+	if err := testwait.Receive(t, "the request to the silent subscriber to end at its deadline", answered); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("request to a subscriber that keeps silent = %v, want context.DeadlineExceeded", err)
 	}
 }
@@ -147,8 +163,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 	const requests = 64
 	perRequest := func(request func(ctx context.Context) error) uint64 {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if err := request(ctx); err != nil {
 			t.Fatalf("warm-up request: %v", err)
 		}

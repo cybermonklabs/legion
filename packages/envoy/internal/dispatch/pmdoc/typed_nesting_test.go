@@ -6,31 +6,29 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
 // The two bodies that froze a reader's tab in the browser engine (INFRA-581) are refused by a
 // document write in a few milliseconds: Go reads a bare `:::a` as a malformed directive, whatever
-// it is nested in. Each refusal is held to 1 s of this process's CPU time (cpuTimeOf), hundreds of
-// times what it takes, so neither a loaded runner nor -race flakes it.
+// it is nested in. Each refusal is held to a parse linear in the body, no more than
+// parseStepsPerCharacter steps (ParseWork) for each of its characters, as the heavy bodies are
+// (heavy_bodies_test.go): a count, so neither a loaded runner nor -race moves it.
 //
 // The bodies are heavybodies.NestedDirectives (pmdoc/heavybodies), so the API's own test of the
 // verdict a write of each gets reads the very same bytes (INFRA-1404).
 func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
 	for _, test := range heavybodies.NestedDirectives() {
 		t.Run(test.Name, func(t *testing.T) {
-			var err error
-			took, timing := cpuTimeOf(again(func() { _, err = ParseForWrite(test.Markdown, nil) }))
-			if timing != nil {
-				t.Fatal(timing)
-			}
+			before := ParseWork()
+			_, err := ParseForWrite(test.Markdown, nil)
+			steps := ParseWork() - before
 			if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), malformedDirectiveReason) {
 				t.Fatalf("ParseForWrite: %v, want ErrSchema saying %q", err, malformedDirectiveReason)
 			}
-			if took >= time.Second {
-				t.Fatalf("ParseForWrite took %s of CPU to refuse it, want under 1 s", took)
+			if allowed := parseStepsPerCharacter * uint64(len(test.Markdown)); steps > allowed {
+				t.Fatalf("ParseForWrite took %d steps to refuse %d characters, past the %d (%d a character) a parse linear in its body takes", steps, len(test.Markdown), allowed, parseStepsPerCharacter)
 			}
 		})
 	}

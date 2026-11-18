@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 )
 
 // TestOAuthProviderSecretUnderATwoPodBootIsFarInsideItsTimeout measures the headroom
@@ -37,6 +39,29 @@ import (
 // or loaded runner closes: this row goes red when the margin collapses by two orders of
 // magnitude, and for nothing else.
 func TestOAuthProviderSecretUnderATwoPodBootIsFarInsideItsTimeout(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	took := oauthSecretUnderATwoPodBoot(t)
+	slower := max(took[0], took[1])
+	t.Logf("%d pods read the OAuth provider secret at the same moment: %s and %s, against oauthSecretTimeout of %s", len(took), took[0], took[1], oauthSecretTimeout)
+	if margin := oauthSecretTimeout / 4; slower >= margin {
+		t.Fatalf("the slower of %d simultaneous boot reads of the OAuth provider secret took %s, which is no longer inside %s (a quarter of oauthSecretTimeout, %s); the bound is sized for single-digit milliseconds, so a call this close to it means the contention has changed rather than the runner being slow",
+			len(took), slower, margin, oauthSecretTimeout)
+	}
+}
+
+// TestOAuthProviderSecretUnderATwoPodBootIsServedToBoth is what every run proves about that
+// contention: both callers are served the secret, neither is refused and neither is left waiting
+// for the other for ever. How much headroom the bound has over it is the timing row above, which
+// only a person runs.
+func TestOAuthProviderSecretUnderATwoPodBootIsServedToBoth(t *testing.T) {
+	oauthSecretUnderATwoPodBoot(t)
+}
+
+// oauthSecretUnderATwoPodBoot runs the contention: two goroutines released together into
+// oauthstore.Store.Secret over one pool, as a cold two-pod boot meets it. It fails t unless both
+// are served, and answers how long each took.
+func oauthSecretUnderATwoPodBoot(t *testing.T) [2]time.Duration {
+	t.Helper()
 	const pods = 2
 	oauthStore := oauthstore.New(storetest.Open(t).Pool)
 
@@ -58,17 +83,10 @@ func TestOAuthProviderSecretUnderATwoPodBootIsFarInsideItsTimeout(t *testing.T) 
 	}
 	close(release)
 	wg.Wait()
-
-	slower := took[0]
 	for pod := range pods {
 		if errs[pod] != nil {
 			t.Fatalf("pod %d's boot read of the OAuth provider secret, with %d pods reading it at once: %v", pod, pods, errs[pod])
 		}
-		slower = max(slower, took[pod])
 	}
-	t.Logf("%d pods read the OAuth provider secret at the same moment: %s and %s, against oauthSecretTimeout of %s", pods, took[0], took[1], oauthSecretTimeout)
-	if margin := oauthSecretTimeout / 4; slower >= margin {
-		t.Fatalf("the slower of %d simultaneous boot reads of the OAuth provider secret took %s, which is no longer inside %s (a quarter of oauthSecretTimeout, %s); the bound is sized for single-digit milliseconds, so a call this close to it means the contention has changed rather than the runner being slow",
-			pods, slower, margin, oauthSecretTimeout)
-	}
+	return took
 }

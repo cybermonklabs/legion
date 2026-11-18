@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener built before the KV key check stored role claims and interests under keys this one
@@ -193,7 +194,7 @@ func openRegistryOver(t *testing.T, seed func(js natsgo.JetStreamContext, rawInt
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -211,9 +212,7 @@ func openRegistryOver(t *testing.T, seed func(js natsgo.JetStreamContext, rawInt
 		t.Fatalf("open the registry over the stored keys: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the cache: %v", err)
 	}
 	return registry, rawInterests, rawRoles

@@ -3,13 +3,13 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -18,27 +18,34 @@ import (
 )
 
 // supersede is what a reconnect hook does to lose the connection its run is on: it stops srv, and
-// returns once conn, the run's connection, has left CONNECTED and ctx, the run's context, has ended
-// with it, with the context's error. Either that is not done within 10 s returns an error of its
-// own, which no run reads as superseded.
+// returns once ctx, the run's context, has ended (awaitRunLost), with the context's error.
 func supersede(ctx context.Context, t *testing.T, srv *testnats.Server, conn *nats.Conn) error {
 	srv.Stop(t)
 	return awaitRunLost(ctx, conn)
 }
 
-// awaitRunLost waits, within 10 s each, for conn to leave CONNECTED and then for ctx, the context
-// of a run on conn, to end, and returns ctx's error; a wait that runs out returns an error of its
-// own.
+// awaitRunLost waits for ctx, the context of a run on conn, to end, which it does once conn leaves
+// CONNECTED (whileConnected), and returns ctx's error, or an error of its own when conn still reads
+// CONNECTED then, which no run reads as superseded. It runs on the goroutine of the run's hooks,
+// where no wait may fail the test, so it waits on the context alone, with no bound: a run whose
+// context never ended would hold its hooks, and the test's own wait for the run's end names it
+// (rewatchOff, or the test's wait for the run's report).
 func awaitRunLost(ctx context.Context, conn *nats.Conn) error {
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
-		return errors.New("the run's connection still read CONNECTED 10s after it was cut")
+	<-ctx.Done()
+	if conn.IsConnected() {
+		return errors.New("the run's context ended while its connection still read CONNECTED")
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(10 * time.Second):
-		return errors.New("the run's context had not ended 10s after its connection left CONNECTED")
-	}
+	return ctx.Err()
+}
+
+// rewatchOff runs c.rewatch on a goroutine of its own and returns what it returned, waiting for it
+// through the shared wait: its hooks wait for the run's context with no bound (awaitRunLost), so a
+// run whose context never ended fails the test by name rather than holding its goroutine.
+func rewatchOff(t *testing.T, c *Client) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- c.rewatch() }()
+	return testwait.Receive(t, "the test's own run of the reconnect hooks to end", done)
 }
 
 // markHooksDue counts a connection event, as onReconnect does, so the next rewatch runs the hooks.
@@ -71,7 +78,7 @@ func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
 	})
 
 	markHooksDue(client)
-	err = client.rewatch()
+	err = rewatchOff(t, client)
 	if !errors.Is(err, errRunSuperseded) {
 		t.Fatalf("a run whose connection was lost under it returned %v, want errRunSuperseded", err)
 	}
@@ -89,7 +96,7 @@ func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
 	failures := func() string {
 		return logs.Lines("reconnect hook failed") + logs.Lines("reconnect hooks have not succeeded")
 	}
-	testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the end of the reconnect's own run", func() bool {
+	testwait.Eventually(t, "the end of the reconnect's own run", func() bool {
 		return calls.Load() >= 2 && (logs.Lines(superseded) != "" || failures() != "")
 	})
 	if lines := failures(); lines != "" {
@@ -99,7 +106,7 @@ func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
 		t.Fatalf("the reconnect's superseded run kept its error for HookStall: %v", kept)
 	}
 	srv.Start(t)
-	testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "a run that covers the last reconnect", func() bool {
+	testwait.Eventually(t, "a run that covers the last reconnect", func() bool {
 		return calls.Load() >= 3 && !client.hooksDue()
 	})
 	if lines := failures(); lines != "" {
@@ -158,7 +165,7 @@ func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
 			})
 
 			markHooksDue(client)
-			err = client.rewatch()
+			err = rewatchOff(t, client)
 			if !client.hooksDue() {
 				t.Fatalf("a run its connection's loss superseded covered its connection event (rewatch returned %v); want every hook due", err)
 			}
@@ -167,7 +174,7 @@ func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
 			}
 
 			srv.Start(t)
-			testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the second hook to run on the reconnected connection and the run to cover it", func() bool {
+			testwait.Eventually(t, "the second hook to run on the reconnected connection and the run to cover it", func() bool {
 				mu.Lock()
 				defer mu.Unlock()
 				for _, call := range seconds {
@@ -341,15 +348,22 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 	}
 	logs := captureLogs(t)
 	var calls atomic.Int32
+	// The run's hook cuts the connection only once the server reports the restore's bind, which the
+	// test's goroutine waits for (proceed): nats-server applies a push subscriber's interest on the
+	// consumer's own goroutine, so only the consumer's report says the restore's bind has reached
+	// it, and a wait on the hook's goroutine could not fail the test.
+	reached := make(chan struct{})
+	proceed := make(chan struct{})
 	cut := make(chan error, 1)
 	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
 		if calls.Add(1) > 1 {
 			return nil
 		}
-		// nats-server applies a push subscriber's interest on the consumer's own goroutine, so only
-		// the consumer's report says the restore's bind has reached it.
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, pushBound) {
-			err := errors.New("the server did not report the restore's bind within 10s")
+		close(reached)
+		select {
+		case <-proceed:
+		case <-ctx.Done():
+			err := fmt.Errorf("the run ended before the server reported the restore's bind: %w", ctx.Err())
 			cut <- err
 			return err
 		}
@@ -360,29 +374,26 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 	})
 
 	proxy.admit()
-	select {
-	case err := <-cut:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the first connection's run was not superseded by the cut: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the first connection's run of the hooks did not reach the cut within 30s")
+	testwait.Receive(t, "the first connection's run of the hooks", reached)
+	testwait.Eventually(t, "the server to report the restore's bind", pushBound)
+	close(proceed)
+	if err := testwait.Receive(t, "the first connection's run of the hooks to reach the cut", cut); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the first connection's run was not superseded by the cut: %v", err)
 	}
-	if !testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
-		return calls.Load() >= 2 && !client.hooksDue() && client.SubOK()
-	}) {
-		t.Fatalf("30s after the cut: hook calls %d, hooks due %t, durable bound %t, want the reconnect's run done with the durable bound; already-bound lines:\n%s",
-			calls.Load(), client.hooksDue(), client.SubOK(), logs.Lines("already bound"))
-	}
+	testwait.Until(t, "the reconnect's run done with the durable bound", func() (string, bool) {
+		hooked, due, bound := calls.Load(), client.hooksDue(), client.SubOK()
+		return fmt.Sprintf("hook calls %d, hooks due %t, durable bound %t; already-bound lines:\n%s", hooked, due, bound, logs.Lines("already bound")),
+			hooked >= 2 && !due && bound
+	})
 	if !pushBound() {
 		t.Fatal("the server does not report the durable bound")
 	}
 	if _, err := owner.JS().Publish("notifications.github.test.restore-across-a-flap", []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return delivered.Load() >= 1 }) {
-		t.Fatalf("the durable bound across the cut was handed nothing within 10s; already-bound lines:\n%s", logs.Lines("already bound"))
-	}
+	testwait.Until(t, "the durable bound across the cut to be handed the message", func() (string, bool) {
+		return "already-bound lines:\n" + logs.Lines("already bound"), delivered.Load() >= 1
+	})
 	if lines := logs.Lines("already bound"); lines != "" {
 		t.Fatalf("a bind of the durable was refused as already bound:\n%s", lines)
 	}

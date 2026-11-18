@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
 
 // plan answers one outcome per attempt, repeating the last, and counts the attempts.
@@ -42,7 +44,7 @@ func TestRunStopsAtTheFirstPass(t *testing.T) {
 	p := &plan{outcomes: []Outcome{transient("database is locked"), passed, transient("never run")}}
 	var logged bytes.Buffer
 
-	if err := Run(context.Background(), "OMP pi.agents", quick(6), logger(&logged), p.attempt); err != nil {
+	if err := Run(context.Background(), clock.Real(), "OMP pi.agents", quick(6), logger(&logged), p.attempt); err != nil {
 		t.Fatalf("Run = %v, want the pass", err)
 	}
 	if p.attempts != 2 {
@@ -58,7 +60,7 @@ func TestRunReturnsARefusalWithoutRetrying(t *testing.T) {
 	refusal := errors.New("pi-legion 1.57.0 is installed but not loaded by omp")
 	p := &plan{outcomes: []Outcome{{Refusal: refusal}, passed}}
 
-	err := Run(context.Background(), "pi-legion load", quick(6), logger(&bytes.Buffer{}), p.attempt)
+	err := Run(context.Background(), clock.Real(), "pi-legion load", quick(6), logger(&bytes.Buffer{}), p.attempt)
 
 	if !errors.Is(err, refusal) || err.Error() != refusal.Error() {
 		t.Fatalf("Run = %v, want the refusal itself", err)
@@ -74,7 +76,7 @@ func TestRunGivesUpAfterItsAttemptsNamingTheLastDetail(t *testing.T) {
 	p := &plan{outcomes: []Outcome{transient("first"), transient("second"), transient("command timed out after 300s")}}
 	var logged bytes.Buffer
 
-	err := Run(context.Background(), "OMP session storage setting", quick(3), logger(&logged), p.attempt)
+	err := Run(context.Background(), clock.Real(), "OMP session storage setting", quick(3), logger(&logged), p.attempt)
 
 	want := "the OMP session storage setting probe never completed within its retry budget (3 attempts): command timed out after 300s"
 	if err == nil || err.Error() != want {
@@ -94,7 +96,7 @@ func TestRunWithoutABoundWaitsOutEveryTransientFailure(t *testing.T) {
 	p := &plan{outcomes: []Outcome{transient("1"), transient("2"), transient("3"), transient("4"), transient("5"), passed}}
 	var logged bytes.Buffer
 
-	if err := Run(context.Background(), "pi-legion load", quick(0), logger(&logged), p.attempt); err != nil {
+	if err := Run(context.Background(), clock.Real(), "pi-legion load", quick(0), logger(&logged), p.attempt); err != nil {
 		t.Fatalf("Run = %v, want the pass after five transient failures", err)
 	}
 	if p.attempts != 6 {
@@ -115,7 +117,7 @@ func TestRunStopsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(50*time.Millisecond, cancel)
 
-	err := Run(ctx, "worker image", Retry{Initial: time.Minute, Max: time.Minute}, logger(&bytes.Buffer{}), p.attempt)
+	err := Run(ctx, clock.Real(), "worker image", Retry{Initial: time.Minute, Max: time.Minute}, logger(&bytes.Buffer{}), p.attempt)
 
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "the worker image probe was abandoned") {
 		t.Fatalf("Run = %v, want the abandoned-probe error wrapping the cancellation", err)
@@ -133,7 +135,7 @@ func TestRunReportsTheStopOverAnInterruptedAttempt(t *testing.T) {
 		return Outcome{Refusal: errors.New("OMP launch probe failed (exit -1)")}
 	}
 
-	err := Run(ctx, "pi-legion load", quick(6), logger(&bytes.Buffer{}), refused)
+	err := Run(ctx, clock.Real(), "pi-legion load", quick(6), logger(&bytes.Buffer{}), refused)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v, want the stop, not the interrupted attempt's refusal", err)
@@ -148,7 +150,7 @@ func TestRunWaitsOutCapacityBeyondItsAttemptBudget(t *testing.T) {
 	p := &plan{outcomes: []Outcome{unschedulable, unschedulable, unschedulable, unschedulable, passed}}
 	var logged bytes.Buffer
 
-	if err := Run(context.Background(), "worker image", quick(3), logger(&logged), p.attempt); err != nil {
+	if err := Run(context.Background(), clock.Real(), "worker image", quick(3), logger(&logged), p.attempt); err != nil {
 		t.Fatalf("Run = %v, want the pass after four waits under a bound of three attempts", err)
 	}
 	if p.attempts != 5 {
@@ -179,7 +181,7 @@ func TestRunCountsTransientFailuresAcrossACapacityWait(t *testing.T) {
 	p := &plan{outcomes: []Outcome{transient("first"), waiting("the pool is full"), transient("second"), passed}}
 	var logged bytes.Buffer
 
-	err := Run(context.Background(), "worker image", quick(2), logger(&logged), p.attempt)
+	err := Run(context.Background(), clock.Real(), "worker image", quick(2), logger(&logged), p.attempt)
 
 	want := "the worker image probe never completed within its retry budget (2 attempts): second"
 	if err == nil || err.Error() != want {
@@ -199,7 +201,7 @@ func TestRunReturnsARefusalAfterACapacityWait(t *testing.T) {
 	refusal := errors.New("worker image sha256:1d10 failed its probe: the OK line confirms contract 2, not 3")
 	p := &plan{outcomes: []Outcome{waiting("the pool is full"), {Refusal: refusal}, passed}}
 
-	err := Run(context.Background(), "worker image", quick(6), logger(&bytes.Buffer{}), p.attempt)
+	err := Run(context.Background(), clock.Real(), "worker image", quick(6), logger(&bytes.Buffer{}), p.attempt)
 
 	if !errors.Is(err, refusal) || err.Error() != refusal.Error() {
 		t.Fatalf("Run = %v, want the refusal itself", err)

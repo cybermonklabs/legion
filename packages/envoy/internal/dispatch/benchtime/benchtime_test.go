@@ -1,6 +1,7 @@
 package benchtime
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +73,23 @@ func TestElevenRunsDecideTheMedian(t *testing.T) {
 func TestTheGateIsTheBenchDatabaseURL(t *testing.T) {
 	if !strings.HasPrefix(DatabaseURLEnv, "DISPATCH_BENCH_") {
 		t.Fatalf("the gate is %q, which is not the bench database variable CI leaves unset", DatabaseURLEnv)
+	}
+}
+
+// A service level's timing row runs only where TimingEnv is set: unset, the gate skips the row,
+// and set, it lets the row run.
+func TestTheTimingGateSkipsUnlessTheTimingVariableIsSet(t *testing.T) {
+	if !strings.HasPrefix(TimingEnv, "DISPATCH_BENCH_") {
+		t.Fatalf("the timing gate is %q, which is not a bench variable CI leaves unset", TimingEnv)
+	}
+	ran := map[string]bool{}
+	for _, value := range []string{"", "1"} {
+		t.Run(fmt.Sprintf("%s=%q", TimingEnv, value), func(t *testing.T) {
+			Timing(t, value)
+			ran[value] = true
+		})
+	}
+	if ran[""] || !ran["1"] {
+		t.Fatalf("the timing gate ran the row unset: %t, set: %t; want only set", ran[""], ran["1"])
 	}
 }

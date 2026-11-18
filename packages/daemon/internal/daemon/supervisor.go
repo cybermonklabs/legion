@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -42,6 +43,10 @@ type supervisor struct {
 	// durableState is the one callback every machine of this supervisor reports its durable
 	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
+	// observe is the test's observer (overrides.observe), set by openSupervision before the worker
+	// stream listens; nil, in production, reports to nobody. The hello resolver reports to it each
+	// hello it holds for restoration (observedHelloHeld).
+	observe func(observation)
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -51,6 +56,10 @@ type supervisor struct {
 	// mu, replaces the slice with a longer copy, and the stop's log lines read it without mu, which
 	// Create holds through a store write.
 	all atomic.Pointer[[]*supervise.Machine]
+	// posted counts every event the supervisor has queued for a machine (post, wakeIssue), and
+	// decided every one of them a machine's goroutine has finished handling: the supervisor's own
+	// ledger of the work it handed its machines, which quiet reports.
+	posted, decided atomic.Uint64
 }
 
 // member is one claim's machine, the queue its events wait in, and the issue the claim is of.
@@ -132,6 +141,7 @@ func (s *supervisor) wakeIssue(token claim.Token) {
 	}
 	for other, m := range s.machines {
 		if other != token && m.issue == ended.issue {
+			s.posted.Add(1)
 			m.inbox.put(supervise.IssueTurnEnded{Claim: other})
 		}
 	}
@@ -278,6 +288,9 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 			if _, end := ev.(supervise.StreamTurnEnd); end || m.TurnsEnded() != ended {
 				s.wakeIssue(token)
 			}
+			// Counted once what handling ev posted is posted too, so no reading of the ledger
+			// finds it settled between this decision and the events it hands on (quiet).
+			s.decided.Add(1)
 		}
 	}()
 }
@@ -309,21 +322,46 @@ func (s *supervisor) inDecision() []string {
 	return busy
 }
 
-// post queues ev for the claim's machine. An event for a claim the daemon does not supervise, or
-// one that arrives once supervision is stopping, goes nowhere.
-func (s *supervisor) post(token claim.Token, ev supervise.Event) {
+// supervisionQuiet is the supervisor's reading of the work its machines still hold: how many
+// events it has queued for them in all (posted), how many of those their goroutines have decided
+// (decided), and every claim whose machine is deciding an event now, whoever handed it the event
+// (inDecision). A test reads it through overrides.supervising, on each side of a read of the
+// daemon's state: no queued event undecided, counts unmoved between the two readings and no
+// machine deciding at either say that no decision ran across the read, so it holds what every
+// decision before it published (supervise.Machine.publish).
+type supervisionQuiet struct {
+	posted, decided uint64
+	deciding        []string
+}
+
+// quiet is the supervisor's supervisionQuiet now. It waits on no decision and no lock a decision
+// holds. decided is read before posted, so an event posted between the two reads leaves posted
+// ahead of decided rather than a reading that claims more decided than was ever posted.
+func (s *supervisor) quiet() supervisionQuiet {
+	decided := s.decided.Load()
+	return supervisionQuiet{posted: s.posted.Load(), decided: decided, deciding: s.inDecision()}
+}
+
+// post queues ev for the claim's machine and reports whether it did. An event for a claim the
+// daemon does not supervise, or one that arrives once supervision is stopping, is queued nowhere
+// and reports false, so a caller that took the refresh gate's credit for this event gives that
+// credit back where no machine will (refreshStalePlugins, supervise.RefreshGate); every other
+// caller posts an event that carries no credit and ignores the report.
+func (s *supervisor) post(token claim.Token, ev supervise.Event) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.stopped {
-		return
+		return false
 	}
 	m, ok := s.machines[token]
 	if !ok {
 		s.log.Warn("supervise: an event for a claim this daemon does not supervise", "claim", token,
 			"event", fmt.Sprintf("%T", ev))
-		return
+		return false
 	}
+	s.posted.Add(1)
 	m.inbox.put(ev)
+	return true
 }
 
 // count is how many claims the daemon supervises. It waits on no lock a decision holds.
@@ -371,7 +409,8 @@ func (s *supervisor) wait() {
 // helloResolver maps a shim's hello to the launch its boot token was minted for, once every stored
 // claim is supervised. A token of a claim this daemon does not supervise — another project's row
 // in a shared database — is unknown: its connection would have no machine to report to. The token
-// is resolved first, bounded by timeout: the worker-stream port is plaintext and
+// is resolved first, bounded by timeout on clk, the daemon's clock (clock.Real() in production,
+// a test's fake where the test holds the daemon's time): the worker-stream port is plaintext and
 // reachable from any pod, Hello2 requires only a non-empty string, and holding an unresolved
 // connection with no deadline would let any client pin a goroutine and a file descriptor for the
 // whole boot wait by sending a garbage token, with no cap on how many could. Only a token
@@ -386,23 +425,26 @@ func (s *supervisor) wait() {
 // first resolve's generation and Stale flag are only ever as fresh as the moment they were read.
 // Judging the hold by that first result would accept a generation its claim has left meanwhile,
 // taking the stream slot the new generation's own hello then finds "already bound to a live
-// stream".
+// stream". A hello whose first resolve found it real is reported to a test's observer as it
+// begins that hold (observedHelloHeld), since nothing the daemon serves or logs names it.
 //
 // A store that fails either read answers the hello with that error, never as an unknown token: the
 // failure says nothing about the token, and the listener closes the connection unrefused for the
-// shim to redial (stream.HelloResolver).
-func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration) stream.HelloResolver {
+// shim to redial (stream.HelloResolver). A read the bound ended is such a failure too.
+func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration, clk clock.Clock) stream.HelloResolver {
 	resolve := func(bootToken string) (api.BootToken, bool, error) {
 		// Every hello is resolved on its own connection's goroutine, beside every other, so each
 		// read takes a hold mark of its own (store.ForConcurrentWorker).
-		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
+		ctx, cancel := clk.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
 		defer cancel()
 		return tokens.Resolve(ctx, bootToken)
 	}
 	return func(bootToken string) (claim.Token, uint64, bool, bool, error) {
-		if _, known, err := resolve(bootToken); err != nil || !known {
+		first, known, err := resolve(bootToken)
+		if err != nil || !known {
 			return "", 0, false, false, err
 		}
+		reportTo(s.observe, observedHelloHeld{claim: first.Claim})
 		select {
 		case <-s.restored:
 		case <-s.ctx.Done():

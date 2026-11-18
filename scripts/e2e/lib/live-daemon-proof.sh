@@ -4,7 +4,9 @@
 # merged-root-waits.sh and no-required-checks.sh have gone with the daemon's merge and its read of
 # a base branch's required checks. Sourced by the entry script, never run. The entry script sets
 # `set -euo pipefail` and
-# root, the checkout it sources this file from, and calls live_daemon_proof as its last command.
+# root, the checkout it sources this file from, sets the run's guard once, at its head, with
+# lib/rig.sh's `proof_guard <seconds>` and the reading of it beside the number, and calls
+# live_daemon_proof as its last command.
 # busy-relaunch-delivery.sh's negative control calls it instead in a subshell of its own whose root
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
@@ -23,8 +25,11 @@
 # line tells that case apart, and names libpq and the package to install. The status does not:
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
-# nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
-# `-tags e2e` test binary. proof runs the one test TEST against them and holds that it passed.
+# nats-server with JetStream on a port the kernel picks, and waits for it through lib/rig.sh's
+# wait_for, which gives up 30 s before the guard's deadline. driver builds the daemon package's
+# `-tags e2e` test binary. proof runs the one test TEST against them, with the time left before
+# the guard's deadline as the driver's -test.timeout, so its testwait waits give up when the
+# shell's would, and holds that it passed.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
 # when it is unset), which holds the broker's store and the driver binary SLUG.test and is removed
@@ -37,13 +42,15 @@
 
 # shellcheck source-path=SCRIPTDIR source=transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
-# lib/loopback-dsn.sh holds require_loopback_dsn, the guard prerequisites reads LEGION_TEST_PG_DSN
-# with. It needs nothing of this file's.
-# shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
-. "$root/scripts/e2e/lib/loopback-dsn.sh"
+# lib/rig.sh holds proof_guard and wait_for, the run's guard and its one wait, and sources
+# lib/loopback-dsn.sh, which holds require_loopback_dsn, the guard prerequisites reads
+# LEGION_TEST_PG_DSN with. It reads this file's work, evidence, note and fail.
+# shellcheck source-path=SCRIPTDIR source=rig.sh
+. "$root/scripts/e2e/lib/rig.sh"
 
 # The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
-# packages/envoy/go.mod pins. The daemon refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0
+# packages/envoy/go.mod pins and the daemon's own NATS tests run in their test process
+# (packages/daemon/go.mod). The daemon refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0
 # (packages/envoy/natsversion).
 nats_version=v2.15.1
 
@@ -81,6 +88,14 @@ cleanup() {
   fi
 }
 
+# nats_ready is the broker's readiness for wait_for: the server logs that it is ready once it
+# listens, and a server that exited never will.
+nats_ready() {
+  grep -q 'Server is ready' "$evidence/nats.log" && return 0
+  kill -0 "$nats_pid" 2>/dev/null || wait_impossible="the nats-server exited at startup; see $evidence/nats.log"
+  return 1
+}
+
 live_daemon_proof() {
   local slug=$2 test_name=$3 tool nats_bin db_host
   proof_label=$1
@@ -95,6 +110,8 @@ live_daemon_proof() {
   trap cleanup EXIT
 
   begin prerequisites
+  [ -n "$proof_deadline_ms" ] ||
+    fail "the entry script set no guard: it calls lib/rig.sh's proof_guard <seconds> before live_daemon_proof"
   [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
     refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
   for tool in go awk python3; do
@@ -134,12 +151,7 @@ live_daemon_proof() {
   # promise, and a pod with no `ss` runs the proof all the same.
   "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >>"$evidence/nats.log" 2>&1 &
   nats_pid=$!
-  for _ in $(seq 1 120); do
-    grep -q 'Server is ready' "$evidence/nats.log" && break
-    kill -0 "$nats_pid" 2>/dev/null || fail "the nats-server exited at startup; see $evidence/nats.log"
-    sleep 0.5
-  done
-  grep -q 'Server is ready' "$evidence/nats.log" || fail "the nats-server was not ready within 60s; see $evidence/nats.log"
+  wait_for "the nats-server to be ready" nats_ready
   port_nats=$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/nats.log")
   [ -n "$port_nats" ] || fail "the nats-server logged no client port; see $evidence/nats.log"
   note "JetStream on nats://127.0.0.1:$port_nats, store $work/nats-store, log $evidence/nats.log"
@@ -158,7 +170,7 @@ live_daemon_proof() {
   LEGION_E2E_NATS_URL="nats://127.0.0.1:$port_nats" \
     LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
     TMPDIR="$work" \
-    "$driver" -test.count=1 -test.timeout=20m -test.v \
+    "$driver" -test.count=1 -test.timeout="$(proof_seconds_left)s" -test.v \
     -test.run "^$test_name\$" 2>&1 | tee "$evidence/proof.log" ||
     fail "the proof's driver failed; see $evidence/proof.log and $evidence/daemon.log"
   # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing.

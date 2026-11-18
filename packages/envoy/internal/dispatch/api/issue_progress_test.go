@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // progressOf reads an issue's progress object off GET /api/v1/issues/{key}.
@@ -234,8 +234,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	wantNull(t, "uncounted tasks before the pass", progressOf(t, handler, uncounted.Key).Tasks)
 	wantCount(t, "stale tasks before the pass", progressOf(t, handler, stale.Key).Tasks, 0, 1)
 
-	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	runCtx := testwait.Context(t)
 	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
 
 	wantCount(t, "counted", progressOf(t, handler, counted.Key).Tasks, 1, 2)
@@ -296,8 +295,7 @@ func TestIssueProgressReconciliationDrainsMoreThanOneBatch(t *testing.T) {
 		t.Fatalf("cleared rows = %d, want %d", drifted, issues)
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	runCtx := testwait.Context(t)
 	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
 
 	var remaining int

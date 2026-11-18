@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -142,7 +143,7 @@ func recreate(t *testing.T, conn *natsgo.Conn, keys ...string) natsgo.KeyValue {
 // the second read, of epoch 1, which swept every key only the old bucket held.
 func readWholeInEpochOne(t *testing.T, w *kvwatch.Watcher, into *seen, kept, swept string) {
 	t.Helper()
-	eventually(t, "the recreated bucket's read to complete", w.Following)
+	testwait.Eventually(t, "the recreated bucket's read to complete", w.Following)
 	if !into.has(kept) || into.has(swept) || w.Epoch() != 1 {
 		t.Fatalf("after the re-read: %s %v, %s %v, Epoch %d; want the new bucket's key only, in epoch 1",
 			kept, into.has(kept), swept, into.has(swept), w.Epoch())
@@ -167,12 +168,12 @@ func TestAProbeOfTheSameStreamOnlyConfirmsIt(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	if probes := len(timers.armed(probeEvery)); probes != 1 {
 		t.Fatalf("the first read armed %d stream probes of %v, want one", probes, probeEvery)
 	}
 
-	now.advance(time.Minute)
+	now.Advance(time.Minute)
 	before := counted.reads()
 	timers.last(t, probeEvery).fire()
 	if got := counted.reads() - before; got != 1 {
@@ -186,7 +187,7 @@ func TestAProbeOfTheSameStreamOnlyConfirmsIt(t *testing.T) {
 	if _, err := kv.Put("after-the-probe", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	eventually(t, "the record written after the probe", func() bool { return into.has("after-the-probe") })
+	testwait.Eventually(t, "the record written after the probe", func() bool { return into.has("after-the-probe") })
 	if got := counted.reads() - before; got != 1 {
 		t.Fatalf("the stream was read %d times in all after the probe, want only the probe's: its confirmation was fresh for the record", got)
 	}
@@ -216,7 +217,7 @@ func TestARecordOnAnOldConfirmationWaitsForAReadOfTheStream(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	base := counted.reads()
 
 	put := func(key string) {
@@ -224,13 +225,13 @@ func TestARecordOnAnOldConfirmationWaitsForAReadOfTheStream(t *testing.T) {
 		if _, err := kv.Put(key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
-		eventually(t, key+" to be applied", func() bool { return into.has(key) })
+		testwait.Eventually(t, key+" to be applied", func() bool { return into.has(key) })
 	}
 	put("fresh")
 	if got := readsBefore("fresh") - base; got != 0 {
 		t.Fatalf("a record on a fresh confirmation waited for %d reads of the stream, want none", got)
 	}
-	now.advance(staleConfirmation)
+	now.Advance(staleConfirmation)
 	put("stale")
 	if got := readsBefore("stale") - base; got != 1 || !w.Following() {
 		t.Fatalf("a record on a %v-old confirmation was applied after %d reads of the stream, Following %v; want one read before it, still following",
@@ -270,13 +271,13 @@ func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	recreated := recreate(t, conn, "fresh")
 	entry := jetStreamEntry(t, wrap(t, conn, recreated), "fresh")
-	now.advance(staleConfirmation)
+	now.Advance(staleConfirmation)
 	records <- entry
-	eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
+	testwait.Eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
 	mu.Lock()
 	whileFollowing := followingAt["fresh"]
 	mu.Unlock()
@@ -307,7 +308,7 @@ func TestAProbeThatFindsANewStreamReadsTheNewBucketInANewEpoch(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	recreate(t, conn, "fresh")
 	timers.last(t, probeEvery).fire()
@@ -342,7 +343,7 @@ func TestAProbeReadsABucketDeletedThenCreatedAgainOnceItIsBack(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
@@ -379,13 +380,13 @@ func TestStopAndANewerWatchDisarmTheProbe(t *testing.T) {
 	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), counted), newSeen(), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	replaced := timers.last(t, probeEvery)
 
 	if err := kvwatch.WatchOn(w, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), counted)); err != nil {
 		t.Fatalf("the newer watch: %v", err)
 	}
-	eventually(t, "the newer read's completion", w.Following)
+	testwait.Eventually(t, "the newer read's completion", w.Following)
 	current := timers.last(t, probeEvery)
 	if current == replaced || !replaced.stopped.Load() {
 		t.Fatalf("after a newer watch: its own probe armed %v, the replaced one stopped %v; want both", current != replaced, replaced.stopped.Load())
@@ -423,11 +424,11 @@ func TestACompletionWhoseStreamChangedUnderTheScanSweepsNothing(t *testing.T) {
 	w := kvwatch.New("test cache", scripted(kv, held.step()).handle(), into, kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	wait(t, held.reached, "the first read to deliver every record")
+	testwait.Receive(t, "the first read to deliver every record", held.reached)
 
 	recreate(t, conn, "fresh")
 	held.let()
-	wait(t, held.handled, "the first read's end to be handled")
+	testwait.Receive(t, "the first read's end to be handled", held.handled)
 	if len(into.completions()) != 0 || !into.has("held-by-the-copy") || !into.has("ghost") || w.Following() {
 		t.Fatalf("after the scan ended on a recreated bucket: %d reads completed, held key kept %v, ghost kept %v, Following %v; want none completed, everything kept, not following",
 			len(into.completions()), into.has("held-by-the-copy"), into.has("ghost"), w.Following())
@@ -437,7 +438,7 @@ func TestACompletionWhoseStreamChangedUnderTheScanSweepsNothing(t *testing.T) {
 	}
 
 	timers.last(t, rereadNow).fire()
-	eventually(t, "the recreated bucket's read to complete", w.Following)
+	testwait.Eventually(t, "the recreated bucket's read to complete", w.Following)
 	if !into.has("fresh") || into.has("ghost") || into.has("held-by-the-copy") || w.Epoch() != 1 {
 		t.Fatalf("after the re-read: fresh %v, ghost %v, held key %v, Epoch %d; want the new bucket's key only, in epoch 1",
 			into.has("fresh"), into.has("ghost"), into.has("held-by-the-copy"), w.Epoch())
@@ -536,7 +537,7 @@ func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	base := streams.reads()
 	put := func(key string) {
 		t.Helper()
@@ -556,29 +557,29 @@ func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
 	}
 
 	let := streams.hold(t)
-	now.advance(staleConfirmation)
+	now.Advance(staleConfirmation)
 	put("first")
-	eventually(t, "the first record's read of the stream", func() bool { return streams.reads() == base+1 })
+	testwait.Eventually(t, "the first record's read of the stream", func() bool { return streams.reads() == base+1 })
 	put("second")
 	put("third")
 	if into.has("first") || into.has("second") || into.has("third") {
 		t.Fatal("a record was applied while the read of the stream it waits for was still held")
 	}
-	now.advance(10 * time.Second)
+	now.Advance(10 * time.Second)
 	let()
-	eventually(t, "the records held behind the read", applied("first", "second", "third"))
+	testwait.Eventually(t, "the records held behind the read", applied("first", "second", "third"))
 	if got := streams.reads() - base; got != 1 || !w.Following() {
 		t.Fatalf("three records were applied after %d reads of the stream, Following %v; want the one read they shared, still following", got, w.Following())
 	}
 
 	put("fourth")
-	eventually(t, "a record within the probe interval of the read", applied("fourth"))
+	testwait.Eventually(t, "a record within the probe interval of the read", applied("fourth"))
 	if got := streams.reads() - base; got != 1 {
 		t.Fatalf("a record within the probe interval of the last read sent another: %d reads in all, want 1", got)
 	}
-	now.advance(probeEvery + time.Second)
+	now.Advance(probeEvery + time.Second)
 	put("fifth")
-	eventually(t, "a record past the probe interval", applied("fifth"))
+	testwait.Eventually(t, "a record past the probe interval", applied("fifth"))
 	if got := streams.reads() - base; got != 2 {
 		t.Fatalf("a record past the probe interval of the last read was applied after %d reads in all, want 2", got)
 	}
@@ -597,25 +598,25 @@ func TestAFailedReadOfTheStreamIsNotRetriedPerRecord(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	base := streams.reads()
 	put := func(key string) {
 		t.Helper()
 		if _, err := kv.Put(key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
-		eventually(t, key+" to be applied", func() bool { return into.has(key) })
+		testwait.Eventually(t, key+" to be applied", func() bool { return into.has(key) })
 	}
 
 	streams.refuse(errors.New("stream info refused"))
-	now.advance(staleConfirmation)
+	now.Advance(staleConfirmation)
 	for _, key := range []string{"first", "second", "third"} {
 		put(key)
 	}
 	if got := streams.reads() - base; got != 1 || !w.Following() {
 		t.Fatalf("three records on an old confirmation sent %d reads of a stream that refuses them, Following %v; want one, still following", got, w.Following())
 	}
-	now.advance(probeEvery + time.Second)
+	now.Advance(probeEvery + time.Second)
 	put("past-the-interval")
 	if got := streams.reads() - base; got != 2 {
 		t.Fatalf("a record past the probe interval of the failed read was applied after %d reads in all, want 2", got)
@@ -654,28 +655,28 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	recreated := recreate(t, conn, "fresh")
 	entry := jetStreamEntry(t, wrap(t, conn, recreated), "fresh")
 	base := streams.reads()
 	let := streams.hold(t)
-	now.advance(staleConfirmation)
+	now.Advance(staleConfirmation)
 	probed := make(chan struct{})
 	probe := timers.last(t, probeEvery)
 	go func() {
 		defer close(probed)
 		probe.fire()
 	}()
-	eventually(t, "the probe's read of the stream", func() bool { return streams.reads() == base+1 })
+	testwait.Eventually(t, "the probe's read of the stream", func() bool { return streams.reads() == base+1 })
 	records <- entry
-	eventually(t, "the record to wait in the gate", waitingInTheGate)
+	testwait.Eventually(t, "the record to wait in the gate", waitingInTheGate)
 	if into.has("fresh") {
 		t.Fatal("the record was applied while the probe's read was in flight")
 	}
 	let()
-	wait(t, probed, "the probe to end")
-	eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
+	testwait.Receive(t, "the probe to end", probed)
+	testwait.Eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
 	mu.Lock()
 	whileFollowing := followingAt["fresh"]
 	mu.Unlock()
@@ -711,19 +712,19 @@ func TestReadsOfTheStreamThatKeepFailingEndFollowingPastTheStaleBound(t *testing
 		kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStaleBound(bound), kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	probe := func() { timers.last(t, probeEvery).fire() }
 	refused := errors.New("stream info refused")
 
 	streams.refuse(refused)
 	probe()
-	now.advance(bound - time.Second)
+	now.Advance(bound - time.Second)
 	streams.refuse(nil)
 	probe()
 	streams.refuse(refused)
-	now.advance(time.Second)
+	now.Advance(time.Second)
 	probe()
-	now.advance(bound)
+	now.Advance(bound)
 	probe()
 	if !w.Following() {
 		t.Fatal("the copy stopped following on a run of failed reads no longer than the stale bound, counted from the read that answered")
@@ -732,7 +733,7 @@ func TestReadsOfTheStreamThatKeepFailingEndFollowingPastTheStaleBound(t *testing
 		t.Fatalf("failed reads within the stale bound armed %d re-reads, want none", got)
 	}
 
-	now.advance(time.Second)
+	now.Advance(time.Second)
 	probe()
 	if w.Following() || w.NeedsRead() || len(timers.armed(rereadAfter)) != 1 {
 		t.Fatalf("after failed reads past the stale bound: Following %v, NeedsRead %v, %d re-reads armed; want not following, a re-read armed",
@@ -743,12 +744,12 @@ func TestReadsOfTheStreamThatKeepFailingEndFollowingPastTheStaleBound(t *testing
 	if lines := matching(logs(), "WARN", stopped); len(lines) != 1 || lines[0]["bucket"] != testBucketName {
 		t.Fatalf("the end of following was logged %v, want one WARN line naming bucket %s", lines, testBucketName)
 	}
-	now.advance(bound + time.Second)
+	now.Advance(bound + time.Second)
 	refuses(t, w, "past the stale bound of its episode")
 
 	streams.refuse(nil)
 	timers.last(t, rereadAfter).fire()
-	eventually(t, "the re-read's completion", w.Following)
+	testwait.Eventually(t, "the re-read's completion", w.Following)
 	serves(t, w, "after the re-read")
 	if got := len(into.completions()); got != 2 {
 		t.Fatalf("%d reads completed, want the first and the re-read", got)

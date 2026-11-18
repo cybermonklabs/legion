@@ -1,7 +1,6 @@
 package leakguard
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,19 +12,6 @@ import (
 
 // The stand-ins and helpers the visibility tests share: visibility_graphql_test.go's reads of
 // GraphQL and visibility_lsremote_test.go's reads with no credential, beside visibility_cache_test.go.
-
-// stopBound is the bound, in whole seconds, that a child (git or gh) was stopped by, read from the
-// *stoppedError err carries, and fails the test where err carries none or a cancel stopped the
-// child. The bound is read against a ceiling, not for its exact seconds: on a loaded machine the
-// child can start late in its bound, which then gives it less than the whole.
-func stopBound(t *testing.T, err error) int64 {
-	t.Helper()
-	var stopped *stoppedError
-	if !errors.As(err, &stopped) || stopped.cancelled {
-		t.Fatalf("the failure %q is no stop of a child by its bound", err)
-	}
-	return wholeSeconds(stopped.bound)
-}
 
 // theRepo is the repository these tests read the visibility of, theURL the HTTPS URL the read
 // with no credential hands git for it, and theResets what that read puts after the package's
@@ -203,43 +189,4 @@ func countLines(t *testing.T, path string) int {
 		t.Fatal(err)
 	}
 	return strings.Count(string(content), "\n")
-}
-
-// whenWritten calls then once the file at path is there, which it looks for every 10 ms, and
-// never where ctx ends first.
-func whenWritten(ctx context.Context, path string, then func()) {
-	go func() {
-		for {
-			if _, err := os.Stat(path); err == nil {
-				then()
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Millisecond):
-			}
-		}
-	}()
-}
-
-// deadlineOnceStarted is a caller's context with a deadline, which ends at that deadline but not
-// before the test closes done once the stand-in program (git or gh) has started: on a loaded
-// machine it can start after a short deadline has passed, and an end before it starts stops
-// nothing. Its Deadline and Value are the embedded context's, so the guard reads the deadline as
-// the caller's bound.
-type deadlineOnceStarted struct {
-	context.Context
-	done chan struct{}
-}
-
-func (c *deadlineOnceStarted) Done() <-chan struct{} { return c.done }
-
-func (c *deadlineOnceStarted) Err() error {
-	select {
-	case <-c.done:
-		return context.DeadlineExceeded
-	default:
-		return nil
-	}
 }

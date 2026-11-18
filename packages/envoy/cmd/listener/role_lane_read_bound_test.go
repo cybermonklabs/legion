@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,12 +11,17 @@ import (
 )
 
 // slowReadKV is a bucket each read of which answers, after delay: a bus that is slow, not silent.
+// The sleep is the stand-in's own: it copies the latency of a NATS bucket read that answers late,
+// which the role paths bound by roleHolderReadTimeout (role_holder.go). reads counts the reads
+// that reached it, so a test can say which of two buckets a resolution read.
 type slowReadKV struct {
 	natsgo.KeyValue
 	delay time.Duration
+	reads *atomic.Int64
 }
 
 func (kv slowReadKV) Get(key string) (natsgo.KeyValueEntry, error) {
+	kv.reads.Add(1)
 	time.Sleep(kv.delay)
 	return kv.KeyValue.Get(key)
 }
@@ -43,9 +49,10 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 	if _, err := harness.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim role %s for %s: %v", role, holder, err)
 	}
-	setRegistryRoleKV(t, harness.registry, slowReadKV{KeyValue: registryRoleKV(t, harness.registry), delay: claimDelay})
+	var claimReads, sessionReads atomic.Int64
+	setRegistryRoleKV(t, harness.registry, slowReadKV{KeyValue: registryRoleKV(t, harness.registry), delay: claimDelay, reads: &claimReads})
 	swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return slowReadKV{KeyValue: kv, delay: sessionDelay}
+		return slowReadKV{KeyValue: kv, delay: sessionDelay, reads: &sessionReads}
 	})
 	forwards := make(chan string, 4)
 	cfg := harness.config
@@ -64,12 +71,10 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 		t.Fatalf("flush the exception probe: %v", err)
 	}
 
-	started := time.Now()
 	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-	elapsed := time.Since(started)
 	cfg.roleForwards.settled(t)
-	t.Logf("the claim read answered after %s and the session read after %s, each bounded by %s; the delivery took %s",
-		claimDelay, sessionDelay, roleHolderReadTimeout, elapsed)
+	t.Logf("the claim read answered after %s and the session read after %s, each bounded by %s; the resolution made %d claim reads and %d session reads",
+		claimDelay, sessionDelay, roleHolderReadTimeout, claimReads.Load(), sessionReads.Load())
 
 	select {
 	case subject := <-forwards:
@@ -80,10 +85,17 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 		t.Fatalf("the role message reached no holder: a claim read that answered after %s left the session read less than its own %s bound:\n%s",
 			claimDelay, roleHolderReadTimeout, harness.logs.String())
 	}
+	// The handler returned and the forwarder settled; the round trip after them puts every
+	// exception the lane published on the probe (noException).
+	if err := harness.client.Conn.Flush(); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
+	}
 	noException(t, probe)
 	assertNothingKept(t, harness.client, role)
-	if elapsed < claimDelay+sessionDelay {
-		t.Fatalf("the delivery took %s, less than the two reads' delays of %s together: one of them did not reach its slow bucket, so the case did not hold",
-			elapsed, claimDelay+sessionDelay)
+	// Both reads went to their slow bucket, so the case this test is about held: a resolution
+	// that read a cached copy of either would be bounded by nothing and prove nothing.
+	if claimReads.Load() == 0 || sessionReads.Load() == 0 {
+		t.Fatalf("the resolution made %d claim reads and %d session reads, want at least one of each: a read that did not reach its slow bucket leaves the two bounds untested",
+			claimReads.Load(), sessionReads.Load())
 	}
 }

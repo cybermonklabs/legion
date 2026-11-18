@@ -14,23 +14,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testInstance is a placeholder connection name: this repository names no real instance.
 const testInstance = "example-project:us-central1:example-instance"
 
-// testProofTimeout bounds the proof dial of a test whose upstream answers at once, so it only has
-// to be long enough never to end a dial a loaded machine is slow to complete.
+// testProofTimeout bounds the proof dial of a test whose upstream answers at once. The proxies of
+// these tests measure it on a fake clock that moves only when the test moves it, so it never ends
+// a dial, and Start refuses a bound that is not positive.
 const testProofTimeout = 10 * time.Second
 
+// testMoment is where a test's fake clock stands until the test moves it.
+var testMoment = time.Date(2026, time.November, 14, 12, 0, 0, 0, time.UTC)
+
+// waitDeadline is the moment the shared wait gives up in t, set as a socket's own read, write or
+// accept deadline so a wait for bytes has the one bound every wait has; the zero time, which is no
+// deadline, under -timeout 0.
+func waitDeadline(t *testing.T) time.Time {
+	deadline, _ := testwait.Context(t).Deadline()
+	return deadline
+}
+
 // upstream is the database end of a test: a real local listener, so the bytes the proxy copies
-// really cross a connection and a test can read them.
+// really cross a connection and a test can read them. The proxy's dials are fakeDialer's, which
+// tells the upstream the local address of each (dialed); a connection from any other address is
+// another process's (a loopback port the kernel gives a listener may be one a process of the
+// machine still dials), which next passes over and the test's cleanup closes.
 type upstream struct {
 	listener net.Listener
 	accepted chan net.Conn
+	dialed   chan string
+	// unmatched holds each accepted connection next has not handed out, by its remote address.
+	unmatched map[string]net.Conn
 }
+
+// upstreams is each test's upstream by its listener's address, which fakeDialer dials.
+var upstreams sync.Map
 
 func newUpstream(t *testing.T) *upstream {
 	t.Helper()
@@ -38,7 +61,10 @@ func newUpstream(t *testing.T) *upstream {
 	if err != nil {
 		t.Fatalf("listen as the upstream: %v", err)
 	}
-	up := &upstream{listener: listener, accepted: make(chan net.Conn, 8)}
+	// dialed holds more dials than any test makes before it reads them, so a dial never waits on
+	// the notice.
+	up := &upstream{listener: listener, accepted: make(chan net.Conn, 8), dialed: make(chan string, 64), unmatched: map[string]net.Conn{}}
+	upstreams.Store(listener.Addr().String(), up)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -49,7 +75,11 @@ func newUpstream(t *testing.T) *upstream {
 		}
 	}()
 	t.Cleanup(func() {
+		upstreams.Delete(listener.Addr().String())
 		_ = listener.Close()
+		for _, conn := range up.unmatched {
+			_ = conn.Close()
+		}
 		for {
 			select {
 			case conn := <-up.accepted:
@@ -62,20 +92,24 @@ func newUpstream(t *testing.T) *upstream {
 	return up
 }
 
-// next is the connection the upstream accepted next, which is the one the proxy just dialed.
+// next is the connection of the proxy's next dial of the upstream, which fakeDialer reported:
+// the accepted connection whose remote address is that dial's local one.
 func (u *upstream) next(t *testing.T) net.Conn {
 	t.Helper()
-	select {
-	case conn := <-u.accepted:
-		return conn
-	case <-time.After(2 * time.Second):
-		t.Fatal("the proxy did not dial the upstream")
-		return nil
+	from := testwait.Receive(t, "the proxy's dial of the upstream", u.dialed)
+	for {
+		if conn, ok := u.unmatched[from]; ok {
+			delete(u.unmatched, from)
+			return conn
+		}
+		conn := testwait.Receive(t, "the upstream's accept of the proxy's dial", u.accepted)
+		u.unmatched[conn.RemoteAddr().String()] = conn
 	}
 }
 
 // fakeDialer stands in for the Cloud SQL connector: it records what the proxy asked of it and
-// hands back a real connection to the test's upstream listener.
+// hands back a real connection to the test's upstream listener, whose local address it tells the
+// upstream.
 type fakeDialer struct {
 	addr string
 
@@ -94,7 +128,11 @@ func (f *fakeDialer) Dial(ctx context.Context, instance string) (net.Conn, error
 		return nil, err
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", f.addr)
+	conn, err := dialer.DialContext(ctx, "tcp", f.addr)
+	if up, ok := upstreams.Load(f.addr); ok && err == nil {
+		up.(*upstream).dialed <- conn.LocalAddr().String()
+	}
+	return conn, err
 }
 
 func (f *fakeDialer) Close() error {
@@ -141,10 +179,14 @@ func startProxy(ctx context.Context, t *testing.T, up *upstream, dialer *fakeDia
 }
 
 // startConfigured is startProxy for a test that sets more of the Config: it fills in the test's
-// instance and proof bound, starts the proxy and takes the connection the proof dial made.
+// instance and proof bound, and a fake clock nothing moves when cfg brings none, starts the proxy
+// and takes the connection the proof dial made.
 func startConfigured(ctx context.Context, t *testing.T, up *upstream, cfg Config) *Proxy {
 	t.Helper()
 	cfg.Instance, cfg.ProofTimeout = testInstance, testProofTimeout
+	if cfg.Clock == nil {
+		cfg.Clock = clocktest.New(testMoment)
+	}
 	proxy, err := Start(ctx, cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -155,7 +197,7 @@ func startConfigured(ctx context.Context, t *testing.T, up *upstream, cfg Config
 
 func writeAll(t *testing.T, conn net.Conn, payload string) {
 	t.Helper()
-	if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetWriteDeadline(waitDeadline(t)); err != nil {
 		t.Fatalf("set a write deadline: %v", err)
 	}
 	if _, err := conn.Write([]byte(payload)); err != nil {
@@ -165,7 +207,7 @@ func writeAll(t *testing.T, conn net.Conn, payload string) {
 
 func readString(t *testing.T, conn net.Conn, n int) string {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(waitDeadline(t)); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	buf := make([]byte, n)
@@ -229,6 +271,7 @@ func TestStartRefusesWhenTheProofDialFails(t *testing.T) {
 		Instance:     testInstance,
 		NewDialer:    dialer.build,
 		ProofTimeout: testProofTimeout,
+		Clock:        clocktest.New(testMoment),
 	})
 	if err == nil {
 		t.Fatal("Start accepted a dialer that cannot reach the instance")
@@ -327,20 +370,32 @@ func (s *stallingDialer) build(context.Context, string) (Dialer, error) { return
 func TestStartRefusesWhenTheProofDialGetsNoAnswerWithinItsBound(t *testing.T) {
 	dialer := &stallingDialer{addr: silentUpstream(t)}
 	socket := socketPath(t)
+	clock := clocktest.New(testMoment)
+	const bound = 200 * time.Millisecond
 
-	began := time.Now()
-	_, err := Start(context.Background(), Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: 200 * time.Millisecond,
-	})
-	waited := time.Since(began)
+	started := make(chan error, 1)
+	go func() {
+		_, err := Start(context.Background(), Config{
+			Socket:       socket,
+			Instance:     testInstance,
+			NewDialer:    dialer.build,
+			ProofTimeout: bound,
+			Clock:        clock,
+		})
+		started <- err
+	}()
+	if armed := clock.AwaitArmed(t, "the proof dial's bound", 1); !armed[0].Equal(testMoment.Add(bound)) {
+		t.Fatalf("the proof dial is bounded at %v, want its %s ProofTimeout from %v", armed, bound, testMoment)
+	}
+	select {
+	case err := <-started:
+		t.Fatalf("Start returned %v before its proof bound was reached, though the instance never answered", err)
+	default:
+	}
+	clock.Advance(bound)
+	err := testwait.Receive(t, "Start's return once its proof bound was reached", started)
 	if err == nil {
 		t.Fatal("Start served although its proof dial was never answered")
-	}
-	if waited >= 2*time.Second {
-		t.Fatalf("Start refused %s after it began, want within its 200ms proof bound", waited)
 	}
 	if want := "sessionproxy: dial " + testInstance + ": no answer within 200ms"; !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("Start = %v, want it to begin %q", err, want)
@@ -468,7 +523,7 @@ func TestStartRefusesWhenSomethingHoldsTheSocket(t *testing.T) {
 			_ = conn.Close()
 		}
 	}()
-	if err := held.(*net.UnixListener).SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := held.(*net.UnixListener).SetDeadline(waitDeadline(t)); err != nil {
 		t.Fatalf("set an accept deadline: %v", err)
 	}
 	conn, err := held.Accept()
@@ -492,7 +547,7 @@ func TestConnectionIsClosedWhenItsUpstreamDialFails(t *testing.T) {
 		t.Fatalf("dial the proxy: %v", err)
 	}
 	defer client.Close()
-	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := client.SetReadDeadline(waitDeadline(t)); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	buf := make([]byte, 64)
@@ -523,6 +578,7 @@ func TestEachConnectionDialsItsOwnUpstream(t *testing.T) {
 		Instance:     testInstance,
 		NewDialer:    dialer.build,
 		ProofTimeout: testProofTimeout,
+		Clock:        clocktest.New(testMoment),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -575,7 +631,7 @@ func TestEachConnectionDialsItsOwnUpstream(t *testing.T) {
 // not for want of time.
 func expectClosed(t *testing.T, conn net.Conn, who string) {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(waitDeadline(t)); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	buf := make([]byte, 64)
@@ -599,8 +655,9 @@ func TestCloseEndsTheProxy(t *testing.T) {
 			dialer := &fakeDialer{addr: up.listener.Addr().String()}
 			socket := socketPath(t)
 			var logged strings.Builder
+			clock := clocktest.New(testMoment)
 			proxy := startConfigured(context.Background(), t, up, Config{
-				Socket: socket, NewDialer: dialer.build, Drain: drain, Log: &logged,
+				Socket: socket, NewDialer: dialer.build, Drain: drain, Log: &logged, Clock: clock,
 			})
 
 			// Bytes cross both ways first, so the connection is established end to end, and the
@@ -621,19 +678,23 @@ func TestCloseEndsTheProxy(t *testing.T) {
 				t.Fatalf("the client read %q", got)
 			}
 
-			began := time.Now()
 			closed := make(chan error, 1)
 			go func() { closed <- proxy.Close() }()
-			select {
-			case err := <-closed:
-				if err != nil {
-					t.Fatalf("Close: %v", err)
+			if drain > 0 {
+				// The client never hangs up, so nothing but the drain's end lets Close return: it arms
+				// the drain from the moment it began, and has not returned while the drain runs.
+				if armed := clock.AwaitArmed(t, "Close's drain", 1); !armed[0].Equal(testMoment.Add(drain)) {
+					t.Fatalf("Close armed %v, want its %s drain from %v", armed, drain, testMoment)
 				}
-			case <-time.After(2 * time.Second):
-				t.Fatalf("Close did not return within 2s while a client held its connection past the %s drain", drain)
+				select {
+				case err := <-closed:
+					t.Fatalf("Close returned %v inside the %s drain an open connection is owed", err, drain)
+				default:
+				}
+				clock.Advance(drain)
 			}
-			if waited := time.Since(began); waited < drain {
-				t.Fatalf("Close returned after %s, inside the %s drain an open connection is owed", waited, drain)
+			if err := testwait.Receive(t, "Close's return once the drain was over", closed); err != nil {
+				t.Fatalf("Close: %v", err)
 			}
 
 			expectClosed(t, client, "the client")
@@ -665,8 +726,9 @@ func TestCloseLetsAConnectionFinishInsideTheDrain(t *testing.T) {
 	dialer := &fakeDialer{addr: up.listener.Addr().String()}
 	socket := socketPath(t)
 	var logged strings.Builder
+	clock := clocktest.New(testMoment)
 	proxy := startConfigured(context.Background(), t, up, Config{
-		Socket: socket, NewDialer: dialer.build, Drain: drain, Log: &logged,
+		Socket: socket, NewDialer: dialer.build, Drain: drain, Log: &logged, Clock: clock,
 	})
 
 	client, err := net.Dial("unix", socket)
@@ -681,16 +743,11 @@ func TestCloseLetsAConnectionFinishInsideTheDrain(t *testing.T) {
 		t.Fatalf("the upstream read %q", got)
 	}
 
-	began := time.Now()
 	closed := make(chan error, 1)
 	go func() { closed <- proxy.Close() }()
-	// Close closes the dialer before it waits on the connections, so a closed dialer means Close
-	// is under way.
-	for deadline := time.Now().Add(2 * time.Second); dialer.closeCount() == 0; time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("Close never closed the dialer")
-		}
-	}
+	// Close arms the drain once it has stopped accepting and closed the dialer, so an armed drain
+	// means Close is under way and waits on the connection.
+	clock.AwaitArmed(t, "Close's drain", 1)
 
 	// Larger than a socket buffer holds, so the copy is still under way as the write is made.
 	payload := strings.Repeat("last write ", 64<<10)
@@ -711,16 +768,10 @@ func TestCloseLetsAConnectionFinishInsideTheDrain(t *testing.T) {
 	}
 	_ = client.Close()
 
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not return once the connection had finished")
-	}
-	if waited := time.Since(began); waited >= drain {
-		t.Fatalf("Close returned %s after it began, not before the %s drain was over", waited, drain)
+	// The fake clock never reaches the drain's end, so Close returns only because the connection
+	// finished.
+	if err := testwait.Receive(t, "Close's return once the connection had finished", closed); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 	expectClosed(t, server, "the upstream")
 	if strings.Contains(logged.String(), "still open") {
@@ -740,8 +791,9 @@ func TestCancellingTheContextLeavesAStartedProxyServingUntilClose(t *testing.T) 
 	proxy := startProxy(ctx, t, up, dialer, socket)
 
 	cancel()
-	// Long enough for anything that watched the context to have acted on it.
-	time.Sleep(100 * time.Millisecond)
+	testwait.Span(t, 100*time.Millisecond, "anything that watched the start context would act on a goroutine of its own: "+
+		"no state the test reads records such a watcher, the proxy does real socket I/O no synctest bubble holds, "+
+		"and no later action of the test is ordered after the watcher's reaction")
 
 	client, err := net.Dial("unix", socket)
 	if err != nil {

@@ -51,6 +51,8 @@ func TestDeviceSignInAsksForWhoTheyAreAndNothingElse(t *testing.T) {
 	if err := issuer.ApproveDeviceCode(authorization.UserCode); err != nil {
 		t.Fatalf("the person types the code in: %v", err)
 	}
+	// x/oauth2's own wait between token requests (DeviceAccessToken), which no clock of
+	// Envoy's reaches; the code is approved already, so the first poll is the only one.
 	authorization.Interval = 1
 	signIn, err := flow.Wait(ctx, authorization)
 	if err != nil {

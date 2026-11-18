@@ -221,8 +221,8 @@ export type AgentStreamFrame =
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
    * reports it (INFRA-812). The publisher sends it after each message of a turn, at each turn
    * start and after a compaction, at most one time in each of its own intervals, and keeps the
-   * newest one in every replay. The frame carries the two figures alone; the share they make is
-   * the viewer's to draw.
+   * newest one in every replay. The frame carries the two figures and the number of the interval
+   * it went out in; the share the figures make is the viewer's to draw.
    *
    * They travel in a frame of their own rather than beside the model on `settings` because a
    * viewer drops a whole frame whose fields do not validate, and a bad figure here would take
@@ -239,6 +239,21 @@ export type AgentStreamFrame =
        * reports no window publishes no frame at all.
        */
       readonly contextWindow: number;
+      /**
+       * The number of the publisher's interval this reading went out in, absent from a publisher
+       * older than it, as are `at` and `readAt`. The session's first frame is the one after the
+       * last it numbered; a reading the interval held back goes out when that interval is up,
+       * numbered the next; a reading that goes out at once is numbered on by every whole interval
+       * since the last one opened, so an interval that sent nothing is a number no frame carries.
+       * No viewer reads the three: they are the session's own record of when it read and
+       * published, which its frames' order can be checked against with no clock of the reader's.
+       */
+      readonly interval?: number;
+      /** Epoch ms on the session's clock: when the reading went out under `interval`, which for
+       *  a reading the interval held back is the moment that interval was up. */
+      readonly at?: number;
+      /** Epoch ms on the session's clock: when the reading was taken. */
+      readonly readAt?: number;
     };
 
 /** What the relay asks a session for, and the ping that keeps it publishing. */

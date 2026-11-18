@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // During a rolling deploy the replacement listener cannot bind its durable consumer until the task
@@ -118,13 +120,9 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 	if err := client.Publish(onLane); err != nil {
 		t.Fatalf("publish a role message onto the lane while another task holds the durable: %v", err)
 	}
-	select {
-	case forwarded := <-frames:
-		if forwarded.Topic != contracts.RoleTopicPrefix+role || !strings.HasPrefix(forwarded.DedupeKey, roleForwardDedupePrefix) {
-			t.Fatalf("the holder received topic %q dedupe key %q, want the role forward of %s", forwarded.Topic, forwarded.DedupeKey, contracts.RoleTopicPrefix+role)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the role holder received no forward while another task holds the durable:\n%s", listener.Output.String())
+	forwarded := testwait.Receive(t, "the role holder's forward while another task holds the durable", frames)
+	if forwarded.Topic != contracts.RoleTopicPrefix+role || !strings.HasPrefix(forwarded.DedupeKey, roleForwardDedupePrefix) {
+		t.Fatalf("the holder received topic %q dedupe key %q, want the role forward of %s:\n%s", forwarded.Topic, forwarded.DedupeKey, contracts.RoleTopicPrefix+role, listener.Output.String())
 	}
 
 	// Negative control: the replacement is neither healthy nor unhealthy while it waits. Healthy
@@ -213,21 +211,19 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 	}
 	keys := map[string]int{}
 	for received := range messages {
-		select {
-		case frame := <-frames:
-			if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
-				t.Fatalf("the holder received dedupe key %q, want one prefixed %s", frame.DedupeKey, roleForwardDedupePrefix)
-			}
-			keys[frame.DedupeKey]++
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the holder received %d of %d role messages", received, messages)
+		frame := testwait.Receive(t, fmt.Sprintf("role message %d of %d for the holder", received+1, messages), frames)
+		if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
+			t.Fatalf("the holder received dedupe key %q, want one prefixed %s", frame.DedupeKey, roleForwardDedupePrefix)
 		}
+		keys[frame.DedupeKey]++
 	}
-	select {
-	case frame := <-frames:
-		t.Fatalf("the holder received a frame past the %d published: %+v", messages, frame)
-	case <-time.After(time.Second):
-	}
+	// The forwards come from two listener child processes, whose state this test reads only
+	// through their logs, and a marker published after the batch orders against nothing: either
+	// task stores a second copy of an earlier message whenever it decides to, which can be after
+	// the marker's own forward. So the one span: a second copy inside it fails here, and the
+	// forward counts below read the same defect from the tasks' own records.
+	testwait.Quiet(t, "the holder's frames past the published messages", frames, time.Second,
+		"the forwards are two child processes', whose state is out of this process, and a later publish does not order against a duplicate forward either task may store at any time")
 	if len(keys) != messages {
 		t.Fatalf("the holder received %d distinct dedupe keys over %d frames, want %d: a publish was forwarded twice", len(keys), messages, messages)
 	}
@@ -236,7 +232,13 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 			return record["topic"] == contracts.RoleTopicPrefix+role
 		})
 	}
-	byOld, byReplacement := roleForwards(old), roleForwards(replacement)
+	// A task logs a forward once the stream has acknowledged storing it, which can come after the
+	// holder already received the copy, so the count is waited for rather than read once.
+	var byOld, byReplacement int
+	testwait.Until(t, fmt.Sprintf("the two tasks to log the %d role forwards between them", messages), func() (string, bool) {
+		byOld, byReplacement = roleForwards(old), roleForwards(replacement)
+		return fmt.Sprintf("%d by the old task and %d by the replacement", byOld, byReplacement), byOld+byReplacement >= messages
+	})
 	if byOld+byReplacement != messages {
 		t.Fatalf("the two tasks logged %d + %d role forwards, want %d in all", byOld, byReplacement, messages)
 	}
@@ -261,18 +263,14 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 		}
 		return total
 	}
-	waitFor(t, 10*time.Second, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
+	testwait.Eventually(t, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
+	// The frames the holder receives mirror the forwards the tasks logged, so the count is read
+	// from their own records rather than by collecting frames until a window of silence: one
+	// forward when the task that forwarded the first copy skips it, two when the other task
+	// forwards it again for the holder's pump to drop.
 	repeats := 0
-	for collecting := true; collecting; {
-		select {
-		case frame := <-frames:
-			if frame.DedupeKey != roleForwardDedupePrefix+repeatKey {
-				t.Fatalf("the holder received dedupe key %q, want %s", frame.DedupeKey, roleForwardDedupePrefix+repeatKey)
-			}
-			repeats++
-		case <-time.After(time.Second):
-			collecting = false
-		}
+	for _, p := range []*listenerProcess{old, replacement} {
+		repeats += countRecords(p, "listener role forwarded", ofRepeat)
 	}
 	if repeats != 1 && repeats != 2 {
 		t.Fatalf("the holder received %d frames for the repeated key, want 1 or 2", repeats)
@@ -458,18 +456,21 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
 	listener.waitHealthy(t)
 	// The positive control, TestAListenerWithAGitHubRouteSettlesTheCIBucket, settles this seed
-	// within a few one-second ticks of turning healthy; five seconds covers them.
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
-		consumers := 0
-		for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
-			consumers++
-		}
-		if consumers != 0 {
-			t.Fatalf("the CI bucket's stream has %d consumers under a listener with no GitHub route, want 0: it watches the bucket\n%s", consumers, listener.Output.String())
-		}
-		if ciSettled(t, client) {
-			t.Fatalf("a listener with no GitHub route published a settlement on %s: it runs the CI summary loop\n%s", ciChecksSubject, listener.Output.String())
-		}
+	// within a few one-second ticks of turning healthy; five seconds covers them. The listener
+	// runs in a child process, so neither its state nor a marker of this test's reaches the loop
+	// that would create the consumer: the span is the window it would have acted in, and both
+	// facts below stand once they happen - a consumer stays on the stream and a settlement stays
+	// stored - so one read after the span sees either.
+	testwait.Span(t, 5*time.Second, "the loop that would watch the bucket runs in a child process, which this test reaches through neither its state nor a later action of its own")
+	consumers := 0
+	for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
+		consumers++
+	}
+	if consumers != 0 {
+		t.Fatalf("the CI bucket's stream has %d consumers under a listener with no GitHub route, want 0: it watches the bucket\n%s", consumers, listener.Output.String())
+	}
+	if ciSettled(t, client) {
+		t.Fatalf("a listener with no GitHub route published a settlement on %s: it runs the CI summary loop\n%s", ciChecksSubject, listener.Output.String())
 	}
 	entry, err := kv.Get(key)
 	if err != nil {
@@ -498,15 +499,10 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "github-route", githubWebhookEnv...)
 	listener.waitHealthy(t)
-	healthy := time.Now()
-	for !ciSettled(t, client) {
-		if time.Since(healthy) > 15*time.Second {
-			t.Fatalf("a listener with the GitHub route published no settlement on %s within 15s of turning healthy\n%s", ciChecksSubject, listener.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Logf("settled %s after turning healthy", time.Since(healthy).Round(10*time.Millisecond))
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+	testwait.Eventually(t, "the listener with the GitHub route to publish a settlement on "+ciChecksSubject, func() bool {
+		return ciSettled(t, client)
+	})
+	testwait.Eventually(t, "the settled CI record to be marked settled", func() bool {
 		entry, err := kv.Get(key)
 		if err != nil {
 			t.Fatalf("read the seeded CI record: %v", err)
@@ -515,13 +511,8 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 		if err := json.Unmarshal(entry.Value(), &state); err != nil {
 			t.Fatalf("decode the seeded CI record: %v", err)
 		}
-		if state.SettledEmitted {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the settled CI record is not marked settled: %s", entry.Value())
-		}
-	}
+		return state.SettledEmitted
+	})
 	if _, health := do(t, mustRequest(t, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(listener.port)+"/healthz")); strings.Contains(health, "ci_cache") {
 		t.Fatalf("/healthz under a listener with the GitHub route: %s, want no ci_cache field, as before", health)
 	}
@@ -599,14 +590,10 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	// cache's readiness is not on the healthy path, so its line can arrive just after.
 	for _, cache := range []string{"interest registry", "session registry", "cistore"} {
 		msg := cache + " cache warm-up"
-		warmUp := listenerJSONRecord(t, listener, msg)
-		for deadline := time.Now().Add(30 * time.Second); warmUp == nil && time.Now().Before(deadline); {
-			time.Sleep(100 * time.Millisecond)
-			warmUp = listenerJSONRecord(t, listener, msg)
-		}
-		if warmUp == nil {
-			t.Fatalf("internal/kvwatch's %q line is not a JSON record in the listener's output:\n%s", msg, listener.Output.String())
-		}
+		warmUp := testwait.Until(t, "internal/kvwatch's "+msg+" line as a JSON record in the listener's output", func() (map[string]any, bool) {
+			record := listenerJSONRecord(t, listener, msg)
+			return record, record != nil
+		})
 		if warmUp["machine_id"] != machineID {
 			t.Fatalf("the %q record's machine_id = %v, want %q", msg, warmUp["machine_id"], machineID)
 		}
@@ -616,16 +603,15 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	// how this test gets one to read.
 	server.Stop(t)
 	textLine := regexp.MustCompile(`(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} .*envoy nats disconnected`)
-	deadline := time.Now().Add(30 * time.Second)
-	for !textLine.MatchString(listener.Output.String()) {
-		if time.Now().After(deadline) {
-			if listenerJSONRecord(t, listener, "envoy nats disconnected") != nil {
-				t.Fatalf("internal/bus's disconnect line is a JSON record: the default logger was replaced, and the deployed text metric filters for publish failures, webhook refusals and dropped stream subjects no longer match:\n%s", listener.Output.String())
-			}
-			t.Fatalf("no disconnect line in Go's text format after the server stopped:\n%s", listener.Output.String())
+	testwait.Eventually(t, "internal/bus's disconnect line in Go's text format after the server stopped", func() bool {
+		if textLine.MatchString(listener.Output.String()) {
+			return true
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		if listenerJSONRecord(t, listener, "envoy nats disconnected") != nil {
+			t.Fatalf("internal/bus's disconnect line is a JSON record: the default logger was replaced, and the deployed text metric filters for publish failures, webhook refusals and dropped stream subjects no longer match:\n%s", listener.Output.String())
+		}
+		return false
+	})
 }
 
 // listenerJSONRecord is the first line of the listener's output that parses as a JSON object whose

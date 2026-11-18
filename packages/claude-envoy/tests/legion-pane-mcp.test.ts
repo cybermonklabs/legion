@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
@@ -110,6 +111,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     args: [entry],
     cwd: root,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: root,
       ENVOY_NATS_URL: broker.url,
@@ -237,4 +239,4 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await broker.stop()
     await rm(root, { recursive: true, force: true })
   }
-}, 20_000)
+})

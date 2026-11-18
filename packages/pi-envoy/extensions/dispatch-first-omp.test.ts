@@ -12,6 +12,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { settled } from "@legion/test-fixtures/wait";
 
 // The dispatch-first skill's insertion on the real Oh My Pi (src/dispatch-first.ts): Oh My Pi keeps
 // nothing a `context` handler returns, so what reaches the model can only be read off the requests
@@ -87,7 +88,7 @@ async function runSession(
 
   // A prompt has settled at its terminal agent_end, a compaction at its RPC response.
   let settle: ((frame: object) => boolean) | undefined;
-  let settled = Promise.withResolvers<void>();
+  let stepSettled = Promise.withResolvers<void>();
   const rpc = spawnRpc(
     binary,
     {
@@ -102,14 +103,14 @@ async function runSession(
       onFrame: (frame) => {
         if (settle?.(frame)) {
           settle = undefined;
-          settled.resolve();
+          stepSettled.resolve();
         }
       },
     },
     cleanup
   );
   for (const step of steps) {
-    settled = Promise.withResolvers<void>();
+    stepSettled = Promise.withResolvers<void>();
     let compactError: unknown;
     settle =
       "compact" in step
@@ -126,7 +127,7 @@ async function runSession(
             frame.type === "agent_end" &&
             !("isTerminal" in frame && frame.isTerminal === false);
     rpc.send("compact" in step ? { type: "compact" } : { type: "prompt", message: step.prompt });
-    await Promise.race([settled.promise, rpc.closed]);
+    await settled("the step to settle in omp", Promise.race([stepSettled.promise, rpc.closed]));
     if (compactError !== undefined) throw new Error(`omp refused the compaction: ${compactError}`);
   }
   await rpc.end();
@@ -168,8 +169,7 @@ test.skipIf(omp === undefined && !onActions)(
     expect(third_.indexOf(summary)).toBeGreaterThan(-1);
     expect(third_.indexOf(summary)).toBeLessThan(third_.indexOf(DISPATCH_FIRST_MARKER));
     expect(third_.indexOf(DISPATCH_FIRST_MARKER)).toBeLessThan(third_.indexOf("Third question."));
-  },
-  180_000
+  }
 );
 
 test.skipIf(omp === undefined && !onActions)(
@@ -180,6 +180,5 @@ test.skipIf(omp === undefined && !onActions)(
 
     expect(session.turns).toHaveLength(1);
     expect(markers(session.turns[0] as Request)).toBe(0);
-  },
-  120_000
+  }
 );

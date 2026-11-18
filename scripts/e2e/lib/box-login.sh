@@ -11,6 +11,26 @@
 # XDG_RUNTIME_DIR and TMPDIR still move nothing.
 box_login_lock_file=${box_login_lock_file:-/tmp/legion-e2e-box-login.$(id -u).lock}
 #
+# box_login_pid_args PID prints PID's command line, its words joined by spaces and each control
+# character as a space, from that one process's /proc/PID/cmdline, and fails when PID runs no
+# command. It stands for `ps -o args= -p PID`, which procps-ng answers by reading every process on
+# the machine even for one -p (it opened /proc/<pid>/stat 12,564 times for one pid at about 13,000
+# processes), about a second on a loaded devbox (docs/testing.md, "A test that looks for a process
+# it started"). procps-ng prints a control character as `?`, so the two lines are not the same
+# bytes. The file is read with `mapfile`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)`
+# cannot open FILE, even on the left of `||`. A host with no /proc (macOS) asks ps.
+box_login_pid_args() {
+  local IFS=' ' args=()
+  if [ -d /proc/self ]; then
+    [ -r "/proc/$1/cmdline" ] && { mapfile -d '' args <"/proc/$1/cmdline"; } 2>/dev/null || return 1
+    [ "${#args[@]}" -gt 0 ] || return 1
+    args=("${args[@]//[[:cntrl:]]/ }")
+    printf '%s\n' "${args[*]}"
+  else
+    ps -o args= -p "$1" 2>/dev/null
+  fi
+}
+#
 # take_box_login_lock — takes a non-blocking flock on $box_login_lock_file. The stage proofs call it
 # first, before they make a work directory or start anything, so a refused run leaves nothing. The
 # lock is held on a file descriptor of the calling shell for the rest of its life, and by every
@@ -29,7 +49,7 @@ take_box_login_lock() {
   if ! flock -n "$box_login_lock_fd"; then
     holder=$(<"$file") || holder=
     pid=${holder%% *}
-    if [[ $pid =~ ^[0-9]+$ ]] && cmd=$(ps -o args= -p "$pid" 2>/dev/null) && [ -n "$cmd" ]; then
+    if [[ $pid =~ ^[0-9]+$ ]] && cmd=$(box_login_pid_args "$pid") && [ -n "$cmd" ]; then
       echo "take_box_login_lock: another box-login proof holds $file: pid $pid ($cmd); one box-login proof runs at a time" >&2
     elif [[ $pid =~ ^[0-9]+$ ]]; then
       echo "take_box_login_lock: another box-login proof holds $file: pid $pid (${holder#* }) has exited, and a process it started still holds the lock; one box-login proof runs at a time" >&2
@@ -40,7 +60,7 @@ take_box_login_lock() {
     return 1
   fi
   # Same inode, so the lock the descriptor holds stays; the content names this holder.
-  printf '%s %s\n' "$$" "$(ps -o args= -p "$$" 2>/dev/null || echo "$0")" >"$file"
+  printf '%s %s\n' "$$" "$(box_login_pid_args "$$" || echo "$0")" >"$file"
 }
 
 # box_login_stop_grace is how long stop_box_login_processes waits, in seconds.

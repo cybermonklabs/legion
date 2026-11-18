@@ -18,6 +18,8 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { until } from "@legion/test-fixtures/wait";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
 // commit carries the two trailers of the pane: `Omp-Session` with the session of the pane, and
@@ -72,9 +74,6 @@ const SUBAGENT_REPORT = "TRAILERS-SUBAGENT-REPORT: the commit is made.";
 /** The variables that `legion git` reads, in the order that the subagent's shell prints them. */
 const PRINTED = ["DISPATCH_HOST", "DISPATCH_SESSION_ID", "LEGION_ROLE"] as const;
 
-/** How long the case waits for one thing that the pane owes it before the case fails on it. */
-const DEADLINE_MS = 60_000;
-
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
@@ -99,21 +98,19 @@ interface Held {
   reply(blocks: readonly Block[]): void;
 }
 
-/** Polls `probe` until it returns a value. Fails on `what` at the deadline or when omp exits. */
-async function until<T>(
+/** Waits through the shared wait until `probe` returns a value; omp's exit ends it at once. The
+ * pane is a real process with no event that the case can await, so the wait polls it. */
+async function waitFor<T>(
   what: string,
   probe: () => T | undefined,
   closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
-    // The pane is a real process with no event that the case can await, so the case polls it.
+  const answered = await until(what, () => {
     if (closed.error !== undefined) throw closed.error;
     const value = probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(10);
-  }
+    return value === undefined ? undefined : { value };
+  });
+  return answered.value;
 }
 
 /** The role pane that the case runs, and what the case can do with it. */
@@ -128,7 +125,8 @@ interface RolePane {
   readonly jj: string;
   /** Waits for the next Messages request of the subagent that the case has not taken. */
   next(what: string): Promise<Held>;
-  /** Polls `probe` until it returns a value. Fails at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined): Promise<T>;
 }
 
@@ -283,11 +281,11 @@ async function startRolePane(role: Role): Promise<RolePane> {
     home,
     jj,
     async next(what) {
-      const request = await until(what, () => held[taken], closed);
+      const request = await waitFor(what, () => held[taken], closed);
       taken += 1;
       return request;
     },
-    until: (what, probe) => until(what, probe, closed),
+    until: (what, probe) => waitFor(what, probe, closed),
   };
 }
 
@@ -335,7 +333,12 @@ async function committedDescription(pane: RolePane, repo: string): Promise<strin
       "description",
     ],
     {
-      env: { PATH: process.env.PATH ?? "", HOME: pane.home, JJ_CONFIG: emptyConfig },
+      env: {
+        ...bunCacheOff,
+        PATH: process.env.PATH ?? "",
+        HOME: pane.home,
+        JJ_CONFIG: emptyConfig,
+      },
       stdout: "pipe",
       stderr: "pipe",
     }
@@ -465,7 +468,6 @@ for (const role of ROLES) {
             rootResult.text.includes(description.trimEnd())
         )
       ).toEqual([]);
-    },
-    120_000
+    }
   );
 }

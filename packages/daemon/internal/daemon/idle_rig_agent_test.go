@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/sessiontiming"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -312,7 +315,7 @@ func TestIdleRigRoleProcess(t *testing.T) {
 	if rig == "" {
 		return
 	}
-	process, err := newIdleRigRoleProcess(rig)
+	process, err := newIdleRigRoleProcess(rig, os.Args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "idle rig role process:", err)
 		os.Exit(1)
@@ -415,8 +418,15 @@ type idleRigRoleProcess struct {
 	taken    bool
 }
 
-func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
-	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}, recorded: map[uint64]bool{}}
+// newIdleRigRoleProcess builds the role process from its pod's environment and from argv, the
+// command line its launcher gave it (os.Args), so a test builds one as the process builds itself.
+func newIdleRigRoleProcess(rig string, argv []string) (*idleRigRoleProcess, error) {
+	// The client sets no timeout of its own: a request ends when it is answered or when this
+	// process does, which the rig's launcher ends when the test ends, so no bound of the rig's
+	// decides a request a loaded machine answers late. A fixed 20 s here once ended the process
+	// before it registered: on a machine at load5 1,100 to 2,000 the listener answered
+	// POST /v1/interests/subscribe later, and the pod was never ready.
+	p := &idleRigRoleProcess{rig: rig, client: &http.Client{}, recorded: map[uint64]bool{}}
 	p.pod = os.Getenv("LEGION_SANDBOX")
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")
@@ -430,7 +440,6 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 		return nil, fmt.Errorf("LEGION_GENERATION %q: %w", os.Getenv("LEGION_GENERATION"), err)
 	}
 	p.generation = generation
-	argv := os.Args
 	for i, arg := range argv {
 		if i+1 >= len(argv) {
 			break
@@ -544,8 +553,12 @@ func (p *idleRigRoleProcess) bootToken() (string, error) {
 	return answer.Token, nil
 }
 
+// dial connects to the worker stream and says hello, as the shim does, and waits for the daemon's
+// hello_ack as the shim waits for it: with no bound of its own (internal/shim's connect), so a
+// daemon that answers late under load is answered, and one that never answers holds this process
+// until the rig ends it.
 func (p *idleRigRoleProcess) dial(bootToken string) error {
-	conn, err := net.DialTimeout("tcp", p.connect, 10*time.Second)
+	conn, err := net.Dial("tcp", p.connect)
 	if err != nil {
 		return fmt.Errorf("dial the worker stream %s: %w", p.connect, err)
 	}
@@ -553,7 +566,7 @@ func (p *idleRigRoleProcess) dial(bootToken string) error {
 	if err := p.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
 		return err
 	}
-	frame, err := p.next(30 * time.Second)
+	frame, err := p.next()
 	if err != nil {
 		return err
 	}
@@ -708,7 +721,7 @@ func (p *idleRigRoleProcess) subscribe(topics []string) error {
 			Reason  string `json:"reason"`
 		} `json:"delivery"`
 	}
-	if err := p.post(p.envoy+"/v1/interests/subscribe", map[string]any{
+	if err := p.postListener(p.envoy+"/v1/interests/subscribe", map[string]any{
 		"session_id": p.session, "dir": "/legion/workspaces/" + p.pod, "topics": topics,
 		"host": "127.0.0.1", "title": p.role, "self_subscribed": true,
 		"capabilities": []string{"prompt_async"}, "plugin": "idle-rig", "plugin_version": "0",
@@ -729,7 +742,7 @@ func (p *idleRigRoleProcess) subscribe(topics []string) error {
 // claimRole takes the role topic of this claim, which is what makes a message published to it
 // reach this session and what makes its absence the listener's wake report.
 func (p *idleRigRoleProcess) claimRole() error {
-	return p.post(p.envoy+"/v1/roles/set", map[string]any{
+	return p.postListener(p.envoy+"/v1/roles/set", map[string]any{
 		"role": string(p.claimToken), "session_id": p.session,
 	}, nil)
 }
@@ -795,7 +808,7 @@ func (p *idleRigRoleProcess) report(kinds []string) error {
 // serve answers the daemon's frames until the connection ends or a shutdown arrives.
 func (p *idleRigRoleProcess) serve() error {
 	for {
-		frame, err := p.next(0)
+		frame, err := p.next()
 		if err != nil {
 			return nil
 		}
@@ -879,20 +892,70 @@ func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 	return p.reportActivity()
 }
 
-func (p *idleRigRoleProcess) next(within time.Duration) (shimwire.Frame, error) {
-	deadline := time.Time{}
-	if within > 0 {
-		deadline = time.Now().Add(within)
-	}
-	if err := p.conn.SetReadDeadline(deadline); err != nil {
-		return nil, err
-	}
+// next is the daemon's next frame on the worker stream, read with no deadline, as the shim reads
+// it.
+func (p *idleRigRoleProcess) next() (shimwire.Frame, error) {
 	line, err := p.lines.ReadBytes('\n')
 	if err != nil {
 		return nil, err
 	}
 	return shimwire.Decode(line)
 }
+
+// postListener is post for a registration call to the Envoy listener, made as a plugin makes one:
+// a call the listener did not answer, or answered 5xx, is made again, until it is answered 2xx or
+// refused 4xx. The listener answers 503 with Retry-After when its bus does not answer within its
+// own budget (cmd/listener's writeStoreError), which asks for another call, and a plugin makes it:
+// envoy-client's request makes a call again that was not answered or was answered 5xx
+// (packages/envoy-client/src/transport.ts), and a pi-envoy session registers again at its next
+// heartbeat (ensureHeartbeat, packages/pi-envoy/extensions/envoy.ts).
+//
+// The pause before the next call is the listener's Retry-After, else envoy-client's own retry
+// delay (sessiontiming.CallRetryDelay, the generated LISTENER_CALL_RETRY_DELAY_MS): the pacing of
+// the client this process stands in for, and no bound of the rig's. Nothing here gives up: the
+// process's own life bounds the calls, as it bounds each one, and its pod's launcher ends it.
+func (p *idleRigRoleProcess) postListener(url string, body, answer any) error {
+	for {
+		err := p.post(url, body, answer)
+		var refused *idleRigStatusError
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &refused) && refused.status >= http.StatusInternalServerError:
+		case errors.As(err, new(idleRigUnanswered)):
+		default:
+			return err
+		}
+		wait := sessiontiming.CallRetryDelay
+		if refused != nil && refused.retryAfter > 0 {
+			wait = refused.retryAfter
+		}
+		fmt.Fprintf(os.Stderr, "idle rig role process: %v; calling again in %s\n", err, wait)
+		time.Sleep(wait)
+	}
+}
+
+// idleRigStatusError is an answer of a status of 300 or above: its method, path, status and body,
+// and the Retry-After it carried, in whole seconds as the listener writes it.
+type idleRigStatusError struct {
+	method, path string
+	status       int
+	body         []byte
+	retryAfter   time.Duration
+}
+
+func (e *idleRigStatusError) Error() string {
+	return fmt.Sprintf("%s %s = %d %s", e.method, e.path, e.status, e.body)
+}
+
+// idleRigUnanswered is a call that got no answer: the request failed before a status came back,
+// or the answer's body did not arrive. An answer whose body does not decode is no such call: it
+// was answered.
+type idleRigUnanswered struct{ err error }
+
+func (e idleRigUnanswered) Error() string { return e.err.Error() }
+
+func (e idleRigUnanswered) Unwrap() error { return e.err }
 
 func (p *idleRigRoleProcess) post(url string, body, answer any) error {
 	encoded, err := json.Marshal(body)
@@ -918,15 +981,19 @@ func (p *idleRigRoleProcess) get(url string, answer any) error {
 func (p *idleRigRoleProcess) do(request *http.Request, answer any) error {
 	response, err := p.client.Do(request)
 	if err != nil {
-		return err
+		return idleRigUnanswered{err}
 	}
 	defer response.Body.Close()
 	read, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return err
+		return idleRigUnanswered{err}
 	}
 	if response.StatusCode >= 300 {
-		return fmt.Errorf("%s %s = %d %s", request.Method, request.URL.Path, response.StatusCode, read)
+		refused := &idleRigStatusError{method: request.Method, path: request.URL.Path, status: response.StatusCode, body: read}
+		if seconds, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && seconds > 0 {
+			refused.retryAfter = time.Duration(seconds) * time.Second
+		}
+		return refused
 	}
 	if answer == nil || len(bytes.TrimSpace(read)) == 0 {
 		return nil

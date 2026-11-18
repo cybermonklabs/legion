@@ -62,6 +62,7 @@ dispatch_port=
 profile=legion-e2e-user-turns-$$-$(date +%s)
 nats_container=legion-e2e-user-turns-nats-$$
 pg_container=legion-e2e-user-turns-pg-$$
+pg_sockets= # its socket directory (start_postgres_container, lib/containers.sh); cleanup removes it
 omp_home=$work/omp-home
 profile_agent=$omp_home/.omp/profiles/$profile/agent
 session_cwd=$work/session
@@ -96,6 +97,7 @@ cleanup() {
   stop_pid "$listener_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets"
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"
   echo "evidence: $evidence (logs/, checks/ with the page's screenshots and the session pane, session.jsonl)"
@@ -214,16 +216,18 @@ mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
 note "Oh My Pi $omp_tool; run $run"
 
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+# Neither container publishes a port (lib/containers.sh): Postgres listens on a unix socket in a
+# directory of the run's own, and NATS binds a loopback port the kernel chooses.
+start_postgres_container "$pg_container" pg_sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
-pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
-until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch
+  -- mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+until_true 60 "Postgres to accept connections on its socket" postgres_container_ready "$pg_container"
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+start_nats_container "$nats_container" --cpus 1 --memory 512m -- "$nats_image" -js
+nats_port=
+until_true 90 "NATS to be ready" nats_container_ready "$nats_container" nats_port
+nats_url="nats://127.0.0.1:$nats_port"
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&
@@ -241,7 +245,7 @@ start_held listener envoy_port ENVOY_LISTEN_FD -- \
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable" \
+  DATABASE_URL="postgres://dispatch:dispatch@/dispatch?host=$pg_sockets&sslmode=disable" \
   DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
   DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \

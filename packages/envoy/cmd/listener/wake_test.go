@@ -15,7 +15,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The wake report's wire shape is what the Legion daemon's decoder reads
@@ -164,16 +166,21 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	reported := make(chan struct{})
+	logs := &logtest.Buffer{}
 	go func() {
 		defer close(reported)
-		publishWakeReport(context.Background(), client, logging.New("test"),
+		publishWakeReport(context.Background(), client, logging.NewWithWriter("test", logs),
 			wakeReport{Kind: wakeKindAgent, Session: "session-released"})
 	}()
 
 	// The stream arrives only once one whole attempt has run out, as a reconnect or a
 	// deployment's first reconcile brings it back: a report published once, however long its own
-	// bound, is gone by then, and only a retry still has it to send.
-	time.Sleep(wakeReportAttempt + 500*time.Millisecond)
+	// bound, is gone by then, and only a retry still has it to send. The report's own line for
+	// an attempt it is about to retry is what says that attempt has run out, so nothing here
+	// waits out wakeReportAttempt on the machine's clock.
+	testwait.Next(t, "the report's first attempt to fail and say it is retrying", logs.Stream(), func(line string) bool {
+		return strings.Contains(line, "legion wake report not published; retrying until the bus takes it")
+	})
 	owner, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("create the stream: %v", err)
@@ -188,7 +195,7 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 		t.Fatalf("read %s from the stream: %v", bus.LegionWakeTopic, err)
 	}
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
-	message, err := subscription.NextMsg(60 * time.Second)
+	message, err := subscription.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("the stream never stored the agent_message report: %v", err)
 	}
@@ -199,11 +206,7 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	if err := item.Validate(); err != nil {
 		t.Fatalf("the retried report's envelope is not valid: %v", err)
 	}
-	select {
-	case <-reported:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the report's goroutine is still retrying after the stream took it")
-	}
+	testwait.Receive(t, "the report's goroutine to return once the stream took it", reported)
 }
 
 // One report retries for up to wakeReportBudget, and during a bus outage one is raised per role
@@ -237,13 +240,9 @@ func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
 	// The listener stops: every report still retrying ends with it, rather than holding its
 	// goroutine for the rest of its budget.
 	stopListener()
-	deadline := time.Now().Add(30 * time.Second)
-	for len(reporter.slots) > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d reports are still retrying after the listener stopped", len(reporter.slots))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "every report still retrying to end with the listener that stopped", func() bool {
+		return len(reporter.slots) == 0
+	})
 }
 
 // Security[untrusted-input]: the listener's own wake subject is refused to every caller of the

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A settlement already past its entry check when a transaction opens its write can reach the
@@ -47,11 +48,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		}
 		<-settled
 	})
-	select {
-	case <-paused:
-	case <-time.After(5 * time.Second):
-		t.Fatal("settlement never reached its warm hook")
-	}
+	testwait.Receive(t, "the settlement to reach its warm hook", paused)
 
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -77,11 +74,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		t.Fatalf("commit edit transaction: %v", err)
 	}
 	close(resume)
-	select {
-	case <-settled:
-	case <-time.After(10 * time.Second):
-		t.Fatal("paused settlement did not finish")
-	}
+	testwait.Receive(t, "the paused settlement to finish", settled)
 	ledger.publish()
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -231,11 +224,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	// document's lock, as one lingering for the keystrokes after it is.
 	appends.armed.Store(true)
 	editAsPeer(t, service, artifactID, appendBlocks(t, "Browser words.\n"))
-	select {
-	case <-appends.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the browser's update never reached the room's persistence")
-	}
+	testwait.Receive(t, "the browser's update to reach the room's persistence", appends.entered)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	const markID = "00000000-0000-4000-8000-000000000605"

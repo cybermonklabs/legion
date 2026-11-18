@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	kubefake "k8s.io/client-go/kubernetes/fake"
@@ -173,13 +175,8 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 				t.Fatalf("the Sandbox %s in flight is gone or replaced after the other probe ran", inFlightName)
 			}
 			g.with(func() { g.held = nil })
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("the probe held in flight = %v, want a pass", err)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatal("the probe held in flight never finished")
+			if err := testwait.Receive(t, "the probe held in flight to finish", done); err != nil {
+				t.Fatalf("the probe held in flight = %v, want a pass", err)
 			}
 
 			for _, sandbox := range []string{probeSandboxName, proberName} {
@@ -203,40 +200,56 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 // probe past many ticks and reads no Secret; the control, a runtime that does start one (start),
 // reads them within the same wait.
 func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
-	g := newProbeRig(t, nil).succeeds(okLine(3))
-	g.autoStart.Store(true)
-	g.spawn(rootSpec(t))
-	g.autoStart.Store(false)
-	tick := 5 * time.Millisecond
-	defer func(was time.Duration) { gitHubRefreshInterval = was }(gitHubRefreshInterval)
-	gitHubRefreshInterval = tick
-	prober, err := newProber(g.ctx, g.clients, g.opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
-	g.clearActions()
-	g.with(func() { g.held = func(name string) bool { return name == proberName } })
-	done := make(chan error, 1)
-	go func() { _, err := prober.ProbeImage(g.ctx, probeOptions(t)); done <- err }()
-	g.eventually("the prober's probe to have its pod", func() bool { return g.pod(proberName) != nil })
-	time.Sleep(40 * tick)
+	synctest.Test(t, func(t *testing.T) {
+		g := newProbeRig(t, nil).succeeds(okLine(3))
+		g.autoStart.Store(true)
+		g.spawn(rootSpec(t))
+		g.autoStart.Store(false)
+		// The refresher's interval is set small — after the rig's own runtime started, so its
+		// refresher keeps the product default and does not read across this short span, as the
+		// control's, started below, will — so the span is a few of the rig's 5 ms controller and
+		// collector ticks on the bubble's clock, not the default's many thousands: the count of
+		// refresh intervals in the span is what the test drives, not their length.
+		defer func(was time.Duration) { gitHubRefreshInterval = was }(gitHubRefreshInterval)
+		gitHubRefreshInterval = 5 * time.Millisecond
+		prober, err := newProber(g.ctx, g.clients, g.opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proberName := probeName(testProject, testDigestHex, prober.r.probeRun)
+		g.clearActions()
+		g.with(func() { g.held = func(name string) bool { return name == proberName } })
+		done := make(chan error, 1)
+		go func() { _, err := prober.ProbeImage(g.ctx, probeOptions(t)); done <- err }()
+		inBubble(func() bool { return g.pod(proberName) != nil })
 
-	if reads := secretReads(g.rig); reads != 0 {
-		t.Fatalf("the Prober read %d Secrets while its probe was held past 40 refresh ticks; it starts no refresher", reads)
-	}
-	g.with(func() { g.held = nil })
-	if err := <-done; err != nil {
-		t.Fatalf("ProbeImage = %v, want a pass", err)
-	}
-	control, err := configure(g.opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := control.start(g.ctx, g.clients); err != nil {
-		t.Fatal(err)
-	}
-	g.eventually("the control's refresher to read the issue pod's role Secrets", func() bool { return secretReads(g.rig) > 0 })
+		// Forty refresh intervals pass on the bubble's clock, every goroutine blocked after: a
+		// refresher, had the Prober started one, would have read the issue pod's role Secrets on the
+		// ticks across that span. The Prober reads none.
+		time.Sleep(40 * gitHubRefreshInterval)
+		synctest.Wait()
+		if reads := secretReads(g.rig); reads != 0 {
+			t.Fatalf("the Prober read %d Secrets while its probe was held past forty refresh intervals; it starts no refresher", reads)
+		}
+		g.with(func() { g.held = nil })
+		if err := <-done; err != nil {
+			t.Fatalf("ProbeImage = %v, want a pass", err)
+		}
+		control, err := configure(g.opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := control.start(g.ctx, g.clients); err != nil {
+			t.Fatal(err)
+		}
+		// The control does start a refresher: across the same span it reads the issue pod's role
+		// Secrets, so the Prober's zero above is the absence of a refresher, not of refresh ticks.
+		time.Sleep(40 * gitHubRefreshInterval)
+		synctest.Wait()
+		if secretReads(g.rig) == 0 {
+			t.Fatal("the control's refresher read no Secret across forty refresh intervals")
+		}
+	})
 }
 
 // sandboxWrites are the verbs of every write to the Sandbox named name, in order.

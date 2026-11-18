@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -230,22 +231,16 @@ func ciReconcilePasses(output string) []map[string]string {
 	return passes
 }
 
-// waitForCIReconcilePasses waits up to a minute for the pass lines the process has logged to
-// satisfy enough, and answers them. The passes run a second apart, so a cycle of them is
-// several seconds of waiting.
+// waitForCIReconcilePasses waits for the pass lines the process has logged to satisfy enough,
+// and answers them. The passes run a second apart, so a cycle of them is several seconds.
 func waitForCIReconcilePasses(t *testing.T, process *dispatchProcess, what string, enough func([]map[string]string) bool) []map[string]string {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	for {
-		passes := ciReconcilePasses(process.Output.String())
-		if enough(passes) {
-			return passes
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the process never logged %s:\n%s", what, process.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	var passes []map[string]string
+	testwait.Until(t, what, func() (string, bool) {
+		passes = ciReconcilePasses(process.Output.String())
+		return process.Output.String(), enough(passes)
+	})
+	return passes
 }
 
 // ciReconcileHeadName is how the pass line names one head of the stand-in: the repository GitHub

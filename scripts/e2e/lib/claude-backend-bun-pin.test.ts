@@ -8,7 +8,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
 // refuses any Bun but the one the repository's .bun-version pins. A devbox whose `bun` is another
@@ -157,6 +159,7 @@ test.skipIf(skip)(
   () => {
     const run = Bun.spawnSync(["bash", script], {
       env: {
+        ...bunCacheOff,
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,
@@ -173,14 +176,15 @@ test.skipIf(skip)(
       },
       stdout: "pipe",
       stderr: "pipe",
-      timeout: 60_000,
+      // The run ends before the row's deadline, so a run that hangs fails here with its output.
+      // spawnSync takes whole milliseconds, and reads 0 as no bound at all.
+      timeout: Math.max(1, Math.floor(timeLeft())),
     });
     const output = run.stdout.toString() + run.stderr.toString();
     const failLine = output.split("\n").find((line) => line.startsWith("FAIL ")) ?? "";
     expect(failLine).toMatch(/^FAIL prerequisites: /);
     expect(failLine).toContain(pinned);
-  },
-  90_000
+  }
 );
 
 // The walk itself, against two probe scripts this row writes: it needs none of the tools above, so

@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { temporaryDirectories, temporaryDirectory } from "./temporary-directories";
+import { memoryRoot, temporaryDirectories, temporaryDirectory } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
 
@@ -107,6 +107,62 @@ test("removed the one-shot directory when its suite ended", () => {
   expect(existsSync(fromTheOneShot)).toBe(false);
 });
 
+/** The root the describe below makes its one-shot directory in, made by the hook this module-scope
+ *  call registers, which Bun runs before that describe's own. */
+const givenRoot = temporaryDirectory("test-fixtures-given-root");
+/** The path that describe reserved under `givenRoot`. */
+let underTheRoot = "";
+
+describe("a one-shot directory under the root it is given", () => {
+  const under = temporaryDirectory("test-fixtures-under-root", { root: givenRoot });
+
+  test("makes its directory under the root it is given", () => {
+    underTheRoot = under;
+    expect(existsSync(under)).toBe(true);
+    expect(dirname(under)).toBe(givenRoot);
+    expect(basename(under)).toStartWith("test-fixtures-under-root-");
+  });
+});
+
+test("removed the directory under the given root when its suite ended", () => {
+  expect(underTheRoot).not.toBe("");
+  expect(existsSync(underTheRoot)).toBe(false);
+  expect(existsSync(givenRoot)).toBe(true);
+});
+
+/** A mountinfo file holding `lines`, for memoryRoot's seam. */
+function mountinfo(...lines: string[]): string {
+  const file = join(makeDirectory("mountinfo"), "mountinfo");
+  writeFileSync(file, `${lines.join("\n")}\n`);
+  return file;
+}
+const sysfs = "22 28 0:21 / /sys rw,nosuid,nodev,noexec,relatime shared:2 - sysfs sysfs rw";
+const shm = (options: string, fstype = "tmpfs") =>
+  `32 28 0:26 / /dev/shm ${options} shared:3 - ${fstype} ${fstype} rw,inode64`;
+
+test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
+  expect(memoryRoot(mountinfo(sysfs, shm("rw,nosuid,nodev")))).toBe("/dev/shm");
+  // The last mount at /dev/shm is the one a path there reaches.
+  expect(memoryRoot(mountinfo(shm("rw,nosuid,nodev,noexec"), shm("rw,nosuid,nodev")))).toBe(
+    "/dev/shm"
+  );
+  // A mount with no optional fields before the separator.
+  expect(memoryRoot(mountinfo("32 28 0:26 / /dev/shm rw,relatime - tmpfs tmpfs rw"))).toBe(
+    "/dev/shm"
+  );
+});
+
+test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
+  expect(memoryRoot(mountinfo(sysfs, shm("rw,nosuid,nodev,noexec")))).toBe(tmpdir());
+  expect(memoryRoot(mountinfo(sysfs, shm("ro,nosuid,nodev")))).toBe(tmpdir());
+  expect(memoryRoot(mountinfo(sysfs, shm("rw,nosuid,nodev", "ext4")))).toBe(tmpdir());
+  expect(memoryRoot(mountinfo(sysfs))).toBe(tmpdir());
+  expect(memoryRoot(mountinfo(shm("rw,nosuid,nodev"), shm("rw,nosuid,nodev,noexec")))).toBe(
+    tmpdir()
+  );
+  expect(memoryRoot(join(makeDirectory("no-mountinfo"), "absent"))).toBe(tmpdir());
+});
+
 /** The path the skipped describe below reserved, which no hook of that describe ever makes. */
 let fromTheSkippedDescribe = "";
 /** The path the describe whose rows are all skipped reserved, which its own hooks make and
@@ -178,7 +234,7 @@ describe("a pathological prefix", () => {
     const made = trimmed();
     expect(basename(made)).toStartWith("prefix-");
     expect(basename(made)).not.toContain("--");
-  }, 5_000);
+  });
 });
 
 /**

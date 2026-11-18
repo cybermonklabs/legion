@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -24,7 +25,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -39,7 +39,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -73,14 +73,15 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		holdPollInterval: 20 * time.Millisecond, consumers: consumers,
+		consumers: consumers,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	go func() { w.pollHoldRelease(ctx); close(done) }()
 
-	testwait.Eventually(t, "the held root releases on the quiet stream's idle ticker", func() bool { return !admission.Held() })
+	passes.until(t, passHoldRelease, "the held root releases on the quiet stream's idle poll", func() bool { return !admission.Held() })
 	cancel()
 	<-done
 }
@@ -112,14 +113,19 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 	reader := &failingPositionReader{failures: 3, position: intake.DispatchConsumerPosition{AckFloorStream: 5}}
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 20 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 
-	testwait.Eventually(t, "the poll retries the failed read and eventually releases", func() bool { return !admission.Held() })
+	// The reader fails the first three reads; the fourth pass is the one that can release.
+	passes.passes(t, passHoldRelease, reader.failures+1)
+	if admission.Held() {
+		t.Fatalf("Held() = true after %d passes, want the poll to have retried the %d failed reads and released", reader.failures+1, reader.failures)
+	}
 	cancel()
 	<-done
 
@@ -159,18 +165,21 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 	reader := &failingPositionReader{position: intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}}
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 10 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	hold(2)
 	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
-	testwait.Eventually(t, "the first hold released", func() bool { return !admission.Held() })
-	time.Sleep(50 * time.Millisecond)
+	passes.until(t, passHoldRelease, "the first hold released", func() bool { return !admission.Held() })
+	// The pass after a release promotes what that release left waiting, and clears the poll's
+	// own wasHeld, so the hold below is the next one this poll sees rather than the first's tail.
+	passes.pass(t, passHoldRelease)
 
 	hold(3)
-	testwait.Eventually(t, "the second hold released by the same position", func() bool { return !admission.Held() })
+	passes.until(t, passHoldRelease, "the second hold released by the same position", func() bool { return !admission.Held() })
 	cancel()
 	<-done
 }
@@ -205,14 +214,20 @@ func TestPollHoldReleaseRetriesAFailedApplyOfAnUnchangedPosition(t *testing.T) {
 	reader := &failingPositionReader{position: intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}}
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission, failing},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 20 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 
-	testwait.Eventually(t, "the poll retries the failed apply of an unchanged position and eventually releases", func() bool { return !admission.Held() })
+	// The first pass's apply is the one the handler fails; the second reads the same position
+	// again and releases on it.
+	passes.passes(t, passHoldRelease, 2)
+	if admission.Held() {
+		t.Fatal("Held() = true after the poll read the same position twice, want the poll to have retried the failed apply and released")
+	}
 	cancel()
 	<-done
 }
@@ -364,7 +379,7 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -422,7 +437,7 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -449,10 +464,9 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 			{Key: "CAPTURE-2", ResolvedRepo: "sjawhar/legion", Title: "backlog root", Status: "backlog", Rank: "B", HandedOver: true},
 		}},
 		dispatchProject: "CAPTURE", consumers: consumers, bootID: "pilot-boot", log: log,
-		holdPollInterval: 10 * time.Millisecond,
 	}
+	passes := triggeringRuntime(w)
 
-	started := time.Now()
 	if err := w.reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -462,18 +476,20 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 	done := make(chan struct{})
 	go func() { w.pollHoldRelease(ctx); close(done) }()
 
-	testwait.Eventually(t, "the labeled todo root is admitted", func() bool {
+	admitted := passes.until(t, passHoldRelease, "the labeled todo root is admitted", func() bool {
 		var slotted bool
 		if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "CAPTURE-1").Scan(&slotted); err != nil {
 			return false
 		}
 		return slotted
 	})
-	elapsed := time.Since(started)
 	cancel()
 	<-done
-	if elapsed > time.Second {
-		t.Fatalf("admission took %s, want it quick", elapsed)
+	// The root is admitted on what the poll itself reads of this quiet stream, within its first
+	// passes, and not on some later event: the count is what a bound in seconds used to say, and
+	// it no longer depends on how fast the machine runs.
+	if admitted.pass > 3 {
+		t.Fatalf("the labeled todo root was admitted only at the poll's pass %d, want it on one of its first passes", admitted.pass)
 	}
 
 	var backlogSlotted bool
@@ -523,21 +539,29 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	// A reader stuck at an ack floor that never reaches target 5: the hold this poll would
 	// otherwise never explain.
 	reader := &failingPositionReader{position: intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false}}
+	fake := clocktest.New(time.Now().UTC())
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		holdPollInterval: 5 * time.Millisecond, holdWarnAfter: 20 * time.Millisecond, holdWarnEvery: 20 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, clock: fake,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
 
-	testwait.Eventually(t, "the poll warns about a hold that has not released", func() bool {
-		return strings.Contains(logBuf.String(), "admission: a hold has not released")
-	})
+	// The pass that first finds the hold is when it began waiting, and says nothing yet.
+	passes.pass(t, passHoldRelease)
+	if strings.Contains(logBuf.String(), "admission: a hold has not released") {
+		t.Fatalf("the poll warned on the pass that first found the hold: %q", logBuf.String())
+	}
+	fake.Advance(defaultHoldWarnAfter)
+	passes.pass(t, passHoldRelease)
 	cancel()
 	<-done
+	if !strings.Contains(logBuf.String(), "admission: a hold has not released") {
+		t.Fatalf("log = %q, want the poll to warn once the hold had waited out %v", logBuf.String(), defaultHoldWarnAfter)
+	}
 
 	msg := logBuf.String()
 	if !strings.Contains(msg, "target=5") || !strings.Contains(msg, "ack_floor=0") {
@@ -569,24 +593,20 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 		t.Fatal("Held() = false after seeding a behind unlabeled record, want it held")
 	}
 
-	// The real ticker runs the whole time, on its own short schedule, against a reader that
-	// always fails: its own held-phase reads never reach ApplyFact, but it still observes Held()
-	// true on every tick — driving the wasHeld bookkeeping this test needs — before this test
-	// clears the hold by hand below.
+	// The poll runs the whole time against a reader that always fails: its own held-phase reads
+	// never reach ApplyFact, but each pass still sees Held() true — driving the wasHeld
+	// bookkeeping this test needs — before this test clears the hold by hand below.
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 5 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	reader := &failingPositionReader{failures: 1 << 20}
 	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
-	testwait.Eventually(t, "the poll to have observed the held admission at least once", func() bool {
-		reader.mu.Lock()
-		defer reader.mu.Unlock()
-		return reader.calls > 0
-	})
+	passes.pass(t, passHoldRelease)
 
 	// release's own transaction commits here — its advisory lock is transaction-scoped and frees
 	// right at commit — but its commit hook, which clears pending, has not run yet: the exact
@@ -631,16 +651,15 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 		t.Fatal("Held() = true after the commit hook ran, want the hold cleared")
 	}
 
-	// Driven through the real ticker: the running poll's own next tick, having observed
-	// Held() true throughout, sees it turn false and promotes LEGION-RACE — no later event of any
-	// kind arrives.
-	testwait.Eventually(t, "the running poll's closing pass promotes LEGION-RACE with no later event", func() bool {
-		var slotted bool
-		if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
-			return false
-		}
-		return slotted
-	})
+	// Driven through the poll itself: its next pass, having seen Held() true throughout, sees it
+	// turn false and promotes LEGION-RACE — no later event of any kind arrives.
+	passes.pass(t, passHoldRelease)
+	if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
+		t.Fatalf("query LEGION-RACE slot: %v", err)
+	}
+	if !slotted {
+		t.Fatal("LEGION-RACE not slotted after the poll's closing pass, want that pass to have promoted it with no later event")
+	}
 	cancel()
 	<-done
 }
@@ -668,18 +687,17 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	failing := &failingOnceHandler{}
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission, failing},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 5 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	reader := &failingPositionReader{failures: 1 << 20}
 	go func() { w.pollHoldReleaseWith(ctx, reader); close(done) }()
-	testwait.Eventually(t, "the poll to have observed the held admission at least once", func() bool {
-		reader.mu.Lock()
-		defer reader.mu.Unlock()
-		return reader.calls > 0
-	})
+	// One pass with the hold standing, so the poll has seen it held — the wasHeld bookkeeping
+	// this test needs — before the hold is cleared by hand below.
+	passes.pass(t, passHoldRelease)
 
 	// The exact window between the commit and its hook leaves LEGION-RACE recorded but unpromoted once
 	// pending clears.
@@ -705,15 +723,16 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	}
 
 	// The first closing pass fails (failing's one failure, never consumed by the held phase); the
-	// poll retries on its own schedule and the second succeeds, admitting LEGION-RACE with no
-	// later event.
-	testwait.Eventually(t, "the poll retries a failed closing pass and eventually promotes LEGION-RACE", func() bool {
-		var slotted bool
-		if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
-			return false
-		}
-		return slotted
-	})
+	// poll retries on the next pass and the second succeeds, admitting LEGION-RACE with no later
+	// event.
+	passes.passes(t, passHoldRelease, 2)
+	var slotted bool
+	if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
+		t.Fatalf("query LEGION-RACE slot: %v", err)
+	}
+	if !slotted {
+		t.Fatal("LEGION-RACE not slotted after the poll's second closing pass, want the poll to have retried the failed one and promoted it")
+	}
 	cancel()
 	<-done
 }
@@ -805,15 +824,19 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		holdPollInterval: 20 * time.Millisecond, consumers: consumers,
+		consumers: consumers,
 	}
+	passes := triggeringRuntime(w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	go func() { w.pollHoldRelease(ctx); close(done) }()
 
-	testwait.Eventually(t, "the held root takes the free slot once the quiet stream's idle ticker releases it", func() bool {
-		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD")
+	// A slot taken is logged by intake.OnCommit once its transaction has committed, so the store
+	// can show the slot before the line is written: the wait asks for both, and the reads below
+	// then see every line the release wrote.
+	passes.until(t, passHoldRelease, "the held root takes the free slot once the quiet stream's idle poll releases it, and its slot is logged", func() bool {
+		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD") && strings.Contains(logged.String(), slotTakenMessage)
 	})
 	cancel()
 	<-done

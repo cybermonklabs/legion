@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // gate holds one hook of a read until the test opens it. reached closes once the hook is held;
@@ -39,14 +40,10 @@ func (g *gate) pass(through func()) {
 	close(g.done)
 }
 
-// waitClosed waits for ch, which names what, failing the test after 10 s.
+// waitClosed waits for ch, which names what.
 func waitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
+	testwait.Receive(t, what, ch)
 }
 
 // holdingCache is the registry's cache with a test's gates in front of its hooks: the next apply
@@ -119,17 +116,16 @@ func holdingRegistry(t *testing.T, client *bus.Client, options ...SessionRegistr
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 	// The bucket is empty, so once the first read has completed nothing more reaches the cache
 	// through the watcher replaced here.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	r.watcher.End(ctx)
 	held := &holdingCache{Cache: sessionCache{r}}
 	r.watcher = kvwatch.New("session registry", r.watcher.KV(), held)
 	t.Cleanup(r.StopWatch)
 	r.watcher.Start()
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 	return r, held
 }
 
@@ -188,7 +184,7 @@ func TestAHeartbeatNewerThanTheReadsValueWinsAndIsKept(t *testing.T) {
 	r, held := holdingRegistry(t, client)
 	putRaw(t, r.watcher.KV().Legacy(), "ses_beat", SessionEntry{Port: 1, MachineID: "m1", Title: "scanned", UpdatedAt: time.Now().UnixMilli()})
 	// The current watcher has applied it, so the held apply below is the new read's.
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Eventually(t, "observable state", func() bool {
 		entry, err := r.Get("ses_beat")
 		return err == nil && entry.Title == "scanned"
 	})
@@ -239,7 +235,7 @@ func TestASessionRegisteredDuringTheReadIsKeptThroughTheSweep(t *testing.T) {
 	if want := []string{"ses_before", "ses_during"}; !slices.Equal(swept, want) {
 		t.Fatalf("listed right after the sweep = %v, want %v", swept, want)
 	}
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 	if got, want := listed(t, r), []string{"ses_before", "ses_during"}; !slices.Equal(got, want) {
 		t.Fatalf("listed after the read = %v, want %v", got, want)
 	}
@@ -269,7 +265,7 @@ func TestASessionDeletedDuringTheReadStaysGone(t *testing.T) {
 	if want := []string{"ses_kept"}; !slices.Equal(swept, want) {
 		t.Fatalf("listed right after the sweep = %v, want %v", swept, want)
 	}
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 	if _, err := r.Refresh(context.Background(), "ses_gone"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("Refresh(ses_gone) after the read = %v, want not found", err)
 	}
@@ -370,7 +366,7 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 			go func() { done <- test.call(r) }()
 			waitClosed(t, held.reached, "the old bucket to answer the delayed call")
 
-			js, err := client.Conn.JetStream()
+			js, err := client.Conn.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("jetstream: %v", err)
 			}
@@ -383,7 +379,7 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 			if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 				t.Fatalf("Rewatch: %v", err)
 			}
-			waitFor(t, 5*time.Second, func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
+			testwait.Eventually(t, "observable state", func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
 
 			held.open()
 			if err := <-done; err != nil {
@@ -396,10 +392,11 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 				t.Fatalf("listed = %v, want the new bucket's sessions %v", got, want)
 			}
 			putRaw(t, recreated, "ses_a", SessionEntry{Port: 1, MachineID: "m1", Title: "newer", UpdatedAt: time.Now().UnixMilli()})
-			waitFor(t, 5*time.Second, func() bool {
+			testwait.Eventually(t, "observable state", func() bool {
 				entry, err := r.Get("ses_a")
 				return err == nil && entry.Title == "newer"
 			})
+
 		})
 	}
 }
@@ -420,9 +417,8 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	waitFor(t, 5*time.Second, r.watcher.Following)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	testwait.Eventually(t, "observable state", r.watcher.Following)
+	ctx := testwait.Context(t)
 	r.watcher.End(ctx)
 	base := r.watcher.KV()
 	delayed := &delayingKV{KeyValue: base.Legacy()}
@@ -433,9 +429,9 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 		kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(r.StopWatch)
 	r.watcher.Start()
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -481,20 +477,19 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 // row is past its TTL, it is not found.
 func TestARefreshTheFenceDropsAnswersTheBucketsEntry(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	now := bucketClock()
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	waitFor(t, 5*time.Second, r.watcher.Following)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	testwait.Eventually(t, "observable state", r.watcher.Following)
+	ctx := testwait.Context(t)
 	r.watcher.End(ctx)
 	// No probe, so nothing finds the recreate below while the test runs.
 	r.watcher = kvwatch.New("session registry", r.watcher.KV(), sessionCache{r}, kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(r.StopWatch)
 	r.watcher.Start()
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 
 	for range 20 {
 		putRaw(t, r.watcher.KV().Legacy(), "ses_filler", SessionEntry{Port: 9, MachineID: "m1"})
@@ -505,7 +500,7 @@ func TestARefreshTheFenceDropsAnswersTheBucketsEntry(t *testing.T) {
 	if err := r.Delete(context.Background(), "ses_a"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -522,30 +517,10 @@ func TestARefreshTheFenceDropsAnswersTheBucketsEntry(t *testing.T) {
 	if err != nil || entry.Title != "new" {
 		t.Fatalf("Refresh(ses_a) below the fence = %+v, %v; want the live entry the bucket returned", entry, err)
 	}
-	now.advance(2 * time.Minute)
+	now.Advance(2 * time.Minute)
 	if _, err := r.Refresh(context.Background(), "ses_a"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("Refresh(ses_a) below the fence past its TTL = %v, want not found", err)
 	}
-}
-
-// clock is the registry's injected clock: the real time moved on by what the test advanced it, so
-// the creation times the server stamps on records and the registry's own time agree until the test
-// moves past a session's TTL without waiting it out.
-type clock struct {
-	mu     sync.Mutex
-	offset time.Duration
-}
-
-func (c *clock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Now().Add(c.offset)
-}
-
-func (c *clock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.offset += d
 }
 
 // A row's state is its own registration's age, while a read of the bucket is under way and after
@@ -557,8 +532,8 @@ func (c *clock) advance(d time.Duration) {
 // the row's own deadline, the bucket's backstop, takes the row away (expireDue).
 func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r, held := holdingRegistry(t, client, WithSessionClock(now.Now), WithSessionLiveWindow(time.Minute))
+	now := bucketClock()
+	r, held := holdingRegistry(t, client, WithSessionClock(now), WithSessionLiveWindow(time.Minute))
 	if err := r.Put("ses_old", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -572,7 +547,7 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
-	now.advance(2 * time.Minute)
+	now.Advance(2 * time.Minute)
 	unresponsive := func(when string) {
 		t.Helper()
 		if got := listed(t, r); len(got) != 0 {
@@ -599,46 +574,56 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 
 	completion.open()
 	waitClosed(t, completion.done, "the read's sweep")
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 	unresponsive("after the read")
 }
+
+// sessionRowTTL is the session TTL the two rows below write under: a day, longer than the guard of
+// any test command (the longest, in .github/workflows, are about an hour). The registry dates a
+// row from the Created time the NATS server stamps on its revision (expiryFor), and the server
+// removes the row at the bucket's MaxAge, both on the machine's clock, so real time between a
+// row's write and its read adds to the age the row reads. A TTL no run reaches leaves that real
+// time no say in the verdict: only the clock's own moves age a row past it.
+const sessionRowTTL = 24 * time.Hour
 
 // A session bucket recreated with another TTL expires its rows by its own: the read of the new
 // bucket adopts its MaxAge.
 func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	now := bucketClock()
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(sessionRowTTL), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
 	if err := js.DeleteKeyValue(bus.SessionBucket); err != nil {
 		t.Fatalf("delete the session bucket: %v", err)
 	}
-	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 3 * time.Minute})
+	recreatedTTL := 3 * sessionRowTTL
+	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: recreatedTTL})
 	putRaw(t, recreated, "ses_long", SessionEntry{Port: 1, MachineID: "m1", UpdatedAt: time.Now().UnixMilli()})
 	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
-	if got := r.TTL(); got != 3*time.Minute {
-		t.Fatalf("TTL after the recreate = %s, want the new bucket's 3m", got)
+	testwait.Eventually(t, "observable state", func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
+	if got := r.TTL(); got != recreatedTTL {
+		t.Fatalf("TTL after the recreate = %s, want the new bucket's %s", got, recreatedTTL)
 	}
 
-	now.advance(2 * time.Minute)
+	// Past the first bucket's TTL and inside the new one's, by the clock's moves alone.
+	now.Advance(2 * sessionRowTTL)
 	if _, err := r.Get("ses_long"); err != nil {
-		t.Fatalf("Get(ses_long) 2m after its write = %v, want it live under the new bucket's 3m TTL", err)
+		t.Fatalf("Get(ses_long) %s after its write = %v, want it live under the new bucket's %s TTL", 2*sessionRowTTL, err, recreatedTTL)
 	}
-	now.advance(2 * time.Minute)
+	now.Advance(2 * sessionRowTTL)
 	if _, err := r.Get("ses_long"); !errors.Is(err, natsgo.ErrKeyNotFound) {
-		t.Fatalf("Get(ses_long) 4m after its write = %v, want it expired", err)
+		t.Fatalf("Get(ses_long) %s after its write = %v, want it expired past the new bucket's %s TTL", 4*sessionRowTTL, err, recreatedTTL)
 	}
 }
 
@@ -651,18 +636,17 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 // lag, answers both the same way.
 func TestTheLeaderRefreshAnswersAsRefreshDoes(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	now := bucketClock()
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(sessionRowTTL), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Eventually(t, "observable state", r.watcher.Following)
 	if err := r.Put("ses_live", SessionEntry{Port: 1, MachineID: "m1", Title: "live"}); err != nil {
 		t.Fatalf("register ses_live: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	leader, leaderErr := r.RefreshFromLeader(ctx, "ses_live")
 	direct, directErr := r.Refresh(ctx, "ses_live")
@@ -680,7 +664,7 @@ func TestTheLeaderRefreshAnswersAsRefreshDoes(t *testing.T) {
 		t.Errorf("Refresh(ses_missing) = %v, want %v: the two answer a session the bucket does not hold alike", err, natsgo.ErrKeyNotFound)
 	}
 
-	now.advance(2 * time.Minute)
+	now.Advance(2 * sessionRowTTL)
 	if _, err := r.RefreshFromLeader(ctx, "ses_live"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Errorf("RefreshFromLeader(ses_live) past its deadline = %v, want %v", err, natsgo.ErrKeyNotFound)
 	}

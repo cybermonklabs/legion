@@ -162,12 +162,9 @@ func (r *liveRig) checkPreviousLayout() error {
 	note("runtime", "fresh listener and sandbox.New; ReconcileOrphans with the two taken-over claims among the known")
 	for _, c := range claims {
 		loc := *c.loc
-		first, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+		first := r.obs.await(r.t, mark, c.name+"'s first observation that is not Uncertain", func(o runtime.Observation) bool {
 			return o.Locator.Claim == c.token && o.Kind != runtime.Uncertain
 		})
-		if !ok {
-			return fmt.Errorf("no first observation of %s within %s", c.name, liveGoneLimit)
-		}
 		if first.Kind != runtime.StaleAddress || !sameLocator(first.Locator, loc) || !strings.Contains(first.Detail, "the pod's containers") || !strings.Contains(first.Detail, "now "+runtime.IssuePodContainer) {
 			return fmt.Errorf("%s's first observation is %s at %s: %s; want StaleAddress at its recorded %s naming the previous layout", c.name, first.Kind, first.Locator.Incarnation, first.Detail, loc.Incarnation)
 		}
@@ -191,10 +188,10 @@ func (r *liveRig) checkPreviousLayout() error {
 	}
 	note("runtime", "Resume(architect) replaced pod %s with %s, one container %s", short(oldUID), short(string(pod.UID)), runtime.IssuePodContainer)
 
-	ended, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+	ended := r.obs.await(r.t, mark, "the tester's "+tester.loc.Incarnation+" to be observed ended", func(o runtime.Observation) bool {
 		return o.Locator.Claim == tester.token && (o.Kind == runtime.Gone || o.Kind == runtime.NotRecordedProcess)
 	})
-	if !ok || !ended.Displaced || !sameLocator(ended.Locator, *tester.loc) {
+	if !ended.Displaced || !sameLocator(ended.Locator, *tester.loc) {
 		return fmt.Errorf("the tester's end in the replaced pod is %+v, want Displaced at its recorded %s", ended, tester.loc.Incarnation)
 	}
 	note("runtime", "tester: %s Displaced at its recorded %s, charged nothing", ended.Kind, short(tester.loc.Incarnation))

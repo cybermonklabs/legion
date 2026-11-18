@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testClaim is the claim the default resolver hands out for testToken.
@@ -23,10 +26,14 @@ const (
 	testClaim      claim.Token = "legion-acme-LEGION-1-tester"
 	testToken                  = "boot-token-1"
 	testGeneration uint64      = 3
-	// wait bounds every test's wait for a real socket to do something; nothing here takes
-	// more than milliseconds when it works.
-	wait = 5 * time.Second
+	// productionRPCTimeout is worker_rpc_timeout_seconds's default (internal/config), the RPC
+	// timeout the harness's listener runs with: the hello's read deadline on the socket, and the
+	// request bound measured on the harness's fake clock, which moves only when a test moves it.
+	productionRPCTimeout = 5 * time.Second
 )
+
+// testMoment is where a harness's fake clock stands until the test moves it.
+var testMoment = time.Date(2026, time.November, 14, 12, 0, 0, 0, time.UTC)
 
 // logRecorder is a slog handler that keeps every line the listener logs, message and
 // attributes, so a test can assert the exact text an operator would read.
@@ -81,23 +88,27 @@ func defaultResolver() *resolver {
 	}}
 }
 
-// harness is one listener under test and the context that bounds it.
+// harness is one listener under test and the context that bounds it. clock is the fake the
+// listener measures its request bounds and its launcher wait on.
 type harness struct {
 	t        *testing.T
 	listener *Listener
 	logs     *logRecorder
 	resolver *resolver
+	clock    *clocktest.Fake
 	cancel   context.CancelFunc
 	drained  []Event
 	done     bool
 }
 
 type harnessOptions struct {
-	addr       string
-	resolver   *resolver
-	rpcTimeout time.Duration
-	// launcherWait is Options.LauncherWait, for the tests that measure how long a launcher's
-	// hello waits for an acceptor; zero leaves the listener's own default.
+	addr     string
+	resolver *resolver
+	// helloDeadline is Options.RPCTimeout for the test of a hello that never completes, whose
+	// read deadline on the socket is that timeout; zero is productionRPCTimeout.
+	helloDeadline time.Duration
+	// launcherWait is Options.LauncherWait, for the tests of how long a launcher's hello waits
+	// for an acceptor; zero leaves the listener's own default.
 	launcherWait time.Duration
 }
 
@@ -109,38 +120,32 @@ func startListener(t *testing.T, options harnessOptions) *harness {
 	if options.resolver == nil {
 		options.resolver = defaultResolver()
 	}
-	if options.rpcTimeout == 0 {
-		options.rpcTimeout = wait
-	}
 	logs := &logRecorder{}
+	clock := clocktest.New(testMoment)
 	ctx, cancel := context.WithCancel(context.Background())
 	listener, err := Listen(ctx, options.addr, options.resolver.resolve, Options{
-		RPCTimeout:   options.rpcTimeout,
+		RPCTimeout:   cmp.Or(options.helloDeadline, productionRPCTimeout),
 		LauncherWait: options.launcherWait,
 		Log:          slog.New(logs),
+		Clock:        clock,
 	})
 	if err != nil {
 		cancel()
 		t.Fatalf("Listen(%q): %v", options.addr, err)
 	}
-	h := &harness{t: t, listener: listener, logs: logs, resolver: options.resolver, cancel: cancel}
+	h := &harness{t: t, listener: listener, logs: logs, resolver: options.resolver, clock: clock, cancel: cancel}
 	t.Cleanup(func() { h.stop() })
 	return h
 }
 
-// next is the listener's next event, failing the test when none arrives.
+// next is the listener's next event.
 func (h *harness) next() Event {
 	h.t.Helper()
-	select {
-	case event, ok := <-h.listener.Events():
-		if !ok {
-			h.t.Fatal("Events() closed while an event was expected")
-		}
-		return event
-	case <-time.After(wait):
-		h.t.Fatal("no event within the wait")
-		return nil
+	event := testwait.Receive(h.t, "the listener's next event", h.listener.Events())
+	if event == nil {
+		h.t.Fatal("Events() closed while an event was expected")
 	}
+	return event
 }
 
 // stop ends the listener and returns every event it had not yet handed to next, through the
@@ -152,19 +157,23 @@ func (h *harness) stop() []Event {
 	}
 	h.done = true
 	h.cancel()
-	deadline := time.After(wait)
 	for {
-		select {
-		case event, ok := <-h.listener.Events():
-			if !ok {
-				return h.drained
-			}
-			h.drained = append(h.drained, event)
-		case <-deadline:
-			h.t.Fatal("Events() did not close after the listener's context ended")
-			return nil
+		event := testwait.Receive(h.t, "Events() to close after the listener's context ended", h.listener.Events())
+		if event == nil {
+			return h.drained
 		}
+		h.drained = append(h.drained, event)
 	}
+}
+
+// noAnswer moves the harness's clock past the RPC bound of the request the peer has just read
+// and leaves unanswered, once the listener has armed it.
+func (h *harness) noAnswer() {
+	h.t.Helper()
+	if armed := h.clock.AwaitArmed(h.t, "the request's RPC bound", 1); len(armed) != 1 || !armed[0].Equal(h.clock.Now().Add(productionRPCTimeout)) {
+		h.t.Fatalf("the listener armed %v, want the one request's RPC bound of %s from %v", armed, productionRPCTimeout, h.clock.Now())
+	}
+	h.clock.Advance(productionRPCTimeout)
 }
 
 // peer is a shim stand-in on the far side of one real connection: it writes raw lines and
@@ -183,7 +192,8 @@ func dial(t *testing.T, addr string) *peer {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	conn, err := net.DialTimeout(network, address, wait)
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(testwait.Context(t), network, address)
 	if err != nil {
 		t.Fatalf("dial %s: %v", addr, err)
 	}
@@ -236,28 +246,36 @@ func (p *peer) hello(bootToken string) {
 // expect is the daemon's next frame, which must be of the given type.
 func (p *peer) expect(frameType string) shimwire.Frame {
 	p.t.Helper()
-	select {
-	case frame := <-p.frames:
-		if frame.FrameType() != frameType {
-			p.t.Fatalf("the daemon sent %s (%#v), want %s", frame.FrameType(), frame, frameType)
+	var frame shimwire.Frame
+	testwait.Eventually(p.t, "the daemon's "+frameType, func() bool {
+		select {
+		case frame = <-p.frames:
+			return true
+		default:
 		}
-		return frame
-	case <-p.closed:
-		p.t.Fatalf("the daemon closed the connection while %s was expected", frameType)
-	case <-time.After(wait):
-		p.t.Fatalf("the daemon sent no %s within the wait", frameType)
+		select {
+		case <-p.closed:
+			// The reader hands over every frame it read before it ends, so one more look.
+			select {
+			case frame = <-p.frames:
+				return true
+			default:
+			}
+			p.t.Fatalf("the daemon closed the connection while %s was expected", frameType)
+		default:
+		}
+		return false
+	})
+	if frame.FrameType() != frameType {
+		p.t.Fatalf("the daemon sent %s (%#v), want %s", frame.FrameType(), frame, frameType)
 	}
-	return nil
+	return frame
 }
 
 // awaitClosed is the daemon hanging up, with nothing sent first.
 func (p *peer) awaitClosed() {
 	p.t.Helper()
-	select {
-	case <-p.closed:
-	case <-time.After(wait):
-		p.t.Fatal("the daemon did not close the connection")
-	}
+	testwait.Receive(p.t, "the daemon to close the connection", p.closed)
 	select {
 	case frame := <-p.frames:
 		p.t.Fatalf("the daemon sent %s before closing", frame.FrameType())
@@ -309,13 +327,7 @@ func async(call func() error) <-chan error {
 
 func awaitResult(t *testing.T, result <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(wait):
-		t.Fatal("the call did not return within the wait")
-		return nil
-	}
+	return testwait.Receive(t, "the call's return", result)
 }
 
 // shortSocketPath is this package's socket path: a socket named worker-stream.sock in a

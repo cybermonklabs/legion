@@ -18,9 +18,10 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m.Run)) }
 
 // clock is a test's clock, which a test moves to tell a first write's recorded_at from a rewrite's.
 type clock struct {
@@ -62,7 +63,7 @@ func openRegistryAt(t *testing.T, uri string) *registry {
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -111,9 +112,7 @@ func agent(project, issue, role, id, started string) legionagents.Entry {
 
 func ctx(t *testing.T) context.Context {
 	t.Helper()
-	c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel)
-	return c
+	return testwait.Context(t)
 }
 
 func sessionIDs(agents []legionagents.Agent) []string {
@@ -574,7 +573,8 @@ func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 }
 
 // heldReads holds the first n reads of key until all n have arrived, so n writes of one session all
-// read it before any of them claims it.
+// read it before any of them claims it. A test that starts fewer than n such reads leaves them held,
+// and its own wait for the writes names that.
 type heldReads struct {
 	natsgo.KeyValue
 	key     string
@@ -598,10 +598,7 @@ func (h *heldReads) Get(key string) (natsgo.KeyValueEntry, error) {
 		close(h.release)
 	}
 	h.mu.Unlock()
-	select {
-	case <-h.release:
-	case <-time.After(5 * time.Second):
-	}
+	<-h.release
 	return entry, err
 }
 
@@ -654,7 +651,12 @@ func TestConcurrentWritesOfOneSessionRecordItOnce(t *testing.T) {
 	for i, entry := range writes {
 		wg.Go(func() { _, errs[i] = r.store.Put(c, entry) })
 	}
-	wg.Wait()
+	written := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(written)
+	}()
+	testwait.Receive(t, "both writes to finish, each having read the session key the hold releases once both have", written)
 	won, lost := 0, 1
 	if errs[0] != nil {
 		won, lost = 1, 0
@@ -866,10 +868,6 @@ func (w *stalledWatcher) Stop() error {
 	return w.KeyWatcher.Stop()
 }
 
-// stallMargin is what a read of a stalled bucket may take beyond its own bound before the test
-// calls it unbounded: the scheduling of one goroutine, not another wait.
-const stallMargin = 500 * time.Millisecond
-
 // A listing of a bucket that stops delivering fails within the caller's context, not at some
 // longer bound of the scan's own: the route that reads under legionagents.ReadTimeout answers its
 // 503 inside the listener's HTTP write timeout rather than dropping the connection
@@ -888,16 +886,16 @@ func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 		"ByIssue": func(c context.Context) error { _, err := stalled.store.ByIssue(c, "INFRA-448"); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
+			// The caller's own context is the input under test: the read must end on it rather
+			// than at a longer bound of the scan's own.
 			c, cancel := context.WithTimeout(context.Background(), legionagents.ReadTimeout)
 			defer cancel()
-			start := time.Now()
 			err := read(c)
-			elapsed := time.Since(start)
 			if err == nil {
-				t.Fatalf("%s on a stalled watch answered no error, after %s", name, elapsed)
+				t.Fatalf("%s on a stalled watch answered no error", name)
 			}
-			if bound := legionagents.ReadTimeout + stallMargin; elapsed > bound {
-				t.Fatalf("%s on a stalled watch failed after %s (%v), want its failure within %s", name, elapsed, err, bound)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("%s on a stalled watch failed with %v, want the caller's context deadline to be what ended it", name, err)
 			}
 		})
 	}

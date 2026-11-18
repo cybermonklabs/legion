@@ -3,9 +3,9 @@ package supervise
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // compactInstructions stands for what the API sends with every compaction: Oh My Pi writes a
@@ -163,14 +163,10 @@ func TestAClaimBeingCompactedIsBusyUntilTheCompactionEnds(t *testing.T) {
 // can move it before the ask and read the answer of a compaction that never began.
 func waitForCompacting(t *testing.T, h *harness) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c := h.m.View().Claim; c.Compacting && c.State == StateWorking && h.conn.CompactsHeld() > 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("the claim never reported itself being compacted with the compaction held at its connection")
+	testwait.Eventually(t, "the claim to report itself being compacted with the compaction held at its connection", func() bool {
+		c := h.m.View().Claim
+		return c.Compacting && c.State == StateWorking && h.conn.CompactsHeld() > 0
+	})
 }
 
 // A turn that ends while the session is being compacted leaves the claim exactly where it is: a

@@ -26,6 +26,11 @@ import (
 // between its first beat and the exit.
 func TestABrokerThatDiesBeforeServingRecordsNoServingBeat(t *testing.T) {
 	databaseURL := storetest.URL(t)
+	// The delay is this stand-in's own, a discovery endpoint that answers slowly: it is three
+	// beats of the serving clock this broker is started with (BROKER_SWEEP_SECONDS=1), so a
+	// clock started before the failing step has beaten several times by the time the boot
+	// fails. Nothing a correct broker writes marks those beats, so no gate the test releases
+	// can take the delay's place.
 	const discoveryDelay = 3 * time.Second
 	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -66,7 +71,7 @@ func TestABrokerThatDiesBeforeServingRecordsNoServingBeat(t *testing.T) {
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=example-broker-exchange",
 		"BROKER_SWEEP_SECONDS=1",
 	}})
-	if err := broker.AwaitExit(t, 30*time.Second); err == nil {
+	if err := broker.AwaitExit(t); err == nil {
 		t.Fatalf("the broker exited 0, want a fatal exit at its exchange issuer's discovery:\n%s", broker.Log())
 	}
 	if log := broker.Log(); !strings.Contains(log, "broker: fatal") || !strings.Contains(log, "discovering issuer "+issuer.URL) {

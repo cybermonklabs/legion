@@ -12,11 +12,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -50,7 +52,7 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 
 	// The upgrade's boot fills the record from Dispatch and GitHub.
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-	if err := backfillRepositories(ctx, pool, records, client, "LEGION", state,
+	if err := backfillRepositories(ctx, clock.Real(), pool, records, client, "LEGION", state,
 		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger()); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,7 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn := testnats.Connect(t, workflowNATS(t))
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,13 +90,16 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := consumer.Info(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.NumPending != 1 {
-		t.Fatalf("pending on the GitHub consumer after GitHub's event = %d, want the event", info.NumPending)
-	}
+	// The server counts a stored message toward a consumer's pending once its stream signals the
+	// consumer, on a goroutine of the server's own, so the count is waited for: a consumer whose
+	// filters miss GitHub's spelling never counts it, and the wait's give-up names the last count.
+	testwait.Until(t, "the GitHub consumer to count GitHub's event as pending", func() (uint64, bool) {
+		info, err := consumer.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.NumPending, info.NumPending == 1
+	})
 }
 
 // A record written before the record carried GitHub's spelling of its repository is named at boot
@@ -123,7 +128,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-		if err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+		if err := backfillRepositories(ctx, clock.Real(), w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
 			t.Fatal(err)
 		}
 		got := recordedIssue(t, w, "LEGION-301")
@@ -143,7 +148,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-		err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger())
+		err := backfillRepositories(ctx, clock.Real(), w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger())
 		if err == nil || !strings.HasPrefix(err.Error(), "name the repository of LEGION-301: ") {
 			t.Fatalf("backfill = %v, want a refusal naming LEGION-301", err)
 		}

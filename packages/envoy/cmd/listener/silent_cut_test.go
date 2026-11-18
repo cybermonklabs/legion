@@ -4,18 +4,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// silentCutBound is how long after the cut the listener's client has to report it.
-// bus.WithSilentCutDetection pings once a second and declares the connection stale on the interval
-// that would put a third ping out, which is two to three seconds, and the rest of the bound is
-// room for a loaded machine.
-const silentCutBound = 5 * time.Second
 
 // disconnectedUnderName reports whether output holds internal/bus's dropped-connection line for
 // the client named name. The listener leaves internal/bus on the default logger, which writes the
@@ -59,12 +52,10 @@ func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, li
 	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown. Thawing twice
 	// is harmless, so a caller may run it itself.
 	t.Cleanup(thaw)
-	cut := time.Now()
-
-	if !testwait.Holds(silentCutBound, 50*time.Millisecond, func() bool { return disconnectedUnderName(output(), "envoy") }) {
-		t.Fatalf("no disconnect line for the listener's client %s into a silent cut:\n%s",
-			time.Since(cut).Round(time.Millisecond), output())
-	}
-	t.Logf("the listener's client reported the cut %s after it began", time.Since(cut).Round(time.Millisecond))
+	testwait.Until(t, "the listener's client to log the dropped connection into a silent cut", func() (string, bool) {
+		out := output()
+		return out, disconnectedUnderName(out, "envoy")
+	})
+	t.Logf("the listener's client reported the cut")
 	return thaw, output
 }

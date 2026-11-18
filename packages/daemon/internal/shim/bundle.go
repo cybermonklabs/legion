@@ -1,7 +1,6 @@
 package shim
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -109,7 +108,7 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		return workspaceSave{}, fmt.Errorf("worker-shim: %w", err)
 	}
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.commands, budget)
+	ctx, cancel := s.clock.WithTimeout(s.commands, budget)
 	defer cancel()
 	env, started := s.cfg.Env, time.Now()
 	run := func(stdin []byte, args ...string) (string, error) {

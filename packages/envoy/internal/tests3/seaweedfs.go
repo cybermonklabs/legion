@@ -9,14 +9,15 @@ package tests3
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"os/exec"
+	"strings"
 	"testing"
-	"time"
 
-	"github.com/docker/docker/api/types/container"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Image is the SeaweedFS image every S3-compatible test container runs: ghcr.io/cybermonklabs/legion/ci,
@@ -25,45 +26,78 @@ import (
 // a single-line string constant.
 const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e"
 
+// s3Port is the port the server's S3 listener binds inside its container.
+const s3Port = "8333"
+
 // Start runs an S3-compatible server holding the empty bucket, removed when t ends, points this
 // process's AWS SDK at it for the rest of t (filestest.PointSDKAt), so files.NewS3(ctx, bucket)
 // reaches it exactly as a deployment's reaches its bucket, and returns the endpoint for a caller
 // that hands it to another process. t.Setenv makes it unusable in a parallel test.
+//
+// The server binds the master, volume, filer and S3 servers of one process on fixed ports, so it
+// runs on Docker's default bridge network in a network namespace of its own, where no other
+// program holds them, and publishes none: a port Docker publishes is one its own allocator
+// chooses, without asking the kernel whether another program holds it, and ten taken ports in a
+// row fail the start (docs/testing.md, "A container a test starts publishes no port"). The
+// endpoint is the container's own address on that network. testcontainers publishes the eight
+// ports the image declares on that network, so the container is started with the docker CLI.
 func Start(t testing.TB, bucket string) string {
 	t.Helper()
-	ctx := context.Background()
-	container, err := testcontainers.Run(ctx, Image,
-		testcontainers.WithCmd("server", "-s3", "-dir=/data", "-ip=0.0.0.0", "-s3.port=8333"),
-		testcontainers.WithExposedPorts("8333/tcp"),
-		testcontainers.WithWaitStrategy(wait.ForHTTP("/").WithPort("8333/tcp").WithStartupTimeout(90*time.Second)),
-		// One CPU and 1 GiB, as every container the repository's tests start is capped on a shared
-		// host: one process runs the master, volume, filer and S3 servers for a few small objects.
-		testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
-			hostConfig.NanoCPUs = 1_000_000_000
-			hostConfig.Memory = 1 << 30
-		}),
-	)
-	testcontainers.CleanupContainer(t, container)
-	if err != nil {
-		t.Fatalf("start the S3-compatible server: %v", err)
+	ctx := testwait.Context(t)
+	// One CPU and 1 GiB, as every container the repository's tests start is capped on a shared
+	// host: one process runs the master, volume, filer and S3 servers for a few small objects.
+	id := strings.TrimSpace(docker(t, ctx, "run", "--detach", "--network", "bridge", "--cpus", "1", "--memory", "1g",
+		Image, "server", "-s3", "-dir=/data", "-ip=0.0.0.0", "-s3.port="+s3Port))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "--force", "--volumes", id).Run() })
+	address := strings.TrimSpace(docker(t, ctx, "inspect", "--format", `{{(index .NetworkSettings.Networks "bridge").IPAddress}}`, id))
+	if address == "" {
+		t.Fatalf("the S3-compatible server's container %s has no address on Docker's bridge network", id)
 	}
-	endpoint, err := container.PortEndpoint(ctx, "8333/tcp", "http")
-	if err != nil {
-		t.Fatalf("S3-compatible server endpoint: %v", err)
-	}
+	endpoint := "http://" + address + ":" + s3Port
+	testwait.Until(t, fmt.Sprintf("the S3-compatible server at %s to answer GET / with 200", endpoint), func() (string, bool) {
+		status, err := request(ctx, http.MethodGet, endpoint+"/")
+		if err != nil {
+			return err.Error(), false
+		}
+		return fmt.Sprint(status), status == http.StatusOK
+	})
 	// The server creates a bucket on an anonymous PUT of its name.
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint+"/"+bucket, nil)
-	if err != nil {
-		t.Fatalf("build the create-bucket request: %v", err)
-	}
-	response, err := http.DefaultClient.Do(request)
+	status, err := request(ctx, http.MethodPut, endpoint+"/"+bucket)
 	if err != nil {
 		t.Fatalf("create bucket %s: %v", bucket, err)
 	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("create bucket %s: %s", bucket, response.Status)
+	if status != http.StatusOK {
+		t.Fatalf("create bucket %s: %d %s", bucket, status, http.StatusText(status))
 	}
 	filestest.PointSDKAt(t, endpoint)
 	return endpoint
+}
+
+// request sends an anonymous request with no body to url, and returns the status it was answered.
+func request(ctx context.Context, method, url string) (int, error) {
+	built, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	response, err := http.DefaultClient.Do(built)
+	if err != nil {
+		return 0, err
+	}
+	_ = response.Body.Close()
+	return response.StatusCode, nil
+}
+
+// docker runs the docker CLI with args and returns what it printed on stdout, failing t with what
+// it printed on stderr when it fails.
+func docker(t testing.TB, ctx context.Context, args ...string) string {
+	t.Helper()
+	out, err := exec.CommandContext(ctx, "docker", args...).Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), err, exit.Stderr)
+	}
+	if err != nil {
+		t.Fatalf("docker %s: %v", strings.Join(args, " "), err)
+	}
+	return string(out)
 }

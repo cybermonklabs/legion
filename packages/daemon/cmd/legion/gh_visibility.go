@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
@@ -18,6 +19,10 @@ import (
 // wait. The guard waits for a near rate-limit reset only where its caller's bound has room for
 // the wait and the reads after it, and this bound has room for none.
 const visibilityAnswerBound = 15 * time.Second
+
+// visibilityClock is the clock answerVisibilityRead's bound runs on, and the guard's clock for
+// that answer's reads: clock.Real(), which a test replaces with a clocktest.Fake.
+var visibilityClock clock.Clock = clock.Real()
 
 // sharedCheckVisibilityRead is the repository the shared public leak check's own visibility read
 // names, and whether argv is that read: exactly leakguard.VisibilityReadArgs of the repository
@@ -60,7 +65,8 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 //
 // It prints what `gh api ... --jq .visibility` prints, the word public, private or internal and a
 // newline, and exits 0. Where no read answers, it prints nothing on standard output, says why on
-// standard error, and exits 1, which the check reads as an unknown visibility and refuses; the
+// standard error (and, where visibilityAnswerBound ended the reads, names that bound in a line of
+// its own), and exits 1, which the check reads as an unknown visibility and refuses; the
 // check prints its own refusal. A signal that reached this command before or during the reads
 // ends it with 128+<signal>, as it ends a call gh was never started for (runGhChild,
 // endedBySignal).
@@ -68,14 +74,22 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 	if status, ok := signalled(ctx); ok {
 		return status
 	}
-	bounded, cancel := context.WithTimeout(ctx, visibilityAnswerBound)
+	bounded, cancel := visibilityClock.WithTimeout(ctx, visibilityAnswerBound)
 	defer cancel()
-	visibility, err := leakguard.New(leakguard.Options{}).FreshVisibility(bounded, repo.String())
+	visibility, err := leakguard.New(leakguard.Options{Clock: visibilityClock}).FreshVisibility(bounded, repo.String())
 	if status, ok := signalled(ctx); ok {
 		return status
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		// The bound says so itself when it is what ended the reads. The guard's own sentence for
+		// a read it stopped names the bound it reads from its context's Deadline, and a test's
+		// fake clock gives a deadline context that reports its parent's deadline and never its
+		// own: there the guard cannot name this bound, so this line names it on every clock.
+		if bounded.Err() != nil && ctx.Err() == nil {
+			fmt.Fprintf(stderr, "legion gh: no read answered the visibility of %s within %s, the bound that keeps this answer inside the shared check's own wait\n",
+				repo, visibilityAnswerBound)
+		}
 		return 1
 	}
 	fmt.Fprintln(stdout, visibility)

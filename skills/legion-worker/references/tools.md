@@ -27,6 +27,18 @@ the program a check of your issue drives (`go build ./cmd/legion`), and vet the 
 The worker image sets `CGO_ENABLED=0` and carries gcc (both in
 `packages/daemon/docker/worker.Dockerfile`), and Go refuses `-race` without cgo.
 
+When you run part of a repository's tests, pass the flags that the repository's own test command
+passes.
+Read that command where the repository keeps it: in this repository, a package's `test` script, a
+Go command of `.github/workflows/ci.yaml`, or one of `docs/testing.md`.
+A bare runner command takes that runner's default bound, and a correct test can fail under it:
+`go test` gives a test binary ten minutes, and `bun test` gives each row and hook 5,000 ms.
+Oh My Pi's repository passes `--timeout=30000` to every `bun test` in its `scripts/ci-test-ts.ts`,
+so a row of it that passes there can time out under a bare `bun test`.
+In this repository each `bun test` command also loads
+`--preload @legion/test-fixtures/row-deadline`, whose marks end each shared wait before its row's
+guard.
+
 A whole module's or whole package's test run goes to CI on the pull request, where a job of that
 pull request runs it: `go test ./...`, a whole Postgres-backed package such as
 `packages/envoy/internal/dispatch/docs` or `packages/envoy/internal/dispatch/api`, a browser suite
@@ -39,17 +51,13 @@ heavy run goes where your deployment's instructions say.
   file `OMP_SESSION_SQL_DSN_FILE`: that is the live sessions database every pod shares, and it
   holds every role's transcript.
 - Give every Postgres variable a test reads `$LEGION_TEST_PG_DSN`, your pod's own server:
-  `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `BROKER_TEST_DATABASE_URL`. Most suites
-  make and drop one of their own per test on that server — a database through `internal/testpg`,
-  a schema through `internal/broker/store/storetest`'s `URL` — so your pod's roles can share the
-  server. Four write the database the URL itself names instead, and take a database of their own
-  from the next bullet's `createdb` line: `packages/envoy/internal/broker/store`, whose
-  `store_test.go` helpers call `Open(ctx, testDatabaseURL(t))` and then `Migrate` on the database
-  `BROKER_TEST_DATABASE_URL` names; and three that open the database `DISPATCH_TEST_DATABASE_URL`
-  names and migrate it, `packages/envoy/internal/dispatch/store` (`openTestStore`, in its
-  `store_test.go`), `packages/envoy/internal/dispatch/delivery` (`deliveryTestPool`, which also
-  deletes every delivery table's rows) and `packages/envoy/internal/dispatch/redeliver`
-  (`redeliverTestLeases`).
+  `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `BROKER_TEST_DATABASE_URL`.
+  Every suite makes and drops databases of its own on that server, and never writes the database
+  the URL names, so your pod's roles can share the server and no suite needs a `createdb` of yours.
+  In `packages/envoy` the fixtures are `internal/testpg/testdb`, `internal/testpg` and the two
+  `storetest` packages (`internal/dispatch/store/storetest`, `internal/broker/store/storetest`);
+  in `packages/daemon` they are `internal/testpg` and `internal/testpg/testdb` (`docs/testing.md`,
+  "A database a Go test creates").
 - Anything that migrates into the database its DSN names, rather than making one per test, needs
   a database of your own, because a sibling role writing the same one collides with you: the
   Dispatch browser suite's `DATABASE_URL`, which resets what it is given, and the stage scripts'
@@ -576,24 +584,29 @@ something to count.
   `internal/tests3` (`internal/dispatch/files`, which `DISPATCH_TEST_NO_CONTAINERS=1` skips) and
   `internal/testpg` (unless `DISPATCH_TEST_DATABASE_URL` names a Postgres).
 
-  The daemon's NATS-backed tests have a way round it: `packages/daemon/internal/testnats` serves
-  the server `LEGION_TEST_NATS_URL` and `LEGION_TEST_NATS_MONITOR_URL` name, and starts no
-  container when both are set, so run one yourself and point them at it:
+  The daemon's Go tests need no NATS server: `packages/daemon/internal/testnats` starts a
+  nats-server of its own in the test process for each test, and reads no server's address from
+  the environment.
+  Run them as the first section says, beside any other package.
+  The one daemon test that runs a container, `TestDaemonPermissionsOnRealServers`, skips where no
+  container runtime answers.
+
+  The `-omp` suites of `packages/pi-envoy` and `packages/pi-legion` read one NATS server from
+  `LEGION_TEST_NATS_URL`.
+  Start it without JetStream, from a binary under `$TMPDIR`, on a port no sibling role holds, and
+  keep its PID:
 
   ```sh
-  go run github.com/nats-io/nats-server/v2@v2.15.1 -js -p 14222 -m 18222 -sd "$TMPDIR/nats" &
-  export LEGION_TEST_NATS_URL=nats://127.0.0.1:14222 LEGION_TEST_NATS_MONITOR_URL=http://127.0.0.1:18222
+  GOBIN="$TMPDIR/gobin" go install github.com/nats-io/nats-server/v2@v2.15.1
+  "$TMPDIR/gobin/nats-server" -a 127.0.0.1 -p <port> & echo $! > "$TMPDIR/nats-omp.pid"
+  export LEGION_TEST_NATS_URL=nats://127.0.0.1:<port>
   ```
 
-  Both or neither: one set without the other fails the test rather than falling back. The
-  monitor port is read, not decoration — the per-test reset waits there for every client
-  connection to end, and the check at the end of each test reads it again, failing the test
-  that leaves a client connected. One server serves one test binary at a time, so name one
-  package a command (or pass `-p 1`): two packages' binaries on one server delete each other's
-  streams, and each would see the other's connections as a leak.
-  Pick ports no sibling role holds, and keep the store directory off your home. In your own
-  work, run the NATS-backed tests your change touches by name (`go test -run`), as the first
-  section says.
+  Stop it by that PID when your run ends: `kill "$(cat "$TMPDIR/nats-omp.pid")"`.
+  A server without JetStream keeps no state, so the suites that share it share nothing.
+  A server with JetStream on a fixed store loads its streams again when it starts again, and a
+  stream left over `notifications.>` captures and acknowledges the relay frames these suites wait
+  for, so those cases fail against it and pass on a server without JetStream.
 - **The rest, by package**, for a named run the pod does make. A Postgres unpacked from Debian
   packages (the harness under **The worked case** of `withheld-capability.md`) has only the
   `C`, `C.utf8` and `POSIX` locales, so its default collation is byte order, and

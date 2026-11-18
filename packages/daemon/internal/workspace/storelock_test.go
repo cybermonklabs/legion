@@ -11,9 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // heldLock is a Request.StoreLock that knows whether it is held, so a runner can read, at each
@@ -367,7 +367,8 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 }
 
 // overlapRunner holds the first checkout until a second one starts, so two provisions' checkouts
-// are seen to run at once, and counts the other commands that run at once.
+// are seen to run at once, and counts the other commands that run at once. A checkout whose
+// partner never starts waits until its provision's context ends (testwait.Context).
 type overlapRunner struct {
 	*recordingRunner
 	checkouts, store, worstStore atomic.Int32
@@ -388,8 +389,8 @@ func (r *overlapRunner) Run(ctx context.Context, command Command) (Result, error
 	}
 	select {
 	case <-r.overlapped:
-	case <-time.After(20 * time.Second):
-		return Result{}, fmt.Errorf("the checkouts never overlapped: %s waited 20s for another issue's checkout", strings.Join(command.Argv, " "))
+	case <-ctx.Done():
+		return Result{}, fmt.Errorf("the checkouts never overlapped: %s ended waiting for another issue's checkout: %w", strings.Join(command.Argv, " "), ctx.Err())
 	}
 	return r.recordingRunner.Run(ctx, command)
 }
@@ -408,6 +409,7 @@ func TestTwoIssuesProvisionedAtOnceOverlapOnlyInTheirCheckouts(t *testing.T) {
 		t.Fatalf("Provision of the first issue: %v", err)
 	}
 	run := &overlapRunner{recordingRunner: base, overlapped: make(chan struct{})}
+	ctx := testwait.Context(t)
 
 	var wg sync.WaitGroup
 	results := make(map[string]Workspace)
@@ -418,7 +420,7 @@ func TestTwoIssuesProvisionedAtOnceOverlapOnlyInTheirCheckouts(t *testing.T) {
 			defer wg.Done()
 			mine := req
 			mine.Issue = issue
-			working, err := Provision(context.Background(), run, mine)
+			working, err := Provision(ctx, run, mine)
 			if err != nil {
 				t.Errorf("Provision %s: %v", issue, err)
 				return

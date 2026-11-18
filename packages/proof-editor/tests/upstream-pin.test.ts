@@ -249,9 +249,9 @@ test("the pinned dependency renders every Mermaid diagram type with its own rend
   );
 });
 
-// The timeout is explicit because the case spawns tsc over the whole upstream closure — two
-// TypeScript programs — and that is the work, not a hang. Bun's 5 s default is under the cost on
-// a two-core runner, where the timeout would read exactly like a stale `upstream/`.
+// The case spawns tsc over the whole upstream closure — two TypeScript programs — and that is the
+// work, not a hang. It takes longer than Bun's 5 s default on a two-core runner, so the package
+// script's `--timeout` is set above it.
 test("upstream/ is what the pinned sources emit", async () => {
   const generator =
     await Bun.$`bun ${join(import.meta.dir, "..", "scripts", "upstream-declarations.ts")} --check`
@@ -261,4 +261,4 @@ test("upstream/ is what the pinned sources emit", async () => {
   const output = generator.stdout.toString() + generator.stderr.toString();
   expect(output).toContain("matches the pin");
   expect(generator.exitCode).toBe(0);
-}, 120_000);
+});

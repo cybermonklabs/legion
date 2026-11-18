@@ -358,7 +358,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
   } finally {
     rmSync(path.dirname(out), { recursive: true, force: true });
   }
-}, 60_000);
+});
 
 // dispatch://INFRA-332's eight guidance rules, each pinned where it was written. A pin fails when
 // a later edit deletes the rule's key sentence; it does not show that an agent follows the rule,

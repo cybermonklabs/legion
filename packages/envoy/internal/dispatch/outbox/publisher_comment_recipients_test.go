@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // seedThreadComment inserts a comment author wrote on issueKey's issue and returns its id. The
@@ -1105,7 +1106,7 @@ func TestAStoppingBatchReleasesTheEventsWhoseRecipientQueryFailed(t *testing.T) 
 		stop := run(t, database, publisher, broker)
 		// The batch's sends to the issue topic go one at a time (planChains), so the comment's,
 		// which is held unanswered, is the one sent.
-		waitFor(t, 5*time.Second, "the comment sent", func() bool {
+		testwait.Eventually(t, "the comment sent", func() bool {
 			return slices.Contains(publisher.sent(), "notifications.dispatch.issue.T-1.comment.created")
 		})
 		stop()

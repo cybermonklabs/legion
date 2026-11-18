@@ -11,10 +11,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // metadataAudience is the broker audience these reads ask the metadata server to mint for.
@@ -79,22 +79,20 @@ func TestGoogleAccountSharesOneMetadataReadBetweenConcurrentReaders(t *testing.T
 	})
 	account := brokertoken.NewGoogleAccount(metadataAudience)
 
-	var started, done sync.WaitGroup
-	started.Add(readers)
+	var done sync.WaitGroup
 	done.Add(readers)
 	errs := make([]error, readers)
 	for i := range readers {
 		go func() {
 			defer done.Done()
-			started.Done()
 			_, errs[i] = account.Read()
 		}()
 	}
-	// The whole point is what the readers behind the first one do, so the stub is held until
-	// every reader has been scheduled and given a moment to reach the read; nothing a reader
-	// blocked inside the shared read is observable from here.
-	started.Wait()
-	time.Sleep(50 * time.Millisecond)
+	// The whole point is what the readers behind the first one do, so the stub holds the one read
+	// until every reader has its place on it.
+	testwait.Eventually(t, fmt.Sprintf("all %d readers to hold a place on the one metadata read in flight", readers), func() bool {
+		return account.Waiting() == readers
+	})
 	close(release)
 	done.Wait()
 

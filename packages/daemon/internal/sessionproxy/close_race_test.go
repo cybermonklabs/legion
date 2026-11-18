@@ -5,6 +5,9 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // heldDialer is a dialer whose dials, once released, return a live connection whatever their
@@ -41,6 +44,7 @@ func TestALateDialDuringCloseIsClosedNotCopied(t *testing.T) {
 	socket := socketPath(t)
 	proxy, err := Start(context.Background(), Config{
 		Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout, Drain: drain, NewDialer: dialer.build,
+		Clock: clocktest.New(testMoment),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -52,37 +56,24 @@ func TestALateDialDuringCloseIsClosedNotCopied(t *testing.T) {
 		t.Fatalf("dial the proxy: %v", err)
 	}
 	defer client.Close()
-	<-dialer.held
+	testwait.Receive(t, "the client's upstream dial", dialer.held)
 
-	began := time.Now()
 	closed := make(chan error, 1)
 	go func() { closed <- proxy.Close() }()
-	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+	testwait.Eventually(t, "Close to mark the proxy closing", func() bool {
 		proxy.connsMu.Lock()
-		closing := proxy.closing
-		proxy.connsMu.Unlock()
-		if closing {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Close never marked the proxy closing")
-		}
-	}
+		defer proxy.connsMu.Unlock()
+		return proxy.closing
+	})
 	close(dialer.release)
 
 	server := up.next(t)
 	defer server.Close()
 	expectClosed(t, server, "the upstream")
 	expectClosed(t, client, "the client")
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	case <-time.After(drain + 2*time.Second):
-		t.Fatal("Close did not return")
-	}
-	if waited := time.Since(began); waited >= drain {
-		t.Fatalf("Close returned %s after it began, having held a connection dialed during it until the %s drain was over", waited, drain)
+	// The proxy's fake clock never reaches the drain's end, so Close returns only because the late
+	// connection was closed at once, not held until the drain was over.
+	if err := testwait.Receive(t, "Close's return", closed); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }

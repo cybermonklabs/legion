@@ -37,8 +37,11 @@ function gitNames(args: string[], allowed: number[] = [0]): string[] {
     .filter((name) => name !== "" && existsSync(join(root, name)));
 }
 
-/** A line that starts a NATS server: a `docker run` whose arguments end in `-js`, as a JetStream server's do. */
-const natsStart = /\bdocker run\b.*\s-js\b/;
+/**
+ * A line that starts a NATS server: a `docker run`, or lib/containers.sh's start_nats_container,
+ * whose arguments end in `-js`, as a JetStream server's do.
+ */
+const natsStart = /\b(?:docker run|start_nats_container)\b.*\s-js\b/;
 
 /**
  * Each problem a driver's text has: a line that starts a NATS server on any image but
@@ -258,6 +261,13 @@ describe("every live proof starts the NATS server the floor takes", () => {
     const old = `. "$root/scripts/e2e/lib/nats-image.sh"\ndocker run -d --name "$nats_container" -p 127.0.0.1::4222 nats:2.10 -js >/dev/null\n`;
     expect(natsProblems("fixture.sh", old)).toEqual([
       'fixture.sh:2 starts NATS on an image other than "$nats_image": docker run -d --name "$nats_container" -p 127.0.0.1::4222 nats:2.10 -js >/dev/null',
+    ]);
+  });
+
+  test("a driver starting nats:2.10 through lib/containers.sh is named", () => {
+    const old = `. "$root/scripts/e2e/lib/nats-image.sh"\nstart_nats_container "$nats_container" --cpus 1 -- nats:2.10 -js\n`;
+    expect(natsProblems("fixture.sh", old)).toEqual([
+      'fixture.sh:2 starts NATS on an image other than "$nats_image": start_nats_container "$nats_container" --cpus 1 -- nats:2.10 -js',
     ]);
   });
 

@@ -71,6 +71,7 @@ type Issuer struct {
 	issuerClaim       string
 	discoveryStatus   int
 	discoveryDelay    time.Duration
+	discoveryGate     chan struct{}
 	discoveryRequests int
 	served            []jose.JSONWebKey
 	jwksRequests      int
@@ -263,6 +264,24 @@ func (i *Issuer) DelayDiscovery(d time.Duration) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.discoveryDelay = d
+}
+
+// HoldDiscovery holds every discovery read at the stand-in until the func it returns releases it,
+// so a test acts while a read is in flight rather than racing a delay. The func runs once however
+// often it is called.
+func (i *Issuer) HoldDiscovery() func() {
+	gate := make(chan struct{})
+	i.mu.Lock()
+	i.discoveryGate = gate
+	i.mu.Unlock()
+	return sync.OnceFunc(func() {
+		i.mu.Lock()
+		if i.discoveryGate == gate {
+			i.discoveryGate = nil
+		}
+		i.mu.Unlock()
+		close(gate)
+	})
 }
 
 // DiscoveryRequests counts the discovery document's reads, whatever it
@@ -598,8 +617,16 @@ func sign(key *Key, claims map[string]any) (string, error) {
 func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	i.mu.Lock()
 	i.discoveryRequests++
-	status, issuer, omitCodeFlow, omitRevocation, delay := i.discoveryStatus, i.issuerClaim, i.omitCodeFlow, i.omitRevocation, i.discoveryDelay
+	status, issuer, omitCodeFlow, omitRevocation := i.discoveryStatus, i.issuerClaim, i.omitCodeFlow, i.omitRevocation
+	delay, gate := i.discoveryDelay, i.discoveryGate
 	i.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if delay > 0 {
 		select {
 		case <-time.After(delay):

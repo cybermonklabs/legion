@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -87,7 +88,7 @@ func reviewsStandIn(t *testing.T, reviews func() string, reads *atomic.Int64) *h
 // when asked, each read of it counted in outsiderReads.
 func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string, outsiderReads *atomic.Int64) *httptest.Server {
 	t.Helper()
-	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: aLease, Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":true,"mergeable_state":"clean"}`))
@@ -453,13 +454,16 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 		return "read"
 	}, &outsiderReads).URL
 	w := reviewReadRuntime(pool, api)
-	w.permissionTTL = time.Nanosecond
+	clk := clocktest.New(time.Date(2026, 10, 8, 22, 20, 0, 0, time.UTC))
+	w.clock = clk
 	readCapture(t, w)
 	if got, _ := capturePhase(t, pool); got != phase.Reviewing || outsiderReads.Load() != 1 {
 		t.Fatalf("after the first read the issue is in %s and the outsider's permission was read %d times, want reviewing and once", got, outsiderReads.Load())
 	}
 	promoted.Store(true)
-	time.Sleep(time.Millisecond)
+	// The permission answer's own window passes, so only the review judged once keeps a second
+	// read from asking about the account again.
+	clk.Advance(reviewPermissionTTL)
 	readCapture(t, w)
 	if got, _ := capturePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the account was given write access the issue is in %s, want reviewing: its approval was judged when the account could not write", got)
@@ -733,7 +737,7 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 		t.Fatalf("seed a second open pull request: %v", err)
 	}
 	var paths []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86", "/repos/acme/widgets/pulls/87":
@@ -742,7 +746,8 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
 		}
-	}))
+	}})
+
 	t.Cleanup(server.Close)
 	readCapture(t, reviewReadRuntime(pool, server.URL))
 	if len(paths) != 2 || paths[1] != "/repos/acme/widgets/pulls/"+strings.TrimPrefix(paths[0], "/repos/acme/widgets/pulls/")+"/reviews" {

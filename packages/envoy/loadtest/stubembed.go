@@ -144,12 +144,14 @@ func (s *stubEmbedder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		answer = stubEmbedRefuse(http.StatusInternalServerError, "encode_failed")
 		payload, _ = json.Marshal(answer.body)
 	}
+	// The request's line is logged before the answer is written, so it exists by the time the
+	// caller holds the answer: a log read after the call sees every call that has answered.
+	s.lg.Printf("%s %s: %d texts, %d bytes, HTTP %d", r.Method, r.URL.Path, answer.texts, answer.bytes, answer.status)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(answer.status)
 	if _, err := w.Write(payload); err != nil {
 		s.lg.Printf("write the answer: %v", err)
 	}
-	s.lg.Printf("%s %s: %d texts, %d bytes, HTTP %d", r.Method, r.URL.Path, answer.texts, answer.bytes, answer.status)
 }
 
 // answer is what the stub replies to one request, and what that request carried. It refuses in

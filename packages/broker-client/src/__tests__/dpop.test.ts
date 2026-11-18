@@ -3,7 +3,7 @@
 // The proof this process signs: what it carries, what it never carries, and that it is signed by
 // the key whose public half it embeds, for a key this process makes and for a person's box key.
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { type JWK, jwtVerify } from "jose";
 import { importDpopKey, newDpopKey } from "../dpop";
@@ -13,17 +13,26 @@ function part(compact: string, at: number): Record<string, unknown> {
   return JSON.parse(Buffer.from(compact.split(".")[at] as string, "base64url").toString("utf8"));
 }
 
+/** The moment the proof's clock reads while it signs: `iat` is its whole second. */
+const SIGNED_AT = new Date("2026-03-04T05:06:07.890Z");
+
 test("a token endpoint proof carries jti, htm, htu and iat, and nothing else", async () => {
-  const key = await newDpopKey();
-  const compact = await key.proof({ method: "post", url: "http://broker.test/v1/oauth/token" });
-  expect(Object.keys(part(compact, 0)).sort()).toEqual(["alg", "jwk", "typ"]);
-  const claims = part(compact, 1);
-  expect(Object.keys(claims).sort()).toEqual(["htm", "htu", "iat", "jti"]);
-  expect(claims.htm).toBe("POST");
-  expect(claims.htu).toBe("http://broker.test/v1/oauth/token");
-  expect(Math.abs(Date.now() / 1000 - (claims.iat as number))).toBeLessThan(60);
-  expect(part(compact, 0).typ).toBe("dpop+jwt");
-  expect(part(compact, 0).alg).toBe("ES256");
+  // Bun holds `Date.now()`, which the proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
+  try {
+    const key = await newDpopKey();
+    const compact = await key.proof({ method: "post", url: "http://broker.test/v1/oauth/token" });
+    expect(Object.keys(part(compact, 0)).sort()).toEqual(["alg", "jwk", "typ"]);
+    const claims = part(compact, 1);
+    expect(Object.keys(claims).sort()).toEqual(["htm", "htu", "iat", "jti"]);
+    expect(claims.htm).toBe("POST");
+    expect(claims.htu).toBe("http://broker.test/v1/oauth/token");
+    expect(claims.iat).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
+    expect(part(compact, 0).typ).toBe("dpop+jwt");
+    expect(part(compact, 0).alg).toBe("ES256");
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("the proof's embedded key is the public half alone, and signs the proof", async () => {

@@ -29,6 +29,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -639,7 +640,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
+		if err := duty.FreeSessionLock(clock.Real(), conn, `select pg_advisory_unlock($1, hashtext($2))`,
 			blockIndexLeaseNamespace, docs.BlockIndexLease); err != nil {
 			t.Errorf("give the block-index lease back: %v", err)
 		}

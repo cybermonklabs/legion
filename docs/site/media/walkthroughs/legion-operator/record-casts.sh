@@ -64,6 +64,7 @@ evidence=$(mktemp -d /tmp/legion-docs-casts-evidence.XXXXXX)
 mkdir -p "$evidence/logs" "$work/bin" "$work/xdg" "$work/tmux"
 timeout_hook=
 pg_container=legion-docs-casts-pg-$$
+pg_sockets= # its socket directory (start_postgres_container, lib/containers.sh); cleanup removes it
 nats_container=legion-docs-casts-nats-$$
 daemon_pid=
 daemon_keeper_pid=
@@ -88,6 +89,7 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets"
   rm -rf "$work"
   echo "evidence: $evidence (logs/daemon.log, logs/listener.log, logs/model.log)"
   return 0
@@ -119,15 +121,17 @@ chmod +x "$work/bin/omp"
 keep_port daemon_keeper daemon_port
 
 check=services
-docker run -d --name "$pg_container" --cpus 0.5 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-  -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
-pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
-until_true 60 "Postgres" docker exec "$pg_container" pg_isready -h 127.0.0.1 -U legion -d legion
+# Neither container publishes a port (scripts/e2e/lib/containers.sh): Postgres listens on a unix
+# socket in a directory of the run's own, and NATS binds a loopback port the kernel chooses.
+start_postgres_container "$pg_container" pg_sockets --cpus 0.5 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -- mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+until_true 60 "Postgres" postgres_container_ready "$pg_container"
 # shellcheck source-path=SCRIPTDIR source=../../../../../scripts/e2e/lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-until_true 90 "NATS" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+start_nats_container "$nats_container" --cpus 0.5 --memory 512m -- "$nats_image" -js
+nats_port=
+until_true 90 "NATS" nats_container_ready "$nats_container" nats_port
+nats_url="nats://127.0.0.1:$nats_port"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/envoy-token")
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
 ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \
@@ -183,7 +187,7 @@ EOF
 cat >"$operator/legion.yaml" <<EOF
 project: SHOP
 port: $daemon_port
-postgres_dsn: postgres://legion:legion@127.0.0.1:$pg_port/legion?sslmode=disable
+postgres_dsn: postgres://legion:legion@/legion?host=$pg_sockets&sslmode=disable
 state_dir: $work/state
 operator_token_file: ./operator-token
 envoy_url: http://127.0.0.1:$envoy_port

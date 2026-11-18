@@ -22,7 +22,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // signInRig is a box: an issuer a person signs in at, a broker that mints their launcher
@@ -83,6 +85,8 @@ func (r *signInRig) signIn(t *testing.T, person string) SignInRecord {
 	if err := r.issuer.ApproveDeviceCode(authorization.UserCode); err != nil {
 		t.Fatalf("%s types the code in: %v", person, err)
 	}
+	// x/oauth2's own wait between token requests, which no clock of Envoy's reaches; the code
+	// is approved already, so the first poll is the only one.
 	authorization.Interval = 1
 	granted, err := r.flow.Wait(context.Background(), authorization)
 	if err != nil {
@@ -272,7 +276,8 @@ func TestARefusedCredentialIsTradedAgain(t *testing.T) {
 // progress must still answer inside its own bound (A10), so its wait for the authority ends
 // when its own context does, answering that context's error, and the trade it stood behind goes
 // on to its own answer. Refused, which an enrolment calls on the same context, waits the same
-// way.
+// way. Each waiter's deadline is on a fake the row moves past it, so the deadline ends the wait
+// at the moment the row chooses, with context.DeadlineExceeded.
 //
 // The named revert: put a sync.Mutex back as mu, and each wait runs until the trade is let go,
 // which this test does only once it has failed.
@@ -296,11 +301,7 @@ func TestAWaitBehindATradeEndsWithTheWaitersContext(t *testing.T) {
 		_, err := rig.authority.Current(context.Background())
 		traded <- err
 	}()
-	select {
-	case <-trading:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first call never reached the broker with its trade")
-	}
+	testwait.Receive(t, "the first call to reach the broker with its trade", trading)
 
 	const bound = 200 * time.Millisecond
 	waiters := []struct {
@@ -317,16 +318,13 @@ func TestAWaitBehindATradeEndsWithTheWaitersContext(t *testing.T) {
 		{"Refused", func(ctx context.Context) error { return rig.authority.Refused(ctx, "credential-1") }},
 	}
 	for _, waiter := range waiters {
-		ctx, cancel := context.WithTimeout(context.Background(), bound)
+		fake := clocktest.New(time.Now())
+		ctx, cancel := fake.WithTimeout(context.Background(), bound)
 		answered := make(chan error, 1)
 		go func() { answered <- waiter.wait(ctx) }()
-		select {
-		case err := <-answered:
-			if !errors.Is(err, context.DeadlineExceeded) {
-				t.Errorf("%s behind a trade, its context ended: %v; want the context's own error", waiter.name, err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Errorf("%s was still waiting 5 s after its %s context ended, behind a trade that has not answered", waiter.name, bound)
+		fake.Advance(bound)
+		if err := testwait.Receive(t, waiter.name+" behind a trade to answer once its context ended", answered); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("%s behind a trade, its context ended: %v; want the context's own error", waiter.name, err)
 		}
 		cancel()
 	}

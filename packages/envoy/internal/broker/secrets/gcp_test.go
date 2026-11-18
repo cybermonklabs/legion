@@ -19,6 +19,7 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -625,9 +626,10 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 }
 
 // TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError pins two failure answers. A metadata call that
-// keeps answering UNAVAILABLE is made gcpMetadataAttempts times and then fails with its own code
-// under a request's deadline, within seconds. A FAILED_PRECONDITION on an enabled version (an
-// unusable key, say) is an error the broker logs, not a secret with no value.
+// keeps answering UNAVAILABLE is made gcpMetadataAttempts times — the count below is what bounds
+// the work, not a reading of the clock — and then fails with its own code. A FAILED_PRECONDITION
+// on an enabled version (an unusable key, say) is an error the broker logs, not a secret with no
+// value.
 func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 	broken := servedSecret("v")
 	broken.keyUnusable = true
@@ -636,12 +638,10 @@ func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 		unavailable: map[string]int{"GetSecret": 100},
 	}
 	store := NewGCP(startFake(t, f), fakeKey)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	start := time.Now()
+	ctx := testwait.Context(t)
 	_, err := store.Describe(ctx, fakePrefix+"a")
-	if err == nil || !strings.Contains(err.Error(), "Unavailable") || time.Since(start) > 10*time.Second {
-		t.Fatalf("Describe through a lasting UNAVAILABLE = %v after %s; want Unavailable within seconds", err, time.Since(start))
+	if err == nil || !strings.Contains(err.Error(), "Unavailable") {
+		t.Fatalf("Describe through a lasting UNAVAILABLE = %v; want Unavailable", err)
 	}
 	f.mu.Lock()
 	calls := f.calls["GetSecret"]

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stop sends sessionID's clean stop as every normal end of a session does, DELETE
@@ -51,19 +52,14 @@ func stopSession(t *testing.T, mux *http.ServeMux, sessionID, query string) *htt
 // before the delete.
 func (rig *sessionConsumerReapRig) requireNoConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for {
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the consumer of "+sessionID+" "+when+" to be deleted with the session's record", func() (string, bool) {
 		info, err := rig.consumers.Info(ctx, sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return
+			return "", true
 		}
-		if ctx.Err() != nil {
-			t.Fatalf("the consumer of %s %s: %+v, %v; want it deleted with the session's record",
-				sessionID, when, info, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("%+v, %v", info, err), false
+	})
 }
 
 // A clean stop takes the session's consumer with the record it deletes. Every normal end of a
@@ -218,7 +214,7 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 			standIn := startSessionStandIn(t, rig.url, sessionID, answerReceived)
 			rig.subscribe(t, kept.registration(t, sessionID))
 			held, _ := rig.storeEvent(t, agent)
-			requireFrames(t, standIn.collect(t, 1, 10*time.Second), held)
+			requireFrames(t, standIn.collect(t, 1), held)
 			created := consumerCreatedAt(t, rig, sessionID, "before the stop")
 
 			answer := stopAnswer(t, stopSession(t, rig.mux, sessionID, kept.query(rig.entry(t, sessionID))))
@@ -229,11 +225,11 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 			if _, err := rig.harness.sessions.Get(sessionID); err != nil {
 				t.Fatalf("the kept registration of %s is gone: %v", sessionID, err)
 			}
-			standIn.none(t, keptStopSilence)
+			standIn.none(t)
 
 			next, _ := rig.storeEvent(t, agent)
 
-			requireFrames(t, standIn.collect(t, 1, 10*time.Second), next)
+			requireFrames(t, standIn.collect(t, 1), next)
 			if again := consumerCreatedAt(t, rig, sessionID, "after the stop that kept its record"); !again.Equal(created) {
 				t.Fatalf("the consumer of %s was created at %s and the stop that kept its record left one created at %s; want the session's own consumer untouched",
 					sessionID, created, again)
@@ -269,7 +265,7 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 		defer close(served)
 		rig.mux.ServeHTTP(recorder, request)
 	}()
-	awaitDeleteWaitingOrDone(t, &rig.delivery.locks, sessionID, served, 2*time.Second)
+	awaitDeleteWaitingOrDone(t, &rig.delivery.locks, sessionID, served)
 	rig.waitForRecordDeleted(t, sessionID)
 
 	hungUp()
@@ -317,19 +313,14 @@ func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for {
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the consumer of "+sessionID+" after the stop to be deleted with the session's record, which is why nothing delivers the naked messages", func() (string, bool) {
 		info, err := rig.consumers.Info(ctx, sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			break
+			return "", true
 		}
-		if ctx.Err() != nil {
-			t.Fatalf("the consumer of %s after the stop: %+v, %v; want it deleted with the session's record, which is why nothing delivers the naked messages",
-				sessionID, info, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("%+v, %v", info, err), false
+	})
 }
 
 // handOverLineNaming is the one hand-over record of sessionID in logs, whatever level it was
@@ -370,12 +361,12 @@ const handOverRecordGoneLine = "session relay stopped; the session has no record
 // session, its stand-in and the message the relay holds.
 func relayHoldingOneMessage(t *testing.T, prefix string) (*relayRig, string, *sessionStandIn, contracts.Envelope) {
 	t.Helper()
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	rig := newRelayRigReceipt(t)
 	sessionID := prefix + id.New()
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), stored)
+	requireFrames(t, standIn.collect(t, 1), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 	return rig, sessionID, standIn, stored
 }
@@ -387,7 +378,7 @@ func relayHoldingOneMessage(t *testing.T, prefix string) (*relayRig, string, *se
 // in it, so a row reads what else the run wrote from the same log.
 func requireHandOverOfAGoneSession(t *testing.T, rig *relayRig, sessionID, went string) string {
 	t.Helper()
-	awaitLogLine(t, rig, "session relay stopped;", 15*time.Second)
+	awaitLogLine(t, rig, "session relay stopped;")
 	logs := rig.harness.logs.String()
 	report := handOverLineNaming(t, logs, sessionID)
 	if report["msg"] != handOverRecordGoneLine {
@@ -431,8 +422,7 @@ func instanceRegistration(t *testing.T, sessionID, epoch, instanceID string) str
 // consumer changes it.
 func consumerCreatedAt(t *testing.T, rig *relayRig, sessionID, when string) time.Time {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	info, err := rig.consumers.Info(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("the consumer of %s %s: %v; want the stream holding it", sessionID, when, err)

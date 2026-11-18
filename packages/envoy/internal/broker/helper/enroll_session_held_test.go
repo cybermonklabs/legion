@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -64,14 +65,11 @@ func (h *holderSignIns) signIn(authority *brokerclient.Authority) {
 	h.authority = authority
 }
 
-// waitUpTo polls cond every 10 ms for as long as d, and fails with why when it never holds. It
-// is waitFor with a deadline of the test's own, because the attempt that enrols here waits out
-// the held ladder first and that outlasts waitFor's five seconds.
-func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
+// waitUpTo waits for cond, failing with why when it never holds. It is waitFor with a message
+// of the row's own, since what never came is what such a failure has to say.
+func waitUpTo(t *testing.T, cond func() bool, why string) {
 	t.Helper()
-	if !testwait.Holds(d, 10*time.Millisecond, cond) {
-		t.Fatal(why)
-	}
+	testwait.Eventually(t, why, cond)
 }
 
 func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *testing.T) {
@@ -89,11 +87,15 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 		defer f.mu.Unlock()
 		delete(f.heldSessions, heldName)
 	}}
+	// The server's own timers — the enroll retry's ladder above all — run on this, so the row
+	// fires each wait rather than waiting it out. The Broker keeps the wall clock: its login
+	// and refresh are the fake broker's real HTTP.
+	fake := clocktest.New(time.Now())
 	srv := &Server{
 		Registry: NewRegistry(filepath.Join(t.TempDir(), "sessions.json")),
 		Broker: &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"),
 			MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log, SignIns: signIns},
-		Hostname: "testhost", PeerOf: PeerOf, Log: log, MinRenew: time.Second,
+		Hostname: "testhost", PeerOf: PeerOf, Log: log, MinRenew: time.Second, Clock: fake,
 	}
 	t.Cleanup(srv.Broker.Close)
 	if _, err := srv.Broker.Login(context.Background(), "testhost"); err != nil {
@@ -126,7 +128,13 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 		sent, _, _ := f.snapshot()
 		return len(sent)
 	}
-	waitUpTo(t, 10*time.Second, func() bool { return posts() > 1 },
+	waitUpTo(t, func() bool { return posts() == 1 },
+		"the helper to send the first enroll of a name another principal holds")
+	// It asks again: a loop that read the refusal as the name's final answer would send one
+	// POST and return, and this session would sign nothing ever again. The retry's own wait
+	// is armed on this server's clock, so the row fires it rather than waiting it out.
+	fireArmedAt(t, fake, fake.Now().Add(time.Second), "the enroll retry's first wait, a second from now")
+	waitUpTo(t, func() bool { return posts() > 1 },
 		"the helper sent one enroll for a name another principal holds and stopped; the refusal is of the principal that attempt enrolled under, which a sign-in changes with no restart")
 	select {
 	case <-done:
@@ -134,14 +142,9 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	default:
 	}
 
-	// And it backs off rather than spinning: the ladder is 1 s doubling, so a couple of
-	// seconds hold a handful of attempts, where a loop with no wait at all would hold
-	// thousands.
-	before := posts()
-	time.Sleep(2500 * time.Millisecond)
-	if spun := posts() - before; spun > 3 {
-		t.Fatalf("the helper sent %d enrolls in 2.5 s for a held name, want the backoff's handful", spun)
-	}
+	// And it backs off rather than spinning: the ladder is 1 s doubling, read from the wait
+	// the second failure arms rather than from a count of attempts in a window of real time.
+	awaitArmedAt(t, fake, fake.Now().Add(2*time.Second), "the enroll retry's second wait, two seconds from now: the ladder doubles")
 
 	// The session keeps the refusal meanwhile: `sessions`, a register reply and every sign
 	// answer report it, so the launcher learns why this session is not signing yet.
@@ -161,7 +164,9 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 		t.Fatal(err)
 	}
 	signIns.signIn(&brokerclient.Authority{Key: graceKey, CredentialID: "credential-of-graces-sign-in", Operator: "grace@example.com"})
-	waitUpTo(t, 60*time.Second, func() bool { return sess.snapshot().EnrollmentID != "" },
+	// The next attempt is grace's: it comes when the wait the last refusal armed fires.
+	fake.Advance(2 * time.Second)
+	waitUpTo(t, func() bool { return sess.snapshot().EnrollmentID != "" },
 		"the session never enrolled after the person holding its name signed in on this box")
 
 	sent, _, _ := f.snapshot()

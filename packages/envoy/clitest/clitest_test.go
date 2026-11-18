@@ -1,7 +1,6 @@
 package clitest
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -15,10 +14,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every fake is this test binary run again with fakeEnv set: TestMain then runs the command line
@@ -149,30 +151,34 @@ func TestRecorderCountsTheBinarysRequests(t *testing.T) {
 	if got, want := rec.Requests(), []string{"GET /v1/alpha?name=bob"}; !slices.Equal(got, want) {
 		t.Errorf("the recorder holds %q, want %q", got, want)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if made, opened, err := rec.contactsSince(ctx, 0, 0); err != nil || len(made) != 1 || opened != 1 {
+	if made, opened, err := rec.contactsSince(testwait.Context(t), 0, 0); err != nil || len(made) != 1 || opened != 1 {
 		t.Errorf("the recorder counts %q and %d connection(s) (%v), want the one request on 1 connection", made, opened, err)
 	}
 }
 
 // A connection the server has not taken yet when a run ends is counted against that run: the
-// count waits for it. The test holds the server's taking of each connection for 300 ms, so a count
-// read at once would read none.
+// count waits for it. The test holds the server's take of every connection until the count says
+// it is waiting, so the count's first look finds no connection counted, and a count that read at
+// once would read none.
 func TestTheRecorderCountsAConnectionItHasNotTakenYet(t *testing.T) {
 	t.Parallel()
 	rec := NewRecorder(t)
+	waiting := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(waiting) }) }
+	// Registered after NewRecorder's, so it runs first: a count that never waits leaves no take
+	// held when the server closes.
+	t.Cleanup(release)
 	rec.mu.Lock()
-	rec.beforeTake = func() { time.Sleep(300 * time.Millisecond) }
+	rec.beforeTake = func() { <-waiting }
+	rec.beforeWait = release
 	rec.mu.Unlock()
 	conn, err := net.Dial("tcp", rec.address())
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if made, opened, err := rec.contactsSince(ctx, 0, 0); err != nil || len(made) != 0 || opened != 1 {
+	if made, opened, err := rec.contactsSince(testwait.Context(t), 0, 0); err != nil || len(made) != 0 || opened != 1 {
 		t.Fatalf("the recorder counts %q and %d connection(s) (%v), want no request on 1 connection", made, opened, err)
 	}
 }
@@ -544,7 +550,9 @@ func TestConformanceChild(t *testing.T) {
 	case "case-with-a-flag":
 		c.Commands = append(c.Commands, []string{"-v"})
 	case hangingHelp:
-		// Long enough that every run but the hanging one ends well inside it on a loaded machine.
+		// The guard of this child's runs: at least twice the slowest correct run, 1,598 ms beside
+		// 32 busy loops on 2 CPUs (runTimeout's comment has the readings), so every run but the
+		// hanging one ends inside it, and the hanging one costs the row 15 s rather than a minute.
 		before := runTimeout
 		runTimeout = 15 * time.Second
 		t.Cleanup(func() { runTimeout = before })
@@ -653,6 +661,11 @@ func runFake(defect string, args []string) int {
 	case defect == hangingHelp && slices.Equal(args, []string{"help", "pass"}):
 		time.Sleep(time.Hour)
 	case defect == leftoverAsker:
+		// The asker is the defect, a process that asks after the run, and the 300 ms is how late
+		// it asks. A harness that waits for the run's process group passes the row however late it
+		// asks; the 300 ms only sets how sure the row is that a harness which does not wait counts
+		// before the ask, so no row's verdict on a correct harness depends on it. A gate on the
+		// starter's exit asks at once, races that harness's count and lets it pass (measured).
 		time.Sleep(300 * time.Millisecond)
 		_ = fetch("/v1/late")
 		return 0

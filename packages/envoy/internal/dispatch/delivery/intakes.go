@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -105,6 +106,13 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
 func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}) (stop func(), err error) {
+	return startIntakes(ctx, connect, pool, leases, github, broker, settingsWake, clock.Real())
+}
+
+// startIntakes is StartIntakes with the clock both intakes run on (heldDurable.clock): clock.Real
+// from StartIntakes, and a test's clocktest.Fake, which moves the intakes' stop deadlines only
+// when the test moves it.
+func startIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, c clock.Clock) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -120,10 +128,11 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	}
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
+	intake.clock = c
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })
-	running.Go(func() { newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings).Run(ctx) })
+	running.Go(func() { newJobIntake(jobClient, pool, leases.jobs, github, c, settings).Run(ctx) })
 	var stopped sync.Once
 	return func() {
 		stopped.Do(func() {

@@ -4,24 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestTailPrintsEnvelopesOnTheSubject(t *testing.T) {
 	server, url := testnats.Start(t)
-	// The deadline bounds the tail, not the server's start: the server runs in this process and
-	// is accepting connections by the time Start returns, so the only thing left to outlive its
-	// deadline is the tail itself.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	publisher, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -45,7 +42,7 @@ func TestTailPrintsEnvelopesOnTheSubject(t *testing.T) {
 		}
 	}
 
-	if err := <-result; err != nil {
+	if err := testwait.Receive(t, "the tail to end after its two envelopes", result); err != nil {
 		t.Fatalf("tail: %v", err)
 	}
 
@@ -71,8 +68,7 @@ func TestTailPrintsEnvelopesOnTheSubject(t *testing.T) {
 // the probe over and go on tailing, rather than end on a message that carries no envelope.
 func TestTailPassesOverTheListenersConnectionProbe(t *testing.T) {
 	server, url := testnats.Start(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	publisher, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -96,7 +92,7 @@ func TestTailPassesOverTheListenersConnectionProbe(t *testing.T) {
 		t.Fatalf("publish the envelope: %v", err)
 	}
 
-	if err := <-result; err != nil {
+	if err := testwait.Receive(t, "the tail to end after the envelope that follows the probe", result); err != nil {
 		t.Fatalf("tail ended on the listener's connection probe: %v", err)
 	}
 	var envelope contracts.Envelope
@@ -111,32 +107,30 @@ func TestTailPassesOverTheListenersConnectionProbe(t *testing.T) {
 func waitForNATSSubscription(t *testing.T, ctx context.Context, server *testnats.Server, subject string) {
 	t.Helper()
 	endpoint := server.MonitorURL() + "/subsz?subs=1"
-	deadline := time.Now().Add(5 * time.Second)
-	var lastErr error
-	for time.Now().Before(deadline) {
+	testwait.Until(t, fmt.Sprintf("NATS to register subscription %q at %s", subject, endpoint), func() (error, bool) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			t.Fatalf("create NATS subscription request: %v", err)
 		}
 		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			var status struct {
-				Subscriptions []struct {
-					Subject string `json:"subject"`
-				} `json:"subscriptions_list"`
-			}
-			err = json.NewDecoder(response.Body).Decode(&status)
-			_ = response.Body.Close()
-			if err == nil {
-				for _, subscription := range status.Subscriptions {
-					if subscription.Subject == subject {
-						return
-					}
-				}
+		if err != nil {
+			return err, false
+		}
+		var status struct {
+			Subscriptions []struct {
+				Subject string `json:"subject"`
+			} `json:"subscriptions_list"`
+		}
+		err = json.NewDecoder(response.Body).Decode(&status)
+		_ = response.Body.Close()
+		if err != nil {
+			return err, false
+		}
+		for _, subscription := range status.Subscriptions {
+			if subscription.Subject == subject {
+				return nil, true
 			}
 		}
-		lastErr = err
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("NATS never registered subscription %q at %s: %v", subject, endpoint, lastErr)
+		return nil, false
+	})
 }

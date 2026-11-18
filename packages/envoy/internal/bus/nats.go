@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -39,14 +40,14 @@ type connectOpts struct {
 	name                        string
 	replicas                    int
 	streamMaxBytes              int64
-	keepInterval                time.Duration
 	keptBuckets                 []string
 	publishAcknowledgementClock AcknowledgementClock
+	clock                       clock.Clock
 	reconnectErrClock           func() time.Time
 	environment                 func(string) (string, bool)
-	streamSubjectsRefresh       time.Duration
-	reconnectWaitTick           func()
+	reconnectWaitPass           func()
 	beforeRequestFlush          func()
+	subjectsRefreshArmed        func(time.Time)
 	background                  bool
 	silentCutDetection          bool
 }
@@ -63,7 +64,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh}
+	opts := connectOpts{name: "envoy", replicas: 1, publishAcknowledgementClock: clock.Real(), clock: clock.Real(), environment: os.LookupEnv}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -79,20 +80,31 @@ func (o connectOpts) streamConfig() nats.StreamConfig {
 	return cfg
 }
 
-// AcknowledgementClock supplies deadline contexts for JetStream publish acknowledgements.
+// AcknowledgementClock supplies deadline contexts for JetStream publish acknowledgements: a
+// narrowing of clock.Clock, clock.Real unless WithPublishAcknowledgementClock names a test's
+// clocktest.Fake.
 type AcknowledgementClock interface {
 	WithTimeout(context.Context, time.Duration) (context.Context, context.CancelFunc)
-}
-
-type wallClock struct{}
-
-func (wallClock) WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, timeout)
 }
 
 // WithPublishAcknowledgementClock overrides the clock that bounds JetStream publish acknowledgements.
 func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.publishAcknowledgementClock = clock })
+}
+
+// WithClock sets the clock the client's own timers wait on, clock.Real unless a test names its
+// clocktest.Fake: the keeper's period (keep), the refresh of the deployed stream's subjects
+// (followDeployedSubjects), a window's deadline and its wait for a connection (WindowUntil), a
+// Request's timeout, the bound of each lookup EnsureKeyValue sends on this client's connection
+// (withinRequestTimeout), the reconnect wait's recheck (reconnectRecheck) and Drain's deadlines.
+// Each is a timer of this process, so a test moves the fake past it once the client has armed it
+// (clocktest.Fake.AwaitArmed) rather than shortening it, and tells one from another by the moment
+// it is armed for. What nats.go and the server time for themselves (a flush, a dial, a JetStream
+// acknowledgement's PublishAsyncTimeout, a ping, a pull request's expiry) stays on the wall clock,
+// which no clock of a test reaches; a publish's acknowledgement deadline is
+// WithPublishAcknowledgementClock's.
+func WithClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.clock = c })
 }
 
 // WithReconnectErrClock overrides the clock the bus reads for the time-based parts of its
@@ -111,12 +123,6 @@ func WithReconnectErrClock(now func() time.Time) DialOption {
 // them again a period later: the count holds only while every program of the deployment carries it.
 func WithReplicas(n int) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.replicas = n })
-}
-
-// withStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
-// client read the deployed subjects again without waiting a minute.
-func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
-	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 
 // WithStreamMaxBytes sets the deployment's byte limit, StreamMaxBytesEnvVar, for the stream
@@ -261,20 +267,28 @@ type Client struct {
 	connectionSettings          nats.Option
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
-	reconnectErrClock           func() time.Time
-	// reconnectWaitTick, when not nil, runs at each pass of ensureConnWithContext's wait for a
+	// clock is what the client's own timers wait on (WithClock): clock.Real outside tests. Read it
+	// through timers, which a Client built without one (a test's &Client{Conn: conn}) also has.
+	clock             clock.Clock
+	reconnectErrClock func() time.Time
+	// reconnectWaitPass, when not nil, runs at each pass of ensureConnWithContext's wait for a
 	// reconnect, before the pass blocks; a connection event it causes is read before the wait looks
 	// at its context, as one that wakes the wait would be. It is nil outside tests: a test sets it
-	// (WithReconnectWaitTick, export_test.go) to know a publish is inside that wait, or to act at
-	// the moment the wait ends.
-	reconnectWaitTick func()
+	// (WithReconnectWaitPass, export_test.go) to act at the moment the wait ends.
+	reconnectWaitPass func()
 	// beforeRequestFlush, when not nil, runs on the goroutine that flushes a Request's publish,
 	// right before that flush begins, while the wait for the request's answer runs beside it
 	// (window.request). It is nil outside tests: a test sets it (WithBeforeRequestFlush,
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// subjectsRefreshArmed, when not nil, is told the deadline of each refresh of the deployed
+	// stream's subjects just before followDeployedSubjects arms it on clock. It is nil outside tests:
+	// a test that moves clock through the keeper's periods sets it (keeperFake.option,
+	// keeper_test.go) to tell those periods from the refreshes armed on the same clock, which fall
+	// on the same moments every other period.
+	subjectsRefreshArmed func(time.Time)
+	mu                   sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -363,7 +377,7 @@ type Client struct {
 
 	// keeperDone is closed when the keeper of a ConnectOwningStream client ends (keep), nil on a
 	// client that runs none, or none yet: one that connects in the background starts it on its first
-	// reconcile (ensureStreamOnce). It is written and read under mu (startKeeper, awaitKeeper).
+	// reconcile (startKeeperOnce). It is written and read under mu (startKeeper, awaitKeeper).
 	keeperDone chan struct{}
 }
 
@@ -472,9 +486,11 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		connectionSettings:          opts.connectionSettings(credential),
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
+		clock:                       opts.clock,
 		reconnectErrClock:           opts.reconnectErrClock,
-		reconnectWaitTick:           opts.reconnectWaitTick,
+		reconnectWaitPass:           opts.reconnectWaitPass,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		subjectsRefreshArmed:        opts.subjectsRefreshArmed,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -492,7 +508,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		// subjects. The keeper starts once the first ensure has succeeded (startKeeperOnce), not
 		// here: a pass before it could write back a subject the ensure replaced.
 		if ownsStream {
-			c.AddReconnectHook(c.startKeeperOnce(opts.keptBuckets, opts.keepInterval))
+			c.AddReconnectHook(c.startKeeperOnce(opts.keptBuckets))
 		} else {
 			c.AddReconnectHook(c.readDeployedSubjectsUntilRead)
 		}
@@ -511,7 +527,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		if _, err := connectFirstInBackground(c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
 			return nil, err
 		}
-		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
+		go c.followDeployedSubjects()
 		return c, nil
 	}
 	nc, err := dial(nil)
@@ -532,12 +548,12 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		// Registered before the caller can add a hook of its own, so after a connection event the
 		// stream is ensured before the hooks that rewatch state kept on it.
 		c.AddReconnectHook(c.ensureStreamOn)
-		c.startKeeper(stream, opts.keptBuckets, opts.keepInterval)
+		c.startKeeper(stream, opts.keptBuckets)
 	} else {
 		readable = c.readDeployedSubjects(context.Background(), nc, firstStreamSubjectsRead)
 	}
 	if readable {
-		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
+		go c.followDeployedSubjects()
 	}
 	return c, nil
 }
@@ -699,24 +715,34 @@ func (c *Client) readDeployedSubjectsUntilRead(ctx context.Context, conn *nats.C
 // streamInfoSubject is the JetStream API subject a read of the stream's configuration is sent on.
 const streamInfoSubject = "$JS.API.STREAM.INFO." + Stream
 
-// followDeployedSubjects reads the deployed stream's subjects every interval, while the client is
-// connected, until the client stops or the server refuses the read.
-func (c *Client) followDeployedSubjects(every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+// followDeployedSubjects reads the deployed stream's subjects streamSubjectsRefresh after it
+// starts and again streamSubjectsRefresh after each read ends, on the client's clock (WithClock),
+// while the client is connected, until the client stops or the server refuses the read. A refresh
+// due while the client is not connected reads nothing and arms the next. The next refresh is armed
+// only once a read has ended, so a test that sees it armed knows that read is done.
+//
+// Each refresh is armed for the moment it is due (a deadline on the clock, WithDeadline), which
+// it reports first to subjectsRefreshArmed where a test set it: the deadline reported is the one
+// the clock holds, whatever moves the clock between the report and the arm, and a test that reads
+// the clock's armed deadlines and then the reports finds a report for every refresh it saw armed.
+func (c *Client) followDeployedSubjects() {
 	for {
+		due := c.timers().Now().Add(streamSubjectsRefresh)
+		if c.subjectsRefreshArmed != nil {
+			c.subjectsRefreshArmed(due)
+		}
+		refresh, cancel := c.timers().WithDeadline(context.Background(), due)
 		select {
 		case <-c.stopCh:
+			cancel()
 			return
-		case <-ticker.C:
+		case <-refresh.Done():
 		}
+		cancel()
 		c.mu.Lock()
 		conn := c.Conn
 		c.mu.Unlock()
-		if !conn.IsConnected() {
-			continue
-		}
-		if c.subjectsRefused.Load() || !c.followRead(conn) {
+		if conn.IsConnected() && (c.subjectsRefused.Load() || !c.followRead(conn)) {
 			return
 		}
 	}
@@ -732,13 +758,13 @@ func (c *Client) followRead(conn *nats.Conn) bool {
 
 // startKeeperOnce is the reconnect hook of an owning client that connects in the background: it
 // ensures the stream on every connection event (ensureStreamOn), and the first ensure that
-// succeeds starts the client's keeper with buckets and interval (startKeeper), where every other
+// succeeds starts the client's keeper with buckets (startKeeper), where every other
 // owning client's constructor starts it. It is the client's first hook, and the hooks run one at a
 // time (rewatch), so keeping needs no lock of its own. No pass of the keeper runs before that
 // first ensure: a pass that read the stream before the ensure's write and wrote after it would put
 // back a subject the ensure replaced, and no later ensure would remove it. A client stopped before
 // then never starts one.
-func (c *Client) startKeeperOnce(buckets []string, interval time.Duration) func(context.Context, *nats.Conn) error {
+func (c *Client) startKeeperOnce(buckets []string) func(context.Context, *nats.Conn) error {
 	keeping := false
 	return func(ctx context.Context, conn *nats.Conn) error {
 		if err := c.ensureStreamOn(ctx, conn); err != nil {
@@ -746,7 +772,7 @@ func (c *Client) startKeeperOnce(buckets []string, interval time.Duration) func(
 		}
 		if !keeping {
 			keeping = true
-			c.startKeeper(*c.streamConfig, buckets, interval)
+			c.startKeeper(*c.streamConfig, buckets)
 		}
 		return nil
 	}
@@ -865,6 +891,14 @@ func (c *Client) now() time.Time {
 		return time.Now()
 	}
 	return c.reconnectErrClock()
+}
+
+// timers is the clock the client's own timers wait on (WithClock), clock.Real when it took none.
+func (c *Client) timers() clock.Clock {
+	if c.clock == nil {
+		return clock.Real()
+	}
+	return c.clock
 }
 
 // markHooksDueLocked counts a connection event the reconnect hooks have yet to cover, under mu,
@@ -1404,7 +1438,7 @@ func (c *Client) Close() {
 // the registry of live clients (forgetClient), as Close does, since the connection it owns is
 // going.
 func (c *Client) Drain(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := c.timers().Now().Add(timeout)
 	deliveriesDeadline := deadline.Add(-min(drainHookReserve, timeout*3/10))
 	c.subscriptionsMu.Lock()
 	if c.stopMode == clientRunning {
@@ -1449,12 +1483,12 @@ func (c *Client) Drain(timeout time.Duration) error {
 	if err := conn.Drain(); err != nil {
 		return err
 	}
-	expired := time.NewTimer(time.Until(deadline))
+	expired := c.timers().NewTimer(deadline.Sub(c.timers().Now()))
 	defer expired.Stop()
 	select {
 	case <-closed:
 		return nil
-	case <-expired.C:
+	case <-expired.C():
 		return fmt.Errorf("drain NATS: %w", context.DeadlineExceeded)
 	}
 }
@@ -1471,34 +1505,41 @@ func (c *Client) Drain(timeout time.Duration) error {
 // most of it.
 const drainHookReserve = 3 * time.Second
 
+// drainDeliveryPoll is how often drainDeliveries reads whether a subscription it drains has ended:
+// nats.go reports that through no event, only through the subscription's IsValid.
+const drainDeliveryPoll = 10 * time.Millisecond
+
 // drainDeliveries drains the delivery subscriptions, pass after pass while a bind in flight
-// installs one more, and waits until each is no longer valid, at the latest until deadline.
+// installs one more, and waits until each is no longer valid, at the latest until deadline, which
+// is read on the client's clock (WithClock).
 func (c *Client) drainDeliveries(deadline time.Time) error {
-	waitUntil := func(done func() bool) error {
-		for !done() {
-			if !time.Now().Before(deadline) {
-				return fmt.Errorf("drain NATS: %w", context.DeadlineExceeded)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+	delivering := c.deliveringSubscriptions()
+	if len(delivering) == 0 {
 		return nil
 	}
-	for {
-		delivering := c.deliveringSubscriptions()
-		if len(delivering) == 0 {
-			return nil
-		}
+	expired := make(chan struct{})
+	timer := c.timers().AfterFunc(deadline.Sub(c.timers().Now()), func() { close(expired) })
+	defer timer.Stop()
+	poll := time.NewTicker(drainDeliveryPoll)
+	defer poll.Stop()
+	for len(delivering) > 0 {
 		for _, subscription := range delivering {
 			if err := subscription.Drain(); err != nil {
 				return err
 			}
 		}
 		for _, subscription := range delivering {
-			if err := waitUntil(func() bool { return !subscription.IsValid() }); err != nil {
-				return err
+			for subscription.IsValid() {
+				select {
+				case <-expired:
+					return fmt.Errorf("drain NATS: %w", context.DeadlineExceeded)
+				case <-poll.C:
+				}
 			}
 		}
+		delivering = c.deliveringSubscriptions()
 	}
+	return nil
 }
 
 // deliveringSubscriptions returns the installed subscriptions that are still valid, those a pass
@@ -1562,15 +1603,15 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		}
 		if conn != nil && !conn.IsClosed() {
 			c.reconnectWaits.Add(1)
-			if c.reconnectWaitTick != nil {
-				c.reconnectWaitTick()
+			if c.reconnectWaitPass != nil {
+				c.reconnectWaitPass()
 				select {
 				case <-changed:
 					continue
 				default:
 				}
 			}
-			recheck := time.NewTimer(reconnectRecheck)
+			recheck := c.timers().NewTimer(reconnectRecheck)
 			select {
 			case <-ctx.Done():
 				recheck.Stop()
@@ -1579,7 +1620,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 				recheck.Stop()
 				return errStopped
 			case <-changed:
-			case <-recheck.C:
+			case <-recheck.C():
 			}
 			recheck.Stop()
 			continue
@@ -1822,13 +1863,15 @@ func (c *Client) refused(err error, size int) error {
 	return err
 }
 
-// publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
+// PublishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
 // PublishCoreContext of a caller that passed no deadline of its own: their wait for a reconnect
 // and their flush or JetStream acknowledgement together. A publish window's sends take
 // publishAcknowledgementTimeout instead. It is also the HTTP client's per-attempt deadline
 // (packages/envoy-client/src/transport.ts), which a publish that spends the whole bound can never
-// be answered inside, and that is what the Within forms below exist for.
-const publishBound = 5 * time.Second
+// be answered inside, and that is what the Within forms below exist for. A publish arms it on the
+// client's clocks (WithClock for a core publish, WithPublishAcknowledgementClock for a JetStream
+// one), so a test that holds those clocks tells a publish's bound by the moment it is armed for.
+const PublishBound = 5 * time.Second
 
 // Publish routes role lanes, their delivery-exception lanes and every topic the stream does not
 // capture through core NATS (UsesCoreTransport); every notification the stream captures retains
@@ -1841,7 +1884,7 @@ func (c *Client) Publish(item contracts.Envelope) error {
 }
 
 // PublishWithin publishes as Publish does, with ctx as the whole publish's bound - the wait for a
-// reconnect, the flush and the JetStream acknowledgement all end with it - instead of publishBound.
+// reconnect, the flush and the JetStream acknowledgement all end with it - instead of PublishBound.
 // The listener's HTTP handlers publish this way, so a bus they cannot reach is answered inside the
 // deadline their own caller gave them.
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
@@ -1861,14 +1904,14 @@ func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) err
 // may have landed, so the very publish that put the message on the subject can
 // come back a duplicate. PublishAckWithin tells that case apart (StoredAck.Resent).
 func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), publishBound)
+	ctx, cancel := c.armBound(context.Background(), PublishBound)
 	defer cancel()
 	return c.PublishReportingDuplicateWithin(ctx, item)
 }
 
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
 // duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
-// publishBound. The verdict is PublishAckWithin's Duplicate, a resend's included.
+// PublishBound. The verdict is PublishAckWithin's Duplicate, a resend's included.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
@@ -1932,7 +1975,7 @@ func (c *Client) PublishStoredAck(ctx context.Context, subject string, item cont
 	if err != nil {
 		return StoredAck{}, err
 	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, PublishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return StoredAck{}, err
@@ -1959,8 +2002,8 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // and the topic together, because one upstream event can be published on several topics under one
 // key - a GitHub comment that mentions the trigger is published on its mention topic beside its
 // comment topic - and each of those must be retained. The bound PublishStoredAck sets is the
-// earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
-// deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
+// earlier of the caller's own deadline and PublishBound, since WithTimeout keeps the parent's
+// deadline when that is the earlier one; PublishBound is what bounds a caller that passed none.
 // The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
 // to expire that bound without spending it.
 //
@@ -2118,7 +2161,7 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
 	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, PublishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return StoredAck{}, err
@@ -2148,8 +2191,8 @@ func cursorMoved(err error) error {
 // ctx is the whole publish's bound, so it is both what the wait for a reconnect ends with and the
 // window publishConfirmed flushes and confirms within, and a caller answering inside a deadline
 // of its own (the listener's routes: a publish through PublishWithin) is never held past it.
-// The bound taken below is the earlier of ctx's own deadline and publishBound, since WithTimeout
-// keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
+// The bound taken below is the earlier of ctx's own deadline and PublishBound, since WithTimeout
+// keeps the parent's deadline when that is the earlier one; PublishBound is what bounds a caller
 // that passed none.
 //
 // A ctx that has ended puts nothing on the wire: ensureConnWithContext returns its error rather
@@ -2165,7 +2208,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, publishBound)
+	ctx, cancel := c.armBound(ctx, PublishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return err
@@ -2237,16 +2280,16 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, cancel := c.armBound(context.Background(), timeout)
 	if err := c.ensureConnWithContext(ctx); err != nil {
+		cancel()
 		return nil, err
 	}
-	deadline, _ := ctx.Deadline()
 	conn := c.Conn
 	inbox := nats.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	forward := &nats.Msg{
@@ -2258,16 +2301,20 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	err = c.publishConfirmed(ctx, conn, forward, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		_ = replies.Unsubscribe()
+		cancel()
 		return nil, err
 	}
-	return &PendingForward{replies: replies, deadline: deadline, unconfirmed: err}, nil
+	return &PendingForward{replies: replies, window: ctx, end: cancel, unconfirmed: err}, nil
 }
 
 // PendingForward is a forward StartRequestStoredTo published, whose replies Wait reads.
 type PendingForward struct {
 	// replies is the forward's reply inbox, which the stream answers on.
-	replies  *nats.Subscription
-	deadline time.Time
+	replies *nats.Subscription
+	// window is the forward's timeout, armed on the client's clock (armBound) when it was
+	// started, and end releases it.
+	window context.Context
+	end    context.CancelFunc
 	// unconfirmed is publishConfirmed's error for a publish it could not confirm, which the
 	// stream's acknowledgement may still overrule; nil when it confirmed the publish.
 	unconfirmed error
@@ -2279,14 +2326,11 @@ type PendingForward struct {
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
 // publish, the reason for that.
 func (f *PendingForward) Wait() error {
+	defer f.end()
 	defer f.replies.Unsubscribe()
 	for {
-		remaining := time.Until(f.deadline)
-		if remaining <= 0 {
-			break
-		}
-		response, err := f.replies.NextMsg(remaining)
-		if errors.Is(err, nats.ErrTimeout) {
+		response, err := f.replies.NextMsgWithContext(f.window)
+		if err != nil && f.window.Err() != nil {
 			break
 		}
 		if err != nil {

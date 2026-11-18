@@ -18,12 +18,19 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // storeWith is emptyStore with query written into the DSN: a database of this test's own, opened
 // through Open itself, with the pool parameters or connection settings the test needs. Open takes
 // nothing but a DSN, so the DSN is where a test says what it wants.
 func storeWith(t *testing.T, query map[string]string) *Store {
+	t.Helper()
+	return storeAt(t, dsnWith(t, query))
+}
+
+// dsnWith is the DSN of a database of this test's own with query written into it.
+func dsnWith(t *testing.T, query map[string]string) string {
 	t.Helper()
 	dsn, err := url.Parse(testdb.Database(t, "legion_store_bounds_test"))
 	if err != nil {
@@ -34,7 +41,13 @@ func storeWith(t *testing.T, query map[string]string) *Store {
 		values.Set(key, value)
 	}
 	dsn.RawQuery = values.Encode()
-	store, err := Open(context.Background(), dsn.String())
+	return dsn.String()
+}
+
+// storeAt is the store Open makes over dsn, closed when the test ends.
+func storeAt(t *testing.T, dsn string) *Store {
+	t.Helper()
+	store, err := Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}
@@ -85,21 +98,30 @@ func TestADsnThatNamesTheIdleBoundKeepsItsValue(t *testing.T) {
 // daemon's half minute; the daemon's own 30 seconds is what
 // TestThePooledConnectionCarriesTheIdleBound pins. One connection in the pool, so the connection
 // the bound ends is the only connection there is and the read at the end cannot be served by
-// another.
+// another. The bound is the server's own timer, which no clock of the test reaches, so the row
+// waits for its effect: the stalled transaction's backend gone from the server, read on a
+// connection of a second store over the same database, since any statement of the stalled
+// transaction's own would restart its idle time.
 func TestTheIdleBoundEndsAStalledTransactionAndFreesTheConnection(t *testing.T) {
-	store := storeWith(t, map[string]string{idleBoundParam: "1s", "pool_max_conns": "1"})
+	dsn := dsnWith(t, map[string]string{idleBoundParam: "1s", "pool_max_conns": "1"})
+	store, watcher := storeAt(t, dsn), storeAt(t, dsn)
 	ctx := context.Background()
 	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the transaction that stalls: %v", err)
 	}
-	if _, err := tx.Exec(ctx, "select 1"); err != nil {
+	var backend int32
+	if err := tx.QueryRow(ctx, "select pg_backend_pid()").Scan(&backend); err != nil {
 		t.Fatalf("the first statement of the stalling transaction: %v", err)
 	}
 
-	// Three seconds of Go work and no statement — the gap the bound was measured with on this
-	// pod's PostgreSQL 18.6 on 2026-11-12 — which is past a one-second bound with room to spare.
-	time.Sleep(3 * time.Second)
+	testwait.Eventually(t, "the server to end the stalled transaction's backend at its one-second idle bound", func() bool {
+		var live bool
+		if err := watcher.Pool().QueryRow(ctx, `select exists (select 1 from pg_stat_activity where pid = $1)`, backend).Scan(&live); err != nil {
+			t.Fatalf("read the stalled transaction's backend: %v", err)
+		}
+		return !live
+	})
 
 	// 25P03 is idle_in_transaction_session_timeout: the server's own word for what it did, and
 	// not merely a connection that went away, which is what tells this test from a flake.

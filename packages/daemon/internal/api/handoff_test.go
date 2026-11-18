@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -90,7 +91,7 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 		pullFiles: `[{"filename":"src/main.go"}]`,
 		pullHead:  headSHA, mergeableState: "clean", pullState: "open", pullUpdatedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC),
 	}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		g.bearers = append(g.bearers, r.Header.Get("Authorization"))
@@ -1579,12 +1580,17 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 // turnClock is the route harness's still clock with timers a test fires: a test whose claim must
 // see the wait for an acknowledged prompt's turn run out (supervise's TimerTurn, armed for the RPC
 // timeout) fires the timers armed for that wait, and every other wait stays armed and never due,
-// as stillClock leaves it. It is the daemon package's heldClock, cut down to that one use.
+// as stillClock leaves it. It is the daemon package's heldClock, cut down to that one use: the
+// timers armed through AfterFunc are kept here by the wait each was armed for, rather than on the
+// fake, because the fake fires every timer due by the moment it moves to and this test fires the
+// timers of one wait and no other. newTurnClock makes one.
 type turnClock struct {
 	stillClock
 	mu     sync.Mutex
 	timers []*turnTimer
 }
+
+func newTurnClock() *turnClock { return &turnClock{stillClock: newStillClock()} }
 
 type turnTimer struct {
 	clock *turnClock
@@ -1593,13 +1599,16 @@ type turnTimer struct {
 	done  bool
 }
 
-func (c *turnClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
+func (c *turnClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	timer := &turnTimer{clock: c, after: d, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
+
+// C is nil, as an AfterFunc timer's is.
+func (t *turnTimer) C() <-chan time.Time { return nil }
 
 func (t *turnTimer) Stop() bool {
 	t.clock.mu.Lock()
@@ -1609,6 +1618,15 @@ func (t *turnTimer) Stop() bool {
 	}
 	t.done = true
 	return true
+}
+
+// Reset arms the timer again for the wait d, which is what fire then finds it under.
+func (t *turnTimer) Reset(d time.Duration) bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	was := !t.done
+	t.after, t.done = d, false
+	return was
 }
 
 // fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
@@ -1677,8 +1695,8 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
-			clock := &turnClock{}
-			h.supervisor.deps.Clock = clock
+			turns := newTurnClock()
+			h.supervisor.deps.Clock = turns
 			seedIssueAt(t, h, "LEGION-208", phase.Testing)
 			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 			machine, ok := h.supervisor.Machine(tester.token)
@@ -1700,7 +1718,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 			if err := machine.Handle(ctx, supervise.PromptAcked{Claim: tester.token, Generation: machine.Claim().Generation, DeliveryID: first}); err != nil {
 				t.Fatalf("acknowledge the task's prompt: %v", err)
 			}
-			if fired := clock.fire(h.supervisor.deps.Timeouts.RPC); fired != 1 {
+			if fired := turns.fire(h.supervisor.deps.Timeouts.RPC); fired != 1 {
 				t.Fatalf("fired %d waits for the prompt's turn, want the one its acknowledgement armed", fired)
 			}
 			resend := machine.Claim().Pending.ID

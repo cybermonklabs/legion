@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -82,74 +83,117 @@ func TestMarkQuoteJoinsTheCallerTransaction(t *testing.T) {
 	}
 }
 
+// VerifyMark's wait for a mark runs on the service's clock (markWait, Deps.Clock), a fake here that
+// moves only as the test moves it: a mark the browser writes while the wait is armed is found
+// before the fake moves at all, and a mark that never comes is refused only once the fake passes
+// the wait's deadline, MarkWait after it was armed.
 func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
+	const markWait = 300 * time.Millisecond
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Settle:   time.Hour,
-		MarkWait: 300 * time.Millisecond,
+		MarkWait: markWait,
+		Clock:    fake,
 	})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		browserMark(t, service, artifactID, "proofComment", "b1", "brown")
-	}()
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	if err != nil || anchored.Quote != "brown" {
-		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
+	type verified struct {
+		anchored Anchored
+		err      error
+	}
+	verify := func(id string) <-chan verified {
+		done := make(chan verified, 1)
+		go func() {
+			anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, id)
+			done <- verified{anchored: anchored, err: err}
+		}()
+		return done
+	}
+	awaitMarkWait := func(what string) {
+		t.Helper()
+		due := fake.Now().Add(markWait)
+		testwait.Until(t, what+": VerifyMark's wait armed at "+due.String(), func() ([]time.Time, bool) {
+			armed := fake.Armed()
+			return armed, slices.ContainsFunc(armed, due.Equal)
+		})
 	}
 
-	started := time.Now()
-	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
-		t.Fatalf("missing mark err = %v", err)
+	found := verify("b1")
+	awaitMarkWait("the wait for b1")
+	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+	if got := testwait.Receive(t, "VerifyMark to find the mark the browser wrote while it waited", found); got.err != nil || got.anchored.Quote != "brown" {
+		t.Fatalf("VerifyMark = %q, %v", got.anchored.Quote, got.err)
 	}
-	if waited := time.Since(started); waited < 250*time.Millisecond || waited > time.Second {
-		t.Fatalf("waited %v, want approximately MarkWait", waited)
+
+	missing := verify("never")
+	awaitMarkWait("the wait for a mark that never comes")
+	select {
+	case got := <-missing:
+		t.Fatalf("VerifyMark of a missing mark returned (%v) before its wait's deadline", got.err)
+	default:
+	}
+	fake.Advance(markWait)
+	if got := testwait.Receive(t, "VerifyMark of a missing mark to return once its wait's deadline passed", missing); !errors.Is(got.err, ErrAnchorMissing) {
+		t.Fatalf("missing mark err = %v", got.err)
 	}
 }
 
 // Two processes serving one document can have one evict the room instance a verification
 // subscribed to, so no update of that instance ever announces the mark the browser writes next.
 // The wait ends with a read of the document as it then is, which finds the mark, rather than
-// refusing an anchor the document holds.
+// refusing an anchor the document holds. The wait runs on a fake clock: the mark is written once
+// the verification's first read has found nothing and its wait is armed, and the wait ends only
+// as the test moves the fake past it.
 func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
+	const markWait = 300 * time.Millisecond
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Settle:   time.Hour,
-		MarkWait: 300 * time.Millisecond,
+		MarkWait: markWait,
+		Clock:    fake,
 	})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
-	written := make(chan struct{})
 	var replaced atomic.Int32
 	service.afterReadWarm = func(room string) {
 		if room != artifactID || !replaced.CompareAndSwap(0, 1) {
 			return
 		}
 		// The verification subscribes to this instance as the hook returns, so evicting it here
-		// leaves the mark to land in the instance that replaces it, announced to nobody. The
-		// write waits out the verification's first read, which must find nothing.
+		// leaves the mark to land in the instance that replaces it, announced to nobody.
 		if err := service.Evict(context.Background(), room); err != nil {
 			t.Errorf("evict the warm room: %v", err)
 		}
-		go func() {
-			defer close(written)
-			time.Sleep(100 * time.Millisecond)
-			browserMark(t, service, artifactID, "proofComment", "b1", "brown")
-		}()
 	}
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	<-written
-	if err != nil || anchored.Quote != "brown" {
-		t.Fatalf("VerifyMark of a mark written into the room that replaced the subscribed one = %q, %v, want brown", anchored.Quote, err)
+	type verified struct {
+		anchored Anchored
+		err      error
+	}
+	done := make(chan verified, 1)
+	go func() {
+		anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
+		done <- verified{anchored: anchored, err: err}
+	}()
+	due := fake.Now().Add(markWait)
+	testwait.Until(t, "VerifyMark's wait, its first read having found nothing, armed at "+due.String(), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, due.Equal)
+	})
+	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+	fake.Advance(markWait)
+	got := testwait.Receive(t, "VerifyMark to return once its wait's deadline passed", done)
+	if got.err != nil || got.anchored.Quote != "brown" {
+		t.Fatalf("VerifyMark of a mark written into the room that replaced the subscribed one = %q, %v, want brown", got.anchored.Quote, got.err)
 	}
 }
 
@@ -468,7 +512,7 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	innerID := insertAnchoredCommentWithID(t, service, artifactID, "00000000-0000-4000-8000-000000000004", "brown")
 
 	editLiveTree(t, service, artifactID, replaceRun("brown", "browner"))
-	waitFor(t, time.Second, "anchor refresh to browner", func() bool {
+	waitFor(t, "anchor refresh to browner", func() bool {
 		anchor := loadAskAnchor(t, service, askID)
 		return anchor.Quote == "browner" && !anchor.Orphaned && loadCommentAnchor(t, service, innerID).Quote == "browner"
 	})
@@ -483,7 +527,7 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	}
 
 	editLiveTree(t, service, artifactID, deleteRun("browner"))
-	waitFor(t, time.Second, "anchor orphaning after browner deletion", func() bool {
+	waitFor(t, "anchor orphaning after browner deletion", func() bool {
 		anchor := loadAskAnchor(t, service, askID)
 		return anchor.Orphaned && anchor.Version == 1
 	})
@@ -756,7 +800,7 @@ func TestMarkOnlyUpdateSweepsUnrecordedMarksWithoutCanonicalizingLegacyTable(t *
 	}
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	browserMark(t, service, artifactID, "proofComment", "dangling", "one|two")
-	waitFor(t, time.Second, "unrecorded mark removed", func() bool {
+	waitFor(t, "unrecorded mark removed", func() bool {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "dangling")
 		return !found
 	})
@@ -879,7 +923,7 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 		t.Fatalf("commit projection transaction: %v", err)
 	}
 	ledger.publish()
-	waitFor(t, time.Second, "settled projection version for after", func() bool {
+	waitFor(t, "settled projection version for after", func() bool {
 		var markdown string
 		var named bool
 		if err := service.store.Pool.QueryRow(context.Background(), `
@@ -941,7 +985,7 @@ func TestReplaceTextReanchorsOpenRows(t *testing.T) {
 	}
 	// The anchored ask and comment above schedule their own settlements, so version 2 can be the
 	// pre-replace snapshot; wait for the replacement's settled state, not a version number.
-	waitFor(t, time.Second, "the deleted quote's comment to orphan", func() bool {
+	waitFor(t, "the deleted quote's comment to orphan", func() bool {
 		return loadCommentAnchor(t, service, commentID).Orphaned
 	})
 	if anchor := loadAskAnchor(t, service, askID); anchor.Orphaned || anchor.Quote != "brown" {
@@ -1173,11 +1217,10 @@ func loadAnchor(t *testing.T, service *Service, table, id string) storedAnchor {
 // than polling the row count against a stopwatch: the drain takes as long as the machine needs -
 // it runs at roughly a hundred appends a second, so five hundred marks is seconds of work on an
 // idle box and longer on a loaded one - while a drain that never finishes still fails, on the
-// context deadline rather than on how busy the box was.
+// shared wait's context (testwait.Context) rather than on how busy the box was.
 func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, want int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 		t.Fatalf("waiting for queued document updates to persist: %v", err)
 	}
@@ -1191,9 +1234,10 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+// waitFor waits through the shared wait until condition holds, failing the test naming what.
+func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
+	testwait.Eventually(t, what, condition)
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats

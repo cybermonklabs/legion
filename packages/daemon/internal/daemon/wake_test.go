@@ -264,11 +264,11 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 	awaitResume(t, pool, id, "first_turn_at")
 	hook(held, supervise.StateFailed)
 
-	deadline := time.Now().Add(10 * time.Second)
-	for len(facts.applied()) < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := facts.applied(); len(got) != 2 || got[0] != "ready" || got[1] != "failed" {
+	got := testwait.Until(t, "the workflow facts of the claim's ready and its failure", func() ([]string, bool) {
+		got := facts.applied()
+		return got, len(got) >= 2
+	})
+	if len(got) != 2 || got[0] != "ready" || got[1] != "failed" {
 		t.Fatalf("workflow facts = %v, want the claim's ready and its failure", got)
 	}
 }
@@ -277,14 +277,12 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 // machine's goroutine, so the callback returns before the write lands.
 func awaitResume(t *testing.T, pool *store.Pool, id int64, column string) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	testwait.Eventually(t, "the resume's "+column+" stamped", func() bool {
 		var stamped bool
 		if err := pool.QueryRow(context.Background(),
 			`select `+column+` is not null from pod_resumes where id = $1`, id).Scan(&stamped); err != nil {
 			t.Fatalf("read the resume's %s: %v", column, err)
 		}
 		return stamped
-	}) {
-		t.Fatalf("the resume's %s was never stamped", column)
-	}
+	})
 }

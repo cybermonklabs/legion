@@ -37,17 +37,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// consumerFilterFenceWait bounds the calls the cases below make themselves: the delete whose
-// restore is held open over a registration, and the relay restart one of them drives.
-const consumerFilterFenceWait = 10 * time.Second
 
 // A registration's confirm keeps the topic a registration on another listener added while the
 // confirm was between its read of the bucket and its consumer call (confirmRegistered,
@@ -120,8 +116,7 @@ func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 	const added = "notifications.dispatch.issue.RESTOREFENCEADD.>"
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait*3)
-	defer cancel()
+	ctx := testwait.Context(t)
 	// The registration whose record and row the restore reads, and the record delete every
 	// delete of a consumer follows.
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-2", kept))
@@ -257,7 +252,7 @@ func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t 
 // this listener's cache, which the watch stopped below stands for one that has not delivered that
 // row yet, and its write is fenced on the row it read (settleFilter).
 func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t *testing.T) {
-	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	a := newRelayRigUnowned(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_fence"
 	const kept = "notifications.dispatch.issue.RESTARTFENCEKEPT.>"
@@ -271,8 +266,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	}
 	requireFilters(t, b, sessionID, kept, added)
 
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	if pull == nil {
 		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
@@ -292,7 +286,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 // through is closed once the restart has read the row, and the restart's own call is then the
 // only write of this loop's the consumer carries.
 func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t *testing.T) {
-	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	a := newRelayRigUnowned(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_unjudged"
 	const kept = "notifications.dispatch.issue.RESTARTUNJUDGEDKEPT.>"
@@ -313,8 +307,7 @@ func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurthe
 		// consumer call built from it, which goes over the session-consumer connection.
 		once.Do(a.harness.client.Close)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead = nil
 	if pull == nil {
@@ -361,7 +354,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite
 // restart leaves on the consumer is the row it replaced, and the pass after it is what sets the
 // filter the newest row asks for (sessionRelays.settleFilter).
 func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite(t *testing.T) {
-	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	a := newRelayRigUnowned(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_fence_write"
 	const kept = "notifications.dispatch.issue.RESTARTWRITEKEPT.>"
@@ -372,8 +365,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 	a.deps.consumers.afterStoredRowRead = func() {
 		once.Do(func() { b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added)) })
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead = nil
 	if pull == nil {
@@ -651,8 +643,7 @@ func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T
 		case 2:
 			// The delete of the consumer, landing between the corrective pass's plan and the
 			// call it makes from it.
-			ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-			defer cancel()
+			ctx := testwait.Context(t)
 			if _, err := rig.consumers.Delete(ctx, sessionID, nil); err != nil {
 				t.Errorf("delete the consumer of %s under its own refollow: %v", sessionID, err)
 			}
@@ -949,8 +940,7 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 			}
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	// The record delete every delete of a consumer follows, with the record read first: the
 	// entry write of the registration that raced the delete puts it back from inside the
 	// restore's first pass (deleteConsumer, repairRegistered).

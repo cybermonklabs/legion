@@ -1,5 +1,46 @@
+diff --git a/dev/index.d.ts b/dev/index.d.ts
+index bd832f665cfdf802955e1fb1663357efe8d03eff..c9a6086dd383d8ab6dbdb82ba123f3a2f7d7888f 100644
+--- a/dev/index.d.ts
++++ b/dev/index.d.ts
+@@ -13,7 +13,7 @@ export { hardBreakEscape } from "./lib/hard-break-escape.js";
+ export { headingAtx } from "./lib/heading-atx.js";
+ export { htmlFlow } from "./lib/html-flow.js";
+ export { htmlText } from "./lib/html-text.js";
+-export { labelEnd } from "./lib/label-end.js";
++export { labelEnd, labelEndScanSteps } from "./lib/label-end.js";
+ export { labelStartImage } from "./lib/label-start-image.js";
+ export { labelStartLink } from "./lib/label-start-link.js";
+ export { lineEnding } from "./lib/line-ending.js";
+diff --git a/dev/index.js b/dev/index.js
+index f9143e09370ab0b29c410c5efadc2bc529dd7ee1..bc2040e4e867d036e4c80b425a9b86b56819122a 100644
+--- a/dev/index.js
++++ b/dev/index.js
+@@ -13,7 +13,7 @@ export {hardBreakEscape} from './lib/hard-break-escape.js'
+ export {headingAtx} from './lib/heading-atx.js'
+ export {htmlFlow} from './lib/html-flow.js'
+ export {htmlText} from './lib/html-text.js'
+-export {labelEnd} from './lib/label-end.js'
++export {labelEnd, labelEndScanSteps} from './lib/label-end.js'
+ export {labelStartImage} from './lib/label-start-image.js'
+ export {labelStartLink} from './lib/label-start-link.js'
+ export {lineEnding} from './lib/line-ending.js'
+diff --git a/dev/lib/label-end.d.ts b/dev/lib/label-end.d.ts
+index c892edb7db82843a0b29f462379a327aa2fe47f6..6da4be5642bad6326dd1b7002b625d6aedd44fe4 100644
+--- a/dev/lib/label-end.d.ts
++++ b/dev/lib/label-end.d.ts
+@@ -1,4 +1,9 @@
+ /** @type {Construct} */
+ export const labelEnd: Construct;
++/**
++ * How much a label end has read to find its opening and to look its label up, over every
++ * document this module parsed since it loaded.
++ */
++export function labelEndScanSteps(): number;
+ import type { Construct } from 'micromark-util-types';
+ //# sourceMappingURL=label-end.d.ts.map
+\ No newline at end of file
 diff --git a/dev/lib/label-end.js b/dev/lib/label-end.js
-index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c854228caa97d 100644
+index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..c8dd91ea38fe2df1e5a08062efa9ec4f9bc31094 100644
 --- a/dev/lib/label-end.js
 +++ b/dev/lib/label-end.js
 @@ -2,6 +2,7 @@
@@ -10,7 +51,35 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
   *   Resolver,
   *   State,
   *   TokenizeContext,
-@@ -67,6 +68,8 @@ function resolveAllLabelEnd(events) {
+@@ -36,6 +37,27 @@ const referenceFullConstruct = {tokenize: tokenizeReferenceFull}
+ /** @type {Construct} */
+ const referenceCollapsedConstruct = {tokenize: tokenizeReferenceCollapsed}
+ 
++/**
++ * Events the opening scan of a label end read, and characters its definition lookup read, in
++ * every document this module parsed: the count `labelEndScanSteps` answers.
++ */
++let labelEndScanned = 0
++
++/**
++ * How much a label end has read to find its opening and to look its label up, over every document
++ * this module parsed since it loaded: one step per event the scan for an opening `[` reads, and
++ * one per character of a label the definition lookup counts or serializes. Each label end resumes
++ * the scan where the one before it stopped and gives up on a label longer than every identifier
++ * defined, so the count grows with the document rather than with its square, and a test reads it
++ * before and after a parse to hold the label end to that.
++ *
++ * @returns {number}
++ *   Steps taken.
++ */
++export function labelEndScanSteps() {
++  return labelEndScanned
++}
++
+ /** @type {Resolver} */
+ function resolveAllLabelEnd(events) {
+   let index = -1
+@@ -67,6 +89,8 @@ function resolveAllLabelEnd(events) {
  
  /** @type {Resolver} */
  function resolveToLabelEnd(events, context) {
@@ -19,7 +88,7 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
    let index = events.length
    let offset = 0
    /** @type {Token} */
-@@ -187,24 +190,60 @@ function resolveToLabelEnd(events, context) {
+@@ -187,24 +211,64 @@ function resolveToLabelEnd(events, context) {
   */
  function tokenizeLabelEnd(effects, ok, nok) {
    const self = this
@@ -52,6 +121,8 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
 +      : 0
 +
 +  while (index-- > floor) {
++    labelEndScanned++
++
      if (
        (self.events[index][1].type === types.labelImage ||
          self.events[index][1].type === types.labelLink) &&
@@ -67,6 +138,8 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
 +    index = self._labelEndFrom
 +
 +    while (index-- > 0) {
++      labelEndScanned++
++
 +      if (
 +        (self.events[index][1].type === types.labelImage ||
 +          self.events[index][1].type === types.labelLink) &&
@@ -82,7 +155,7 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
    return start
  
    /**
-@@ -243,11 +282,7 @@ function tokenizeLabelEnd(effects, ok, nok) {
+@@ -243,11 +307,7 @@ function tokenizeLabelEnd(effects, ok, nok) {
        return labelEndNok(code)
      }
  
@@ -95,7 +168,7 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
      effects.enter(types.labelEnd)
      effects.enter(types.labelMarker)
      effects.consume(code)
-@@ -359,10 +394,83 @@ function tokenizeLabelEnd(effects, ok, nok) {
+@@ -359,10 +419,86 @@ function tokenizeLabelEnd(effects, ok, nok) {
     */
    function labelEndNok(code) {
      labelStart._balanced = true
@@ -156,6 +229,7 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
 +
 +        while (++at < chunk.length) {
 +          const code = chunk.charCodeAt(at)
++          labelEndScanned++
 +
 +          if (
 +            code !== codes.horizontalTab &&
@@ -170,6 +244,8 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
 +      }
 +    }
 +  }
++
++  labelEndScanned += end.offset - start.offset
 +
 +  return defined.includes(
 +    normalizeIdentifier(context.sliceSerialize({start, end}))
@@ -221,11 +297,80 @@ index 55671e12ec43194115cecf4e58c23bc4b2e5fcb5..0de401bc8b59d4015292292e490a6f16
  
    /** @type {State} */
    function onBlank(code) {
+diff --git a/index.d.ts b/index.d.ts
+index bd832f665cfdf802955e1fb1663357efe8d03eff..c9a6086dd383d8ab6dbdb82ba123f3a2f7d7888f 100644
+--- a/index.d.ts
++++ b/index.d.ts
+@@ -13,7 +13,7 @@ export { hardBreakEscape } from "./lib/hard-break-escape.js";
+ export { headingAtx } from "./lib/heading-atx.js";
+ export { htmlFlow } from "./lib/html-flow.js";
+ export { htmlText } from "./lib/html-text.js";
+-export { labelEnd } from "./lib/label-end.js";
++export { labelEnd, labelEndScanSteps } from "./lib/label-end.js";
+ export { labelStartImage } from "./lib/label-start-image.js";
+ export { labelStartLink } from "./lib/label-start-link.js";
+ export { lineEnding } from "./lib/line-ending.js";
+diff --git a/index.js b/index.js
+index 969b1cdf1228636c4ceccc85cea270ad47c3471f..92b833278f392f80362d6e9ef7efd0c8437c3b16 100644
+--- a/index.js
++++ b/index.js
+@@ -13,7 +13,7 @@ export { hardBreakEscape } from './lib/hard-break-escape.js';
+ export { headingAtx } from './lib/heading-atx.js';
+ export { htmlFlow } from './lib/html-flow.js';
+ export { htmlText } from './lib/html-text.js';
+-export { labelEnd } from './lib/label-end.js';
++export { labelEnd, labelEndScanSteps } from './lib/label-end.js';
+ export { labelStartImage } from './lib/label-start-image.js';
+ export { labelStartLink } from './lib/label-start-link.js';
+ export { lineEnding } from './lib/line-ending.js';
+diff --git a/lib/label-end.d.ts b/lib/label-end.d.ts
+index c892edb7db82843a0b29f462379a327aa2fe47f6..6da4be5642bad6326dd1b7002b625d6aedd44fe4 100644
+--- a/lib/label-end.d.ts
++++ b/lib/label-end.d.ts
+@@ -1,4 +1,9 @@
+ /** @type {Construct} */
+ export const labelEnd: Construct;
++/**
++ * How much a label end has read to find its opening and to look its label up, over every
++ * document this module parsed since it loaded.
++ */
++export function labelEndScanSteps(): number;
+ import type { Construct } from 'micromark-util-types';
+ //# sourceMappingURL=label-end.d.ts.map
+\ No newline at end of file
 diff --git a/lib/label-end.js b/lib/label-end.js
-index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb2f856834 100644
+index 927808f648bac3803c8149d3b24c97e6def7e103..48d098e8b15127b9179e32174b80ddaf732fa3ca 100644
 --- a/lib/label-end.js
 +++ b/lib/label-end.js
-@@ -64,6 +64,8 @@ function resolveAllLabelEnd(events) {
+@@ -39,6 +39,27 @@ const referenceCollapsedConstruct = {
+   tokenize: tokenizeReferenceCollapsed
+ };
+ 
++/**
++ * Events the opening scan of a label end read, and characters its definition lookup read, in
++ * every document this module parsed: the count `labelEndScanSteps` answers.
++ */
++let labelEndScanned = 0;
++
++/**
++ * How much a label end has read to find its opening and to look its label up, over every document
++ * this module parsed since it loaded: one step per event the scan for an opening `[` reads, and
++ * one per character of a label the definition lookup counts or serializes. Each label end resumes
++ * the scan where the one before it stopped and gives up on a label longer than every identifier
++ * defined, so the count grows with the document rather than with its square, and a test reads it
++ * before and after a parse to hold the label end to that.
++ *
++ * @returns {number}
++ *   Steps taken.
++ */
++export function labelEndScanSteps() {
++  return labelEndScanned;
++}
++
+ /** @type {Resolver} */
+ function resolveAllLabelEnd(events) {
+   let index = -1;
+@@ -64,6 +85,8 @@ function resolveAllLabelEnd(events) {
  
  /** @type {Resolver} */
  function resolveToLabelEnd(events, context) {
@@ -234,7 +379,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
    let index = events.length;
    let offset = 0;
    /** @type {Token} */
-@@ -160,19 +162,43 @@ function resolveToLabelEnd(events, context) {
+@@ -160,19 +183,45 @@ function resolveToLabelEnd(events, context) {
   */
  function tokenizeLabelEnd(effects, ok, nok) {
    const self = this;
@@ -261,6 +406,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
 +  const seen = self._labelEndSeen;
 +  const floor = seen !== undefined && seen <= index && self.events[seen - 1] === self._labelEndSeenAt ? seen : 0;
 +  while (index-- > floor) {
++    labelEndScanned++;
      if ((self.events[index][1].type === "labelImage" || self.events[index][1].type === "labelLink") && !self.events[index][1]._balanced) {
        labelStart = self.events[index][1];
 +      labelStartIndex = index;
@@ -270,6 +416,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
 +  if (!labelStart && floor > 0) {
 +    index = self._labelEndFrom;
 +    while (index-- > 0) {
++      labelEndScanned++;
 +      if ((self.events[index][1].type === "labelImage" || self.events[index][1].type === "labelLink") && !self.events[index][1]._balanced) {
 +        labelStart = self.events[index][1];
 +        labelStartIndex = index;
@@ -280,7 +427,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
    return start;
  
    /**
-@@ -208,10 +234,7 @@ function tokenizeLabelEnd(effects, ok, nok) {
+@@ -208,10 +257,7 @@ function tokenizeLabelEnd(effects, ok, nok) {
      if (labelStart._inactive) {
        return labelEndNok(code);
      }
@@ -292,7 +439,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
      effects.enter("labelEnd");
      effects.enter("labelMarker");
      effects.consume(code);
-@@ -311,10 +334,71 @@ function tokenizeLabelEnd(effects, ok, nok) {
+@@ -311,10 +357,73 @@ function tokenizeLabelEnd(effects, ok, nok) {
     */
    function labelEndNok(code) {
      labelStart._balanced = true;
@@ -348,6 +495,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
 +        let at = -1;
 +        while (++at < chunk.length) {
 +          const code = chunk.charCodeAt(at);
++          labelEndScanned++;
 +          if (code !== 9 && code !== 10 && code !== 13 && code !== 32 && ++size > max) {
 +            return false;
 +          }
@@ -355,6 +503,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
 +      }
 +    }
 +  }
++  labelEndScanned += end.offset - start.offset;
 +  return defined.includes(normalizeIdentifier(context.sliceSerialize({
 +    start,
 +    end

@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -72,16 +74,28 @@ var (
 // one only when no credential is held (the first login, or after a refusal), so a renewal never
 // moves the broker to another key and a proof in flight during one stays valid: nothing makes an
 // Enroll or a Revoke wait for a login. changed wakes the login loop (Start) when a call finds no
-// live credential or the broker refuses it.
+// live credential or the broker refuses it. clock is every time the client reads and waits on —
+// the login loop's waits, a credential's renewal instant and whether it is live, and the moment
+// each request object and proof carries — nil for the wall clock: a test hands it a
+// clocktest.Fake and moves it through the waits it asserts.
 type Client struct {
 	URL       string
 	HTTP      *http.Client
 	TokenFile string
 	Log       *slog.Logger
 
+	clock       clock.Clock
 	state       atomic.Pointer[loginState]
 	changed     chan struct{}
 	changedOnce sync.Once
+}
+
+// timers is the clock the client reads and waits on: its own, or the wall clock where none was set.
+func (c *Client) timers() clock.Clock {
+	if c.clock == nil {
+		return clock.Real()
+	}
+	return c.clock
 }
 
 // loginState is one snapshot of the login: cred is the held launcher credential, nil before the
@@ -256,7 +270,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	} else if key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
 		return nil, fmt.Errorf("agent-secrets login: generate key: %w", err)
 	}
-	now := time.Now()
+	now := c.timers().Now()
 	request, err := signRequestObject(key, c.URL, launcherService, now)
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
@@ -332,7 +346,7 @@ func daemonSideFault(err error) bool {
 // LoginStatus reports the login as LoginState describes it, from one snapshot.
 func (c *Client) LoginStatus() LoginState {
 	s := c.snapshot()
-	if s.cred.live(time.Now()) {
+	if s.cred.live(c.timers().Now()) {
 		return LoginState{State: "issued"}
 	}
 	if s.failure != "" {
@@ -352,8 +366,10 @@ func (c *Client) LoginStatus() LoginState {
 // or a 5xx to at 2 s doubling to 10 s, never in a tight loop, whether or not a credential is still
 // held.
 func (c *Client) keepLoggedIn(ctx context.Context, retry loginRetry, retryAt time.Time) {
+	timers := c.timers()
 	for {
-		timer := time.NewTimer(time.Until(c.nextDue(time.Now(), retryAt)))
+		now := timers.Now()
+		timer := timers.NewTimer(c.nextDue(now, retryAt).Sub(now))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -361,7 +377,7 @@ func (c *Client) keepLoggedIn(ctx context.Context, retry loginRetry, retryAt tim
 		case <-c.changes():
 			timer.Stop()
 			continue
-		case <-timer.C:
+		case <-timer.C():
 		}
 		if _, err := c.Login(ctx); err != nil {
 			if ctx.Err() != nil {
@@ -386,7 +402,7 @@ func (c *Client) retryAfter(ctx context.Context, retry *loginRetry, err error) t
 		c.log().Error("agent-secrets: the token login failed; retrying",
 			"class", string(class), "schedule", class.schedule(), "retry_in", wait, "error", err)
 	}
-	return time.Now().Add(wait)
+	return c.timers().Now().Add(wait)
 }
 
 // nextDue is when the next login is due: with a live credential, the later of its renewal instant
@@ -617,11 +633,12 @@ func (*SupersededError) Permanent() bool { return true }
 // replaced clears nothing.
 func (c *Client) doProof(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	cred := c.snapshot().cred
-	if !cred.live(time.Now()) {
+	now := c.timers().Now()
+	if !cred.live(now) {
 		c.wake()
 		return 0, nil, c.noCredentialError()
 	}
-	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, time.Now())
+	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, now)
 	if err != nil {
 		return 0, nil, err
 	}

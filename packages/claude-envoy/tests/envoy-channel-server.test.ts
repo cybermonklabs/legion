@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -402,7 +403,6 @@ test("registers no delivery mode for a session whose channel Claude Code did not
     ])
   } finally {
     await session.shutdown()
-    await Bun.sleep(5)
   }
 })
 
@@ -747,7 +747,7 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -853,7 +853,7 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
-}, 20_000)
+})
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
   let stopBroker: (() => Promise<void>) | undefined
@@ -893,7 +893,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 // The listener's bearer and the NATS seed are resolved once and handed to the client and the
 // connection: a server that dropped either would leave the session unregistered or signed out.
@@ -956,6 +956,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     server = Bun.spawn(["bun", channelEntry], {
       cwd: home,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: home,
         CLAUDE_CONFIG_DIR: configDirectory,
@@ -979,7 +980,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 /** A listener that answers `GET /v1/sessions` with no session and records every call. */
 function recordingListener(calls: string[]) {
@@ -1046,7 +1047,7 @@ test("with Envoy on and no NATS server the server serves its listener tools with
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+})
 
 test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
   const sentence =
@@ -1108,7 +1109,7 @@ test("a tool call the listener refused because its sender is rate limited answer
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+})
 
 test("a refused NATS seed leaves the listener tools on, opens no NATS connection, and says why", async () => {
   let listener: Server<undefined> | undefined
@@ -1154,7 +1155,7 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 test("a Legion pane takes Aside and Send from the start and gains BTW when its mod connects", () => {
   // The pane's messages go through the bridge's inbox, which needs no mod; the side turn a BTW

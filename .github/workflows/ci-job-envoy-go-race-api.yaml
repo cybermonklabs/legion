@@ -32,10 +32,14 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
-    timeout-minutes: 45
+    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. It is twice and more the slowest over this job's 20 newest green
+    # merge-group runs up to 2026-11-17T10:27Z (runs 43890498473 to 44065065187): the package's
+    # own line at 1508.156 s and the step at 1643 s, both in run 44061818140 (job 133974325061),
+    # twice which, 3016 s and 3286 s, the 50 minutes it had before did not hold. The limit is at
+    # least the job's sum over those runs: its other steps at their longest, 77 s (run
+    # 44003767289), and the step's longest 1643 s plus its 60 minutes: 5320 s, or 89 minutes.
+    timeout-minutes: 90
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -65,7 +69,7 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the Dispatch API
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
+        run: go test -count=1 -race -timeout 60m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

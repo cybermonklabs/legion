@@ -20,29 +20,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// stopTickInterval is how often the daemon of the stop's tests applies its controller tick, which
-// is one admission pass each (workflowRuntime.tickController). They drive the daemon's own
-// ticks rather than applying a ControllerTick of their own, as boot_slots_test.go and
-// hold_place_test.go do, because what each test reads is what the outbox did with the rows a pass
-// wrote: a pass of the test's own writes through a store that wakes no outbox lane, so a row it
-// wrote would wait up to one outbox lease (30 seconds) before the daemon ran it, while a row the
-// daemon's own pass writes wakes its lane at the commit. The tick's period is the whole wait in
-// these tests, so it is short; no other timer of the daemon is armed anywhere near as soon.
-const stopTickInterval = 20 * time.Millisecond
-
 // stoppedWorkerDaemon is the configuration the stop's tests boot: its own database, its own
-// project, the shipped defaults, and a controller tick every stopTickInterval from shortly after
-// the runtime starts.
-func stoppedWorkerDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
+// project and the shipped defaults, with a passer to run its controller ticks. No tick fires on
+// its own: the daemon's controller interval is the shipped hour (a boot's first tick is a minute
+// off, longer than any run here), so a controller admission pass runs only when a test asks for
+// one. A test drives the daemon's own tick rather than applying a ControllerTick of its own, as
+// boot_slots_test.go and hold_place_test.go do, because what it reads is what the outbox did with
+// the rows a pass wrote: a pass of the test's own writes through a store that wakes no outbox
+// lane, so a row it wrote would wait up to one outbox lease (30 seconds) before the daemon ran
+// it, while a row the daemon's own pass writes wakes its lane at the commit.
+func stoppedWorkerDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime, *passer) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.ControllerWakeInterval = stopTickInterval
 	rt := fake.NewRuntime()
 	// A pods runtime provisions each claim's workspace itself, so the daemon clones and fetches
 	// nothing: these issues name a repository that exists in no GitHub these tests reach. The
@@ -52,32 +46,19 @@ func stoppedWorkerDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *
 	rt.InPod = true
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
-	o.controllerFirstWake = stopTickInterval
-	return pool, cfg, o, rt
+	p := triggering(&o)
+	return pool, cfg, o, rt, p
 }
 
-// controllerTicks is how many controller ticks this database has recorded. Each tick's event id
-// is its own — the project, the boot and the tick's time — and every one of them is applied under
-// the source `controller` (workflowRuntime.applyControllerTick), so counting the rows of that
-// source counts the admission passes the daemon has actually made, across a restart as well.
-func controllerTicks(t *testing.T, pool *store.Pool) int {
+// passed runs three controller admission passes of the daemon, one after another, in place of
+// waiting for three of its own 20 ms ticks: each pass applies a ControllerTick fact over the
+// whole waiting line (workflowRuntime.applyControllerTick), and the reads that follow are of a
+// state no further tick moves, since none fires between a triggered pass and the next.
+func passed(t *testing.T, p *passer, what string) {
 	t.Helper()
-	var ticks int
-	if err := pool.QueryRow(context.Background(),
-		`select count(*) from processed_events where source = 'controller'`).Scan(&ticks); err != nil {
-		t.Fatalf("count the controller ticks the daemon applied: %v", err)
+	for range 3 {
+		p.pass(t, passControllerTick)
 	}
-	return ticks
-}
-
-// passed waits for the daemon to apply three more controller ticks than it had, which is three
-// more admission passes over the whole waiting line.
-func passed(t *testing.T, pool *store.Pool, what string) {
-	t.Helper()
-	ticks := controllerTicks(t, pool)
-	testwait.Eventually(t, "three admission passes "+what, func() bool {
-		return controllerTicks(t, pool) >= ticks+3
-	})
 }
 
 // startRowsOf is every start the outbox still owes issue, spelled for a failure message: the role,
@@ -163,13 +144,13 @@ func theOperatorStops(t *testing.T, d *daemon, token claim.Token) {
 //
 // A test whose issue owes its worker a start row before the stop calls theOperatorStops itself:
 // the read here that the issue owes no start reads that row and fails on it.
-func stopTheWorker(t *testing.T, pool *store.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
+func stopTheWorker(t *testing.T, p *passer, pool *store.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
 	t.Helper()
 	launches := len(launchesOf(rt, token))
-	passed(t, pool, "before the stop")
+	passed(t, p, "before the stop")
 	nothingStartedTheWorker(t, pool, rt, issue, token, launches, "before the stop")
 	theOperatorStops(t, d, token)
-	passed(t, pool, "after the stop")
+	passed(t, p, "after the stop")
 	nothingStartedTheWorker(t, pool, rt, issue, token, launches, "three passes after the stop")
 	return launches
 }
@@ -212,7 +193,7 @@ func outOfTheLine(t *testing.T, d *daemon, issue, when string) {
 // with nobody in it, until a start of the workflow's own — the held phase's retry, the tree's
 // re-admission — or a person moves it. TestAStopEndsTheOwedStartOfAWaitingIssue drives that retry.
 func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
-	pool, cfg, o, rt := stoppedWorkerDaemon(t)
+	pool, cfg, o, rt, p := stoppedWorkerDaemon(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +217,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 
 	// The passes before the stop write the working implementer nothing, so what the passes after
 	// it do is the claim's state and nothing else about the fixture.
-	launches := stopTheWorker(t, pool, rt, d, root, implementer)
+	launches := stopTheWorker(t, p, pool, rt, d, root, implementer)
 
 	// The restart is the other pass the stop has to hold against: a boot makes an admission pass
 	// of its own, over records it reads fresh, and resumes by rule every claim that owns its
@@ -245,7 +226,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 	d.stop()
 	rebindHeldPorts(t, &cfg)
 	d = startDaemon(t, cfg, o)
-	passed(t, pool, "after the restart")
+	passed(t, p, "after the restart")
 	nothingStartedTheWorker(t, pool, rt, root, implementer, launches, "three passes after the restart")
 
 	if state := d.claim(implementer).State; state != string(supervise.StateRetired) {
@@ -369,7 +350,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 // line, takes the free slot, and its tester is launched — so what the stop ended is one start, not
 // the issue's ability to run again.
 func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
-	pool, cfg, o, rt := stoppedWorkerDaemon(t)
+	pool, cfg, o, rt, p := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -387,7 +368,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	seedWaitingTester(t, cfg, project, root, member, "B", tester)
 	d := startDaemon(t, cfg, o)
 
-	passed(t, pool, "before the stop")
+	passed(t, p, "before the stop")
 	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
 		t.Fatalf("the waiting line is %v, want %s in it before the stop: the member owes its tester a start and holds no slot, which is what puts an issue in the line's first part",
 			line, member)
@@ -398,7 +379,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	// The first read, with both slots still held. The repair ends the owed row on the first pass
 	// that meets the retired claim, whether a slot is free or not, so the issue is out of the line
 	// from here on.
-	passed(t, pool, "after the stop")
+	passed(t, p, "after the stop")
 	nothingStartedTheWorker(t, pool, rt, member, tester, launches, "three passes after the stop")
 	outOfTheLine(t, d, member, "after the stop")
 
@@ -406,7 +387,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	// slot back. Nothing offers it to the issue whose start the repair ended, and nothing starts
 	// the worker the operator stopped.
 	finish(t, pool, record.NewStore(), other)
-	passed(t, pool, "after the slot came free")
+	passed(t, p, "after the slot came free")
 	nothingStartedTheWorker(t, pool, rt, member, tester, launches, "three passes after the slot came free")
 	outOfTheLine(t, d, member, "once a slot stood free")
 
@@ -420,7 +401,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
 		t.Fatalf("after the retry the waiting line is %v, want %s in it: it holds no slot and owes its tester a start again", line, member)
 	}
-	testwait.Eventually(t, "the retried phase to launch its tester once a slot comes", func() bool {
+	p.until(t, passControllerTick, "the retried phase to launch its tester once a slot comes", func() bool {
 		return len(launchesOf(rt, tester)) > launches
 	})
 }
@@ -451,7 +432,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 // take it once the test lets it go is the pass this test is about: one pass, with the retired
 // claim and the free slot both in front of it.
 func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
-	pool, cfg, o, rt := stoppedWorkerDaemon(t)
+	pool, cfg, o, rt, p := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -477,7 +458,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 	seedWaitingTester(t, cfg, project, root, next, "C", nextTester)
 	d := startDaemon(t, cfg, o)
 
-	passed(t, pool, "before the stop")
+	passed(t, p, "before the stop")
 	line := []string{stopped, next}
 	if waits := d.state().Admission.Waiting; !slices.Equal(waits, line) {
 		t.Fatalf("the waiting line is %v, want %v before the stop: both members owe their tester a start and hold no slot, and the oldest owed row stands first, so the issue about to be stopped is the one the next free slot would reach",
@@ -503,7 +484,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 		t.Fatalf("let the daemon's passes have the fact lock back: %v", err)
 	}
 
-	passed(t, pool, "after the stop and the freed slot")
+	passed(t, p, "after the stop and the freed slot")
 	nothingStartedTheWorker(t, pool, rt, stopped, stoppedTester, launches, "three passes after the stop that freed a slot")
 	outOfTheLine(t, d, stopped, "after the pass that met the stop with a slot free")
 	held := slotHolders(t, pool)

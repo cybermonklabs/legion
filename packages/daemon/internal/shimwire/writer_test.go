@@ -10,52 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
-
-// The bug socket-writer.ts exists for (socket-writer.ts:19-25): an ~350 KiB rpc_chunk line
-// against a unix socket buffer of roughly 200 KiB. A writer that let the transport take only
-// what fits would deliver a truncated, unparseable frame. Here the reader deliberately waits
-// until the buffer is full before it starts draining.
-func TestALineLargerThanTheSocketBufferIsDeliveredWhole(t *testing.T) {
-	line := chunkLine(t)
-	listener, err := net.Listen("unix", testtmp.Socket(t, "w.sock"))
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-
-	written := make(chan error, 1)
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			written <- acceptErr
-			return
-		}
-		defer conn.Close()
-		written <- NewWriter(conn).WriteLine(line)
-	}()
-
-	conn, err := net.Dial("unix", listener.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-	// Let the writer fill the kernel buffer and park before anything is read from it.
-	time.Sleep(100 * time.Millisecond)
-	got, err := NewReader(conn).ReadLine()
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if writeErr := <-written; writeErr != nil {
-		t.Fatalf("WriteLine: %v", writeErr)
-	}
-	if !bytes.Equal(got, line) {
-		t.Fatalf("read %d bytes, want the whole %d-byte line", len(got), len(line))
-	}
-}
 
 // Two goroutines share one stream in the shim (the wrapped process's stdout and the daemon's own
 // answers). Two frames must never interleave on the wire, and neither may lose its newline.

@@ -76,8 +76,8 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 			}
 		}
 		g.Correct(gateRate * 4)
-		if g.held != 0 || g.granted != 0 {
-			t.Fatalf("at rate %d the gate holds %d and counts %d granted, want neither counted at all", rate, g.held, g.granted)
+		if g.held != 0 || g.out != 0 {
+			t.Fatalf("at rate %d the gate holds %d and counts %d out, want neither counted at all", rate, g.held, g.out)
 		}
 		for i := range gateRate * 4 {
 			if !g.Admit() {
@@ -91,19 +91,19 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 	}
 }
 
-// The sweep's correction sets the count from the wakes it re-read, floored at the admissions of
-// the window that are still out. The floor is the view lagging the decision that published it: a
+// The sweep's correction sets the count from the wakes it re-read, floored at the credits the
+// gate still has out. The floor is the view lagging the decision that published it: a
 // refresh admitted a moment before the sweep counted is a wake the count misses, and the floor is
 // what keeps the gate from handing that credit out twice. A credit already given back is out of
 // that floor, because its wake has run or was never parked, and a gate that floored each
 // correction at the whole batch before it would admit one batch every other sweep and halve the
-// rate the operator set. A reading above the admissions still out is taken as it stands, which is
-// how a credit lost to a path that returns none is taken back.
+// rate the operator set. A reading above the credits still out is taken as it stands, which is
+// how a wake the gate never charged is counted.
 func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// admit is the admissions granted since the previous correction, release the credits
-		// given back before it, and waiting what the sweep's re-read reports.
+		// admit is the admissions the gate granted, release the credits given back before the
+		// correction, and waiting what the sweep's re-read reports.
 		admit   int
 		release int
 		waiting int
@@ -142,12 +142,15 @@ func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 	}
 }
 
-// The floor is the admissions of one sweep, not of the gate's whole life: the correction resets
-// that count where it reads it, so the sweep after a correction is floored at what the lane has
-// taken since that correction and at nothing earlier. Without the reset, the second correction
-// below would hold five credits for a lane that has one wake waiting, and the lane would lose a
-// sweep's worth of refreshes at every sweep.
-func TestTheRefreshGateCountsAdmissionsOnlySinceTheLastCorrection(t *testing.T) {
+// A correction counts every credit still out, whichever sweep admitted it: a credit is out from
+// its admission to its release, and nothing of the sweep it was admitted in bounds how long a
+// correction keeps counting it. A refresh whose wake is having its turn, and a post a machine has
+// not yet decided, are credits out that the views a correction re-reads do not show (Correct,
+// out), and a correction that forgot them the sweep after they were admitted would set the count
+// below what the lane holds and admit past the rate (dispatch://INFRA-3149). A credit given back
+// is out of the count, which is how a lane whose batch has run gets its whole share again
+// (TestTheRefreshGateGivesItsWholeShareBackAtTheNextSweep).
+func TestACorrectionCountsEveryCreditStillOutAcrossSweeps(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	for i := range 4 {
 		if !g.Admit() {
@@ -158,13 +161,16 @@ func TestTheRefreshGateCountsAdmissionsOnlySinceTheLastCorrection(t *testing.T) 
 	if !g.Admit() {
 		t.Fatal("the admission after the first correction was refused, want 4 of the rate held and the rest free")
 	}
+	// A sweep later the five credits are still out — four with wakes having their turns, off the
+	// machines that hold them, and the one admitted since — so no view shows them and none has
+	// been given back. The correction keeps every one.
 	g.Correct(0)
-	if g.held != 1 {
-		t.Fatalf("the gate holds %d after a correction reading nothing with one admission since, want 1: the four before the previous correction are not counted again",
+	if g.held != 5 {
+		t.Fatalf("the gate holds %d after a correction reading nothing with five credits out, want 5: a credit is counted until it is given back, whichever sweep admitted it",
 			g.held)
 	}
-	if granted := admissions(t, g, gateRate+1); granted != gateRate-1 {
-		t.Fatalf("the gate granted %d admissions after that correction, want %d", granted, gateRate-1)
+	if granted := admissions(t, g, gateRate+1); granted != gateRate-5 {
+		t.Fatalf("the gate granted %d admissions after that correction, want %d: five of the rate are still out", granted, gateRate-5)
 	}
 }
 

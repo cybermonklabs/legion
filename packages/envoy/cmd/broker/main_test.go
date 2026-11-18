@@ -14,6 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"maps"
 	"math/big"
@@ -41,6 +42,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// TestMain drops the databases the package's tests clone (storetest.Main).
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // testSecretsPrefix and testSecretsKMSKeyARN are the name prefix every agent secret sits under
 // and the key every one of them is encrypted with, as productionEnv configures every broker
@@ -391,16 +395,12 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 	}
 }
 
-// listenTimeout bounds how long startBroker waits for a broker's "broker listening" line: long
-// enough for a cold binary to migrate an empty database, short enough that a broker which will
-// never bind fails its row rather than its package's deadline.
-const listenTimeout = 10 * time.Second
-
-// stopTimeout bounds how long a broker gets to exit after the SIGTERM its test's cleanup sends,
-// before it is killed outright. It covers the whole stop budget the process logs at boot — its
-// drain plus its shutdown — so a broker that honours that budget is never killed mid-drain, and
-// one that hangs leaves no stray process behind holding a port and a database connection.
-const stopTimeout = 90 * time.Second
+// stopGrace is how long a broker gets to exit after the SIGTERM its test's cleanup sends. It is
+// the whole stop budget the process logs at boot — its drain plus its shutdown — so a broker
+// that honours that budget is never killed mid-drain. It is a span the cleanup holds open, not a
+// wait: a broker still running at the end of it is killed by cmdtest's own cleanup, and the row
+// that was about its stop is the one that says so (AwaitExit).
+const stopGrace = 90 * time.Second
 
 // brokerOptions varies how startBroker starts a broker.
 type brokerOptions struct {
@@ -439,7 +439,7 @@ const metricsListenEnv = "BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
 
 // startBroker starts the broker binary with productionEnv, metricsListenEnv and options.Env,
 // waits for its "broker listening" line unless options.NoWaitForListening says not to, and stops
-// it with SIGTERM when t ends, killing it if it has not gone within stopTimeout.
+// it with SIGTERM when t ends, killing it if it has not gone within stopGrace.
 func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 	t.Helper()
 	binary := options.Binary
@@ -452,16 +452,18 @@ func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 	// Cleanups run last-registered-first, so this one — registered after cmdtest.Start's own —
 	// asks the broker to stop and waits its whole stop budget out before cmdtest's cleanup kills
 	// the child. The signal's own error is dropped because a process that has already exited is
-	// nothing for a teardown to fail on.
+	// nothing for a teardown to fail on. The wait is a plain select rather than the shared wait
+	// because a broker that will not stop is this teardown's to kill, never this row's to fail:
+	// a row about the stop itself asks AwaitExit for it.
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-p.Exited:
-		case <-time.After(stopTimeout):
+		case <-time.After(stopGrace):
 		}
 	})
 	if !options.NoWaitForListening {
-		p.AwaitListening(t, listenTimeout)
+		p.AwaitListening(t)
 	}
 	return p
 }
@@ -474,40 +476,32 @@ func (p *brokerProcess) Log() string {
 	return p.Output.String()
 }
 
-// awaitTimeout bounds how long Await waits for the line it asks for.
-const awaitTimeout = 10 * time.Second
-
 // Await answers everything the broker has logged once a whole line carrying want has arrived, one
 // a newline closes, so a test that goes on to read that line's fields reads all of them. The
 // binary logs the rest of its boot — the state of its token exchange — after the bind line
 // startBroker synchronises on, so a test that reads one of those later lines asks Await for it
-// rather than reading Boot. It fails t if that line has not come within awaitTimeout.
+// rather than reading Boot.
 func (p *brokerProcess) Await(t *testing.T, want string) string {
 	t.Helper()
-	var text string
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		text = p.Log()
+	return testwait.Until(t, fmt.Sprintf("the broker to log a whole line carrying %q", want), func() (string, bool) {
+		text := p.Log()
 		text = text[:strings.LastIndexByte(text, '\n')+1]
-		return strings.Contains(text, want)
-	}) {
-		t.Fatalf("the broker never logged a line carrying %q:\n%s", want, p.Log())
-	}
-	return text
+		return text, strings.Contains(text, want)
+	})
 }
 
 // AwaitRecord answers the first line the broker has logged whose message is message and that
-// carries every field of fields (recordsWith), once one has arrived, and fails t if none has
-// within awaitTimeout. It is Await for a line whose fields a test reads.
+// carries every field of fields (recordsWith), once one has arrived. It is Await for a line whose
+// fields a test reads.
 func (p *brokerProcess) AwaitRecord(t *testing.T, message string, fields map[string]any) map[string]any {
 	t.Helper()
-	var found []map[string]any
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		found = recordsWith(p.Log(), message, fields)
-		return len(found) != 0
-	}) {
-		t.Fatalf("the broker never logged a %q line carrying %v:\n%s", message, fields, p.Log())
-	}
-	return found[0]
+	return testwait.Until(t, fmt.Sprintf("the broker to log a %q line carrying %v", message, fields), func() (map[string]any, bool) {
+		found := recordsWith(p.Log(), message, fields)
+		if len(found) == 0 {
+			return nil, false
+		}
+		return found[0], true
+	})
 }
 
 // MetricsAddr answers the address the broker's "broker metrics listening" line names, waiting for
@@ -566,20 +560,15 @@ func scrapeMetric(t *testing.T, addr, metric string) map[string]float64 {
 	return samples
 }
 
-// listeningPoll is how often AwaitListening looks for the broker's listening line. The line is
-// logged synchronously, only after Listen has already succeeded — the bind fix's whole point —
-// so this is how soon a test reads the bind, never how soon the broker makes it.
-const listeningPoll = 20 * time.Millisecond
-
-// AwaitListening waits up to within for the broker's "broker listening" line and records the
-// address it names in Addr and the log up to it in Boot. It fails t when the broker exits without
-// ever logging that line, and when within passes with no such line.
-func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
+// AwaitListening waits for the broker's "broker listening" line and records the address it names
+// in Addr and the log up to it in Boot. It fails t when the broker exits without ever logging
+// that line.
+func (p *brokerProcess) AwaitListening(t *testing.T) {
 	t.Helper()
-	if !testwait.Holds(within, listeningPoll, func() bool {
+	testwait.Until(t, "the broker's listening line", func() (string, bool) {
 		if addr, boot, ok := listeningIn(p.Log()); ok {
 			p.Addr, p.Boot = addr, boot
-			return true
+			return boot, true
 		}
 		select {
 		case <-p.Exited:
@@ -589,15 +578,13 @@ func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
 			// did bind, instead of being failed for the exit.
 			if addr, boot, ok := listeningIn(p.Log()); ok {
 				p.Addr, p.Boot = addr, boot
-				return true
+				return boot, true
 			}
 			t.Fatalf("the broker exited without ever logging %q:\n%s", "broker listening", p.Log())
 		default:
 		}
-		return false
-	}) {
-		t.Fatalf("no %q line within %s:\n%s", "broker listening", within, p.Log())
-	}
+		return p.Log(), false
+	})
 }
 
 // listeningIn finds the broker's first "broker listening" line in log and answers the address it
@@ -686,23 +673,22 @@ func rereadRateIn(log string) (rate rereadRateLine, ok bool) {
 	return rate, ok
 }
 
-// AwaitExit waits up to within for the broker to exit and answers what its exit was: nil for a
-// clean one, an *exec.ExitError naming the code otherwise, which is what Wait itself answers. It
-// fails t when the broker is still running after within. The bound is its caller's rather than
-// cmdtest.WaitExit's fixed thirty seconds, because a broker's stop budget is its whole drain plus
-// its shutdown, which the drain row gives ninety.
-func (p *brokerProcess) AwaitExit(t *testing.T, within time.Duration) error {
+// AwaitExit waits for the broker to exit and answers what its exit was: nil for a clean one, an
+// *exec.ExitError naming the code otherwise, which is what Wait itself answers.
+func (p *brokerProcess) AwaitExit(t *testing.T) error {
 	t.Helper()
-	select {
-	case <-p.Exited:
-		if p.Cmd.ProcessState.Success() {
-			return nil
+	testwait.Until(t, fmt.Sprintf("the broker at %s to exit after it was asked to stop", p.Addr), func() (string, bool) {
+		select {
+		case <-p.Exited:
+			return "", true
+		default:
+			return p.Log(), false
 		}
-		return &exec.ExitError{ProcessState: p.Cmd.ProcessState}
-	case <-time.After(within):
-		t.Fatalf("the broker at %s was still running %s after it was asked to stop:\n%s", p.Addr, within, p.Log())
+	})
+	if p.Cmd.ProcessState.Success() {
 		return nil
 	}
+	return &exec.ExitError{ProcessState: p.Cmd.ProcessState}
 }
 
 // requireHealthy fails t unless GET /healthz at addr answers 200.

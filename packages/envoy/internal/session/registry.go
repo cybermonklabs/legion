@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -148,7 +149,8 @@ type sessionRegistryOpts struct {
 	goneHorizon       time.Duration
 	lastSeenRetention time.Duration
 	log               *slog.Logger
-	now               func() time.Time
+	clock             clock.Clock
+	watch             []kvwatch.Option
 }
 
 func WithSessionReplicas(n int) SessionRegistryOption {
@@ -204,11 +206,20 @@ func WithSessionLogger(log *slog.Logger) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.log = log }
 }
 
-// WithSessionClock sets the registry's clock, time.Now by default: the time a heartbeat records,
-// and the time a row's expiry and a last-seen record's retention are measured against. Tests move
-// it past a session's TTL without waiting it out.
-func WithSessionClock(now func() time.Time) SessionRegistryOption {
-	return func(o *sessionRegistryOpts) { o.now = now }
+// WithSessionClock sets the registry's clock, clock.Real by default: the time a heartbeat records,
+// the time a row's expiry and a last-seen record's retention are measured against, and the timer
+// that fires those deadlines (armExpiryLocked). A test hands it a clocktest.Fake and moves it past
+// a session's TTL rather than waiting that TTL out.
+func WithSessionClock(c clock.Clock) SessionRegistryOption {
+	return func(o *sessionRegistryOpts) { o.clock = c }
+}
+
+// WithSessionWatch adds options to the ones the registry's cache watcher is built with, after
+// them: the watcher's timers for a test (kvwatch.WithAfterFunc, kvwatch.WithNow), so its stream
+// probe and its other waits run on a clock the test holds rather than on time.AfterFunc. No
+// deployment sets it.
+func WithSessionWatch(options ...kvwatch.Option) SessionRegistryOption {
+	return func(o *sessionRegistryOpts) { o.watch = append(o.watch, options...) }
 }
 
 // cachedSession is a SessionEntry plus its local expiry deadline. JetStream
@@ -245,7 +256,7 @@ func (s lastSeenSession) expired(now time.Time) bool {
 // cache keeps every row through the read and removes the rows the read found no evidence of only
 // once it completes (sessionCache), so a list served during the read is the copy it had.
 type SessionRegistry struct {
-	now func() time.Time
+	clock clock.Clock
 	// liveWindow and goneHorizon are the windows this registry judges a record's age against
 	// (StateOf); zero, as in a registry built from a struct literal, means the package's own
 	// (windows). Both are fixed when the registry is opened, so no lock covers them.
@@ -289,7 +300,7 @@ type SessionRegistry struct {
 	// built from a struct literal starts with none of them (scheduleLocked).
 	expiries       expiryHeap
 	expiryIndex    map[expiryKey]*expiryItem
-	expiryTimer    *time.Timer
+	expiryTimer    clock.Timer
 	expiryArmedFor time.Time
 
 	// watcher feeds the cache from the session bucket and holds the handle the registry writes
@@ -351,7 +362,7 @@ func (r *SessionRegistry) PruneLapsed() {
 	if !r.following() {
 		return
 	}
-	now := r.now()
+	now := r.clock.Now()
 	for sessionID, cs := range r.cache.All() {
 		if !cs.expired(now) {
 			continue
@@ -403,7 +414,7 @@ func (r *SessionRegistry) unlockAndNotify() {
 }
 
 func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*SessionRegistry, error) {
-	opts := sessionRegistryOpts{replicas: 1, ttl: BucketMaxAge, liveWindow: LiveWindow, goneHorizon: GoneHorizon, lastSeenRetention: LastSeenMemory, now: time.Now}
+	opts := sessionRegistryOpts{replicas: 1, ttl: BucketMaxAge, liveWindow: LiveWindow, goneHorizon: GoneHorizon, lastSeenRetention: LastSeenMemory, clock: clock.Real()}
 	for _, o := range options {
 		o(&opts)
 	}
@@ -440,7 +451,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		}
 	}
 	r := &SessionRegistry{
-		now:               opts.now,
+		clock:             opts.clock,
 		liveWindow:        opts.liveWindow,
 		goneHorizon:       opts.goneHorizon,
 		lastSeenRetention: opts.lastSeenRetention,
@@ -451,11 +462,21 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		log:               opts.log,
 	}
 	r.cache = newSessionCopy(r)
-	r.watcher = kvwatch.New("session registry", kv, sessionCache{r}, kvwatch.WithLogger(opts.log))
+	r.watcher = r.newWatcher(kv, opts.watch...)
 	// The watcher populates the cache asynchronously. A synchronous Keys()+per-key Get() loop
 	// blocks for seconds when the KV stream leader is on a remote node.
 	r.watcher.Start()
 	return r, nil
+}
+
+// newWatcher returns the watcher that feeds r's copy from kv. A first watch whose failure was
+// transient, as a loaded start's can be (its consumer create unanswered, its connection
+// reconnecting), is made again on the watcher's own clock (kvwatch.WithFirstWatchRetry), a WARN for
+// each attempt, rather than the ERROR that leaves the copy to the listener's self-health rebuild.
+// options follow the watcher's own.
+func (r *SessionRegistry) newWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithFirstWatchRetry()}, options...)
+	return kvwatch.New("session registry", kv, sessionCache{r}, options...)
 }
 
 // newSessionCopy is the copy of the session bucket r keeps: the one place its rows are decoded and
@@ -556,7 +577,7 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()
 	defer r.unlockAndNotify()
-	r.followingSince = r.now()
+	r.followingSince = r.clock.Now()
 	r.cache.CompleteRead()
 }
 
@@ -591,7 +612,7 @@ func (r *SessionRegistry) expiryFor(created time.Time, updatedAtMillis int64) ti
 	if updatedAtMillis > 0 {
 		return time.UnixMilli(updatedAtMillis).Add(r.ttl)
 	}
-	return r.now().Add(r.ttl)
+	return r.clock.Now().Add(r.ttl)
 }
 
 // StopWatch retires the cache's watcher for a shutdown (kvwatch.Watcher.Stop).
@@ -682,7 +703,7 @@ func (r *SessionRegistry) Windows() (live, horizon time.Duration) {
 // (Refresh). A caller naming a session asks Lookup, which reads the record and judges it
 // together.
 func (r *SessionRegistry) EntryState(entry SessionEntry) State {
-	return r.stateOf(entry, r.now())
+	return r.stateOf(entry, r.clock.Now())
 }
 
 // applyMaxAge writes the deployment's maximum age on the bucket when it has one (WithSessionMaxAge)
@@ -753,7 +774,7 @@ func (r *SessionRegistry) CacheSize() int {
 // live window, the rows that have not expired are every row the bucket holds, and counting those
 // would report a box full of stalled sessions as a box full of working ones.
 func (r *SessionRegistry) LiveCount() int {
-	now := r.now()
+	now := r.clock.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	live := 0
@@ -788,7 +809,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
 	// follows whichever wrote last, and this write stamps the entry with the moment it was made,
 	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
-	entry.UpdatedAt = r.now().UnixMilli()
+	entry.UpdatedAt = r.clock.Now().UnixMilli()
 	buf, err := json.Marshal(entry)
 	if err != nil {
 		return err
@@ -824,7 +845,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 // record itself (StateOf), since a record this answers can be two hours old. It takes only the
 // shared lock and changes nothing: the expiry timer, not a read, removes an expired entry.
 func (r *SessionRegistry) Get(sessionID string) (SessionEntry, error) {
-	now := r.now()
+	now := r.clock.Now()
 	r.mu.RLock()
 	cs, ok := r.cache.Get(sessionID)
 	r.mu.RUnlock()
@@ -849,7 +870,7 @@ func (r *SessionRegistry) Get(sessionID string) (SessionEntry, error) {
 // LastSeen is what still knows when it was last seen. It takes only the shared lock and changes
 // nothing.
 func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
-	now := r.now()
+	now := r.clock.Now()
 	r.mu.RLock()
 	cs, ok := r.cache.Get(sessionID)
 	r.mu.RUnlock()
@@ -931,7 +952,7 @@ func (r *SessionRegistry) applyRead(sessionID string, epoch uint64, got nats.Key
 		return SessionEntry{}, err
 	}
 	entry := kvwatch.LegacyEntry(got)
-	now := r.now()
+	now := r.clock.Now()
 	r.mu.Lock()
 	outcome, malformed := r.cache.Apply(r.watcher, epoch, entry)
 	if outcome != kvwatch.Applied {
@@ -972,7 +993,7 @@ func (r *SessionRegistry) uncachedLocked(entry kvwatch.Entry, now time.Time) (Se
 // retention past the moment it left the live view, departedLocked), so the answer is the same
 // before and after the removal.
 func (r *SessionRegistry) LastSeen(sessionID string) int64 {
-	now := r.now()
+	now := r.clock.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if cs, ok := r.cache.Get(sessionID); ok {
@@ -1033,7 +1054,7 @@ func (r *SessionRegistry) List(include ...ListOption) ([]ListEntry, error) {
 	for _, o := range include {
 		o(&opts)
 	}
-	now := r.now()
+	now := r.clock.Now()
 	r.mu.RLock()
 	entries := make([]ListEntry, 0, r.cache.Len())
 	for key, cs := range r.cache.All() {
@@ -1066,7 +1087,7 @@ func (r *SessionRegistry) storedLocked(sessionID string, stored *cachedSession) 
 }
 
 func (r *SessionRegistry) removedLocked(sessionID string, removed *cachedSession) {
-	r.scheduleLocked(sessionID, expireLastSeen, r.retireLocked(sessionID, removed, r.now()))
+	r.scheduleLocked(sessionID, expireLastSeen, r.retireLocked(sessionID, removed, r.clock.Now()))
 	r.changedLocked(sessionID)
 }
 

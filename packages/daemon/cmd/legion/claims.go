@@ -533,7 +533,7 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 				"the claim dropped it, or the daemon restarted\n", c.name, token, seen.State)
 			return nil, false
 		}
-		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
+		if !c.until.IsZero() && !c.clock.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
 				"runtime refused the stop, which is tried again every probe interval\n", c.name, token, seen.State, *c.wait)
 			return nil, false
@@ -542,7 +542,7 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		case <-ctx.Done():
 			fmt.Fprintf(c.stderr, "%s: %v\n", c.name, ctx.Err())
 			return nil, false
-		case <-time.After(suspendPoll):
+		case <-c.clock.After(suspendPoll):
 		}
 	}
 }

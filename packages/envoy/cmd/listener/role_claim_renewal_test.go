@@ -12,15 +12,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleClaimRenewalRig is the registration route over one role bucket, with the bucket itself
@@ -36,13 +41,20 @@ type roleClaimRenewalRig struct {
 
 func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	t.Helper()
+	return newRoleClaimRenewalRigOn(t, nil)
+}
+
+// newRoleClaimRenewalRigOn is newRoleClaimRenewalRig with the listener's own bounds, the
+// registration's sendRequestBudget among them, on clk; nil is the real clock.
+func newRoleClaimRenewalRigOn(t *testing.T, clk clock.Clock) *roleClaimRenewalRig {
+	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	logs := &bytes.Buffer{}
 	// withRoleClaimDrain, because a registration that makes its session live again hands that
 	// session the kept lane of each role whose claim record it read for it (runKeptRoleDrain),
 	// and the first registration of every holder here is one: the rig's session cache has never
 	// seen it.
-	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil), clock: clk})
 	return &roleClaimRenewalRig{
 		t:         t,
 		registry:  registry,
@@ -73,7 +85,7 @@ func (r *roleClaimRenewalRig) seed(role string, claim store.RoleClaim) store.Rol
 	if _, err := r.registry.Upsert(store.Interest{SessionID: claim.HolderSessionID, MachineID: "test-machine"}, []string{contracts.RoleTopicPrefix + role}); err != nil {
 		r.t.Fatalf("register %s's interest in %s's lane: %v", claim.HolderSessionID, role, err)
 	}
-	waitFor(r.t, 5*time.Second, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
+	testwait.Eventually(r.t, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
 		held, err := r.registry.RolesHeldBy(claim.HolderSessionID)
 		return err == nil && slices.Contains(held, role)
 	})
@@ -196,7 +208,16 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 	if err != nil {
 		t.Fatalf("encode the registration: %v", err)
 	}
-	rig := newRoleClaimRenewalRig(t)
+	// The registration's budget runs on the listener's clock. The suite stands that clock still,
+	// so its verdict is the renewal's own and never how fast a loaded machine reduces these
+	// topics. Whether the work fits in the budget is a service level, read on a quiet machine with
+	// DISPATCH_BENCH_TIMING set, where the row runs on the real clock and the budget decides it as
+	// it decided the incident.
+	var listenerClock clock.Clock
+	if os.Getenv(benchtime.TimingEnv) == "" {
+		listenerClock = clocktest.New(time.Now())
+	}
+	rig := newRoleClaimRenewalRigOn(t, listenerClock)
 	seeded := rig.seed(role, lapsedClaim(sessionID, ""))
 
 	registered := time.Now()

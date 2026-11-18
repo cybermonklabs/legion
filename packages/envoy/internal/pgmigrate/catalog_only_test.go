@@ -3,8 +3,6 @@ package pgmigrate
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -100,22 +98,13 @@ func catalogOnlyFixture(rows int) string {
 }
 
 // catalogOnlyDatabase connects to a database of the test's own, loaded with
-// catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names, and skips the test
-// when that variable is unset, as the store's tests do. It does not call testpg.URL, which starts
-// a container when the variable is unset. The database is dropped when the test ends.
+// catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names (testdb's
+// DispatchServer.Database), which skips the test when that variable is unset, as the store's tests
+// do. It does not call testpg.URL, which starts a container when the variable is unset. The
+// database is dropped when the test ends.
 func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn {
 	t.Helper()
-	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's catalog tests")
-	}
-	adminURL, err := url.Parse(raw)
-	if err != nil {
-		// url.Parse's own error quotes the URL, which carries a credential.
-		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
-	}
-	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_catalog"))
+	conn := connect(t, ctx, testdb.DispatchServer.Database(t, "pgmigrate_catalog"))
 	if _, err := conn.Exec(ctx, catalogOnlyFixture(rows)); err != nil {
 		t.Fatalf("load the fixture: %v", err)
 	}

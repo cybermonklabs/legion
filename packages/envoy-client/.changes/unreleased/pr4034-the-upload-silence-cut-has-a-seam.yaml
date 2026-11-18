@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `DispatchWriteRetry` takes an optional `armSilence`, the seam that arms, renews and disarms an
+  upload's silence cut; left unset, the cut runs on `setTimeout` as before.

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -131,7 +132,9 @@ func catchUpClock() time.Time { return time.Date(2026, 10, 23, 18, 0, 0, 0, time
 func justAdmitted() time.Time { return time.Now().UTC() }
 
 // catchUpRig is the daemon's workflow runtime over a fresh store of project CAPTURE, against
-// client, with admission at cap: what the boot catch-up runs on.
+// client, with admission at cap: what the boot catch-up runs on. Its clock is a still one: a
+// root's bound (bootTimeout) passes only when a test moves it, and the wait between two reads of
+// a refused root returns at once.
 func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*store.Pool, *workflowRuntime) {
 	t.Helper()
 	return catchUpRigLogging(t, client, cap, quietLogger())
@@ -147,17 +150,24 @@ func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.
 	admission := admit.New(records, engine, cap, "CAPTURE", log)
 	return pool, &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
 		gatedSteps: config.DesignGateRootIssues.Steps(),
-		handlers:   []intake.Handler{engine, admission}, log: log, bootID: "boot-1", catchUpRetryDelay: time.Millisecond}
+		handlers:   []intake.Handler{engine, admission}, log: log, bootID: "boot-1", clock: newStillClock()}
 }
 
 // bootCatchUp runs the boot's catch-up as the boot does: every root it reads is held in the
 // reconcile's transaction (holdForCatchUp), then caught up (catchUpAwaiting).
 func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 	t.Helper()
+	holdCatchUp(t, w)
+	return w.catchUpAwaiting(context.Background())
+}
+
+// holdCatchUp holds every root the boot's catch-up reads in the reconcile's transaction
+// (holdForCatchUp), the first half of bootCatchUp.
+func holdCatchUp(t *testing.T, w *workflowRuntime) {
+	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
 		t.Fatalf("hold the roots to catch up: %v", err)
 	}
-	return w.catchUpAwaiting(context.Background())
 }
 
 // seedRecord runs put in a transaction of its own.
@@ -464,16 +474,19 @@ func TestCatchUpAwaitingFailsWhileDispatchIsDown(t *testing.T) {
 
 // slowFirstRoot is a Dispatch whose read of CAPTURE-1's issue never answers within the catch-up's
 // deadline for that root, the first time it is asked, and whose approval read fails for good.
+// stalling is closed once that read waits on its deadline.
 type slowFirstRoot struct {
 	awaitingDispatch
-	stalled bool
-	asked   []string
+	stalled  bool
+	stalling chan struct{}
+	asked    []string
 }
 
 func (d *slowFirstRoot) GetIssue(ctx context.Context, key string) (dispatch.Issue, error) {
 	d.asked = append(d.asked, key)
 	if key == "CAPTURE-1" && !d.stalled {
 		d.stalled = true
+		close(d.stalling)
 		<-ctx.Done()
 		return dispatch.Issue{}, ctx.Err()
 	}
@@ -495,19 +508,23 @@ func (d *slowFirstRoot) EventsAfter(ctx context.Context, key string, after int64
 // The boot's catch-up gives each root a deadline of its own. A root whose deadline passes makes the
 // attempt transient, so the boot's readiness retry runs it again, and the retry resumes at that root
 // without reading again the roots it finished. A root whose gate request read fails for good still
-// has its event log replayed, so a person's answer there is caught up.
+// has its event log replayed, so a person's answer there is caught up. The deadline runs on the
+// runtime's clock, which the test moves past it once the stalled read waits on it, so no other
+// root's work, however slow under a loaded suite, can outlast it.
 func TestCatchUpAwaitingBoundsEachRootAndResumesAfterTheRootsItFinished(t *testing.T) {
-	client := &slowFirstRoot{awaitingDispatch: awaitingDispatch{events: []json.RawMessage{answeredIn("CAPTURE-2", 9)}}}
+	client := &slowFirstRoot{awaitingDispatch: awaitingDispatch{events: []json.RawMessage{answeredIn("CAPTURE-2", 9)}}, stalling: make(chan struct{})}
 	pool, w := catchUpRig(t, client, 0)
-	// The bound is the stalled root's only wait; the others apply their facts well inside it, each
-	// of which runs admission's whole pass, also under a loaded suite.
-	w.catchUpRootTimeout = 3 * time.Second
 	waitingRoots(t, pool, "CAPTURE-0", "CAPTURE-1", "CAPTURE-2")
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-2", ArtifactID: "artifact-gone", LatestVersion: 2})
 	})
 
-	if err := bootCatchUp(t, w); !dispatch.Unreachable(err) {
+	holdCatchUp(t, w)
+	caught := make(chan error, 1)
+	go func() { caught <- w.catchUpAwaiting(context.Background()) }()
+	testwait.Receive(t, "the catch-up's read of CAPTURE-1 to wait on its deadline", client.stalling)
+	w.clock.(stillClock).Advance(bootTimeout)
+	if err := testwait.Receive(t, "the catch-up to end", caught); !dispatch.Unreachable(err) {
 		t.Fatalf("catch up with a root past its deadline = %v, want a transient error the boot retries", err)
 	}
 	if err := w.catchUpAwaiting(context.Background()); err != nil {

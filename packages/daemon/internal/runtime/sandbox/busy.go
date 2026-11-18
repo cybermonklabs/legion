@@ -86,7 +86,7 @@ func resend[T any](ctx context.Context, r *Runtime, what string, send func() (T,
 	if !serverBusy(err) || !isLaunch(ctx) {
 		return answer, err
 	}
-	start := time.Now()
+	start := r.timers().Now()
 	deadline := start.Add(r.bootTimeout)
 	if bound, ok := ctx.Deadline(); ok && bound.Before(deadline) {
 		deadline = bound
@@ -96,18 +96,18 @@ func resend[T any](ctx context.Context, r *Runtime, what string, send func() (T,
 	for overloaded := 1; ; overloaded++ {
 		wait := backoff.Wait(r.busyBackoff, overloaded)
 		stopped := ""
-		if !time.Now().Add(wait).Before(deadline) {
+		if !r.timers().Now().Add(wait).Before(deadline) {
 			stopped = "until the launch's deadline for it"
-		} else if ended := backoff.Sleep(ctx, wait); ended != nil {
+		} else if ended := r.timers().Sleep(ctx, wait); ended != nil {
 			stopped = "until the launch's context ended: " + ended.Error()
 		}
 		if stopped != "" {
 			return answer, fmt.Errorf("%w (the API server answered %s overloaded %d times in %s, %s)",
-				err, what, overloaded, time.Since(start).Round(time.Millisecond), stopped)
+				err, what, overloaded, r.timers().Now().Sub(start).Round(time.Millisecond), stopped)
 		}
 		if answer, err = send(); !serverBusy(err) {
 			r.log.Info("sandbox runtime: the API server answered a launch's request it had answered overloaded",
-				"request", what, "overloaded", overloaded, "after", time.Since(start).Round(time.Millisecond), "error", err)
+				"request", what, "overloaded", overloaded, "after", r.timers().Now().Sub(start).Round(time.Millisecond), "error", err)
 			return answer, err
 		}
 	}

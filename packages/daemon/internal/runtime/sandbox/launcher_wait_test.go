@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -63,64 +64,90 @@ func (g *rig) pendingPod(name string, status func(*corev1.Pod)) time.Time {
 	return appeared
 }
 
+// The tests below time the launch's own timers (the boot timeout, the provisioning bound, the
+// recheck), so each runs its rig in a synctest bubble: no real network I/O reaches the rig, the
+// bubble's clock is the test's own, and what a launch does at each of those moments is read on
+// it, the same at any load.
+
+// inBubble waits, inside a synctest bubble, until holds reports true: it lets every goroutine of
+// the bubble act on the moment it is at (synctest.Wait), reads, and moves the bubble's clock a
+// millisecond on, so it ends at the bubble's first moment at which holds is true and costs no real
+// time. The shared wait does not run in a bubble: it reads the test binary's deadline, which
+// testing refuses to give a bubble's test.
+func inBubble(holds func() bool) {
+	for synctest.Wait(); !holds(); synctest.Wait() {
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// pendingPodInBubble is pendingPod inside a synctest bubble.
+func (g *rig) pendingPodInBubble(name string, status func(*corev1.Pod)) time.Time {
+	g.t.Helper()
+	inBubble(func() bool { return g.pod(name) != nil })
+	appeared := time.Now()
+	g.update(g.pod(name), status)
+	return appeared
+}
+
 // A pod's role launchers start only once its init containers have finished, and workspace-fetch's
 // clone, with its retries of a transient failure, may run past the boot timeout. A launch whose pod
 // is still provisioning then keeps waiting for its launcher, and starts the role in that same pod
 // once the launcher connects: the claim is charged no launch failure.
 func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
-	g := newRig(t, nil)
-	g.autoStart.Store(false)
-	spec := workerSpec(t)
-	machine, _, _ := supervisedSandboxMachine(t, g, spec)
-	launched := make(chan error, 1)
-	go func() { launched <- machine.Handle(g.ctx, supervise.RequestSpawn{Claim: spec.Claim}) }()
-	name := SandboxName(spec.Claim)
-	g.pendingPod(name, fetching)
-	uid := g.pod(name).UID
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil, withBubbleBoot())
+		g.autoStart.Store(false)
+		spec := workerSpec(t)
+		machine, _, _ := supervisedSandboxMachine(t, g, spec)
+		launched := make(chan error, 1)
+		go func() { launched <- machine.Handle(g.ctx, supervise.RequestSpawn{Claim: spec.Claim}) }()
+		name := SandboxName(spec.Claim)
+		g.pendingPodInBubble(name, fetching)
+		uid := g.pod(name).UID
 
-	select {
-	case err := <-launched:
-		t.Fatalf("the launch ended while its pod was still in workspace-fetch: %v", err)
-	case <-time.After(g.opts.BootTimeout + time.Second):
-	}
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
-	g.launcher(spec.Claim)
-	select {
-	case err := <-launched:
-		if err != nil {
+		// A second past the boot timeout on the bubble's clock, with every goroutine of the
+		// launch blocked again: a launch that gave up at the boot timeout has ended by now.
+		time.Sleep(g.opts.BootTimeout + time.Second)
+		synctest.Wait()
+		select {
+		case err := <-launched:
+			t.Fatalf("the launch ended while its pod was still in workspace-fetch: %v", err)
+		default:
+		}
+		g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
+		g.launcher(spec.Claim)
+		if err := <-launched; err != nil {
 			t.Fatalf("the launch failed once its pod had provisioned: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the launch did not start the role once its launcher connected")
-	}
-	got := machine.Claim()
-	if got.Budgets.LaunchFailures != 0 || got.Locator == nil || got.Locator.Sandbox.PodUID != string(uid) {
-		t.Fatalf("claim after the launch = %+v, want it launched in pod %s with no launch failure", got, uid)
-	}
-	if !slices.ContainsFunc(g.sent(spec.Claim), func(frame shimwire.Frame) bool {
-		start, ok := frame.(shimwire.LauncherStart)
-		return ok && start.Generation == got.Generation
-	}) {
-		t.Fatalf("the launcher was sent %v, want the generation %d start", g.sent(spec.Claim), got.Generation)
-	}
+		got := machine.Claim()
+		if got.Budgets.LaunchFailures != 0 || got.Locator == nil || got.Locator.Sandbox.PodUID != string(uid) {
+			t.Fatalf("claim after the launch = %+v, want it launched in pod %s with no launch failure", got, uid)
+		}
+		if !slices.ContainsFunc(g.sent(spec.Claim), func(frame shimwire.Frame) bool {
+			start, ok := frame.(shimwire.LauncherStart)
+			return ok && start.Generation == got.Generation
+		}) {
+			t.Fatalf("the launcher was sent %v, want the generation %d start", g.sent(spec.Claim), got.Generation)
+		}
+	})
 }
 
 // The wait provisioning extends is still bounded once provisioning ends: the launcher then has the
 // boot timeout to connect, and a launch whose launcher never does fails then, not at the end of
 // ProvisionBound.
 func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) {
-	g := newRig(t, nil)
-	g.autoStart.Store(false)
-	result := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
-	name := SandboxName(workerToken)
-	appeared := g.pendingPod(name, fetching)
-	time.Sleep(g.opts.BootTimeout + time.Second)
-	provisioned := time.Now()
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil, withBubbleBoot())
+		g.autoStart.Store(false)
+		result := make(chan error, 1)
+		go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
+		name := SandboxName(workerToken)
+		appeared := g.pendingPodInBubble(name, fetching)
+		time.Sleep(g.opts.BootTimeout + time.Second)
+		provisioned := time.Now()
+		g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
 
-	select {
-	case err := <-result:
+		err := <-result
 		if err == nil || !strings.Contains(err.Error(), "wait for its role launcher: timed out after") {
 			t.Fatalf("Spawn = %v, want it timed out waiting for the role launcher", err)
 		}
@@ -130,30 +157,26 @@ func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) 
 		if waited := time.Since(appeared); waited < 2*g.opts.BootTimeout {
 			t.Fatalf("the launch gave up %s after its pod appeared, want the boot timeout counted from the end of provisioning", waited)
 		}
-	case <-time.After(90 * time.Second):
-		t.Fatal("hang guard: the launch never ended after its pod provisioned")
-	}
+	})
 }
 
 // A pod that never runs an init container, as one whose image pull never finishes, is not
 // provisioning: its launch gives up at the boot timeout.
 func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
-	g := newRig(t, nil)
-	g.autoStart.Store(false)
-	result := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
-	name := SandboxName(workerToken)
-	g.pendingPod(name, pulling)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil, withBubbleBoot())
+		g.autoStart.Store(false)
+		result := make(chan error, 1)
+		go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
+		name := SandboxName(workerToken)
+		g.pendingPodInBubble(name, pulling)
 
-	select {
-	case err := <-result:
+		err := <-result
 		want := "wait for its role launcher: timed out after " + g.opts.BootTimeout.String() + " waiting for role launcher " + string(workerToken)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Spawn = %v, want %q", err, want)
 		}
-	case <-time.After(90 * time.Second):
-		t.Fatal("hang guard: the launch never ended for a pod that never provisioned")
-	}
+	})
 }
 
 // A pod has never started only while it is scheduled, still Pending, and its node has not made it
@@ -317,14 +340,10 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 			}
 			g.pendingPod(name, status)
 			stuck := g.pod(name).UID
-			select {
-			case err := <-result:
-				want := "wait for its role launcher: timed out after " + g.opts.BootTimeout.String()
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
-				}
-			case <-time.After(90 * time.Second):
-				t.Fatal("hang guard: the launch never ended for a pod that never started")
+			err := testwait.Receive(t, "the launch to end for a pod that never started", result)
+			want := "wait for its role launcher: timed out after " + g.opts.BootTimeout.String()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
 			}
 
 			g.advance(tc.aged)
@@ -422,23 +441,26 @@ func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 // of the repository cache that fetch fills a fresh feed from: the fetch's own failure, which would
 // name it, has not come.
 func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
-	g := newRig(t, nil)
-	g.autoStart.Store(false)
-	g.r.provisionBound = time.Second
-	spec := workerSpec(t)
-	result := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-	g.pendingPod(SandboxName(spec.Claim), fetching)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil, withBubbleBoot())
+		g.autoStart.Store(false)
+		g.r.provisionBound = time.Second
+		spec := workerSpec(t)
+		result := make(chan error, 1)
+		go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+		appeared := g.pendingPodInBubble(SandboxName(spec.Claim), fetching)
 
-	select {
-	case err := <-result:
+		err := <-result
 		want := "; its workspace-fetch is still running; the repository cache of " + spec.Repository.String() + ", which a fresh feed comes from alone, is "
 		if err == nil || !strings.Contains(err.Error(), "wait for its role launcher: timed out after") || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Spawn = %v, want the launcher wait's timeout naming the running fetch and %q", err, want)
 		}
-	case <-time.After(2*g.opts.BootTimeout + 5*time.Second):
-		t.Fatal("the launch still waits past its bound on a pod that is still fetching")
-	}
+		// The launcher's deadline is the boot timeout past the provisioning bound from the first
+		// moment the wait saw the pod fetching, which it reads at its next recheck at the latest.
+		if waited, bound := time.Since(appeared), g.r.provisionBound+g.opts.BootTimeout+recheckInterval; waited > bound {
+			t.Fatalf("the launch gave up %s after its pod appeared fetching, past its bound of %s", waited, bound)
+		}
+	})
 }
 
 // The cap is counted from the first time the wait sees the pod provisioning, not from the wait's
@@ -447,26 +469,23 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 // past the 5 s a cap from the wait's start would allow; its launcher connects then, and the launch
 // starts the role.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
-	g := newRig(t, nil)
-	g.autoStart.Store(false)
-	g.r.provisionBound = 3 * time.Second
-	spec := workerSpec(t)
-	result := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-	name := SandboxName(spec.Claim)
-	appeared := g.pendingPod(name, pulling)
-	time.Sleep(time.Until(appeared.Add(1500 * time.Millisecond)))
-	g.update(g.pod(name), fetching)
-	time.Sleep(time.Until(appeared.Add(5500 * time.Millisecond)))
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
-	g.launcher(spec.Claim)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil, withBubbleBoot())
+		g.autoStart.Store(false)
+		g.r.provisionBound = 3 * time.Second
+		spec := workerSpec(t)
+		result := make(chan error, 1)
+		go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+		name := SandboxName(spec.Claim)
+		appeared := g.pendingPodInBubble(name, pulling)
+		time.Sleep(time.Until(appeared.Add(1500 * time.Millisecond)))
+		g.update(g.pod(name), fetching)
+		time.Sleep(time.Until(appeared.Add(5500 * time.Millisecond)))
+		g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
+		g.launcher(spec.Claim)
 
-	select {
-	case err := <-result:
-		if err != nil {
+		if err := <-result; err != nil {
 			t.Fatalf("Spawn = %v %s after its pod appeared, want the role started", err, time.Since(appeared).Round(time.Millisecond))
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the launch did not start the role once its launcher connected")
-	}
+	})
 }

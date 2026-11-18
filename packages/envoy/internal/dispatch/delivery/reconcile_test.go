@@ -665,7 +665,6 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 // settings. reconcilePullRequestHeads never sees them, so calling it would prove nothing. The
 // population steps, which are the settings' own, must stay idle in the same pass.
 func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 5)
 
@@ -743,7 +742,6 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 // which is the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131
 // for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 60)
 	own := seedGadgetsIssue(t, ctx, pool, 60)
@@ -805,7 +803,6 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 // and not the arm's `issue_key is null`: a row this pass credited would leave the arm on its
 // issue alone, while this row stays in every way the arm reads but the rule it is stamped with.
 func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 61)
 	// acme/gadgets is a repository of its own project, as in the test above: what makes the

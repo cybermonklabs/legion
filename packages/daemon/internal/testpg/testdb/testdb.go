@@ -8,13 +8,20 @@
 //
 // A package whose tests migrate into the database their DSN names, rather than making one per
 // test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
-// RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
-// both nests them (internal/daemon's TestMain).
+// RunDatabase in each test. The two mechanisms compose, and a package that needs both nests them
+// (internal/daemon's TestMain).
 //
-// This package imports nothing of this module, and nothing added here may: migrating the template
-// needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
-// imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
-// internal/store's own tests take the same fixture every other package's tests take.
+// Every read of LEGION_TEST_PG_DSN a test binary of this module makes is in this package or in
+// internal/testpg: a test takes a database from a fixture and never names the server itself
+// (dispatch://INFRA-3149, check c-own). Available is that read for a gate alone — a package whose
+// tests must fail rather than skip without a server — and it answers whether, not where.
+//
+// This package imports nothing of this module but internal/testwait, the one wait the daemon's
+// tests share, which itself imports nothing outside the standard library; nothing added here may
+// import more. Migrating the template needs internal/store, so internal/testpg imports it, and a
+// test binary of internal/store that imported internal/testpg back would be a cycle. Keeping the
+// schema-free half apart is what lets internal/store's own tests take the same fixture every
+// other package's tests take.
 //
 // DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
 // its own comment says which callers make that rewrite and what it refuses. RandomName is
@@ -34,10 +41,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -47,11 +55,25 @@ import (
 const Image = "mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4"
 
 // SkipMessage is what a test is skipped with when there is no Postgres to run it against. It is
-// exported for the packages whose own skip says the same thing (internal/daemon's testDSN).
+// exported for internal/testpg, whose Clone skips with the same words. The server it gives a
+// person to start listens on a unix socket in a directory of their own and publishes no port,
+// since a port Docker chooses can be one another program holds (docs/testing.md, "A container a
+// test starts publishes no port"); it is ready once it has logged its readiness twice, the first
+// time for the entrypoint's server that makes the database and then stops.
 const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against. In a Legion pod, read skill://legion-worker/references/tools.md, \"The database your tests use\"; never the sessions database. Elsewhere, start one and set it:\n" +
-	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 " + Image + "\n" +
-	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
-	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
+	"  sock=$(mktemp -d) && chmod 0777 \"$sock\"\n" +
+	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -v \"$sock:/sockets\" " + Image + " -c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/sockets\n" +
+	"  until [ \"$(docker logs legion-pg 2>&1 | grep -c 'database system is ready to accept connections')\" -ge 2 ]; do sleep 1; done\n" +
+	"  LEGION_TEST_PG_DSN=\"postgres://legion:legion@/legion?host=$sock\" go test ./..."
+
+// Available reports whether LEGION_TEST_PG_DSN names a server, which is whether a fixture here
+// gives a test a database rather than skipping it. It is for the gate of a package whose tests
+// must fail rather than skip without one (internal/admit's migratedPool, the real Postgres
+// admission tests), and it answers no URL: a caller that wants a database takes one from
+// Database, RunDatabase or internal/testpg's Clone.
+func Available() bool {
+	return os.Getenv("LEGION_TEST_PG_DSN") != ""
+}
 
 // Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end.
 func Database(t testing.TB, prefix string) string {
@@ -125,32 +147,35 @@ type Execer interface {
 // every other session of the database, which PostgreSQL refuses to a login that is neither
 // superuser nor a member of pg_signal_backend as soon as one session belongs to another role — an
 // autovacuum worker, which attaches to a database a test has just filled. Every Legion pod shares
-// one server whose test login holds neither privilege, so the refusal is waited out for 30
-// seconds; any other error is the caller's at once (dispatch://INFRA-714 round six).
+// one server whose test login holds neither privilege, so that refusal is waited out; any other
+// error is the caller's at once (dispatch://INFRA-714 round six).
 //
-// It lives here rather than in internal/testpg because this package imports nothing of the
-// module, so every package's tests can take it — internal/store's among them, whose own tests
-// cannot import internal/testpg at all.
+// The wait is testwait's, which gives up a margin before the test binary's own deadline and takes
+// no bound from here. It is testwait.InMain's rather than a test's because two of the three
+// callers have no test to fail: the drop RunDatabaseMain runs after the last test, and
+// internal/testpg's background drops. The bound is the binary's deadline either way.
+//
+// It lives here rather than in internal/testpg because this package imports nothing of the module
+// but testwait, so every package's tests can take it — internal/store's among them, whose own
+// tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for attempt := 0; ; attempt++ {
+	var refused error
+	gaveUp := testwait.InMain("the drop of the test database "+name+", which a session of another role holds", func() bool {
 		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
-		if err == nil {
-			return nil
+		refused = err
+		if err == nil || ctx.Err() != nil {
+			return true
 		}
 		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != insufficientPrivilege {
-			return err
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w (still refused after %d attempts over 30s: a session of another role, an autovacuum worker, holds the database and this login may not terminate it)", err, attempt+1)
-		}
-		select {
-		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(250 * time.Millisecond):
-		}
+		return !errors.As(err, &pgErr) || pgErr.Code != insufficientPrivilege
+	})
+	switch {
+	case refused != nil && ctx.Err() != nil:
+		return errors.Join(refused, ctx.Err())
+	case gaveUp != nil:
+		return fmt.Errorf("%w (a session of another role, an autovacuum worker, holds %s and this login may not terminate it): %w", refused, name, gaveUp)
 	}
+	return refused
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is
@@ -165,11 +190,11 @@ func RandomName(prefix string) (string, error) {
 
 // DatabaseURL is the URL of database on the server dsn names: dsn with its path replaced, so the
 // URL keeps dsn's query. Every database a test binary of this module names from
-// LEGION_TEST_PG_DSN is named here — create above, internal/testpg's prepare and Clone, and the
-// live proofs' takeOwnDatabase (internal/daemon/live_agent_proof_test.go) — so one place reads
-// each rewrite back, and no caller checks itself. Delayed's proxy URL is the one other rewrite
-// of a DSN this package makes, and it takes the same check (rewriteDSN below). dsn is what
-// LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names it.
+// LEGION_TEST_PG_DSN is named here — create above, and internal/testpg's prepare and Clone — so
+// one place reads each rewrite back, and no caller checks itself. Delayed's proxy URL is the one
+// other rewrite of a DSN this package makes, and it takes the same check (rewriteDSN below). dsn
+// is what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal
+// names it.
 //
 // A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
 // reads another database from than database. Go's net/url ends the user name at the last `@` and
@@ -299,33 +324,15 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	return rewritten, nil
 }
 
-// runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and
-// runDatabase the URL of that database; both are empty until a RunDatabaseMain with
-// LEGION_TEST_PG_DSN set runs.
-var (
-	runServer   string
-	runDatabase string
-)
-
-// serverKey is the part of a DSN that names the server rather than a database on it, so two DSNs
-// that differ only in the database they name have one key. It reads the DSN with
-// pgconn.ParseConfig, the parser DatabaseURL and the driver read it with, so the key is the host,
-// the port and the user pgx connects as. A DSN pgx refuses is its own key: every key below holds
-// two NUL bytes, and a DSN a test read out of its environment holds none, so no refused DSN
-// equals a key.
-func serverKey(dsn string) string {
-	cfg, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return dsn
-	}
-	return fmt.Sprintf("%s\x00%d\x00%s", cfg.Host, cfg.Port, cfg.User)
-}
+// runDatabase is the URL of the database RunDatabaseMain made for this run, empty until a
+// RunDatabaseMain with LEGION_TEST_PG_DSN set runs.
+var runDatabase string
 
 // RunDatabaseMain makes one database named <prefix>_<random> for the whole run on the server
 // LEGION_TEST_PG_DSN names, runs run, drops that database and returns run's code; a drop that
 // fails prints why and turns a passing run into exit 1. A package whose tests migrate into the
 // database their DSN names calls it from TestMain, where every test reads the run's database
-// through RunDatabaseFor, so two runs of the package on one server never write each other's rows
+// through RunDatabase, so two runs of the package on one server never write each other's rows
 // and neither writes the database that server serves. With LEGION_TEST_PG_DSN unset it makes
 // nothing and returns run(), so those tests skip as they do without a server.
 //
@@ -348,7 +355,7 @@ func RunDatabaseMain(prefix string, run func() int) int {
 		fmt.Fprintf(os.Stderr, "make the package's run database: %v\n", err)
 		return 1
 	}
-	runServer, runDatabase = serverKey(dsn), database
+	runDatabase = database
 	code := run()
 	if err := drop(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -359,14 +366,22 @@ func RunDatabaseMain(prefix string, run func() int) int {
 	return code
 }
 
-// RunDatabaseFor is the URL of the database RunDatabaseMain made for this run when dsn names the
-// server that database is on, which is the host, the port and the user pgx reads from both
-// (serverKey), and dsn itself otherwise: a test that points LEGION_TEST_PG_DSN at a server of its
-// own keeps what it set. Without a run database — no RunDatabaseMain, or LEGION_TEST_PG_DSN
-// unset — it is dsn.
-func RunDatabaseFor(dsn string) string {
-	if runDatabase == "" || serverKey(dsn) != runServer {
-		return dsn
+// RunDatabase is the URL of the database RunDatabaseMain made for this run: the one database the
+// tests of a package that migrates into the database it is given share. Without
+// LEGION_TEST_PG_DSN the test is skipped, as every fixture here skips; with it set and no run
+// database made, the test fails naming RunDatabaseMain, which such a package's TestMain must
+// return — a test of it left on the server's own database is what the run database exists to
+// prevent.
+//
+// A test of that package that needs rows no other test of the run can see takes a clone of its
+// own instead (internal/testpg's Clone).
+func RunDatabase(t testing.TB) string {
+	t.Helper()
+	if !Available() {
+		t.Skip(SkipMessage)
+	}
+	if runDatabase == "" {
+		t.Fatal("no run database was made: this package's TestMain must return testdb.RunDatabaseMain(\"<prefix>\", run), which makes the one database its tests share")
 	}
 	return runDatabase
 }

@@ -15,43 +15,28 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// renewTestBound is how long a renewal test waits for any one step before it fails, so a
-// regression that turns a terminal refusal into a retry (or the reverse) fails the test rather
-// than hanging it until go test's own timeout.
-const renewTestBound = 10 * time.Second
 
 // syncWriter is a stderr a renew loop running on its own goroutine writes and a test reads.
 type syncWriter = logtest.Buffer
 
-// receive is the next value from ch, failing the test when none arrives within renewTestBound.
-func receive[T any](t *testing.T, ch <-chan T, what string) T {
-	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(renewTestBound):
-		t.Fatalf("no %s within %s", what, renewTestBound)
-	}
-	var zero T
-	return zero
-}
-
 // awaitRetry waits for renewLoop to reach its retry wait and returns that wait's channel. It
-// fails the test at once when the loop exits instead (the refusal was treated as terminal), and
-// when it does neither within renewTestBound.
+// fails the test at once when the loop exits instead (the refusal was treated as terminal).
 func awaitRetry(t *testing.T, waits <-chan chan time.Time, result <-chan int, what string) chan time.Time {
 	t.Helper()
-	select {
-	case wait := <-waits:
-		return wait
-	case code := <-result:
-		t.Fatalf("renew loop exited %d on %s, want it to wait and retry", code, what)
-	case <-time.After(renewTestBound):
-		t.Fatalf("renew loop neither retried nor exited on %s within %s", what, renewTestBound)
-	}
-	return nil
+	var wait chan time.Time
+	testwait.Eventually(t, "renew loop to wait and retry on "+what, func() bool {
+		select {
+		case wait = <-waits:
+			return true
+		case code := <-result:
+			t.Fatalf("renew loop exited %d on %s, want it to wait and retry", code, what)
+		default:
+		}
+		return false
+	})
+	return wait
 }
 
 // steppedWaits is an injected renewLoop wait: each call hands the test a channel through waits,
@@ -121,9 +106,9 @@ func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 	go func() {
 		result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, &stderr, after)
 	}()
-	receive(t, first, "first renewal")
-	receive(t, waits, "wait for the next renewal") <- time.Now()
-	if code := receive(t, result, "renew loop exit"); code != exitRenewRefused {
+	testwait.Receive(t, "first renewal", first)
+	testwait.Receive(t, "wait for the next renewal", waits) <- time.Now()
+	if code := testwait.Receive(t, "renew loop exit", result); code != exitRenewRefused {
 		t.Fatalf("renew loop exit = %d, want terminal-refusal code %d", code, exitRenewRefused)
 	}
 	if got := stderr.String(); !strings.Contains(got, "enrollment "+enrollmentID) || !strings.Contains(got, "HTTP 401 ENROLLMENT_NOT_LIVE") {
@@ -177,7 +162,7 @@ func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 		t.Fatalf("renew bodies %q, want one request with no body", got)
 	}
 	cancel()
-	if code := receive(t, result, "renew loop exit after cancellation"); code != 0 {
+	if code := testwait.Receive(t, "renew loop exit after cancellation", result); code != 0 {
 		t.Fatalf("renew loop exit after retry cancellation = %d, want 0", code)
 	}
 }
@@ -267,7 +252,7 @@ func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 				t.Fatalf("broker requests after two %s refusals = %d, want 2", tc.code, got)
 			}
 			cancel()
-			if code := receive(t, result, "renew loop exit after cancellation"); code != 0 {
+			if code := testwait.Receive(t, "renew loop exit after cancellation", result); code != 0 {
 				t.Fatalf("renew loop exit after cancellation = %d, want 0", code)
 			}
 		})
@@ -355,7 +340,7 @@ func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
 	go func() {
 		result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, &stderr, after)
 	}()
-	receive(t, first, "first renewal")
+	testwait.Receive(t, "first renewal", first)
 	awaitRetry(t, waits, result, "the wait after the first renewal") <- time.Now()
 	awaitRetry(t, waits, result, "a blank later token")
 	mu.Lock()
@@ -368,7 +353,7 @@ func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
 		t.Fatalf("blank later token stderr %q, want %q", stderr.String(), want)
 	}
 	cancel()
-	if code := receive(t, result, "renew loop exit after cancellation"); code != 0 {
+	if code := testwait.Receive(t, "renew loop exit after cancellation", result); code != 0 {
 		t.Fatalf("renew loop exit after cancellation = %d, want 0", code)
 	}
 }

@@ -4,32 +4,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// testClock provides a thread-safe injectable clock for tests.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newTestClock() *testClock {
-	return &testClock{now: time.Now()}
-}
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
+// The module's one fake clock stands in for the wall clock these tests read.
 
 func TestCache_FirstDeliveryNotSeen(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -39,7 +22,7 @@ func TestCache_FirstDeliveryNotSeen(t *testing.T) {
 }
 
 func TestCache_AfterRecordIsSeen(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -50,7 +33,7 @@ func TestCache_AfterRecordIsSeen(t *testing.T) {
 }
 
 func TestCache_ClearRemovesRecordedDelivery(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -63,7 +46,7 @@ func TestCache_ClearRemovesRecordedDelivery(t *testing.T) {
 }
 
 func TestCache_DifferentSessionsIndependent(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -74,7 +57,7 @@ func TestCache_DifferentSessionsIndependent(t *testing.T) {
 }
 
 func TestCache_DifferentKeysIndependent(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -85,7 +68,7 @@ func TestCache_DifferentKeysIndependent(t *testing.T) {
 }
 
 func TestCache_ExpiryAfterTTL(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -98,7 +81,7 @@ func TestCache_ExpiryAfterTTL(t *testing.T) {
 }
 
 func TestCache_NotSeenAtExactTTLBoundary(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	ttl := 10 * time.Minute
 	c := NewWithClock(ttl, clock.Now)
 	defer c.Stop()
@@ -120,7 +103,7 @@ func TestCache_NotSeenAtExactTTLBoundary(t *testing.T) {
 
 func TestCache_RecordOnlyAfterSuccess(t *testing.T) {
 	// Verify that Seen alone never records — only Record does.
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -159,7 +142,7 @@ func TestCache_ConcurrentAccess(t *testing.T) {
 }
 
 func TestCache_BackgroundCleanup(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	// Short TTL so the real ticker fires quickly.
 	c := NewWithClock(50*time.Millisecond, clock.Now)
 	defer c.Stop()
@@ -173,15 +156,10 @@ func TestCache_BackgroundCleanup(t *testing.T) {
 	clock.Advance(100 * time.Millisecond)
 
 	// The cleanup goroutine runs on a real ticker, and a loaded machine may not schedule it within
-	// any fixed number of periods: wait for the pass that removes the expired entry. The deadline
-	// bounds a failure; it is not how long cleanup takes.
-	deadline := time.Now().Add(10 * time.Second)
-	for c.Len() != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected 0 entries after background cleanup, got %d", c.Len())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// any fixed number of periods: this waits for the pass that removes the expired entry.
+	testwait.Eventually(t, "the background cleanup's pass that removes the expired entry", func() bool {
+		return c.Len() == 0
+	})
 }
 
 func TestCache_StopHaltsCleanup(t *testing.T) {
@@ -197,7 +175,7 @@ func TestCache_StopHaltsCleanup(t *testing.T) {
 }
 
 func TestCache_Len(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
@@ -218,7 +196,7 @@ func TestCache_Len(t *testing.T) {
 // record BEFORE delivery so redeliveries of the same (dedupe_key, session_id)
 // are skipped even when the first attempt timed out (slow-204 case).
 func TestCache_PreDeliveryAttemptDedupe(t *testing.T) {
-	clock := newTestClock()
+	clock := clocktest.New(time.Now())
 	attempts := NewWithClock(5*time.Minute, clock.Now)
 	defer attempts.Stop()
 

@@ -97,7 +97,7 @@ type transferGitHub struct {
 func newTransferGitHub(t *testing.T, serving string) *transferGitHub {
 	t.Helper()
 	g := &transferGitHub{serving: serving}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		head := r.URL.Query().Get("head")
 		g.mu.Lock()
 		g.made = append(g.made, r.Method+" "+r.URL.Path+" head="+head+" "+r.Header.Get("Authorization"))

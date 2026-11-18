@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -192,24 +193,38 @@ func pageInBound(ref Ref) (Ref, bool) {
 // trimReference drops what trails a reference in prose: sentence punctuation, the `*`, `_` and `~`
 // that close emphasis and strikethrough around it (GFM's autolinks drop the same characters,
 // keeping them inside a link), and a closing parenthesis that opens nowhere in the reference. It
-// counts the parentheses once and walks back from the end, so a run of closers costs one pass.
+// counts the parentheses once and walks back from the end, so a run of closers costs one pass,
+// and it adds what it read to trimmedBytes.
 func trimReference(raw string) string {
 	opened, closed := strings.Count(raw, "("), strings.Count(raw, ")")
 	end := len(raw)
+walk:
 	for ; end > 0; end-- {
 		switch raw[end-1] {
 		case '.', ',', ';', ':', '!', '?', '*', '_', '~':
 		case ')':
 			if opened >= closed {
-				return raw[:end]
+				break walk
 			}
 			closed--
 		default:
-			return raw[:end]
+			break walk
 		}
 	}
-	return ""
+	// The span once for each of the two counts, and the bytes the walk dropped.
+	trimmedBytes.Add(uint64(3*len(raw) - end))
+	return raw[:end]
 }
+
+// trimmedBytes counts what trimWork answers.
+var trimmedBytes atomic.Uint64
+
+// trimWork is how many bytes trimReference has read, in all, since the process started: each
+// span once for each of its two parenthesis counts, and every byte it walked back over. It is
+// what holds the trim to one pass over a closing run (TestExtractTrimsALongClosingRunInLinearTime),
+// where a trim that counted the parentheses again for every byte it dropped read a 1 MiB run in 13
+// to 26 seconds.
+func trimWork() uint64 { return trimmedBytes.Load() }
 
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as

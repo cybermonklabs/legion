@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A message on a followed topic that is refused -- its delivery mode cannot be read, which any
@@ -80,7 +80,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Unowned, so no relay runs until the fan-out has decided both messages: the test
 			// orders the two paths by construction rather than by timing.
-			rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+			rig := newRelayRigUnowned(t)
 			relayed := "ses_refused_state_" + id.New()
 			topic := "notifications.github.acme.refused-state-" + id.New() + ".mention"
 			exceptions, err := rig.harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + topic)
@@ -111,7 +111,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("store the unreadable-mode message: %v", err)
 			}
-			awaitLogLine(t, rig, "listener delivery mode cannot be read unambiguously", 15*time.Second)
+			awaitLogLine(t, rig, "listener delivery mode cannot be read unambiguously")
 			awaitFanoutFinished(t, rig, durable, first.Sequence)
 			if got := rig.harness.config.attemptCache.Seen(unreadable.DedupeKey, relayed); got != tc.wantAttempt {
 				t.Fatalf("an attempt record of %s is there: %t, want %t", relayed, got, tc.wantAttempt)
@@ -137,8 +137,8 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			// refused one: the refusal is the fan-out's to report and nothing about it may stop
 			// the session's consumer.
 			rig.relays.setOwned(true)
-			awaitRelayFrame(t, standIn, later, 20*time.Second)
-			reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second)
+			awaitRelayFrame(t, standIn, later)
+			reasons := deliveryExceptionsFor(t, rig.harness.client, exceptions, relayed, 1)
 			if len(reasons) != 1 || reasons[0] != "delivery_failed" {
 				t.Fatalf("the exception lane of %s carried %v, want one delivery_failed for the one refused message", relayed, reasons)
 			}
@@ -146,20 +146,15 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 	}
 }
 
-// awaitRelayFrame waits for the frame carrying item among those the session's stand-in receives,
-// failing the test when none arrives within the bound. A relay publishes every frame unjudged, so
-// the frames before it are the ones the relay refused nothing of.
-func awaitRelayFrame(t *testing.T, standIn *sessionStandIn, item contracts.Envelope, within time.Duration) {
+// awaitRelayFrame waits for the frame carrying item among those the session's stand-in receives. A
+// relay publishes every frame unjudged, so the frames before it are the ones the relay refused
+// nothing of.
+func awaitRelayFrame(t *testing.T, standIn *sessionStandIn, item contracts.Envelope) {
 	t.Helper()
-	deadline := time.After(within)
 	for {
-		select {
-		case frame := <-standIn.frames:
-			if frame.item.EventID == item.EventID {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("the frame carrying %s never reached the session within %s", item.EventID, within)
+		frame := testwait.Receive(t, "the frame carrying "+item.EventID, standIn.frames)
+		if frame.item.EventID == item.EventID {
+			return
 		}
 	}
 }

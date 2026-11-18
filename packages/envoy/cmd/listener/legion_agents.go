@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -35,9 +36,15 @@ type legionAgentRegistry struct {
 	conn  atomic.Pointer[nats.Conn]
 	state atomic.Pointer[legionAgentState]
 	// failing is what the last open failed at, "open" or "move", or empty when it has not failed, so
-	// each kind of failure logs once rather than at each retry. Only the open in progress reads or
-	// writes it, and there is never more than one.
+	// each kind of failure logs its ERROR once rather than at each retry. Only the open in progress
+	// reads or writes it, and there is never more than one.
 	failing string
+	// clk is the clock the open reads how long its transient failures have lasted on (open),
+	// clock.Real but in a test.
+	clk clock.Clock
+	// transientSince is when the current run of transient open failures began, zero outside one.
+	// Only the open in progress reads or writes it.
+	transientSince time.Time
 	// reconnected wakes the retry at once after a connection event.
 	reconnected chan struct{}
 	// firstWait and maxWait bound the retry's backoff, which doubles from one to the other.
@@ -66,22 +73,24 @@ func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
 	return r
 }
 
-// openLegionAgentRegistry opens the registry's bucket on conn. A bucket it cannot open logs one
-// ERROR and leaves the registry unavailable rather than ending the start, and the open is retried
-// in the background until it succeeds or close ends it.
+// openLegionAgentRegistry opens the registry's bucket on conn. A bucket it cannot open leaves the
+// registry unavailable rather than ending the start, and the open is retried in the background
+// until it succeeds or close ends it; open says which failures log their ERROR.
 func openLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, opts ...legionagents.Option) *legionAgentRegistry {
 	return startLegionAgentRegistry(conn, logger, func(conn *nats.Conn) (*legionagents.Store, error) {
 		return legionagents.Open(conn, opts...)
-	}, legionAgentRetryFirstWait, legionAgentRetryMaxWait)
+	}, legionAgentRetryFirstWait, legionAgentRetryMaxWait, clock.Real())
 }
 
 // startLegionAgentRegistry opens the bucket on conn through openBucket, and, when that fails,
-// starts the retry with a backoff doubling from firstWait to maxWait.
-func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucket func(*nats.Conn) (*legionagents.Store, error), firstWait, maxWait time.Duration) *legionAgentRegistry {
+// starts the retry with a backoff doubling from firstWait to maxWait. clk is the clock open reads
+// how long its transient failures have lasted on.
+func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucket func(*nats.Conn) (*legionagents.Store, error), firstWait, maxWait time.Duration, clk clock.Clock) *legionAgentRegistry {
 	ctx, stop := context.WithCancel(context.Background())
 	r := &legionAgentRegistry{
 		logger:      logger,
 		openBucket:  openBucket,
+		clk:         clk,
 		reconnected: make(chan struct{}, 1),
 		firstWait:   firstWait,
 		maxWait:     maxWait,
@@ -98,25 +107,60 @@ func startLegionAgentRegistry(conn *nats.Conn, logger *logging.Logger, openBucke
 	return r
 }
 
+// legionAgentOpenUnavailable is the ERROR an open that failed logs once (open).
+const legionAgentOpenUnavailable = "legion agent registry unavailable: could not open the " + bus.LegionAgentBucket + " bucket (a missing grant is the usual cause), so the /v1/legion/agents routes answer 503 while every other route serves; the listener retries the open in the background"
+
+// legionAgentOpenRetried is the WARN an open logs for each transient failure its retry makes again
+// within bus.RepairGrace (open).
+const legionAgentOpenRetried = "legion agent registry open failed for now; the listener opens it again in the background, and the /v1/legion/agents routes answer 503 until it does"
+
+// transientOpenFailure reports whether err is an open's failure that a moment later need not
+// repeat: a request that ran out of its wait with no answer, or one made while the connection was
+// reconnecting. A grant the server refused is not, whatever else the error carries: its operator
+// must see it.
+func transientOpenFailure(err error) bool {
+	if errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, nats.ErrPermissionViolation) {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, bus.ErrNotConnected) ||
+		errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrDisconnected)
+}
+
 // open opens the bucket on the latest connection, and reports whether the registry has its store.
 // A connection event that lands during the open moves the store to the new connection: the event's
 // hook stores the connection before it reads the state, and open stores the state before it reads
 // the connection, so one of the two sees the other's. A move open makes that fails leaves the
 // registry without a store, and the retry opens the bucket again on the latest connection: that
 // event's hook found no store to move and only woke the retry, so no later event is owed.
+//
+// A failed open answers the routes 503 naming it, and logs: a transient failure
+// (transientOpenFailure), as a loaded start's open can meet, one WARN for each, while the run of
+// them is younger than bus.RepairGrace, the minute a stopped cache watcher waits for its repair
+// before its own ERROR; any other failure, a refused grant among them, and a transient one past
+// that minute, the one ERROR, once until an open succeeds.
 func (r *legionAgentRegistry) open() bool {
 	conn := r.conn.Load()
 	store, err := r.openBucket(conn)
 	if err != nil {
 		reason := fmt.Sprintf("envoy: the legion agent registry is unavailable: could not open the %s bucket (a missing grant is the usual cause): %v", bus.LegionAgentBucket, err)
 		r.state.Store(&legionAgentState{unavailable: reason})
-		if r.failing != "open" {
+		transient := transientOpenFailure(err)
+		if !transient {
+			r.transientSince = time.Time{}
+		} else if r.transientSince.IsZero() {
+			r.transientSince = r.clk.Now()
+		}
+		if transient && r.clk.Now().Sub(r.transientSince) < bus.RepairGrace {
+			r.logger.Warn(legionAgentOpenRetried,
+				slog.String("bucket", bus.LegionAgentBucket), slog.String("error", err.Error()))
+		} else if r.failing != "open" {
 			r.failing = "open"
-			r.logger.Error("legion agent registry unavailable: could not open the "+bus.LegionAgentBucket+" bucket (a missing grant is the usual cause), so the /v1/legion/agents routes answer 503 while every other route serves; the listener retries the open in the background",
+			r.logger.Error(legionAgentOpenUnavailable,
 				slog.String("bucket", bus.LegionAgentBucket), slog.String("error", err.Error()))
 		}
 		return false
 	}
+	r.transientSince = time.Time{}
 	r.state.Store(&legionAgentState{store: store})
 	if latest := r.conn.Load(); latest != conn {
 		if err := store.Reopen(context.Background(), latest); err != nil {

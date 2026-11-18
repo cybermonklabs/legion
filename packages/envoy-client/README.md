@@ -10,22 +10,29 @@ history before that and stops where the fragments begin.
 
 ## Running the suite
 
-`bun run test` runs the suite with `--timeout 30000`, because Bun's own per-test default is
-5,000 ms and nothing here wrote it, sized it or explained it. On a busy machine that default is a
-limit on a row's work rather than on a hang: measured in a 2-CPU pod under 16 busy loops
-(8 x nproc), `dispatch-cwd.test.ts`'s row that kills a child ignoring SIGTERM reached 5,000.89 ms
-and failed, where it costs 0.14 s idle and 0.31 s with its own file alone. A row that hangs still
-fails the suite; it takes 30 s to say so rather than 5 s.
+`bun run test` runs two `bun test` commands, each with the row-deadline preload
+(`--preload @legion/test-fixtures/row-deadline`) and one `--timeout`, the command's guard. No row
+or hook carries a limit of its own: a wait of `@legion/test-fixtures/wait` (`until`, `settled`)
+ends before the guard of the command that runs it, with a failure that names what it waited for,
+and it cannot read a row's own number. The second command runs the files whose rows take far
+longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the two `*.live.test.ts` suites,
+`dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts` and `askgate-record.test.ts`; the first
+runs every other file. Each guard is for now the largest limit its files' rows carried before
+(60 s and 600 s), until a measured guard replaces it.
 
-Bun reads that number from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
+Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and
-`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
-still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
-limit as the third argument to `test`, with what can hang and the two costs that sized it written
-beside it. Each row's comment is the record of its own number.
+`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test`
+here runs under Bun's 5,000 ms default and without the preload: run the package's script.
 
-A row whose limit is a bound on work rather than a hang guard says so beside its number, and a row
-whose limit must stay below something the row must not wait out says that too.
+No row passes or fails by reading a clock. A row about one of the client's own timers runs it on
+Bun's fake clock (`jest.useFakeTimers()`, which holds `AbortSignal.timeout` as well) or holds it,
+and reads what the client did at each moment; a row that bounds the work of the client reads the
+client's own count of it (`bearerRedactionMatches`, `excerptPatternCharacters` in
+`dispatch-http.ts`). What no count reaches, the steps a regular expression takes within one pass,
+recheck's automaton checker reads from each pattern instead (`test/pattern-analysis.ts`): a row
+analyzes a pattern it reads in a moment, and holds a slower one to the verdict `bun run
+analyze:patterns` committed beside its test.
 
 ## Inbound delivery
 

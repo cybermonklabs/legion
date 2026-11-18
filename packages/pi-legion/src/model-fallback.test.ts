@@ -146,6 +146,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now,
       cause: "other",
     });
@@ -162,6 +163,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -202,6 +204,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + 2 * HOUR,
       cause: "refusal",
     });
@@ -223,6 +226,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now,
       cause: "other",
     });
@@ -243,6 +247,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -262,6 +267,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -280,6 +286,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: second,
+      armedAt: pane.live.now,
       dueAt: pane.live.now,
       cause: "other",
     });
@@ -313,6 +320,7 @@ describe("a refusal the host did not walk", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -332,6 +340,7 @@ describe("a refusal the host did not walk", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + 2 * HOUR,
       cause: "refusal",
     });
@@ -353,6 +362,7 @@ describe("a refusal the host did not walk", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: GPT,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -530,6 +540,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: walkedAt,
       dueAt: walkedAt + HOUR,
       cause: "refusal",
     });
@@ -559,6 +570,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: walkedAt,
       dueAt: walkedAt + HOUR,
       cause: "refusal",
     });
@@ -579,6 +591,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + 4 * HOUR,
       cause: "refusal",
     });
@@ -602,6 +615,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: "entry-unstamped",
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });

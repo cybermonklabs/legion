@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // registerEnv names the helper socket a child of this test binary registers with as a session
@@ -175,16 +176,10 @@ func TestServeStartsWithoutCredentialAndAnswersSessions(t *testing.T) {
 			t.Errorf("serve: %v", err)
 		}
 	})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(cfg.Socket); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("helper socket never appeared")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the helper socket to appear", func() bool {
+		_, err := os.Stat(cfg.Socket)
+		return err == nil
+	})
 	resp, err := helper.Call(cfg.Socket, helper.Request{Op: "sessions"}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("sessions: %v", err)
@@ -289,21 +284,34 @@ func TestServeNamesTheSignalItStopsOn(t *testing.T) {
 			exited := make(chan error, 1)
 			go func() { exited <- cmd.Wait() }()
 			stopped := false
+			var exitErr error
 			t.Cleanup(func() {
 				if !stopped {
 					_ = cmd.Process.Kill()
 					<-exited
 				}
 			})
+			// exitedNow reports whether serve has exited, keeping its exit status in exitErr.
+			exitedNow := func() bool {
+				select {
+				case exitErr = <-exited:
+					stopped = true
+					return true
+				default:
+					return false
+				}
+			}
 			waitFor := func(what string, cond func() bool) {
 				t.Helper()
-				deadline := time.Now().Add(10 * time.Second)
-				for !cond() {
-					if time.Now().After(deadline) {
-						t.Fatalf("%s within 10 s; stderr:\n%s", what, logged())
+				testwait.Until(t, what, func() (string, bool) {
+					if cond() {
+						return "", true
 					}
-					time.Sleep(20 * time.Millisecond)
-				}
+					if exitedNow() {
+						t.Fatalf("serve exited (%v) while the test waited for %s; stderr:\n%s", exitErr, what, logged())
+					}
+					return "stderr: " + logged(), false
+				})
 			}
 			waitFor("the helper answering on its socket", func() bool {
 				resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, time.Second)
@@ -322,14 +330,14 @@ func TestServeNamesTheSignalItStopsOn(t *testing.T) {
 			if err := cmd.Process.Signal(tc.sig); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case err := <-exited:
-				stopped = true
-				if err != nil {
-					t.Fatalf("serve after %s: %v; want exit 0, as a requested stop. stderr:\n%s", tc.sig, err, logged())
+			testwait.Until(t, fmt.Sprintf("serve to stop on %s", tc.sig), func() (string, bool) {
+				if exitedNow() {
+					return "", true
 				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("serve did not stop on %s; stderr:\n%s", tc.sig, logged())
+				return "stderr: " + logged(), false
+			})
+			if exitErr != nil {
+				t.Fatalf("serve after %s: %v; want exit 0, as a requested stop. stderr:\n%s", tc.sig, exitErr, logged())
 			}
 			want := `level=WARN msg="agent-secrets-helper stopping on a signal" signal=` + tc.name + ` sessions=2 launcher_credential=true`
 			if !strings.Contains(logged(), want) {
@@ -369,13 +377,10 @@ func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
 	go func() { exited <- cmd.Wait() }()
 	defer func() { _ = cmd.Process.Kill(); <-exited }()
 	want := `level=INFO msg="agent-secrets-helper listening"`
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(logged(), want) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no listening line within 10 s; stderr:\n%s", logged())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "the helper's listening line", func() (string, bool) {
+		got := logged()
+		return "stderr: " + got, strings.Contains(got, want)
+	})
 	if got := logged(); !strings.Contains(got, `broker="`+redact.NotPrinted+`"`) ||
 		strings.Contains(got, "tokuser9f3") || strings.Contains(got, "hunter2pw") {
 		t.Fatalf("stderr:\n%s\nwant the broker named as %q, with no user name or password", got, redact.NotPrinted)
@@ -416,16 +421,10 @@ func TestALoginTheBrokerNeverAnswersNamesNoCredential(t *testing.T) {
 			exited := make(chan error, 1)
 			go func() { exited <- cmd.Wait() }()
 			defer func() { _ = cmd.Process.Kill(); <-exited }()
-			deadline := time.Now().Add(10 * time.Second)
-			for {
-				if resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, time.Second); err == nil && resp.OK {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the helper never answered on its socket")
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			testwait.Eventually(t, "the helper answering on its socket", func() bool {
+				resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, time.Second)
+				return err == nil && resp.OK
+			})
 			resp, err := helper.Call(sock, helper.Request{Op: "login"}, 5*time.Second)
 			if err != nil || resp.OK {
 				t.Fatalf("login against a broker that never answers: %+v %v; want a refusal", resp, err)

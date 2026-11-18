@@ -1,13 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // cutRewatchCaches are the warm-up lines of the three caches the listener keeps. The reconnect
@@ -49,15 +50,12 @@ func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	thaw()
 
 	// Every cache is rewatched on the reconnect, and each replacement's warm-up line says so.
-	thawed := time.Now()
 	for _, warmUp := range cutRewatchCaches {
-		for !strings.Contains(output(), warmUp) {
-			if time.Since(thawed) > 30*time.Second {
-				t.Fatalf("no %q line %s after the thaw, so the cache did not come back:\n%s",
-					warmUp, time.Since(thawed).Round(time.Millisecond), output())
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("the %q line a rewatch's replacement writes after the thaw", warmUp),
+			func() (string, bool) {
+				logs := output()
+				return logs, strings.Contains(logs, warmUp)
+			})
 	}
 
 	// The cache follows the bucket again: an interest another listener writes after the thaw is
@@ -73,14 +71,8 @@ func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "other-listener"}, []string{"notifications.agent." + sessionID}); err != nil {
 		t.Fatalf("subscribe through another listener: %v", err)
 	}
-	written := time.Now()
-	for !listsInterest(t, listener.port, sessionID) {
-		if time.Since(written) > 10*time.Second {
-			t.Fatalf("%s after the thaw, the listener's cache still missed an interest another listener wrote:\n%s",
-				time.Since(written).Round(time.Millisecond), output())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	testwait.Until(t, "the listener's cache to list an interest another listener wrote after the thaw",
+		func() (string, bool) { return output(), listsInterest(t, listener.port, sessionID) })
 
 	for line := range strings.SplitSeq(output(), "\n") {
 		if errorLine.MatchString(line) {

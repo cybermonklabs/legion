@@ -240,6 +240,89 @@ func TestARefreshWhoseClaimIsInATurnAtItsTurnRelaunchesNothingAndIsAdmittedAgain
 	gate.wantAsks(t, "the sweep after the turn ended", refreshAsks{asked: 2, granted: 2, released: 1})
 }
 
+// A refresh the gate admitted and the machine parked keeps its credit until its turn, but a claim
+// closed while that turn waits gives the credit back at the close. The retirement lets the process
+// go and clears the wake (retire, letGo), so the decision ends with no refresh wake of this
+// claim's and endRefreshLane releases (Machine.unlock). Every path that stops, retires or replaces
+// a machine holding a credit ends in a decision of that machine, and every decision ends there, so
+// none holds a credit past the wake it was taken for — which is what the correction no longer
+// resetting its count relies on (RefreshGate, dispatch://INFRA-3149).
+//
+// The negative control is the credit check removed from the end of a decision (endRefreshLane):
+// the retired claim then holds a credit for a wake that no longer exists, which this test reads at
+// the asks.
+func TestARefreshHeldWhenTheClaimIsClosedGivesItsCreditBack(t *testing.T) {
+	h, gate := gatedHarness(t, wakeRate)
+	h.reach(StateIdle)
+	h.m.deps.PluginContract = refreshContract
+
+	h.mustRefreshPass(gate, "sweep")
+	h.wantWaitingWake(WakePluginRefresh)
+	gate.wantAsks(t, "the refresh waiting its turn", refreshAsks{asked: 1, granted: 1})
+
+	h.must(RequestTreeClose{Claim: h.token})
+	h.wantState(StateRetired)
+	gate.wantAsks(t, "the refresh whose claim was closed before its turn", refreshAsks{asked: 1, granted: 1, released: 1})
+}
+
+// An admitted post decided over a claim the state table gives no stale-plugin row gives its
+// credit back at the end of that decision. The table ignores a stale-plugin post over a claim
+// queued, launching, shim-connected, suspended, failed or retired, so refreshPlugin never runs for
+// it; the decision takes the post's credit as it begins (takeRefreshCredit, Machine.Handle), and
+// endRefreshLane gives it back. The daemon's pass reads its claims from a snapshot and the
+// machines' views a moment late, so it does post credits there. The case this was found by is the
+// last one: a claim read idle while its own refresh wake was having its turn — off the views, and
+// idle in the snapshot — whose relaunch had put it in launching by the time the sweep's post was
+// decided. Held by nothing, that credit was kept by a count no correction resets, and the lane
+// stopped one short of its rate for good: seven wakes in the pacing, eight credits out, and no
+// sweep admitting again (internal/daemon's
+// TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHolds,
+// dispatch://INFRA-3149).
+//
+// The negative control is the credit taken only where the post's row runs (the take moved out of
+// Handle into refreshStalePlugin): every case then ends with its last credit granted and never
+// released.
+func TestAnAdmittedPostOverAClaimThatCannotTakeItGivesItsCreditBack(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state ClaimState
+		reach func(h *harness, gate *fakeAdmitter)
+		want  refreshAsks
+	}{
+		{name: "queued", state: StateQueued, reach: func(*harness, *fakeAdmitter) {},
+			want: refreshAsks{asked: 1, granted: 1, released: 1}},
+		{name: "launching", state: StateLaunching, reach: func(h *harness, _ *fakeAdmitter) { h.reach(StateLaunching) },
+			want: refreshAsks{asked: 1, granted: 1, released: 1}},
+		{name: "shim-connected", state: StateShimConnected, reach: func(h *harness, _ *fakeAdmitter) { h.reach(StateShimConnected) },
+			want: refreshAsks{asked: 1, granted: 1, released: 1}},
+		{name: "suspended", state: StateSuspended, reach: func(h *harness, _ *fakeAdmitter) { h.reach(StateSuspended) },
+			want: refreshAsks{asked: 1, granted: 1, released: 1}},
+		{name: "retired", state: StateRetired, reach: func(h *harness, _ *fakeAdmitter) {
+			h.reach(StateIdle)
+			h.must(RequestTreeClose{Claim: h.token})
+		}, want: refreshAsks{asked: 1, granted: 1, released: 1}},
+		{name: "relaunched by its own refresh turn", state: StateLaunching, reach: func(h *harness, gate *fakeAdmitter) {
+			h.reach(StateIdle)
+			h.m.deps.PluginContract = refreshContract
+			h.mustRefreshPass(gate, "sweep")
+			waiting := h.wantWaitingWake(WakePluginRefresh)
+			h.advance(waiting.At.Sub(h.clock.Now()))
+		}, want: refreshAsks{asked: 2, granted: 2, released: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, gate := gatedHarness(t, wakeRate)
+			tc.reach(h, gate)
+			h.m.deps.PluginContract = refreshContract
+			h.wantState(tc.state)
+
+			h.mustRefreshPass(gate, "sweep")
+
+			h.wantState(tc.state)
+			gate.wantAsks(t, "an admitted post decided over a claim "+tc.name, tc.want)
+		})
+	}
+}
+
 // A claim that registered on this daemon's own contract while its refresh waited is relaunched by
 // that wake not at all: there is nothing left to replace, and replacing it would cost the claim
 // its process and the task it holds for a fact that is already fixed. The credit goes back, and
@@ -424,12 +507,14 @@ func TestAnUncreditedRelaunchAsksTheGateAndRelaunchesNothingWhenItIsFull(t *test
 
 // The fourth branch of refreshPlugin that raises no relaunch is the claim whose process holds no
 // capability, and it gives its credit back like the three above. It is reached by one road only,
-// which is why this test calls it where the others post an event: the table ignores a stale-plugin
-// post over every state with no process at all (the onStalePlugin rows), so the daemon's pass can
-// put no claim here, and the entry that can is the turn's end running a relaunch it held
-// (afterTurn) over a claim the end of that turn left without one. The guard lives in
-// refreshPlugin rather than in the pass alone for exactly that reason: a relaunch raised here
-// would start a process nobody asked for.
+// which is why this test calls it, holding the credit an admitted post's decision takes as it
+// begins (takeRefreshCredit), where the others post an event: the table ignores a stale-plugin
+// post over every state with no process at all (the onStalePlugin rows), so a post there gives
+// its credit back without reaching refreshPlugin
+// (TestAnAdmittedPostOverAClaimThatCannotTakeItGivesItsCreditBack), and the entry that can
+// reach this branch is the turn's end running a relaunch it held (afterTurn) over a claim the end
+// of that turn left without one. The guard lives in refreshPlugin rather than in the pass alone
+// for exactly that reason: a relaunch raised here would start a process nobody asked for.
 //
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
 // the credit is then held by a machine that did nothing with it until the sweep's own correction
@@ -442,7 +527,10 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 	if !gate.Admit() {
 		t.Fatal("the gate refused the first admission of a fresh gate")
 	}
-	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", true) })
+	err := h.insideDecision(h.m, func() error {
+		h.m.takeRefreshCredit()
+		return h.m.refreshPlugin(h.ctx, "sweep")
+	})
 	if err != nil {
 		t.Fatalf("the refresh of a suspended claim = %v, want nil", err)
 	}

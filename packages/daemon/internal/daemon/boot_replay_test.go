@@ -14,13 +14,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -121,19 +126,22 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 	}
 }
 
-// slowFactHandler is a workflow handler each of whose facts takes delay to apply, as a handler's
-// reads and writes take time on a loaded database, and that counts the facts it applied.
+// slowFactHandler is a workflow handler each of whose facts takes delay of clock to apply, as a
+// handler's reads and writes take time on a loaded database: it moves clock on by delay as it
+// applies, under the fact lock every apply holds, so the facts' time adds up one after another as
+// theirs would, and a budget armed on clock that the time spent passes ends the fact's context. It
+// counts the facts it applied.
 type slowFactHandler struct {
+	clock *clocktest.Fake
 	delay time.Duration
 	mu    sync.Mutex
 	seen  map[intake.Fact]int
 }
 
 func (h *slowFactHandler) Apply(ctx context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	select {
-	case <-time.After(h.delay):
-	case <-ctx.Done():
-		return intake.Result{}, ctx.Err()
+	h.clock.Advance(h.delay)
+	if err := ctx.Err(); err != nil {
+		return intake.Result{}, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -150,14 +158,15 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 // A boot must not die on the number of terminal facts no daemon applied. Those it replays one at a
 // time, each taking the fact lock, and each may wait there behind live facts: here 100 restored
 // claims fail while the replay runs, and their failures (terminal) apply beside it. The 300
-// replayed facts and the 100 live ones take several times the replay's budget between them; the
-// replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
-// applied exactly once.
+// replayed facts and the 100 live ones take twice the replay's budget between them, on the
+// runtime's fake clock, which each fact moves on as it applies; the replay still finishes, since
+// the budget is each fact's own and no fact waits behind more than half of it, and every fact,
+// replayed or live, is applied exactly once.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
-	const budget = 5 * time.Second
 	pool := isolatedOutboxPool(t)
-	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
-	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
+	clk := clocktest.New(time.Now())
+	handler := &slowFactHandler{clock: clk, delay: bootTimeout / 200, seen: map[intake.Fact]int{}}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits, clock: clk}
 	replayed := terminalClaims(t, "legion", 300)
 	failing := make([]supervise.Claim, 100)
 	for i := range failing {
@@ -172,21 +181,21 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 
 	var live sync.WaitGroup
 	live.Add(len(failing))
-	started := time.Now()
+	started := clk.Now()
 	for _, c := range failing {
 		go func() {
 			defer live.Done()
 			w.terminal(c, supervise.StateFailed)
 		}()
 	}
-	err := w.replayTerminal(context.Background(), replayed, budget)
-	took := time.Since(started)
+	err := w.replayTerminal(context.Background(), replayed, bootTimeout)
+	took := clk.Now().Sub(started)
 	live.Wait()
 	if err != nil {
-		t.Fatalf("the replay of %d unapplied facts beside %d live failures = %v after %s, want it finished", len(replayed), len(failing), err, took)
+		t.Fatalf("the replay of %d unapplied facts beside %d live failures = %v after %s of the fake clock, want it finished", len(replayed), len(failing), err, took)
 	}
-	if took <= budget {
-		t.Fatalf("the replay took %s, within its budget of %s, so it proves nothing about outlasting it", took, budget)
+	if took <= bootTimeout {
+		t.Fatalf("the replay took %s of the fake clock, within its budget of %s, so it proves nothing about outlasting it", took, bootTimeout)
 	}
 	select {
 	case err := <-w.failed:
@@ -296,6 +305,22 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	var record built
 	o := fakeRuntime(&bootReconcileHeld{Runtime: fake.NewRuntime(), hello: hello}, &record)
 	o.workflowTokens = &workflowTokenRecorder{}
+	// The worker stream's address is known once the daemon builds its runtime, which it does
+	// before the boot's orphan reconciliation the shims' hellos release, so the shims wait for that
+	// build's report rather than for startDaemonLogging, which returns only once the boot settles.
+	addressed := make(chan string, 1)
+	build := o.runtime
+	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		rt, err := build(ctx, listener, address, apps, repository, st, mapped)
+		select {
+		case addressed <- address:
+		default:
+		}
+		return rt, err
+	}
+	ended := make(chan struct{})
+	t.Cleanup(func() { close(ended) })
 	type acked struct {
 		conn    net.Conn
 		applied int
@@ -310,14 +335,11 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	}()
 	go func() {
 		var address string
-		for deadline := time.Now().Add(60 * time.Second); address == ""; time.Sleep(5 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				// The daemon never built its runtime; startDaemonWithin fails the test.
-				return
-			}
-			record.mu.Lock()
-			address = record.address
-			record.mu.Unlock()
+		select {
+		case address = <-addressed:
+		case <-ended:
+			// The daemon never built its runtime; startDaemonLogging fails the test.
+			return
 		}
 		for _, bootToken := range bootTokens {
 			go func() {
@@ -327,7 +349,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 	}()
 
-	startDaemonWithin(t, cfg, o, quietLogger(), 60*time.Second)
+	startDaemonLogging(t, cfg, o, quietLogger())
 
 	var conns []net.Conn
 	t.Cleanup(func() {
@@ -337,7 +359,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	})
 	var early []int
 	for range n {
-		got := <-results
+		got := testwait.Receive(t, "a shim's hello_ack", results)
 		if got.conn != nil {
 			conns = append(conns, got.conn)
 		}
@@ -355,8 +377,10 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 }
 
 // helloCountingApplied dials the worker stream at address as a shim does, says hello with
-// bootToken, marks said, and waits for the daemon's hello_ack; then it counts how many of events
-// the store holds as applied at that moment.
+// bootToken, marks said, and waits for the daemon's hello_ack as the shim waits for it, with no
+// bound of its own (internal/shim's connect): the test's wait for its answer is the shared one
+// (testwait.Receive), and the daemon's stop closes the connection of a hello it never answered.
+// Then it counts how many of events the store holds as applied at that moment.
 func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reader *pgxpool.Pool, events []string) (net.Conn, int, error) {
 	conn, err := net.Dial("unix", strings.TrimPrefix(address, "unix://"))
 	if err != nil {
@@ -367,9 +391,6 @@ func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reade
 	said.Done()
 	if err != nil {
 		return conn, 0, fmt.Errorf("say hello: %w", err)
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
-		return conn, 0, err
 	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {

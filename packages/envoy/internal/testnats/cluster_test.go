@@ -7,6 +7,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // StartClusterConfig gives every member the configuration it is passed: each admits a user its
@@ -33,13 +35,11 @@ func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
 func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *testing.T) {
 	cluster := StartCluster(t, 3)
 	conn := connectCluster(t, cluster)
-	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "THREE", Subjects: []string{"three.>"}, Replicas: 3, Storage: natsgo.FileStorage}); err != nil {
-		t.Fatalf("create a three-copy stream: %v", err)
-	}
+	cluster.CreateStream(t, natsgo.StreamConfig{Name: "THREE", Subjects: []string{"three.>"}, Replicas: 3, Storage: natsgo.FileStorage})
 	if _, err := js.Publish("three.before", []byte("before")); err != nil {
 		t.Fatalf("publish with every member running: %v", err)
 	}
@@ -77,13 +77,18 @@ func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *tes
 func connectCluster(t *testing.T, cluster *Cluster) *natsgo.Conn {
 	t.Helper()
 	Connect(t, cluster.URL()).Close()
-	conn, err := natsgo.Connect(cluster.URL(), natsgo.Timeout(dialTimeout), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
+	conn, err := natsgo.Connect(cluster.URL(), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(reconnectWait))
 	if err != nil {
 		t.Fatalf("connect to the cluster: %v", err)
 	}
 	t.Cleanup(conn.Close)
 	return conn
 }
+
+// reconnectWait is nats.go's own wait between a client's reconnect attempts, shortened from its
+// two seconds so a test that waits for a client to move to another member is not held by it; no
+// verdict here rests on an attempt not being made within it.
+const reconnectWait = 100 * time.Millisecond
 
 // A member in lame duck closes its clients' connections over its lame-duck window, and a client
 // that knows the cluster's other URLs reconnects to one of them: the move a hub's server change
@@ -93,8 +98,7 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	cluster := StartCluster(t, 3)
 	conn, err := natsgo.Connect(cluster.URL(),
 		natsgo.DontRandomize(),
-		natsgo.Timeout(dialTimeout),
-		natsgo.ReconnectWait(retryInterval),
+		natsgo.ReconnectWait(reconnectWait),
 		natsgo.MaxReconnects(-1),
 	)
 	if err != nil {
@@ -108,17 +112,16 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 		t.Fatalf("the members advertised %v to the client, want no URL beyond the ones it was given", discovered)
 	}
 
-	if err := cluster.Servers[0].LameDuck(); err != nil {
-		t.Fatal(err)
-	}
-
-	deadline := time.Now().Add(connectTimeout)
-	for !conn.IsConnected() || cluster.Member(conn.ConnectedServerName()) <= 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the client did not move to another member within %s of the lame duck: status %s, connected to %q", connectTimeout, conn.Status(), conn.ConnectedServerName())
-		}
-		time.Sleep(retryInterval)
-	}
+	// The lame duck runs on a goroutine of its own, since the client's move is awaited meanwhile.
+	down := make(chan struct{})
+	go func() {
+		defer close(down)
+		cluster.Servers[0].LameDuck()
+	}()
+	testwait.Eventually(t, fmt.Sprintf("the client to move off %s to another member of the cluster", cluster.Name(0)), func() bool {
+		return conn.IsConnected() && cluster.Member(conn.ConnectedServerName()) > 0
+	})
+	testwait.Receive(t, "the lame duck of the member the client was on to finish", down)
 	cluster.Servers[0].Start(t)
 	cluster.AwaitReady(t)
 }

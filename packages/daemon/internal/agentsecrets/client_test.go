@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -65,6 +66,9 @@ type fakeBroker struct {
 	dropLogins   int            // this many next logins get their connection closed with no answer
 	lifetime     time.Duration  // each accepted login's credential lives this long; an hour by default
 	holdLogins   chan struct{}  // when set, every login waits for it to close before answering
+	// now is the time the broker reads each login at and stamps each expiry from: time.Now, or the
+	// client's fake clock in a row that drives one, as a broker and a daemon read one time.
+	now func() time.Time
 
 	// enrollment-route behavior: answered in order, the last entry repeating once exhausted.
 	enrollAnswers []enrollAnswer
@@ -94,7 +98,7 @@ type enrollRequest struct {
 }
 
 func newFakeBroker(t *testing.T) (*fakeBroker, *httptest.Server) {
-	b := &fakeBroker{t: t, lifetime: time.Hour}
+	b := &fakeBroker{t: t, lifetime: time.Hour, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/launcher-credentials/token", b.handleTokenLogin)
 	mux.HandleFunc("POST /v1/enrollments", b.handleEnrollmentRoute)
@@ -104,29 +108,29 @@ func newFakeBroker(t *testing.T) (*fakeBroker, *httptest.Server) {
 	return b, server
 }
 
+// handleTokenLogin takes a token login. Its credential is its body: the daemon's token and a
+// request object that decodes as a compact JWS. A login without them is another process's: it is
+// answered 404 and logged, and fails nothing (fromTheDaemonWhen).
 func (b *fakeBroker) handleTokenLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "" || r.Header.Get("Proof") != "" {
-		b.t.Errorf("token login carried a credential header, want none: %v", r.Header)
-	}
 	var body struct {
 		Token   string `json:"token"`
 		Request string `json:"request"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		b.t.Errorf("token login body: %v", err)
+	decodeErr := json.NewDecoder(r.Body).Decode(&body)
+	_, payload, err := decodeCompactJWSRaw(body.Request)
+	if !fromTheDaemonWhen(b.t, w, r, decodeErr == nil && body.Token != "" && err == nil) {
 		return
 	}
-	_, payload, err := decodeCompactJWSRaw(body.Request)
-	if err != nil {
-		b.t.Errorf("token login request object: %v", err)
-		return
+	if r.Header.Get("Authorization") != "" || r.Header.Get("Proof") != "" {
+		b.t.Errorf("token login carried a credential header, want none: %v", r.Header)
 	}
 	detail := firstDetail(payload)
 	b.mu.Lock()
+	now := b.now
 	b.logins = append(b.logins, tokenLogin{
 		token: body.Token, iss: fmt.Sprint(payload["iss"]),
 		identifier: fmt.Sprint(detail["identifier"]), service: fmt.Sprint(detail["service"]),
-		at: time.Now(),
+		at: now(),
 	})
 	seq := len(b.logins)
 	held := b.holdLogins
@@ -163,7 +167,7 @@ func (b *fakeBroker) handleTokenLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"credential_id": "cred-1", "expires_at": time.Now().Add(lifetime).UTC().Format(time.RFC3339Nano),
+		"credential_id": "cred-1", "expires_at": now().Add(lifetime).UTC().Format(time.RFC3339Nano),
 		"seq": seq,
 	})
 }
@@ -177,7 +181,13 @@ func firstDetail(payload map[string]any) map[string]any {
 	return detail
 }
 
+// handleEnrollmentRoute takes an enrollment-route request. Its credential is its launcher proof, a
+// Proof header that decodes as a compact JWS: a request without one is another process's, answered
+// 404 and logged, and recorded as nothing (fromTheDaemonWhen).
 func (b *fakeBroker) handleEnrollmentRoute(w http.ResponseWriter, r *http.Request) {
+	if _, _, err := decodeCompactJWSRaw(r.Header.Get("Proof")); !fromTheDaemonWhen(b.t, w, r, err == nil) {
+		return
+	}
 	req := enrollRequest{
 		method: r.Method, path: r.URL.Path,
 		proof: r.Header.Get("Proof"), authorization: r.Header.Get("Authorization"),
@@ -253,16 +263,47 @@ func tokenFile(t *testing.T, token string) string {
 	return path
 }
 
-// eventually polls fn until it returns true or the deadline passes, failing the test otherwise.
-// The deadline is a hang guard: every caller waits for a retry schedule measured in tens of
-// milliseconds, and a loaded machine stretches an HTTP round trip far past that without the
-// schedule being wrong. Five seconds was too near the work's own duration (INFRA-985); the
-// callers whose claim is "well before a refusal's minute" still read below that minute.
+// eventually waits until fn holds, through the shared wait; msg names what it waits for.
 func eventually(t *testing.T, fn func() bool, msg string) {
 	t.Helper()
-	if !testwait.Holds(30*time.Second, time.Millisecond, fn) {
-		t.Fatalf("timed out waiting: %s", msg)
+	testwait.Eventually(t, msg, fn)
+}
+
+// shortRetriesUntilIssued moves fake through each wait the login loop arms after a login the
+// broker did not decide, until a login wins, and fails at once, naming the wait, when one is longer
+// than the short schedule's most (unavailableRetryMax): such a login never waits the refusal's
+// schedule (loginRetryInitial, a minute in the rows that call it). fake moves only to each short
+// wait it reads, so it never reaches the minute, and a loop that armed the minute fails at that arm.
+func shortRetriesUntilIssued(t *testing.T, c *Client, fake *clocktest.Fake) {
+	t.Helper()
+	for {
+		// The loop arms its next wait only once the login before it has stored its outcome, so
+		// a wait armed while the state reads issued is the renewal of the login that won.
+		armed := fake.AwaitArmed(t, "the login loop's wait before its next login", 1)
+		if c.LoginStatus().State == "issued" {
+			return
+		}
+		if wait := armed[0].Sub(fake.Now()); wait > unavailableRetryMax {
+			t.Fatalf("after a login the broker did not decide, the login loop waits %v before the next, want the short schedule's (at most %v), never the refusal's %v", wait, unavailableRetryMax, loginRetryInitial)
+		}
+		fake.Set(armed[0])
 	}
+}
+
+// armedWait waits until the login loop, once the broker has read logins logins, arms its wait
+// before the next, and answers that wait. A login past logins before then is one the loop made
+// without waiting on fake, and fails the test at once naming the count.
+func armedWait(t *testing.T, broker *fakeBroker, fake *clocktest.Fake, logins int) time.Duration {
+	t.Helper()
+	armed := testwait.Until(t, fmt.Sprintf("the login loop's wait after login %d", logins), func() ([]time.Time, bool) {
+		read := broker.loginCount()
+		if read > logins {
+			t.Fatalf("the broker read %d logins where the login loop was to wait after login %d: a login came with no wait", read, logins)
+		}
+		armed := fake.Armed()
+		return armed, read == logins && len(armed) > 0
+	})
+	return armed[0].Sub(fake.Now())
 }
 
 // withCredential gives c an already-won credential directly, bypassing the login, for tests whose
@@ -416,57 +457,88 @@ func TestALoginAnswerWithNoExpiryNamesNoCredential(t *testing.T) {
 // TestARefusedRenewalLeavesTheHeldCredentialIssued: a renewal the broker refuses while the
 // credential it would replace has not expired leaves that credential working: the state stays
 // issued and pods still enroll under it until it expires, after which the state reads failed.
+// Both readings are taken on the client's clock, which only the test moves, so the credential
+// lapses where the test moves the clock to its expiry and nowhere before.
 func TestARefusedRenewalLeavesTheHeldCredentialIssued(t *testing.T) {
 	withLoginRetry(t, time.Minute, time.Minute)
 	broker, server := newFakeBroker(t)
 	broker.lifetime = 2 * time.Second
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	held := c.snapshot().cred
 	broker.mu.Lock()
 	broker.refuseLogins = []enrollAnswer{{http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"slow down"}`}}
 	broker.mu.Unlock()
-	eventually(t, func() bool { return broker.loginCount() == 2 }, "the renewal to reach the broker")
-	eventually(t, func() bool { return c.snapshot().failure != "" }, "the refused renewal to be recorded")
+	// The renewal is due halfway to the credential's expiry.
+	fake.Advance(armedWait(t, broker, fake, 1))
+	// The loop arms its wait after the refused renewal once that renewal has stored its outcome:
+	// the refusal's minute, which outlasts the credential, so no login comes before its expiry.
+	if wait := armedWait(t, broker, fake, 2); wait != time.Minute {
+		t.Fatalf("after the refused renewal the login loop waits %v, want the refusal's minute", wait)
+	}
+	if c.snapshot().failure == "" {
+		t.Fatal("the refused renewal was not recorded")
+	}
 	if got := c.LoginStatus().State; got != "issued" {
 		t.Fatalf("state after a refused renewal under a live credential = %q, want issued", got)
 	}
 	if _, err := c.Enroll(ctx, podEnrollment); err != nil {
 		t.Fatalf("Enroll under the still-live credential: %v", err)
 	}
-	eventually(t, func() bool { return c.LoginStatus().State == "failed" }, "the credential to expire")
+	fake.Set(held.expires)
+	if got := c.LoginStatus().State; got != "failed" {
+		t.Fatalf("state once the credential expired = %q, want failed", got)
+	}
 	if _, err := c.Enroll(ctx, podEnrollment); !isNoCredential(err, "RATE_LIMITED") {
 		t.Fatalf("Enroll once the credential expired = %v, want NO_MACHINE_CREDENTIAL naming the refusal", err)
 	}
 }
 
 // TestRefusedRenewalsKeepTheirWaitPastTheCredentialsExpiry: renewals the broker keeps refusing are
-// retried after loginRetryWait, before the held credential expires and after it, never in a loop
-// that waits for nothing: two seconds of a broker that answers every renewal 429 at once see a
-// handful of logins, not thousands.
+// retried after the long schedule's wait (here 200 ms doubling to 400 ms), before the held
+// credential expires and after it, never in a loop that waits for nothing: the loop arms each wait
+// in full, and logs in once for each wait the test moves its clock through.
 func TestRefusedRenewalsKeepTheirWaitPastTheCredentialsExpiry(t *testing.T) {
 	withLoginRetry(t, 200*time.Millisecond, 400*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.lifetime = time.Second
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	refusals := make([]enrollAnswer, 10000)
+	held := c.snapshot().cred
+	refusals := make([]enrollAnswer, 10)
 	for i := range refusals {
 		refusals[i] = enrollAnswer{http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"slow down"}`}
 	}
 	broker.mu.Lock()
 	broker.refuseLogins = refusals
 	broker.mu.Unlock()
-	time.Sleep(2500 * time.Millisecond)
-	if n := broker.loginCount(); n > 12 {
-		t.Fatalf("%d logins in 2.5 s of refused renewals, want at most 12: a renewal waits 200 ms doubling to 400 ms after each refusal", n)
+	// The renewal is due halfway to the credential's expiry.
+	fake.Advance(armedWait(t, broker, fake, 1))
+	// Each refused renewal waits its schedule's wait: the first two while the credential lives,
+	// the last two after it expired.
+	for i, step := range []struct {
+		wait time.Duration
+		live bool
+	}{{200 * time.Millisecond, true}, {400 * time.Millisecond, true}, {400 * time.Millisecond, false}, {400 * time.Millisecond, false}} {
+		if live := held.live(fake.Now()); live != step.live {
+			t.Fatalf("at refused renewal %d the held credential is live %t, want %t", i+1, live, step.live)
+		}
+		if wait := armedWait(t, broker, fake, 2+i); wait != step.wait {
+			t.Fatalf("after refused renewal %d the login loop waits %v, want %v: a renewal waits 200 ms doubling to 400 ms after each refusal", i+1, wait, step.wait)
+		}
+		fake.Advance(step.wait)
 	}
 	if got := c.LoginStatus().State; got != "failed" {
 		t.Fatalf("state after the credential expired under refused renewals = %q, want failed", got)
@@ -498,36 +570,42 @@ func TestARefusedProofLogsInAgain(t *testing.T) {
 	}
 }
 
-// TestTheLoginLoopRenewsHalfwayToExpiry: with credentials that live 200 ms, the loop logs in again
-// before each expires, so a second later the daemon has logged in several times and still holds a
-// live credential.
+// TestTheLoginLoopRenewsHalfwayToExpiry: with credentials that live 200 ms, the loop arms each
+// renewal halfway to the expiry of the credential it holds, so through five renewals the daemon
+// logs in once for each, holds a live credential throughout, and logs each login once.
 func TestTheLoginLoopRenewsHalfwayToExpiry(t *testing.T) {
+	const renewals = 5
 	broker, server := newFakeBroker(t)
 	broker.lifetime = 200 * time.Millisecond
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	logged := &lockedLog{}
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(logged, nil))}
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(logged, nil)), clock: fake}
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Second)
-	if n := broker.loginCount(); n < 5 {
-		t.Fatalf("%d logins in a second of 200 ms credentials, want at least five", n)
+	for login := 1; login <= renewals+1; login++ {
+		if wait := armedWait(t, broker, fake, login); wait != broker.lifetime/2 {
+			t.Fatalf("after login %d the login loop renews in %v, want halfway to the credential's %v", login, wait, broker.lifetime)
+		}
+		if login <= renewals {
+			fake.Advance(broker.lifetime / 2)
+		}
 	}
-	if cred := c.snapshot().cred; cred == nil || !cred.expires.After(time.Now()) {
-		t.Fatal("no live credential after renewals, want one")
+	if got := c.LoginStatus().State; got != "issued" {
+		t.Fatalf("state after %d renewals = %q, want issued: a live credential", renewals, got)
 	}
-	if got := strings.Count(logged.String(), "logged in with the daemon's ServiceAccount token"); got != broker.loginCount() && got != broker.loginCount()-1 {
-		t.Fatalf("log = %s, want each login logged once", logged.String())
+	if got := strings.Count(logged.String(), "logged in with the daemon's ServiceAccount token"); got != renewals+1 {
+		t.Fatalf("log = %s, want each of the %d logins logged once", logged.String(), renewals+1)
 	}
 }
 
 // TestAFailedLoginIsRetriedAfterItsWait: a login the broker refuses is logged and retried by the
-// loop once loginRetryWait has passed, and the first one that succeeds gives the client its
-// credential.
+// loop once its wait on the refusal's schedule has passed on the client's clock — loginRetryInitial,
+// then twice that — and the first one that succeeds gives the client its credential.
 func TestAFailedLoginIsRetriedAfterItsWait(t *testing.T) {
-	withLoginRetry(t, 50*time.Millisecond, 100*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.refuseLogins = []enrollAnswer{
 		{http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"slow down"}`},
@@ -535,10 +613,18 @@ func TestAFailedLoginIsRetriedAfterItsWait(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
 	logged := &lockedLog{}
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(logged, nil))}
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(logged, nil)), clock: fake}
 	if err := c.Start(ctx); err == nil {
 		t.Fatal("the first login succeeded, want the refusal")
+	}
+	for i, want := range []time.Duration{loginRetryInitial, 2 * loginRetryInitial} {
+		if wait := armedWait(t, broker, fake, i+1); wait != want {
+			t.Fatalf("after refused login %d the login loop waits %v before the next, want the refusal's schedule's %v", i+1, wait, want)
+		}
+		fake.Advance(want)
 	}
 	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "a retried login to succeed")
 	if n := broker.loginCount(); n != 3 {
@@ -551,8 +637,9 @@ func TestAFailedLoginIsRetriedAfterItsWait(t *testing.T) {
 
 // TestTokenLoginRetriesQuicklyWhileTheBrokerDoesNotAnswer: logins the broker closes the connection
 // on without an answer, as while it is down, are retried on the short schedule, not the long one
-// a refusal waits: with a minute's wait after a refusal, the daemon still logs in within seconds
-// once the broker answers again, after several unanswered attempts.
+// a refusal waits: with a minute's wait after a refusal, every wait before the login that wins,
+// after several unanswered attempts, is the short schedule's, on a clock that never reaches the
+// minute.
 func TestTokenLoginRetriesQuicklyWhileTheBrokerDoesNotAnswer(t *testing.T) {
 	withLoginRetry(t, time.Minute, time.Minute)
 	withUnansweredRetry(t, 20*time.Millisecond, 100*time.Millisecond)
@@ -560,46 +647,50 @@ func TestTokenLoginRetriesQuicklyWhileTheBrokerDoesNotAnswer(t *testing.T) {
 	broker.dropLogins = 4
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	err := c.Start(ctx)
 	var unavailable *brokerUnavailableError
 	if !errors.As(err, &unavailable) {
 		t.Fatalf("the first login = %v, want it unanswered", err)
 	}
-	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "a login to succeed once the broker answers, well before a refusal's minute")
+	shortRetriesUntilIssued(t, c, fake)
 	if n := broker.loginCount(); n < 5 {
 		t.Fatalf("%d logins, want the four unanswered and the one that succeeded", n)
 	}
 }
 
 // TestTokenLoginRetriesSlowlyWhenTheBrokerRefuses: a login the broker answers with a refusal waits
-// the long schedule's first wait before the next attempt, not the short one an unanswered login
-// waits, and is then retried.
+// the long schedule's first wait (loginRetryInitial) before the next attempt, not the short one an
+// unanswered login waits (unavailableRetryInitial), and is then retried.
 func TestTokenLoginRetriesSlowlyWhenTheBrokerRefuses(t *testing.T) {
-	withLoginRetry(t, 300*time.Millisecond, 300*time.Millisecond)
-	withUnansweredRetry(t, 10*time.Millisecond, 10*time.Millisecond)
 	broker, server := newFakeBroker(t)
 	broker.refuseLogins = []enrollAnswer{{http.StatusUnauthorized, `{"code":"TOKEN_EXPIRED","error":"the token has expired"}`}}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	err := c.Start(ctx)
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != http.StatusUnauthorized {
 		t.Fatalf("the first login = %v, want the broker's 401", err)
 	}
-	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "the refused login to be retried")
-	if gap := broker.login(1).at.Sub(broker.login(0).at); gap < 300*time.Millisecond {
-		t.Fatalf("the retry came %v after the refusal, want the long schedule's 300 ms wait at least", gap)
+	if wait := armedWait(t, broker, fake, 1); wait != loginRetryInitial {
+		t.Fatalf("after the refusal the login loop waits %v before the next, want the long schedule's %v, never the short schedule's %v", wait, loginRetryInitial, unavailableRetryInitial)
 	}
+	fake.Advance(loginRetryInitial)
+	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "the refused login to be retried")
 }
 
 // TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker: the daemon reaches the
 // broker through an HTTPS front door, a reverse proxy (Tailscale serve, whose proxy is a plain
 // httputil.ReverseProxy with no error handler), so while no broker serves, every login is
 // answered 502 Bad Gateway by the front door, not left unanswered. The broker decided nothing, so
-// those logins are retried on the short schedule too: with a minute's wait after a refusal, the
-// daemon logs in within seconds once a broker serves behind the front door again.
+// those logins are retried on the short schedule too: with a minute's wait after a refusal, every
+// wait before the login that wins once a broker serves behind the front door again is the short
+// schedule's, on a clock that never reaches the minute.
 func TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker(t *testing.T) {
 	withLoginRetry(t, time.Minute, time.Minute)
 	withUnansweredRetry(t, 20*time.Millisecond, 100*time.Millisecond)
@@ -642,7 +733,9 @@ func TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker(t *testi
 	t.Cleanup(front.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: front.URL, HTTP: front.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
+	c := &Client{URL: front.URL, HTTP: front.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	err = c.Start(ctx)
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != http.StatusBadGateway {
@@ -652,7 +745,7 @@ func TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker(t *testi
 	// front door's requests instead, the flip lands wherever the retries and any future
 	// non-login request happen to put it.
 	serving.Store(true)
-	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "a login to succeed once a broker serves behind the front door, well before a refusal's minute")
+	shortRetriesUntilIssued(t, c, fake)
 	if n := broker.loginCount(); n != 1 {
 		t.Fatalf("the broker read %d logins, want the one that succeeded", n)
 	}
@@ -661,7 +754,8 @@ func TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker(t *testi
 // TestTokenLoginRetriesQuicklyWhileTheBrokerCannotReachItsDatabase: while the broker's database
 // is away, the broker answers a token login 500 INTERNAL ("token login failed"), which is not a
 // decision about the daemon's token, so those logins are retried on the short schedule too: with
-// a minute's wait after a refusal, the daemon logs in within seconds once the database is back.
+// a minute's wait after a refusal, every wait before the login that wins once the database is back
+// is the short schedule's, on a clock that never reaches the minute.
 func TestTokenLoginRetriesQuicklyWhileTheBrokerCannotReachItsDatabase(t *testing.T) {
 	withLoginRetry(t, time.Minute, time.Minute)
 	withUnansweredRetry(t, 20*time.Millisecond, 100*time.Millisecond)
@@ -670,13 +764,15 @@ func TestTokenLoginRetriesQuicklyWhileTheBrokerCannotReachItsDatabase(t *testing
 	broker.refuseLogins = []enrollAnswer{down, down, down}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	fake := clocktest.New(time.Now())
+	broker.now = fake.Now
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), clock: fake}
 	err := c.Start(ctx)
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != http.StatusInternalServerError {
 		t.Fatalf("the first login = %v, want the broker's 500", err)
 	}
-	eventually(t, func() bool { return c.LoginStatus().State == "issued" }, "a login to succeed once the broker's database is back, well before a refusal's minute")
+	shortRetriesUntilIssued(t, c, fake)
 	if n := broker.loginCount(); n != 4 {
 		t.Fatalf("%d logins, want the three the broker could not answer and the one that succeeded", n)
 	}
@@ -685,7 +781,8 @@ func TestTokenLoginRetriesQuicklyWhileTheBrokerCannotReachItsDatabase(t *testing
 // TestAProofDuringALoginPOSTReturnsWithinItsDeadline: an Enroll or a Revoke runs under its claim's
 // machine lock with the RPC deadline, so it never waits for a login the broker is slow to answer:
 // while a renewal's POST hangs, an enrollment under the held credential succeeds, and one the broker
-// refuses 401 answers NO_MACHINE_CREDENTIAL, both well within their deadline.
+// refuses 401 answers NO_MACHINE_CREDENTIAL. The test releases the POST only once both answered, so
+// an Enroll that waited for the login would answer only at its context's end, and fail naming it.
 func TestAProofDuringALoginPOSTReturnsWithinItsDeadline(t *testing.T) {
 	broker, server := newFakeBroker(t)
 	release := make(chan struct{})
@@ -701,10 +798,9 @@ func TestAProofDuringALoginPOSTReturnsWithinItsDeadline(t *testing.T) {
 	started := make(chan error, 1)
 	go func() { started <- c.Start(ctx) }()
 	eventually(t, func() bool { return broker.loginCount() == 1 }, "the renewal to reach the broker")
+	rpc := testwait.Context(t)
 	for i, want := range []string{"", "NO_MACHINE_CREDENTIAL"} {
-		rpc, rpcCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		_, err := c.Enroll(rpc, podEnrollment)
-		rpcCancel()
 		switch {
 		case want == "" && err != nil:
 			t.Fatalf("Enroll %d during the renewal's POST = %v, want it enrolled under the held credential", i, err)
@@ -713,7 +809,7 @@ func TestAProofDuringALoginPOSTReturnsWithinItsDeadline(t *testing.T) {
 		}
 	}
 	close(release)
-	if err := <-started; err != nil {
+	if err := testwait.Receive(t, "the renewal's answer once its POST was released", started); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -861,7 +957,7 @@ func TestARefusalBodyThatIsNotTheContractsShapeFallsBackToUNKNOWN(t *testing.T) 
 	}
 }
 
-func mustJSON(t *testing.T, v any) string {
+func mustJSON(t testing.TB, v any) string {
 	t.Helper()
 	raw, err := json.Marshal(v)
 	if err != nil {

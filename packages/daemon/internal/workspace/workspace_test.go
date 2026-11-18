@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
-
-const testTimeout = 30 * time.Second
 
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
 // remote or credential not the test's own (fixtureenv.MustGuard), and gives the process a home of the
@@ -239,7 +239,7 @@ func newLocalRunnerOnBranch(t *testing.T, defaultBranch string) *recordingRunner
 	}
 	t.Setenv("JJ_USER", "Legion test")
 	t.Setenv("JJ_EMAIL", "legion-test@example.invalid")
-	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, runner: NewRunner(testTimeout, testTools(t))}
+	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: CommandTimeout, runner: NewRunner(CommandTimeout, testTools(t))}
 }
 
 // provisionRequest is a host provisioning's request, the tmux runtime's: the one-shot credential
@@ -405,7 +405,7 @@ func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 
-	if err := ensureRepoClone(context.Background(), run, WallClock{}, clone, run.remote, "main", remote{}); err != nil {
+	if err := ensureRepoClone(context.Background(), run, clock.Real(), clone, run.remote, "main", remote{}); err != nil {
 		t.Fatalf("ensureRepoClone: %v", err)
 	}
 	if _, err := os.Stat(config); err != nil {
@@ -508,7 +508,7 @@ func findCall(t *testing.T, calls []Command, prefix ...string) Command {
 // pointer, never as a value in its environment, under the slow-command budget.
 func assertCredentialedEnvironment(t *testing.T, command Command) {
 	t.Helper()
-	assertCredentialedEnvironmentBounded(t, command, testTimeout)
+	assertCredentialedEnvironmentBounded(t, command, CommandTimeout)
 }
 
 // assertCredentialedEnvironmentBounded is assertCredentialedEnvironment, but for a command bounded
@@ -650,7 +650,7 @@ func fetchRequest(t *testing.T) FetchRequest {
 	t.Helper()
 	return FetchRequest{
 		Repo: ghrepo.MustParse("acme/widgets"), Token: staticToken(testInstallationToken), CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: WallClock{},
+		Log: func(line string) { t.Logf("fetch logged: %s", line) }, Clock: clock.Real(),
 	}
 }
 
@@ -899,8 +899,8 @@ func TestTheSharedClonesCloneIsBoundedByCloneTimeout(t *testing.T) {
 			}
 			continue
 		}
-		if call.Timeout != testTimeout {
-			t.Errorf("%q ran under %s, want %s", call.Argv, call.Timeout, testTimeout)
+		if call.Timeout != CommandTimeout {
+			t.Errorf("%q ran under %s, want %s", call.Argv, call.Timeout, CommandTimeout)
 		}
 	}
 	for i := 1; i < len(given); i++ {
@@ -988,10 +988,10 @@ func (r *slowSteps) Run(ctx context.Context, command Command) (Result, error) {
 	r.timeouts[step] = append(r.timeouts[step], command.Timeout)
 	took := r.took[step]
 	if command.Timeout < took {
-		r.clock.advance(command.Timeout)
+		r.clock.Advance(command.Timeout)
 		return Result{ExitCode: -1, TimedOut: true}, nil
 	}
-	r.clock.advance(took)
+	r.clock.Advance(took)
 	return r.recordingRunner.Run(ctx, command)
 }
 
@@ -1247,23 +1247,26 @@ func TestProvisionLocksAnExistingUnlockedWorkspace(t *testing.T) {
 // Provisioning that creates a workspace records when it did (Created), where jj never snapshots
 // it: `jj status` in the new workspace lists no change. Provisioning the workspace again keeps the
 // record as it was, and a workspace removed and created again records its new creation, which the
-// role launcher compares with a resumed session's last write.
+// role launcher compares with a resumed session's last write. The moments are the request's fake
+// clock's, which moves between the provisions.
 func TestProvisionRecordsWhenItCreatedTheWorkspace(t *testing.T) {
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
-	started := time.Now()
+	clock := clocktest.New(stopMoment)
+	request.Clock = clock
 	workspace, err := Provision(context.Background(), run, request)
 	if err != nil {
 		t.Fatalf("provision: %v", err)
 	}
 	created, ok, err := Created(workspace.Dir)
-	if err != nil || !ok || created.Before(started.Truncate(time.Millisecond)) || created.After(time.Now()) {
-		t.Fatalf("Created = %v, %t, %v; want a record between %v and now", created, ok, err, started)
+	if err != nil || !ok || !created.Equal(clock.Now()) {
+		t.Fatalf("Created = %v, %t, %v; want the record of the creation, %v", created, ok, err, clock.Now())
 	}
 	if status := runSetup(t, workspace.Dir, "jj", "status"); !strings.Contains(status, "The working copy has no changes") {
 		t.Errorf("jj status in the new workspace = %q, want no change: the record is not the working copy's", status)
 	}
 
+	clock.Advance(time.Minute)
 	if _, err := Provision(context.Background(), run, request); err != nil {
 		t.Fatalf("provision the existing workspace: %v", err)
 	}
@@ -1277,11 +1280,12 @@ func TestProvisionRecordsWhenItCreatedTheWorkspace(t *testing.T) {
 	if _, ok, err := Created(workspace.Dir); ok || err != nil {
 		t.Fatalf("Created of the removed workspace = %t, %v; want no record", ok, err)
 	}
+	clock.Advance(time.Minute)
 	if _, err := Provision(context.Background(), run, request); err != nil {
 		t.Fatalf("provision the removed workspace again: %v", err)
 	}
-	if recreated, ok, err := Created(workspace.Dir); err != nil || !ok || !recreated.After(created) {
-		t.Errorf("Created of the workspace created again = %v, %t, %v; want a record after %v", recreated, ok, err, created)
+	if recreated, ok, err := Created(workspace.Dir); err != nil || !ok || !recreated.Equal(clock.Now()) {
+		t.Errorf("Created of the workspace created again = %v, %t, %v; want the record of its new creation, %v", recreated, ok, err, clock.Now())
 	}
 }
 
@@ -1674,7 +1678,7 @@ func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := NewRunner(testTimeout, testTools(t))
+	run := NewRunner(CommandTimeout, testTools(t))
 	var logged []string
 	err := restoreGitWorktree(context.Background(), run, Workspace{Dir: other, Clone: clone}, func(line string) {
 		logged = append(logged, line)

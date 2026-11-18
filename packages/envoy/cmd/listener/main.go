@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -42,6 +43,14 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// clock is what the bounds this listener holds in its own process are measured on: the
+	// budget each /v1 route gives its bus work (sendRequestBudget and the read timeouts beside
+	// it). It is nil in production and in every test that does not drive time, and clk reads it
+	// as clock.Real then; a test that asserts one of those bounds hands a clocktest.Fake here,
+	// waits for the bound to be armed on it (clocktest.Fake.AwaitArmed) and moves the fake past
+	// it, rather than waiting the bound out on the machine's own clock. What nats.go and the
+	// server time for themselves is not here, nor is /healthz's budget (healthzHandler says why).
+	clock clock.Clock
 	// known is the store of every session that registered in the last 30 days
 	// (session.KnownSessions). It keeps a cache of its own outside caches below, so the
 	// self-health monitor never restarts a listener over it. A listener whose NATS user may not
@@ -97,6 +106,16 @@ type listenerDeps struct {
 	senderLimit *senderLimit
 }
 
+// clk is the clock d's own bounds are measured on: the one a test gave it, and clock.Real for a
+// deps built without one, which every production build and every test that does not drive time
+// is.
+func (d *listenerDeps) clk() clock.Clock {
+	if d.clock == nil {
+		return clock.Real()
+	}
+	return d.clock
+}
+
 // kvCache is what the listener asks of each KV-backed cache it keeps.
 type kvCache interface {
 	Rewatch(context.Context, *nats.Conn) error
@@ -143,9 +162,9 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
 // with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
-// waits.
+// waits. The bound is the real clock's: no route waits behind this read, so no test drives it.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
-	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone)
+	_, _, err := liveSessionEntry(context.Background(), clock.Real(), sessions, sessionID, roleHolderReadTimeout, notGone)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}
@@ -345,6 +364,10 @@ const disconnectedFailureThreshold = 20
 // from being swallowed.
 const attemptCacheTTL = 5 * time.Minute
 
+// selfHealthInterval is how long the self-health monitor waits between its passes
+// (runSelfHealthMonitor), on the clock the monitor is given.
+const selfHealthInterval = 30 * time.Second
+
 // runSelfHealthMonitor leaves transient dependency timeouts degraded while
 // NATS reconnects. A terminal watcher, closed KV handle, or missing durable
 // consumer is rebuilt immediately, and a rebuild that reports success is
@@ -363,10 +386,17 @@ const attemptCacheTTL = 5 * time.Minute
 // count is its own, advanced only while connected reads false and reset the
 // moment it reads true again, so it never mixes with a transient failure that
 // happens while the client is connected (an unclassified JetStream timeout,
-// say), which keeps retrying under the unbounded path above.
+// say), which keeps retrying under the unbounded path above. A rebuild that fails while connected
+// reads false is a disconnected failure too, logged at WARN and counted as the first of that run;
+// one that fails while connected reads true stays an ERROR.
+//
+// Each pass waits interval on clk after the one before it ended: a timer re-armed after each
+// pass rather than a ticker, so a test hands a clocktest.Fake and moves it past each pass's wait
+// (AwaitArmed, Advance) instead of shortening the interval. Production passes clock.Real.
 func runSelfHealthMonitor(
 	ctx context.Context,
 	logger *logging.Logger,
+	clk clock.Clock,
 	probe func() error,
 	isUnrecoverable func(error) bool,
 	connected func() bool,
@@ -375,19 +405,24 @@ func runSelfHealthMonitor(
 	interval time.Duration,
 	threshold int,
 ) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	next := clk.NewTimer(interval)
+	defer next.Stop()
 	failures := 0
 	terminalFailures := 0
 	disconnectedFailures := 0
 	// readsDisconnected classifies every probe result, the one right after a rebuild included, so
 	// the disconnected count is the same run of probes wherever in the loop they fall.
 	readsDisconnected := func() bool { return connected != nil && !connected() }
-	for {
+	for rearm := false; ; rearm = true {
+		// The timer fired for the pass before this one, so it is armed again here, at the top of
+		// the wait, which every pass reaches whichever branch of it ended it.
+		if rearm {
+			next.Reset(interval)
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-next.C():
 		}
 		err := probe()
 		if err != nil {
@@ -427,7 +462,18 @@ func runSelfHealthMonitor(
 					if ctx.Err() != nil {
 						return
 					}
-					logger.Error("self-health rebuild failed", slog.Int("consecutive", terminalFailures), slog.String("error", rebuildErr.Error()))
+					if readsDisconnected() {
+						// NATS dropped under the rebuild, which then fails for the reconnect alone
+						// (nats.go's KeyValue reads no server version while the connection is not
+						// connected, and refuses as if the server were too old): a WARN, and the
+						// first of this outage's disconnected failures, as the probe after a rebuild
+						// that started is below.
+						logger.Warn("self-health rebuild failed", slog.Int("consecutive", terminalFailures), slog.Bool("connected", false), slog.String("error", rebuildErr.Error()))
+						disconnectedFailures = 1
+						terminalFailures = 0
+					} else {
+						logger.Error("self-health rebuild failed", slog.Int("consecutive", terminalFailures), slog.String("error", rebuildErr.Error()))
+					}
 				} else {
 					logger.Info("self-health rebuild started", slog.Int("consecutive", terminalFailures))
 					// Whatever this probe reads, transient or terminal, the count keeps its
@@ -598,6 +644,9 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "starting"})
 			return
 		}
+		// The budget stays on the real clock: nats.go's FlushWithContext refuses a context with
+		// no deadline (nats.ErrNoDeadlineContext), and a fake clock's deadline context reports
+		// none, so the flush is nats.go's own timer, read from this context's deadline.
 		ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
 		defer cancel()
 		if err := d.client.Conn.FlushWithContext(ctx); err != nil {
@@ -1239,7 +1288,10 @@ func main() {
 
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
-	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
+	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks. A
+	// server that leaves the open's role-revision scan unanswered, as a loaded machine's can, delays
+	// the start here, a WARN for each attempt while /healthz answers "starting", and does not end
+	// it; a refusal the server answers ends it (store.roleRevisions).
 	registry, err := store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
 	if err != nil {
 		log.Fatal(err)
@@ -1549,7 +1601,9 @@ func main() {
 		os.Exit(1)
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
-	// machine's durable binding (below).
+	// machine's durable binding (below). Its reply subscription fails only where the client cannot
+	// make it: a server slow to answer it does not end the start, since the subscribe waits for no
+	// answer from the server (bus.SessionConsumers.SubscribeReplies).
 	relays, err := startSessionRelays(delivery, deliveryConfig)
 	if err != nil {
 		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
@@ -1609,7 +1663,7 @@ func main() {
 	// here is not retried either. The bind is the only refusal when the check after the connect
 	// could not read the durable (logged at WARN above), and it also catches a durable made
 	// refusable since that check.
-	bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, durableBindInterval, durableBindDeadline)
+	bind, err := bindListenerDurable(stopping, clock.Real(), client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, durableBindInterval, durableBindDeadline)
 	// A start the bind ends shuts down in order: /v1 and the role lane already serve, and no
 	// background loop has started yet. shutdownListener exits, so nothing below runs on an error.
 	if err != nil {
@@ -1776,6 +1830,7 @@ func main() {
 		runSelfHealthMonitor(
 			monitorCtx,
 			logger,
+			clock.Real(),
 			func() error {
 				return checkSelfHealth(caches, probeDurable)
 			},
@@ -1795,7 +1850,7 @@ func main() {
 				)
 			},
 			func() { _ = syscall.Kill(os.Getpid(), syscall.SIGTERM) },
-			30*time.Second,
+			selfHealthInterval,
 			3,
 		)
 	}()

@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/routing"
 )
@@ -168,7 +167,7 @@ func TestSubjectIndexFollowsTheInterestBucket(t *testing.T) {
 	if _, err := other.Upsert(Interest{SessionID: "ses_idx", MachineID: "m1"}, []string{"notifications.dispatch.issue.IDX-1.>", "notifications.agent.ses_idx"}); err != nil {
 		t.Fatalf("subscribe through the other registry: %v", err)
 	}
-	got := pollMatch(t, r, "m1", topic, 1, 5*time.Second)
+	got := pollMatch(t, r, "m1", topic, 1)
 	if got[0].SessionID != "ses_idx" {
 		t.Fatalf("matched %v, want ses_idx", got)
 	}
@@ -183,7 +182,7 @@ func TestSubjectIndexFollowsTheInterestBucket(t *testing.T) {
 	if _, err := other.Remove(t.Context(), "ses_idx", []string{"notifications.dispatch.issue.IDX-1.>"}, releasedByItsProcess); err != nil {
 		t.Fatalf("unsubscribe the topic: %v", err)
 	}
-	pollMatch(t, r, "m1", topic, 0, 5*time.Second)
+	pollMatch(t, r, "m1", topic, 0)
 	if got := r.Match("m1", "notifications.agent.ses_idx"); len(got) != 1 {
 		t.Fatalf("the session's remaining topic matched %v, want the session", got)
 	}
@@ -197,6 +196,6 @@ func TestSubjectIndexFollowsTheInterestBucket(t *testing.T) {
 	if err := other.deleteInterest(t.Context(), "ses_idx"); err != nil {
 		t.Fatalf("delete the interest: %v", err)
 	}
-	pollMatch(t, r, "m1", topic, 0, 5*time.Second)
-	pollMatch(t, r, "m1", "notifications.agent.ses_idx", 0, 5*time.Second)
+	pollMatch(t, r, "m1", topic, 0)
+	pollMatch(t, r, "m1", "notifications.agent.ses_idx", 0)
 }

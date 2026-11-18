@@ -96,11 +96,12 @@ func TestAnIssueOnARepositoryNoMappingNamesIsRecordedWithGitHubsSpellingAndAdmit
 
 // One recorded repository is read once however many issues name it: the recorded set holds
 // GitHub's spelling and the default branch, so the second issue's preparation reads neither
-// installation nor the repository again.
+// installation nor the repository again. GitHub's stand-in counts only the daemon's own reads,
+// those under a lease of its App tokens (aLease).
 func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
 	ctx := context.Background()
 	var named atomic.Int64
-	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	github := githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		path := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
 		branch := map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", unmappedRepo: unmappedNamed + "@trunk"}[path]
 		if branch == "" {
@@ -144,10 +145,10 @@ func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
 // An issue whose repository GitHub did not answer for waits: its event is applied and
 // acknowledged, nothing is said on it and nothing is recorded, and the daemon reads the
 // repository again of its own until GitHub answers, then recovers the issue from Dispatch's
-// listing and admits it on it — with nobody moving the issue and no mapping change.
+// listing and admits it on it — with nobody moving the issue and no mapping change. The read of
+// its own is the refresher's wait on the rig's fake clock, which the test fires (recheck).
 func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenItDoes(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
@@ -177,7 +178,14 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 		t.Fatalf("the daemon waits on %q, want %s alone", waiting, unmappedRepo)
 	}
 
+	// The preparation's failure asked for a read, whose recovery GitHub fails again; the refresher
+	// arms its wait before a read of its own once that run is over, and GitHub answers only then,
+	// so the admission comes from the read of the refresher's own.
+	testwait.Until(t, "the refresher's wait before a read of its own, armed once the recovery GitHub fails again is over", func() (time.Time, bool) {
+		return refresherWait(w)
+	})
 	installs.setFailing(nil, "implement "+unmappedRepo)
+	recheck(t, w)
 	testwait.Eventually(t, "LEGION-921 admitted on "+unmappedNamed+" with no one moving it", func() bool {
 		got := recordedIssue(t, w, "LEGION-921")
 		return got != nil && got.Repo == unmappedNamed
@@ -197,21 +205,17 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswer(t *testing.T) {
 	failing := &installations{}
 	failing.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
-	// The refresher's own read is never due in this test, so a recovery runs only where a read
-	// is asked for. The refresher starts a wait once a run is over, so the wait it starts after
-	// the recovery's own read of GitHub, the second read, says that recovery is over.
-	var over atomic.Bool
-	w, client, installs, _ := unmappedRig(t, failing, func(w *workflowRuntime) {
-		w.recheckAfter = func(time.Duration) <-chan time.Time {
-			if failing.reads("implement "+unmappedRepo) >= 2 {
-				over.Store(true)
-			}
-			return nil
-		}
-	})
+	// The refresher's own read is never due in this test, since its wait is on the rig's fake
+	// clock, which the test never moves, so a recovery runs only where a read is asked for. The
+	// refresher arms its wait once a run is over, so the wait armed after the recovery's own read
+	// of GitHub, the second read, says that recovery is over.
+	w, client, installs, _ := unmappedRig(t, failing)
 	const left, answered = "LEGION-961", "LEGION-962"
 	deliver(t, w, client, issue(left, unmappedRepo, "todo", true, "", 1))
-	testwait.Eventually(t, "the recovery GitHub fails again is over", over.Load)
+	testwait.Eventually(t, "the recovery GitHub fails again is over", func() bool {
+		_, armed := refresherWait(w)
+		return armed && failing.reads("implement "+unmappedRepo) >= 2
+	})
 	if got := recordedIssue(t, w, left); got != nil {
 		t.Fatalf("%s recorded as %+v while GitHub does not answer for %s", left, got, unmappedRepo)
 	}
@@ -221,13 +225,10 @@ func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswe
 	if got := recordedIssue(t, w, answered); got == nil || got.Repo != unmappedNamed {
 		t.Fatalf("%s = %+v, want it recorded on %s once GitHub answers", answered, got, unmappedNamed)
 	}
-	if !within(10*time.Second, func() bool {
+	testwait.Until(t, left+" recovered and admitted on "+unmappedNamed+" with no event of its own once GitHub answered at "+answered+"'s preparation", func() (*record.Issue, bool) {
 		got := recordedIssue(t, w, left)
-		return got != nil && got.Repo == unmappedNamed
-	}) {
-		t.Fatalf("%s = %+v after GitHub answered at %s's preparation, want it recovered and admitted on %s with no event of its own",
-			left, recordedIssue(t, w, left), answered, unmappedNamed)
-	}
+		return got, got != nil && got.Repo == unmappedNamed
+	})
 	if notes := repositoryNotes(t, w, left); len(notes) != 0 {
 		t.Fatalf("notes on %s = %q, want none: it was left, then recovered", left, notes)
 	}
@@ -244,7 +245,6 @@ func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswe
 // that GitHub had answered for it again and dropped the wait, and the recovery that followed
 // GitHub's answer told nothing.
 func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *testing.T) {
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
@@ -259,8 +259,15 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 	if !w.awaitRecovery(unmappedRepo, tree, child, parent) {
 		t.Fatalf("the wait for %s on %s was refused while the daemon holds it unread", child, unmappedRepo)
 	}
-	// A recovery lists once, at its start, so the second listing says the first recovery is over.
-	testwait.Eventually(t, "a recovery GitHub fails again is over", func() bool { return client.listingCount() >= listings+2 })
+	// A recovery lists once, at its start, and the refresher arms its wait once a run is over, so
+	// the wait armed after the second listing says the second recovery is over. The first may
+	// have begun before the wait above was filed, so the second, which the test runs by firing
+	// the refresher's wait (recheck), is the one that tells.
+	recheck(t, w)
+	testwait.Eventually(t, "a second recovery GitHub fails again is over", func() bool {
+		_, armed := refresherWait(w)
+		return armed && client.listingCount() >= listings+2
+	})
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 0 {
 		t.Fatalf("notices to %s's architect while GitHub does not answer for %s = %q, want none: nothing was recovered", tree, unmappedRepo, got)
 	}
@@ -269,6 +276,7 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 	}
 
 	installs.setFailing(nil, "implement "+unmappedRepo)
+	recheck(t, w)
 	testwait.Eventually(t, root+" admitted, and nothing left unread or to recover", func() bool {
 		return recordedIssue(t, w, root) != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
@@ -281,9 +289,14 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 		t.Fatalf("notices to %s's architect once GitHub answered for %s = %q, want one naming %s and %s: the wait was kept for the recovery that answered",
 			tree, unmappedRepo, notices, child, parent)
 	}
-	time.Sleep(10 * installReadRetry.Max)
-	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
-		t.Fatalf("notices after the recovery = %d, want the one only", len(got))
+	// No later notice: the waits it told are gone with the telling, and the refresher reads again
+	// of its own only while something awaits it (refreshWaits), so with nothing awaiting it arms
+	// no wait and runs no recovery that could tell again.
+	w.recoveringMu.Lock()
+	kept := len(w.releaseWaits[unmappedRepo])
+	w.recoveringMu.Unlock()
+	if waiting := w.refreshWaits(); kept != 0 || len(waiting) != 0 {
+		t.Fatalf("%d release waits are kept on %s and the refresher awaits %q, want neither once the recovery told its one notice", kept, unmappedRepo, waiting)
 	}
 }
 
@@ -293,8 +306,8 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 // mapping and listing the project for it. The issue coming back to todo is prepared afresh and
 // admitted on what GitHub says then. The marker stood for ever before, and the refresher read
 // the whole mapping and listed the whole project on its backoff for as long as the daemon ran.
+// The refresher's reads of its own are its waits on the rig's fake clock (refreshUntil).
 func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
@@ -307,16 +320,12 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 	// A person takes the issue back before GitHub answers, so nothing on the repository is left
 	// for a preparation to read GitHub for.
 	deliver(t, w, client, issue(key, unmappedRepo, "backlog", true, "", 2))
-	if !within(10*time.Second, func() bool { return len(w.unreadReasons()) == 0 }) {
-		t.Fatalf("the daemon still waits on %q with no todo issue left on %s, want the repository let go", w.unreadReasons(), unmappedRepo)
-	}
-	listings, reads := client.listingCount(), installs.reads("implement "+unmappedRepo)
-	time.Sleep(10 * installReadRetry.Max)
-	if got := client.listingCount(); got != listings {
-		t.Fatalf("Dispatch listed %d times more once %s was let go, want none", got-listings, unmappedRepo)
-	}
-	if got := installs.reads("implement " + unmappedRepo); got != reads {
-		t.Fatalf("%s read %d times more once it was let go, want none", unmappedRepo, got-reads)
+	refreshUntil(t, w, "the daemon to let "+unmappedRepo+" go with no todo issue left on it", func() bool { return len(w.unreadReasons()) == 0 })
+	// The refresher reads again of its own only while something awaits it (refreshWaits), so with
+	// nothing awaiting it arms no wait: it neither lists Dispatch nor reads GitHub for the
+	// repository again.
+	if waiting := w.refreshWaits(); len(waiting) != 0 {
+		t.Fatalf("the refresher awaits %q once %s was let go, want nothing, so it lists and reads nothing more of its own", waiting, unmappedRepo)
 	}
 	if got := recordedIssue(t, w, key); got != nil {
 		t.Fatalf("%s recorded as %+v, want it left in backlog", key, got)
@@ -339,7 +348,6 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 // architect, whose release_children had answered that the child was released, heard nothing at
 // all.
 func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *testing.T) {
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
@@ -367,10 +375,9 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	// repository again and the daemon lets it go. The notice is what the pass does last — the
 	// marker and the waits are already gone by the time it commits — so it is what to wait on.
 	deliver(t, w, client, issue(root, unmappedRepo, "backlog", true, "", 2))
-	if !within(10*time.Second, func() bool { return len(treeNotices(t, w, tree)) > before }) {
-		t.Fatalf("%s's architect was told nothing once %s was let go (unread: %q), want the children nothing will record named",
-			tree, unmappedRepo, w.unreadReasons())
-	}
+	refreshUntil(t, w, tree+"'s architect told of the children nothing will record once "+unmappedRepo+" was let go", func() bool {
+		return len(treeNotices(t, w, tree)) > before
+	})
 	notices := treeNotices(t, w, tree)[before:]
 	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") ||
 		!strings.Contains(notices[0], "the daemon no longer waits for GitHub to answer for "+unmappedRepo+", because no todo issue labelled for Legion or under a parent names it now") ||
@@ -384,9 +391,10 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	if left != 0 || unread != 0 {
 		t.Fatalf("%d release waits are left on %s and %d repositories are left unread, want both gone with the telling", left, unmappedRepo, unread)
 	}
-	time.Sleep(10 * installReadRetry.Max)
-	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
-		t.Fatalf("notices after %s was let go = %d, want the one only", unmappedRepo, len(got))
+	// No later notice: the waits are gone with the telling, and the refresher reads again of its
+	// own only while something awaits it (refreshWaits), so it runs no pass that could tell again.
+	if waiting := w.refreshWaits(); len(waiting) != 0 {
+		t.Fatalf("the refresher awaits %q once %s was let go, want nothing, so nothing is told again", waiting, unmappedRepo)
 	}
 }
 
@@ -649,10 +657,11 @@ func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
 // is left unread for it either, since no recovery would ever record it, and no read of the
 // mapping is asked for. Its preparation read both Apps' installations and the repository's name
 // at every event of the issue before, since no refusal is kept, each read up to
-// installReadAttempt long.
+// installReadAttempt long. GitHub's stand-in counts only the daemon's own reads, those under a
+// lease of its App tokens (aLease).
 func TestAPersonsOwnTodoIssueOnARepositoryNoMappingNamesAsksGitHubNothing(t *testing.T) {
 	var named atomic.Int64
-	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	github := githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		path := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
 		if path == unmappedRepo {
 			named.Add(1)
@@ -755,13 +764,14 @@ func TestTheBootsListingAsksGitHubNothingForARepositoryNoMappingNamesAndItsRecov
 // The read that repairs a lost pull_request.opened event looks the pull request up on the issue's
 // own repository, whatever the mapping names, so a tree on a repository no mapping names is
 // repaired like any other (R5). The read mints on that repository's owner account, which is what
-// lets it reach a repository the mapping never named.
+// lets it reach a repository the mapping never named. GitHub's stand-in records only the daemon's
+// own reads, those under a lease of its App tokens (aLease).
 func TestThePerIssueReadLooksUpARepositoryOnlyARecordNames(t *testing.T) {
 	ctx := context.Background()
 	var listed []string
 	var mu atomic.Pointer[[]string]
 	mu.Store(&listed)
-	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	github := githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if repo, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"), "/pulls"); ok {
 			asked := append(slices.Clone(*mu.Load()), repo)
 			mu.Store(&asked)

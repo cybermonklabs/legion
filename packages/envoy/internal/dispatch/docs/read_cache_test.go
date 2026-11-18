@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -15,11 +16,14 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proofHistory writes a document's stored history as a room stores one: each write is the update
@@ -339,6 +343,13 @@ func (s *timeoutLoadStore) LoadDocument(ctx context.Context, room string) (Loade
 
 func newReadCacheService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
+	return newReadCacheServiceOn(t, database, persistence, nil)
+}
+
+// newReadCacheServiceOn is newReadCacheService on serviceClock (Deps.Clock), the real clock when
+// nil.
+func newReadCacheServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
+	t.Helper()
 	service := New(Deps{
 		Store:       database,
 		Persistence: persistence,
@@ -346,6 +357,7 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
+		Clock:       serviceClock,
 	})
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -481,11 +493,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		_, err := service.Text(leaderCtx, artifactID)
 		leader <- err
 	}()
-	select {
-	case <-persistence.entered:
-	case <-time.After(time.Second):
-		t.Fatal("the cold fold never reached LoadDocument")
-	}
+	testwait.Receive(t, "the cold fold to reach LoadDocument", persistence.entered)
 
 	var followers sync.WaitGroup
 	results := make(chan error, 2)
@@ -500,16 +508,13 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 			results <- err
 		}()
 	}
-	// Give the followers a chance to enter DoChan while the first fold is still blocked.
-	time.Sleep(20 * time.Millisecond)
+	// The leader is cancelled once both followers wait on its fold (DoChan) beside it.
+	waitFor(t, "both followers to wait on the leader's fold", func() bool {
+		return coldReadsWaitingOnAFold() == 3
+	})
 	cancel()
-	select {
-	case err := <-leader:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled leader = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("the cancelled leader stayed blocked on the shared fold")
+	if err := testwait.Receive(t, "the cancelled leader to return while the shared fold stays blocked", leader); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 	}
 	close(persistence.release)
 	followers.Wait()
@@ -527,6 +532,29 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	}
 }
 
+// coldReadsWaitingOnAFold is how many goroutines wait in coldRead's select for a fold's result
+// (DoChan): the goroutine stacks marked select whose first frame outside the runtime is coldRead.
+func coldReadsWaitingOnAFold() int {
+	buffer := make([]byte, 1<<24)
+	waiting := 0
+	for _, stack := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
+		header, frames, _ := strings.Cut(stack, "\n")
+		if !strings.Contains(header, "[select") {
+			continue
+		}
+		for _, line := range strings.Split(frames, "\n") {
+			if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "runtime.") {
+				continue
+			}
+			if strings.Contains(line, "docs.(*Service).coldRead(") {
+				waiting++
+			}
+			break
+		}
+	}
+	return waiting
+}
+
 func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &panickingLoadStore{VersionedStore: NewPgVersioned(database)}
@@ -542,28 +570,41 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 	waitForDocumentText(t, service, artifactID, "before\n")
 }
 
+// A cold fold whose load outlasts coldReadTimeout fails the read as ErrServiceUnavailable, not as
+// the caller's own deadline. The bound runs on the service's clock, a fake here, which the test
+// moves past it once the fold has armed it and is waiting in the load.
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")
-	service := newReadCacheService(t, database, persistence)
+	foldClock := clocktest.New(time.Now())
+	service := newReadCacheServiceOn(t, database, persistence, foldClock)
 	seedServiceText(t, service, artifactID, "before\n")
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 20 * time.Millisecond
-	t.Cleanup(func() { coldReadTimeout = oldTimeout })
 
 	ctx := context.Background()
-	_, err := service.Text(ctx, artifactID)
+	read := make(chan error, 1)
+	go func() {
+		_, err := service.Text(ctx, artifactID)
+		read <- err
+	}()
+	testwait.Receive(t, "the cold fold to reach LoadDocument", persistence.started)
+	bound := foldClock.Now().Add(coldReadTimeout)
+	waitFor(t, "the cold fold to arm its coldReadTimeout bound on the service's clock", func() bool {
+		return slices.Contains(foldClock.Armed(), bound)
+	})
+	// The load waits for the fold's context, which ends only at that bound: the read is waiting.
+	select {
+	case err := <-read:
+		t.Fatalf("the cold read returned (%v) before its fold's bound ended", err)
+	default:
+	}
+	foldClock.Advance(coldReadTimeout)
+	err := testwait.Receive(t, "the cold read to return once its fold's bound ended", read)
 	if !errors.Is(err, ErrServiceUnavailable) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timed-out cold load = %v, want ErrServiceUnavailable and not context.DeadlineExceeded", err)
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("the live caller context ended with %v", ctx.Err())
-	}
-	select {
-	case <-persistence.started:
-	default:
-		t.Fatal("the timed cold fold never reached LoadDocument")
 	}
 }
 

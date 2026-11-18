@@ -6,13 +6,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // abandonKV makes each watch for real, so the server has answered the consumer's create, and
@@ -113,9 +113,9 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0))
 			t.Cleanup(w.Stop)
 			w.Start()
-			eventually(t, "the first read's completion", w.Following)
+			testwait.Eventually(t, "the first read's completion", w.Following)
 
-			js, err := jetstream.New(conn)
+			js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 			if err != nil {
 				t.Fatalf("jetstream: %v", err)
 			}
@@ -151,26 +151,20 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			t.Cleanup(release)
 			watched := make(chan error, 1)
 			go func() { watched <- tc.install(w, run, bus.NewKeyValue(kv.Legacy(), abandon, kv.Streams())) }()
-			select {
-			case err := <-watched:
-				if tc.ends && err == nil {
-					t.Fatal("a watch whose run ended while its create was in flight answered nil, want the run's end")
-				}
-				if !tc.ends && err != nil {
-					t.Fatalf("an overtaken watch answered %v, want nil", err)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("the watch did not return within 2s: it waited out the discarded watcher's stop")
+			// The discarded watcher's stop is held until release below, so a watch that waited it out
+			// would not return before then, and this wait would give up naming it.
+			err = testwait.Receive(t, "the watch to return while the discarded watcher's stop is held", watched)
+			if tc.ends && err == nil {
+				t.Fatal("a watch whose run ended while its create was in flight answered nil, want the run's end")
+			}
+			if !tc.ends && err != nil {
+				t.Fatalf("an overtaken watch answered %v, want nil", err)
 			}
 
 			release()
-			select {
-			case <-abandon.stopped:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the discarded watcher was never stopped")
-			}
-			eventually(t, "the discard's goroutine to end", func() bool { return subscriptionGoroutines() <= goroutines })
-			eventually(t, "the discarded watcher's consumer to be gone", func() bool { return consumers() <= held })
+			testwait.Receive(t, "the discarded watcher's stop", abandon.stopped)
+			testwait.Eventually(t, "the discard's goroutine to end", func() bool { return subscriptionGoroutines() <= goroutines })
+			testwait.Eventually(t, "the discarded watcher's consumer to be gone", func() bool { return consumers() <= held })
 
 			if err := w.Err(); err != nil {
 				t.Fatalf("the cache's watcher ended: %v", err)
@@ -178,7 +172,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			if _, err := kv.Put("after-the-discarded-watch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
-			eventually(t, "the cache's own watcher's delivery", func() bool { return into.has("after-the-discarded-watch") })
+			testwait.Eventually(t, "the cache's own watcher's delivery", func() bool { return into.has("after-the-discarded-watch") })
 		})
 	}
 }

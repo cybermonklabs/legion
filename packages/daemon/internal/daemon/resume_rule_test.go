@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -143,8 +144,11 @@ func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}
 	putOutboxIssue(t, pool, records, root)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	// Real timers, so the held suspension's stop timeout runs as it does in a daemon.
-	sup.deps.Clock = supervise.RealClock{}
+	// The machines' timers run on a fake the test moves past the stop timeout, so a held
+	// suspension armed for it would fire there; what a timer's function did is done once the move
+	// returns (clocktest.Fake.Advance).
+	machines := clocktest.Held()
+	sup.deps.Clock = machines
 	architect := launchedClaim(t, sup, root.Key, root.Key, claim.RoleArchitect)
 	machine, _ := sup.Machine(architect)
 	ctx := context.Background()
@@ -159,7 +163,7 @@ func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the linger's suspend: %v", err)
 	}
-	time.Sleep(3 * sup.deps.Timeouts.Stop)
+	machines.Advance(3 * sup.deps.Timeouts.Stop)
 	if got := machine.Claim().State; got != supervise.StateWorking || len(rt.CallsOf("Suspend")) != 0 {
 		t.Fatalf("three stop timeouts into the turn the architect is %s after %d suspensions, want its turn still running",
 			got, len(rt.CallsOf("Suspend")))

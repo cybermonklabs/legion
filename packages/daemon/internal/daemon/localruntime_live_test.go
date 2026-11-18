@@ -64,11 +64,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // localStopGrace is how long a stop waits for a child to end after the shutdown frame and then
-// after SIGTERM, before the group is SIGKILLed. Oh My Pi's own exit on a shutdown is under a
-// second once it is idle; a turn in flight takes the longer path.
+// after SIGTERM, before the group is SIGKILLed: the stand-in's copy of the tmux runtime's
+// StopGrace (worker_stop_timeout_seconds), which this runtime's stop ladder (stop, awaitGone)
+// keeps as its own setting. Oh My Pi's own exit on a shutdown is under a second once it is idle; a
+// turn in flight takes the longer path.
 const localStopGrace = 15 * time.Second
 
 // localObserveInterval is how often the observation sweep reports every tracked process. The
@@ -224,9 +227,7 @@ func (r *localRuntime) killProcessGroup(loc runtime.Locator) int {
 	if err := syscall.Kill(-pane.pid, syscall.SIGKILL); err != nil {
 		r.t.Fatalf("kill the process group of %s (pid %d): %v", loc.Claim, pane.pid, err)
 	}
-	if !waitGone(pane, localStopGrace) {
-		r.t.Fatalf("the worker of %s (pid %d) did not end after SIGKILL; its log is %s", loc.Claim, pane.pid, pane.log)
-	}
+	testwait.Receive(r.t, fmt.Sprintf("the worker of %s (pid %d) to end after SIGKILL; its log is %s", loc.Claim, pane.pid, pane.log), pane.done)
 	return pane.pid
 }
 
@@ -242,11 +243,7 @@ func (r *localRuntime) killEverything() {
 		_ = syscall.Kill(-pane.pid, syscall.SIGKILL)
 	}
 	for _, pane := range started {
-		select {
-		case <-pane.done:
-		case <-time.After(10 * time.Second):
-			r.t.Errorf("the worker of %s (pid %d) did not end after SIGKILL; its log is %s", pane.spec.Claim, pane.pid, pane.log)
-		}
+		testwait.Receive(r.t, fmt.Sprintf("the worker of %s (pid %d) to end after SIGKILL; its log is %s", pane.spec.Claim, pane.pid, pane.log), pane.done)
 	}
 }
 

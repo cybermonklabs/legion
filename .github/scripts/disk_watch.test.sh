@@ -134,14 +134,11 @@ echo "case: the series begins in the second start ran in, not a second later"
 # The sampler reads before it sleeps, so its first tick falls inside the start step rather than
 # after it. Without that the series would begin after the first step being measured had begun,
 # and the boundary a reader most wants to line up would have no tick of the machine beside it.
+# The detached sampler writes that tick in its own time, so the case waits for it; the check that
+# it came without waiting a second is the stamp the sampler gave it, below.
 after_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 series_file="$state.series"
-for _ in $(seq 30); do
-  [ -s "$series_file" ] && break
-  sleep 0.1
-done
-check "the sampler wrote a tick without waiting a second" \
-  "$([ -s "$series_file" ] && echo true || echo false)"
+wait_for "the sampler's first tick in $series_file" test -s "$series_file"
 first_tick=$(head -1 "$series_file")
 check "that tick is a reading of the machine" "$(contains "$first_tick" "$tick_shape")"
 check "it was read no later than the second start returned in" \
@@ -156,14 +153,16 @@ check "the sampler is alive after start returned" "$(alive "$pid")"
 
 echo "case: the least value falls when the watched file system fills"
 dd if=/dev/zero of="$watched/filler" bs=1M count=64 status=none
-least=$before
-for _ in $(seq 20); do
-  sleep 0.5
+# least_fell: the least free figure the sampler keeps in the state is below the before figure; it
+# prints both, for the wait's note.
+least_fell() {
+  local least
   least=$(field "$state" least_kb)
-  [ "$least" -lt "$before" ] && break
-done
-check "least_kb fell below before_kb after 64 MiB was written" \
-  "$([ "$least" -lt "$before" ] && echo true || echo false)"
+  echo "least_kb ${least:-unread}, before_kb $before"
+  [ "$least" -lt "$before" ]
+}
+# The sampler reads the file system once a second, so the fall shows in a tick after the write.
+wait_for "least_kb to fall below before_kb after 64 MiB was written" least_fell
 check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
 rm -f "$watched/filler"
 
@@ -244,12 +243,25 @@ kill -STOP "$pid"
 # `kill -STOP` only sends the signal, and the series below may be read only once the process
 # can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
 # millisecond, so the wait is a guarantee rather than a delay.
-for _ in $(seq 50); do
-  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
-  sleep 0.1
-done
-check "the kernel has the sampler off the CPU" \
-  "$(is "$(ps -o state= -p "$pid" | tr -d ' ')" T)"
+# sampler_stopped: the kernel shows the sampler stopped (state T); it prints the state it shows.
+# The state is the first field after the command name's closing `) ` in that one process's
+# /proc/<pid>/stat (the name may hold spaces and parentheses), never a read of every process on
+# the machine, which procps-ng's `ps -o state= -p PID` makes even for one pid, about a second a
+# call on a loaded devbox (docs/testing.md, "A test that looks for a process it started"). The
+# file is read with `read`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open
+# FILE, even on the left of `||`. A host with no /proc asks ps.
+sampler_stopped() {
+  local stat shown=
+  if [ ! -d /proc/self ]; then
+    shown=$(ps -o state= -p "$pid" | tr -d ' ')
+  elif { read -r stat <"/proc/$pid/stat"; } 2>/dev/null; then
+    shown=${stat##*) }
+    shown=${shown%% *}
+  fi
+  echo "the sampler $pid is in state '${shown:-gone}'"
+  [ "$shown" = T ]
+}
+wait_for "the kernel to take the sampler $pid off the CPU (state T)" sampler_stopped
 # While the sampler is off the CPU it cannot write, so its series file is stable here and its
 # last stamp is the last second it has a line for. The second after that one is the second it
 # was waiting for when the signal landed, and that is where the window of seconds no line may

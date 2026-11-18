@@ -18,9 +18,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // limitGitHub is a GitHub App API that records every request it is sent ("METHOD path
 // Authorization"): one repository (acme/web) and the installation covering it, token mints, the
@@ -87,10 +88,12 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	query := f.graphQL
 	f.mu.Unlock()
 	if held != nil {
-		// A client that sends fewer mints than awaited is answered anyway, a little later.
+		// The mint waits for the last of the mints awaited, or for its request to end; a client
+		// that sends fewer is held, and the test's wait for its answers names that.
 		select {
 		case <-held:
-		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+			return
 		}
 	}
 	if limited {
@@ -402,7 +405,12 @@ func TestTwoConcurrentFirstMintsForOneInstallationAreBothUnderItsLimit(t *testin
 	for i := range tokens {
 		minting.Go(func() { tokens[i], errs[i] = a.Token(ctx, 7) })
 	}
-	minting.Wait()
+	minted := make(chan struct{})
+	go func() {
+		minting.Wait()
+		close(minted)
+	}()
+	testwait.Receive(t, "both of A's concurrent mints to answer, which GitHub holds until two have arrived", minted)
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("A's concurrent mint %d: %v", i, err)

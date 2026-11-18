@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -1274,13 +1275,8 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 		_, err := source.Token()
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
-			t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the refresh of an expired token was still waiting on gcloud 10s on, past the 300ms deadline")
+	if err := testwait.Receive(t, "the refresh of an expired token to end at the 300ms store deadline rather than wait on gcloud", done); err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
+		t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
 	}
 }
 
@@ -1288,20 +1284,22 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 // account, answers `auth print-access-token` with stubTokenPrefix + account, and answers
 // `auth list` (account, active) and `config list` (no auth property) as authList and configList
 // say: "" answers, "fail" fails as gcloud does, naming the failure on its standard error, and
-// "hang" answers nothing for 30 s. It first clears every other source, as useNoADC does.
+// "hang" answers nothing until the test releases it, which it does only as t ends
+// (hangUntilReleased). It first clears every other source, as useNoADC does.
 func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 	t.Helper()
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Fatal(err)
-	}
 	useNoADC(t)
+	dir := t.TempDir()
+	hang := ""
 	behave := func(command, answer, mode string) string {
 		switch mode {
 		case "fail":
 			return `echo 'ERROR: (gcloud.` + command + `) the test fails it' >&2; exit 1`
 		case "hang":
-			return "exec " + shellWord(sleep) + " 30"
+			if hang == "" {
+				hang = hangUntilReleased(t, dir)
+			}
+			return hang
 		}
 		return "printf '%s\\n' " + shellWord(answer)
 	}
@@ -1315,7 +1313,6 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 		"esac",
 		"",
 	}, "\n")
-	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1323,10 +1320,58 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 }
 
+// hangUntilReleased makes a fifo in dir and answers the shell text of a stand-in that waits on it:
+// a read that ends only once something opens the fifo to write, which the test does only as t
+// ends, so a stand-in the command under test left waiting is let go then rather than left behind.
+// The command's own deadline kills a stand-in it gave up on, which then waits on nothing.
+func hangUntilReleased(t *testing.T, dir string) string {
+	t.Helper()
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "release")
+	made := exec.Command(mkfifo, fifo)
+	made.Env = []string{}
+	if out, err := made.CombinedOutput(); err != nil {
+		t.Fatalf("make the fifo a hung stand-in gcloud waits on: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		// Opened to read and write, the fifo opens at once whether or not a stand-in waits on it,
+		// and its close ends a waiting stand-in's read with the end of the file.
+		if release, err := os.OpenFile(fifo, os.O_RDWR, 0); err == nil {
+			_ = release.Close()
+		}
+	})
+	return "read line < " + shellWord(fifo)
+}
+
+// secretRun is what one run of `agent-secrets secret` wrote and the code it exited with.
+type secretRun struct {
+	stdout, stderr string
+	code           int
+}
+
+// runSecretToItsExit is runSecret on a goroutine of its own, waited for through the shared wait,
+// so a command that never exits fails t naming what rather than holding the test to the binary's
+// deadline.
+func runSecretToItsExit(t *testing.T, what string, args ...string) secretRun {
+	t.Helper()
+	exited := make(chan secretRun, 1)
+	go func() {
+		stdout, stderr, code := runSecret(args...)
+		exited <- secretRun{stdout: stdout, stderr: stderr, code: code}
+	}()
+	return testwait.Receive(t, what, exited)
+}
+
 // TestGCPSecretGcloudSettingsReadIsBestEffort: the gcloud source reads gcloud's auth settings only
 // to name whom its token acts as (R2), so a `gcloud config list` that fails, or that does not
 // answer within gcloudSettingsDeadline, never stops the command: the form runs under the login's
-// token, and the using line names the login with the principal unknown.
+// token, and the using line names the login with the principal unknown. The hung read is a
+// stand-in's that answers only once the row has ended (hangUntilReleased), so the command exits
+// while that read still hangs or not at all: a settings read that waited for its answer never
+// returns, and the wait for the command's exit gives up naming it.
 func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 	for _, mode := range []string{"fail", "hang"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1334,14 +1379,16 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 			startFakeSecretManager(t, fake)
 			useGcloudThatAnswers(t, "ada@example.com", "", mode)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-			started := time.Now()
-			_, stderr, code := runSecret("list")
-			took := time.Since(started)
-			if code != 0 || took > 15*time.Second {
-				t.Fatalf("exit %d after %s, stderr %q; want 0 within 15s", code, took, stderr)
+			what := "the command to exit while `gcloud config list` still hangs"
+			if mode == "fail" {
+				what = "the command to exit once `gcloud config list` has failed"
 			}
-			if want := "agent-secrets secret list: using the active gcloud account (gcloud configuration default): ada@example.com (principal unknown: gcloud's auth settings could not be read)\n"; !strings.Contains(stderr, want) {
-				t.Fatalf("stderr %q does not say %q", stderr, want)
+			run := runSecretToItsExit(t, what, "list")
+			if run.code != 0 {
+				t.Fatalf("exit %d, stderr %q; want 0", run.code, run.stderr)
+			}
+			if want := "agent-secrets secret list: using the active gcloud account (gcloud configuration default): ada@example.com (principal unknown: gcloud's auth settings could not be read)\n"; !strings.Contains(run.stderr, want) {
+				t.Fatalf("stderr %q does not say %q", run.stderr, want)
 			}
 			if got, calls := fake.calledUnder(); got != "Bearer "+stubTokenPrefix+"ada@example.com" || calls == 0 {
 				t.Fatalf("Secret Manager calls ran under %q (%d calls), want only ada@example.com's gcloud token", got, calls)
@@ -1353,18 +1400,18 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 // TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline: `gcloud auth list`, which
 // decides whether the gcloud source is present, runs under storeCallDeadline as the token's
 // refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
-// before any Secret Manager call.
+// before any Secret Manager call. The stand-in answers only once the row has ended
+// (hangUntilReleased), so the command exits while it still hangs or not at all, and the refusal it
+// exits with names the 300 ms deadline that ended the list.
 func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGcloudThatAnswers(t, "ada@example.com", "hang", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	started := time.Now()
-	_, stderr, code := runSecret("list")
-	took := time.Since(started)
-	if code != 1 || took > 10*time.Second || !strings.Contains(stderr, "`gcloud auth list` did not answer within 300ms") {
-		t.Fatalf("exit %d after %s, stderr %q; want 1 within 10s naming the 300ms deadline", code, took, stderr)
+	run := runSecretToItsExit(t, "the command to exit while `gcloud auth list` still hangs", "list")
+	if run.code != 1 || !strings.Contains(run.stderr, "`gcloud auth list` did not answer within 300ms") {
+		t.Fatalf("exit %d, stderr %q; want 1 naming the 300ms deadline", run.code, run.stderr)
 	}
 	if _, calls := fake.calledUnder(); calls != 0 {
 		t.Fatalf("Secret Manager saw %d calls, want none", calls)

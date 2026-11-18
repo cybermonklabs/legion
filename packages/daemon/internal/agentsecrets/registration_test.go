@@ -25,7 +25,7 @@ import (
 // broker that kept another binding answers — at the generation the write sent, or at newer, where
 // a test sets it, as a broker holding a later process's registration answers a stale write.
 type registrationBroker struct {
-	t     *testing.T
+	t     testing.TB
 	pod   string
 	bound string
 
@@ -42,7 +42,7 @@ type registrationWrite struct {
 	status                            int
 }
 
-func newRegistrationBroker(t *testing.T, pod string) (*registrationBroker, *httptest.Server) {
+func newRegistrationBroker(t testing.TB, pod string) (*registrationBroker, *httptest.Server) {
 	b := &registrationBroker{t: t, pod: pod}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/exchange/pod-sessions", b.handle)
@@ -51,7 +51,13 @@ func newRegistrationBroker(t *testing.T, pod string) (*registrationBroker, *http
 	return b, server
 }
 
+// handle takes a write under the daemon's own token, the one its token file holds or the one a
+// test rotated it to. A write without either is another process's: it is answered 404 and logged,
+// and recorded as nothing (fromTheDaemonWhen).
 func (b *registrationBroker) handle(w http.ResponseWriter, r *http.Request) {
+	if authorization := r.Header.Get("Authorization"); !fromTheDaemonWhen(b.t, w, r, authorization == "Bearer the-daemon's-token" || authorization == "Bearer the-rotated-token") {
+		return
+	}
 	raw, _ := io.ReadAll(r.Body)
 	write := registrationWrite{
 		authorization: r.Header.Get("Authorization"), proof: r.Header.Get("Proof"), contentType: r.Header.Get("Content-Type"),

@@ -50,9 +50,12 @@
       "bun": "./src/wire.ts"
     }
   },
+  "//": [
+    "test: --timeout 5000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): the wire corpus holds this client, 110.74 ms."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 5000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ test/"
   },
   "dependencies": {

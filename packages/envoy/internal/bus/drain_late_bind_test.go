@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A bind in flight when Drain stops the client, such as the role lane's restore on a connection
@@ -91,20 +92,12 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			if err := publisher.Flush(); err != nil {
 				t.Fatalf("flush the publishes: %v", err)
 			}
-			select {
-			case <-started:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the first role message never reached the handler")
-			}
+			testwait.Receive(t, "the first role message to reach the handler", started)
 			// nats.go counts a delivery as pending until its handler returns.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-				if pending, _, _ := sub.Pending(); pending == 2 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the second role message never queued behind the first")
-				}
-			}
+			testwait.Until(t, "the second role message to queue behind the first", func() (int, bool) {
+				pending, _, _ := sub.Pending()
+				return pending, pending == 2
+			})
 			// Drain's stop lands, and then the bind ends.
 			client.subscriptionsMu.Lock()
 			client.stopMode = clientDraining
@@ -116,16 +109,14 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			_ = client.endBind(slot, sub, nil, true)
 			drained := make(chan error, 1)
 			go func() { drained <- client.Drain(5 * time.Second) }()
-			// Well within this, a drain that takes no subscription has begun draining the connection.
-			time.Sleep(200 * time.Millisecond)
+			// A drain that takes the subscription drains it; one that takes none drains the
+			// connection: either way the drain is under way when the handlers are let go.
+			testwait.Eventually(t, "the drain to begin draining the subscription or the connection", func() bool {
+				return sub.IsDraining() || client.Conn.IsDraining()
+			})
 			releaseHandlers()
-			select {
-			case err := <-drained:
-				if err != nil {
-					t.Fatalf("drain: %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("Drain never returned")
+			if err := testwait.Receive(t, "the drain to return", drained); err != nil {
+				t.Fatalf("drain: %v", err)
 			}
 			if finished := finished.Load(); finished != 2 {
 				t.Fatalf("%d of the 2 role messages routed to the bind finished in the handler before Drain returned; want both", finished)

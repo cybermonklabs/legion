@@ -9,7 +9,7 @@
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
+// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonLogging),
 // booted with dispatch_url at that server, so every Dispatch read and write it makes - the
 // repository mapping, the issue list, its status writes and messages, and the read of the record a
 // completion names - goes to the real routes. The worker side is the real `dispatch` CLI
@@ -158,7 +158,7 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 	return r
@@ -596,15 +596,16 @@ func (r *handoffRecordsLive) a10Restarted() {
 	}
 }
 
-// holdPhase holds that key is still in want, for liveSettle, as the refusal left it.
+// holdPhase holds that key is still in want, as the refusal left it. One read is the whole proof:
+// the completion route applies a completion's fact inside the request (api's answerCompletion,
+// intake.ApplyFact), so the refusal it answered has done all it will, and it tells nobody to read
+// the pull request (Options.HandoffCompleted is told of taken completions only). Each refusal's
+// control step then completes the same phase and is taken, which a phase the refusal had moved
+// would refuse.
 func (r *handoffRecordsLive) holdPhase(key string, want phase.Phase) {
 	r.t.Helper()
-	deadline := time.Now().Add(liveSettle)
-	for time.Now().Before(deadline) {
-		if got := r.issue(key).Phase; got != want {
-			r.t.Fatalf("%s moved to %s after the refusal, want it to stay in %s", key, got, want)
-		}
-		time.Sleep(100 * time.Millisecond)
+	if got := r.issue(key).Phase; got != want {
+		r.t.Fatalf("%s moved to %s after the refusal, want it to stay in %s", key, got, want)
 	}
 	r.note("read back: %s is still in %s", key, want)
 }
@@ -725,6 +726,9 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 		"XDG_CONFIG_HOME=" + filepath.Join(r.cliHome, "config"),
 		"XDG_STATE_HOME=" + filepath.Join(r.cliHome, "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(r.cliHome, "cache"),
+		// Bun keeps its runtime transpiler cache under XDG_CACHE_HOME, the test's own directory
+		// here, where each run would write every module it transpiles: "0" turns that cache off.
+		"BUN_RUNTIME_TRANSPILER_CACHE_PATH=0",
 		"ENVOY_CONFIG_FILE=" + filepath.Join(r.cliHome, "envoy.json"),
 		"DISPATCH_STATE_DIR=" + filepath.Join(r.cliHome, "dispatch-state"),
 		"DISPATCH_HOST=omp",
@@ -942,13 +946,7 @@ func (c *handoffClaimant) endTurn() {
 // awaitPrompt waits for the next task the daemon prompts this claim with.
 func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
 	c.r.t.Helper()
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(2 * time.Minute):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
-		return shimwire.Prompt{}
-	}
+	return testwait.Receive(c.r.t, string(c.token)+"'s next task prompt", c.prompts)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`
@@ -981,7 +979,10 @@ func (c *handoffClaimant) complete(req api.HandoffCompleteRequest) (int, api.Fai
 // the daemon's dispatch_url and the CLI's DISPATCH_URL name it.
 type handoffDispatch struct {
 	*scratchDispatch
-	client *http.Client
+	// ctx is the bound every request the driver sends carries: the test binary's own deadline less
+	// the shared wait's margin (testwait.Context), so a Dispatch that never answers fails the
+	// request by name, and one the machine's load slows fails nothing.
+	ctx context.Context
 }
 
 // startHandoffDispatch starts the run's Dispatch server from root's packages/envoy on a database
@@ -998,7 +999,7 @@ func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 		t.Cleanup(func() { file.Close() })
 		options.log = file
 	}
-	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), client: &http.Client{Timeout: 10 * time.Second}}
+	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), ctx: testwait.Context(t)}
 }
 
 // user sends one request as the person handoffRecordsUser and requires want, decoding the answer
@@ -1009,7 +1010,7 @@ func (d *handoffDispatch) user(method, path string, body any, want int, into any
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	request, err := http.NewRequest(method, d.base+path, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(d.ctx, method, d.base+path, bytes.NewReader(encoded))
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -1033,7 +1034,7 @@ func (d *handoffDispatch) agentPost(path string, body any) (int, []byte) {
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPost, d.base+path, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(d.ctx, http.MethodPost, d.base+path, bytes.NewReader(encoded))
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -1045,7 +1046,7 @@ func (d *handoffDispatch) agentPost(path string, body any) (int, []byte) {
 // agentGet reads path with the agent's bearer token into into, requiring 200.
 func (d *handoffDispatch) agentGet(path string, into any) {
 	d.t.Helper()
-	request, err := http.NewRequest(http.MethodGet, d.base+path, nil)
+	request, err := http.NewRequestWithContext(d.ctx, http.MethodGet, d.base+path, nil)
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -1061,7 +1062,7 @@ func (d *handoffDispatch) agentGet(path string, into any) {
 
 func (d *handoffDispatch) do(request *http.Request) (int, []byte) {
 	d.t.Helper()
-	response, err := d.client.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		d.t.Fatalf("Dispatch %s %s: %v", request.Method, request.URL.Path, err)
 	}

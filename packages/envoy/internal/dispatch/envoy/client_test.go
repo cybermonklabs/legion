@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
@@ -21,7 +23,7 @@ import (
 // than as a string, and today client.go flattens the cause with %v so errors.Is sees nothing.
 // A refusal is the discriminating control: nothing landed, and it must not read as a timeout.
 func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
-	held := make(chan struct{})
+	held, reached := make(chan struct{}), make(chan struct{}, 1)
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			IdempotencyKey string `json:"idempotency_key"`
@@ -34,6 +36,7 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"listener refused the send"}`))
 			return
 		}
+		reached <- struct{}{}
 		<-held
 	}))
 	defer func() {
@@ -41,9 +44,21 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		listener.Close()
 	}()
 
-	_, err := New(listener.URL, WithTimeout(150*time.Millisecond)).Send(context.Background(), SendInput{
-		TargetSession: "s1", Message: "held past the window", IdempotencyKey: "held:steer",
-	})
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := New(listener.URL, WithClock(fake)).Send(context.Background(), SendInput{
+			TargetSession: "s1", Message: "held past the window", IdempotencyKey: "held:steer",
+		})
+		answered <- err
+	}()
+	testwait.Receive(t, "the held send to reach the listener", reached)
+	if armed := fake.AwaitArmed(t, "the send's window", 1); armed[0] != start.Add(CallWindow) {
+		t.Fatalf("the send's window ends at %v, want %v, the window every call gets", armed[0], start.Add(CallWindow))
+	}
+	fake.Advance(CallWindow)
+	err := testwait.Receive(t, "the held send to end at its window", answered)
 	if !errors.Is(err, ErrReceiptTimeout) {
 		t.Fatalf("send that missed the window = %v, want ErrReceiptTimeout", err)
 	}
@@ -51,7 +66,7 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		t.Fatalf("a receipt timeout is still a listener failure: %v", err)
 	}
 
-	_, err = New(listener.URL, WithTimeout(5*time.Second)).Send(context.Background(), SendInput{
+	_, err = New(listener.URL).Send(context.Background(), SendInput{
 		TargetSession: "s1", Message: "refused outright", IdempotencyKey: "refused:steer",
 	})
 	if err == nil || errors.Is(err, ErrReceiptTimeout) {
@@ -107,12 +122,26 @@ func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 func TestSendDoesNotCallAConnectFailureAReceiptTimeout(t *testing.T) {
 	// 203.0.113.0/24 is TEST-NET-3: reserved, routed nowhere. The dial either times out or is
 	// refused outright; both mean nothing was written, and neither may read as a receipt
-	// timeout.
-	_, err := New("http://203.0.113.1:9", WithTimeout(200*time.Millisecond)).Send(
-		context.Background(), SendInput{
+	// timeout. The window ends when the test moves the clock past it, whichever comes first.
+	fake := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	answered := make(chan error, 1)
+	go func() {
+		_, err := New("http://203.0.113.1:9", WithClock(fake)).Send(context.Background(), SendInput{
 			TargetSession: "s1", Message: "never left the building", IdempotencyKey: "m1:steer",
-		},
-	)
+		})
+		answered <- err
+	}()
+	err := testwait.Until(t, "the send to an unroutable address to fail", func() (error, bool) {
+		select {
+		case err := <-answered:
+			return err, true
+		default:
+		}
+		if len(fake.Armed()) > 0 {
+			fake.Advance(CallWindow)
+		}
+		return nil, false
+	})
 	if err == nil {
 		t.Fatal("a send to an unroutable address must fail")
 	}

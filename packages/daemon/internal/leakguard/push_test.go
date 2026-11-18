@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A push's records are read from the commits it would add, out of a real repository: the
@@ -124,7 +125,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 				remoteSHA = noSHA
 			}
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), PushRequest{
+			err := guard.Push(testwait.Context(t), PushRequest{
 				Dir:    repo,
 				Remote: "origin",
 				URL:    "https://github.com/invented-org/invented-repo.git",
@@ -164,7 +165,7 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// The destination holds that commit at that ref already, so the push moves nothing and the
 	// commit's own text is none of its business.
-	err := guard.Push(bound(t), PushRequest{
+	err := guard.Push(testwait.Context(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
 		URL:     "https://github.com/invented-org/invented-repo.git",
@@ -194,7 +195,7 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// The destination holds nothing: a ref the push creates, in a repository with no remote
 	// whose tracking refs could say otherwise.
-	err := guard.Push(bound(t), PushRequest{
+	err := guard.Push(testwait.Context(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
 		URL:     "https://github.com/invented-org/invented-repo.git",
@@ -245,7 +246,7 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
 	}
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	err := guard.Push(bound(t), PushRequest{
+	err := guard.Push(testwait.Context(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
 		URL:     "https://github.com/invented-org/invented-repo.git",
@@ -317,7 +318,7 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), PushRequest{
+			err := guard.Push(testwait.Context(t), PushRequest{
 				Dir:     repo,
 				Remote:  "origin",
 				URL:     "https://github.com/invented-org/invented-repo.git",

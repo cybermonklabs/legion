@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the
@@ -141,29 +142,27 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 }
 
 // The quiet window starts when the settlement writes the notice, not when its transaction began:
-// a settlement that waited on its locks longer than the quiet time still commits a notice that is
-// not due yet, so the card never goes out before the document has been quiet that long.
+// a settlement that waited on its locks writes a window that still has its whole quiet time to
+// run, so the card never goes out before the document has been quiet that long.
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	service.editNoticeQuiet = 500 * time.Millisecond
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
-	service.afterSettleVersionWrite = func(room string) error {
-		if room == artifactID {
-			// The settlement's transaction began before this wait, as it begins before the owner
-			// and advisory locks a busy document makes it wait on.
-			time.Sleep(time.Second)
-		}
-		return nil
-	}
 	settleCurrentGeneration(t, service, artifactID)
-	service.afterSettleVersionWrite = nil
 	row, open := readEditNotice(t, service, artifactID)
 	if !open {
 		t.Fatal("alice's settled edit opened no edit notice")
+	}
+	// The version's created_at is the settlement's transaction start (now()), taken before the
+	// owner and advisory locks a busy document makes the writer wait on; the notice is written
+	// later in that transaction, so a window counted from the write is due strictly later than one
+	// counted from the start, however long the locks held the settlement up.
+	began := versionCreatedAt(t, service.store, artifactID, row.to)
+	if written := row.dueAt.Sub(began); written <= service.editNoticeQuiet {
+		t.Fatalf("the notice is due %v after its settlement's transaction began, want more than the quiet window %v: the window starts when the notice is written", written, service.editNoticeQuiet)
 	}
 	if !row.dueAt.After(row.now) {
 		t.Fatalf("the notice was due at %v, %v before it could be read, want it still inside its quiet window", row.dueAt, row.now.Sub(row.dueAt))
@@ -171,6 +170,19 @@ func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t
 	if sent, err := service.sendDueEditNotices(context.Background()); err != nil || sent != 0 {
 		t.Fatalf("a sweep right after the settlement = %d sent, %v; want none sent", sent, err)
 	}
+}
+
+// versionCreatedAt is when version number of document was stored, the now() of the transaction
+// that wrote it.
+func versionCreatedAt(t *testing.T, database *store.Store, document string, number int) time.Time {
+	t.Helper()
+	var created time.Time
+	if err := database.Pool.QueryRow(context.Background(),
+		`select created_at from artifact_versions where artifact_id = $1 and number = $2`, document, number,
+	).Scan(&created); err != nil {
+		t.Fatalf("read when version %d was stored: %v", number, err)
+	}
+	return created
 }
 
 // A named version an agent writes over two people's edits names the person who edited last as the
@@ -467,13 +479,8 @@ func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
 	if _, open := readEditNotice(t, service, artifactID); open {
 		t.Fatal("the sent notice's row is still there")
 	}
-	select {
-	case event := <-published:
-		if event.Type != "artifact.human_edited" {
-			t.Fatalf("published %q, want artifact.human_edited", event.Type)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the sent notice was never published")
+	if event := testwait.Receive(t, "the sent notice to be published", published); event.Type != "artifact.human_edited" {
+		t.Fatalf("published %q, want artifact.human_edited", event.Type)
 	}
 }
 
@@ -630,7 +637,6 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	service.editNoticeQuiet = 500 * time.Millisecond
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -656,22 +662,15 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 			sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background()))
 			swept <- sweepResult{sent, err}
 		}()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		waitFor(t, "the sweep to wait on the document owner's lock the settlement holds", func() bool {
 			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%from issues where key = $1 for no key update%")
 			if err != nil {
 				t.Errorf("count the sweep's lock waits: %v", err)
-				return nil
+				return true
 			}
-			if waiting > 0 {
-				return nil
-			}
-			if time.Now().After(deadline) {
-				t.Error("the sweep never waited on the document owner's lock the settlement holds")
-				return nil
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+			return waiting > 0
+		})
+		return nil
 	}
 	settleCurrentGeneration(t, service, artifactID)
 	service.afterSettleVersionWrite = nil
@@ -682,24 +681,14 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	if bobVersion != aliceVersion+1 {
 		t.Fatalf("bob's settlement wrote version %d, want %d", bobVersion, aliceVersion+1)
 	}
-	select {
-	case result := <-swept:
-		if result.err != nil || result.sent != 0 {
-			t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the sweep that met the settlement never finished")
+	if result := testwait.Receive(t, "the sweep that met the settlement to finish", swept); result.err != nil || result.sent != 0 {
+		t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for len(humanEdits(t, service.store, artifactID)) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("no notice went once the quiet time passed")
-		}
-		if _, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil {
-			t.Fatalf("sweep after the quiet time: %v", err)
-		}
-		time.Sleep(50 * time.Millisecond)
+	// The quiet window the settlement moved on ends, and one sweep sends the notice it left.
+	makeEditNoticeDue(t, service.store, artifactID)
+	if sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil || sent != 1 {
+		t.Fatalf("the sweep once the quiet time passed = %d sent, %v; want the notice both versions are in sent", sent, err)
 	}
 	edits := humanEdits(t, service.store, artifactID)
 	for _, version := range []int{aliceVersion, bobVersion} {

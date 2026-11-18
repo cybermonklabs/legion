@@ -4,20 +4,17 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// delivered is how long a notification that must arrive is given, and the only wait in this file.
-// It is also what bounds the two notifications that must NOT reach the reread function: each is
-// sent before a good one, and Postgres delivers to one listening session in the order the sends
-// committed, so the good one arriving proves the listener was alive, the channel delivering and
-// the earlier notification already handled - and the reread function having heard only the good
-// one's name proves the earlier one was dropped. Two seconds is far longer than a local round
-// trip and short enough to fail a hung listener inside any test timeout.
-const delivered = 2 * time.Second
+// The two notifications that must NOT reach the reread function are proved dropped by order
+// rather than by any wait: each is sent before a good one, and Postgres delivers to one
+// listening session in the order the sends committed, so the good one arriving proves the
+// listener was alive, the channel delivering and the earlier notification already handled — and
+// the reread function having heard only the good one's name proves the earlier one was dropped.
 
 // listener opens a store on a database of its own and runs a reread listener against it under
 // sender, returning that store and the channel its reread function reports each name on. The
@@ -53,24 +50,14 @@ func listener(t *testing.T, sender string) (*store.Store, <-chan string) {
 		<-stopped
 	})
 
-	select {
-	case <-listening:
-	case <-time.After(delivered):
-		t.Fatal("the listener did not listen on its channel")
-	}
+	testwait.Receive(t, "the listener to listen on its channel", listening)
 	return st, refreshed
 }
 
-// next answers the name the listener next rereads, failing t when none arrives.
+// next answers the name the listener next rereads.
 func next(t *testing.T, refreshed <-chan string) string {
 	t.Helper()
-	select {
-	case name := <-refreshed:
-		return name
-	case <-time.After(delivered):
-		t.Fatal("no secret was reread")
-		return ""
-	}
+	return testwait.Receive(t, "the next secret to be reread", refreshed)
 }
 
 // TestARereadAnotherPodSentIsRunHere is the fan-out's whole point: a notification one pod's

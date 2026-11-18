@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -755,25 +756,16 @@ type Specs interface {
 	SpawnSpec(ctx context.Context, c Claim) (runtime.SpawnSpec, error)
 }
 
-// Clock is time as a machine sees it.
+// Clock is time as a machine sees it: a narrowing of clock.Clock, which clock.Real and
+// clocktest.Fake both fit.
 type Clock interface {
 	Now() time.Time
-	AfterFunc(d time.Duration, f func()) Cancel
+	AfterFunc(d time.Duration, f func()) clock.Timer
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
+	// WithTimeout is ctx ending d from now: the claim-write deadline (Machine.write).
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
-
-// Cancel stops a scheduled callback.
-type Cancel interface{ Stop() bool }
-
-// RealClock is the wall clock.
-type RealClock struct{}
-
-func (RealClock) Now() time.Time { return time.Now() }
-
-func (RealClock) AfterFunc(d time.Duration, f func()) Cancel { return time.AfterFunc(d, f) }
-
-func (RealClock) Sleep(ctx context.Context, d time.Duration) error { return backoff.Sleep(ctx, d) }
 
 // Timeouts are every wait a machine times.
 type Timeouts struct {
@@ -1381,7 +1373,7 @@ type Machine struct {
 	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
 	// claim that already holds a wake, and a post that arrives carrying a credit over a machine
 	// that already holds one gives the new one straight back to the gate rather than losing it
-	// behind this one flag (refreshPlugin). It is memory only, as the wake it is taken for is: a
+	// behind this one flag (takeRefreshCredit). It is memory only, as the wake it is taken for is: a
 	// restart leaves the gate empty and the first pass fills it from the claims it reads
 	// (RefreshGate, refreshStalePlugins).
 	refreshCredit bool
@@ -1433,7 +1425,7 @@ type sending struct {
 type armed struct {
 	seq        uint64
 	deliveryID string
-	cancel     Cancel
+	cancel     clock.Timer
 	due        time.Time
 }
 
@@ -1510,6 +1502,14 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	m.mu.Lock()
 	defer m.unlock()
 	m.decide(ev)
+	// An admitted post's credit is this machine's from the moment its decision begins, whatever
+	// the decision then does with the event — the relaunch it raises, or a refusal by the claim's
+	// state, the fence or a failed settle before any of that — so the release every decision ends
+	// in gives it back unless a refresh wake of this claim's waits for it (takeRefreshCredit,
+	// endRefreshLane, dispatch://INFRA-3149).
+	if stale, ok := ev.(StalePlugin); ok && stale.Admitted {
+		m.takeRefreshCredit()
+	}
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
 	}
@@ -3395,19 +3395,19 @@ func (m *Machine) forgetSend() {
 	m.send, m.helloDuringSend, m.askFirst = nil, false, false
 }
 
-// write runs one store write of a decision under the claim-write deadline, derived from the
-// decision's own context so the daemon's stop still ends the write at once. Every claim and
-// delivery write a decision makes while it holds the machine's lock goes through it, and those
-// are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
-// take no deadline: what they wait on is an advisory lock another transaction holds, so a
-// deadline there would fail a launch that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, TreeClosable — which decide what the next
-// write will say rather than hold the row, and whose failure costs the decision and nothing
-// after it. The deadline is what keeps a database that has stopped answering from holding the
-// machine's lock for the length of the outage; a write it cuts short is owed and made again at
-// the claim's next decision (owes, repair).
+// write runs one store write of a decision under the claim-write deadline, armed on the machine's
+// clock and derived from the decision's own context so the daemon's stop still ends the write at
+// once. Every claim and delivery write a decision makes while it holds the machine's lock goes
+// through it, and those are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep
+// today's behaviour and take no deadline: what they wait on is an advisory lock another
+// transaction holds, so a deadline there would fail a launch that was only queued behind its
+// predecessor. So do the reads of the record — PhaseHolds, RootHears, RootTask, TreeClosable —
+// which decide what the next write will say rather than hold the row, and whose failure costs the
+// decision and nothing after it. The deadline is what keeps a database that has stopped answering
+// from holding the machine's lock for the length of the outage; a write it cuts short is owed and
+// made again at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	writing, cancel := m.deps.Clock.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()
 	return call(writing)
 }

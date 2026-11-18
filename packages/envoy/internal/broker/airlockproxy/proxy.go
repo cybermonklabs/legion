@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -136,10 +137,11 @@ type Options struct {
 	// address the proxy resolved and checked, never a host name, so a replacement of it
 	// cannot reach a name's second answer (address.go). A test replaces it.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
-	// Now is the clock the proxy reads to tell a minted value that is about to stop working
-	// from one that is not (mintAgainBefore); nil is time.Now. A test drives it rather than
-	// waiting out a token's life.
-	Now func() time.Time
+	// Clock is the time the proxy reads and arms its timers on: the idle limit (conn.go), the
+	// watch of a joined connection, and telling a minted value that is about to stop working
+	// from one that is not (mintAgainBefore). Nil is clock.Real. A test hands it a
+	// clocktest.Fake and moves it, rather than waiting out a token's life or an idle window.
+	Clock clock.Clock
 	// Resolve answers the addresses a host has: the ones the refusal reads and the ones the
 	// dial opens a socket to (checkedAddresses); nil is net.DefaultResolver's lookup. So a
 	// host that resolves here reaches whatever this answers for it, and nothing below looks
@@ -191,7 +193,7 @@ type Server struct {
 	watch  time.Duration
 	log    *slog.Logger
 	dial   func(ctx context.Context, network, addr string) (net.Conn, error)
-	now    func() time.Time
+	clock  clock.Clock
 
 	// answers is Options.Answers, which record counts each answer a handler of the port writes
 	// on.
@@ -295,7 +297,7 @@ func New(o Options) *Server {
 		log:        o.Log,
 		answers:    o.Answers,
 		dial:       o.Dial,
-		now:        o.Now,
+		clock:      o.Clock,
 		resolve:    o.Resolve,
 		dialAllow:  o.DialAllow,
 		keepValues: o.KeepValues,
@@ -319,8 +321,8 @@ func New(o Options) *Server {
 		dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 		s.dial = dialer.DialContext
 	}
-	if s.now == nil {
-		s.now = time.Now
+	if s.clock == nil {
+		s.clock = clock.Real()
 	}
 	if s.watch <= 0 {
 		s.watch = watchInterval
@@ -669,7 +671,7 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 		client.Close()
 		return
 	}
-	cut := &cutConn{Conn: newIdleConn(client, s.idle)}
+	cut := &cutConn{Conn: newIdleConn(client, s.idle, s.clock)}
 	decrypted := tls.Server(cut, &tls.Config{
 		// http/1.1 first and h2 after it, and crypto/tls answers the first protocol of this
 		// list the client offers too, so a client that offers both - net/http's own, curl,
@@ -730,8 +732,8 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 	// nothing never ends, and closing the command's side would not wake it. Both wrappers see
 	// the same bytes at the same moment - every byte read from one end is written to the
 	// other - so the window is the one window, counted twice.
-	bounded := newIdleConn(client, s.idle)
-	boundedUpstream := newIdleConn(upstream, s.idle)
+	bounded := newIdleConn(client, s.idle, s.clock)
+	boundedUpstream := newIdleConn(upstream, s.idle, s.clock)
 	ends := bothEnds{client: bounded, upstream: boundedUpstream}
 	s.track(ends)
 	// The one end of this tunnel, whichever copy reaches it first: both connections closed and

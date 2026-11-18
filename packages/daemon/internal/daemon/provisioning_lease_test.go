@@ -72,7 +72,9 @@ func (g *provisioningGitHub) requestsTo(installation string) []provisioningToken
 }
 
 // provisioningStandIn serves installations and returns the stand-in, whose tokens is a real App
-// token manager pointed at it, the implement App id 1 and the review App id 2.
+// token manager pointed at it, the implement App id 1 and the review App id 2. A request without
+// the manager's credential (anAppCredential) is another process's: it is answered 404 and logged,
+// and is recorded as no token request.
 func provisioningStandIn(t *testing.T, installations ...provisioningInstallation) *provisioningGitHub {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -85,7 +87,7 @@ func provisioningStandIn(t *testing.T, installations ...provisioningInstallation
 		byID[installation.id] = installation
 	}
 	github := &provisioningGitHub{}
-	server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
 			discovered := make([]string, 0, len(installations))

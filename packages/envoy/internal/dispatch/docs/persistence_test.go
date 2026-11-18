@@ -23,7 +23,7 @@ import (
 // still alive. The fix such a run asks for is a t.Cleanup on the test the report names, shutting
 // down the service that test built.
 func TestMain(m *testing.M) {
-	code := storetest.Main(m)
+	code := storetest.Main(m.Run)
 	if reportLeakedServices() && code == 0 {
 		code = 1
 	}

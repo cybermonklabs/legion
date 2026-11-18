@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -157,7 +158,9 @@ func citesGitHubIssue(body string, pathAt, end int) bool {
 // authorityBefore is where the authority owning the path at pathAt begins, or -1 where no host
 // stands before the path at all. It reads the port's digits and then the run of host bytes, each
 // bounded by a host name's length, so one match costs the same constant whatever the body holds
-// around it and a body of any size costs its own length plus that constant per match.
+// around it and a body of any size costs its own length plus that constant per match. Every byte
+// it takes into either run counts in AuthorityReads: at most maxHostName digits and maxHostName
+// host bytes a match.
 func authorityBefore(body string, pathAt int) int {
 	at := pathAt
 	digits := at
@@ -171,11 +174,21 @@ func authorityBefore(body string, pathAt int) int {
 	for start > 0 && at-start < maxHostName && isHostByte(body[start-1]) {
 		start--
 	}
+	authorityBytesRead.Add(uint64(pathAt-digits) + uint64(at-start))
 	if start == at || at-start >= maxHostName {
 		return -1 // no host before the path, or a run too long to be one
 	}
 	return start
 }
+
+// authorityBytesRead counts what AuthorityReads answers.
+var authorityBytesRead atomic.Uint64
+
+// AuthorityReads is how many bytes before a citation's path authorityBefore has read back in this
+// process since it started: the port's digits and the host's bytes of every match. A test reads it
+// before and after a call to hold citedIssues to a bounded read per match, which a reader that
+// walked back to the nearest space would pass by the body's length (attribution_test.go).
+func AuthorityReads() uint64 { return authorityBytesRead.Load() }
 
 func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -702,11 +703,11 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 			dropped <- err
 		}()
 		pid := int32(tx.Conn().PgConn().PID())
-		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		testwait.Eventually(t, "the index drop to wait behind the login in flight, or to finish without waiting", func() bool {
 			select {
 			case err := <-dropped:
 				dropped <- err // the drop did not wait; the login below meets the schema it left
-				return
+				return true
 			default:
 			}
 			var waiters int
@@ -714,14 +715,11 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 				`select count(*) from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))`,
 				pid).Scan(&waiters); err != nil {
 				t.Errorf("read the backends waiting behind the login: %v", err)
-				return
+				return true
 			}
-			if waiters > 0 {
-				waited = true
-				return
-			}
-		}
-		t.Error("the drop neither waited for the login nor finished within 30s")
+			waited = waiters > 0
+			return waited
+		})
 	}
 
 	if _, err := r.svc.IssueTokenLoginTx(ctx, tx, r.tokenLoginOf(selfAccount, "pod-uid-in-flight", newLoginKey(t))); err != nil {
@@ -734,13 +732,8 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 		t.Fatalf("commit the login: %v", err)
 	}
 
-	select {
-	case err := <-dropped:
-		if err != nil {
-			t.Fatalf("the drop once the login committed: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the drop did not finish within 30s of the login committing; it must wait for a login in flight, never for the next one")
+	if err := testwait.Receive(t, "the index drop to finish once the login committed", dropped); err != nil {
+		t.Fatalf("the drop once the login committed: %v", err)
 	}
 }
 
@@ -771,12 +764,7 @@ func TestTwoLoginsInFlightDoNotWaitForEachOther(t *testing.T) {
 		_, err = r.svc.IssueTokenLoginTx(context.Background(), second, r.tokenLoginOf(launcherAccount, "pod-uid-second", newLoginKey(t)))
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("the second login while the first is open: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the second login did not finish while the first was open: the lock serializes logins, which it must not")
+	if err := testwait.Receive(t, "the second login to finish while the first is open", done); err != nil {
+		t.Fatalf("the second login while the first is open: %v; the lock must not serialize logins", err)
 	}
 }

@@ -113,10 +113,17 @@ export type AgentStreamSettingsState =
   | Omit<AgentStreamSettingsUnreported, "v" | "kind" | "seq">;
 
 /** What a `context` frame says without its envelope: the two figures the host's own
- *  `getContextUsage()` answered with, once `setContext`'s rule has let them through. */
+ *  `getContextUsage()` answered with, once `setContext`'s rule has let them through, and the
+ *  caller's record of when they were read and went out (`AgentStreamContextTiming`). */
 export type AgentStreamContextState = Omit<
   Extract<AgentStreamFrame, { kind: "context" }>,
   "v" | "kind" | "seq"
+>;
+
+/** The caller's record of one reading: the number of its interval it goes out in, when it goes
+ *  out under that number, and when it was read, each as the `context` frame carries it. */
+export type AgentStreamContextTiming = Required<
+  Pick<AgentStreamContextState, "interval" | "at" | "readAt">
 >;
 
 const encoder = new TextEncoder();
@@ -328,7 +335,8 @@ export class AgentStreamPublisher {
    *  first answers figures `setContext` publishes. */
   #context: AgentStreamContextState | undefined;
   #contextSeq = 0;
-  /** `#context` as JSON, which a new reading is compared against. */
+  /** `#context`'s two figures as JSON, which a new reading is compared against: its interval
+   *  number is when it went out, not what it says. */
   #contextJson: string | undefined;
 
   constructor(deps: AgentStreamPublisherDeps) {
@@ -453,6 +461,9 @@ export class AgentStreamPublisher {
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
    * answered: kept for every replay, whose frame between the settings and the commands it is, and
    * published at once when it differs from the reading last kept while a viewer is attached.
+   * `timing` is the caller's record of the reading, which the frame carries: the number of the
+   * caller's interval it goes out in, when, and when it was read. The caller's throttle numbers
+   * the intervals, and a reading kept unchanged keeps the record it went out with.
    *
    * A reading is published only when the host answers a positive window and a usable figure:
    * `contextWindow` above zero, and either a `percent` the host computed or tokens of its own.
@@ -463,16 +474,18 @@ export class AgentStreamPublisher {
    * nothing at all, and a host too old to have the method lets its caller pass undefined; neither
    * refusal disturbs the reading this publisher already keeps.
    */
-  setContext(subject: string, usage: ContextUsage | undefined): void {
+  setContext(
+    subject: string,
+    usage: ContextUsage | undefined,
+    timing: AgentStreamContextTiming
+  ): void {
     if (usage === undefined) return;
     if (!(usage.contextWindow > 0)) return;
     if (typeof usage.percent !== "number" && !(usage.tokens > 0)) return;
-    const kept: AgentStreamContextState = {
-      contextWindow: usage.contextWindow,
-      tokens: usage.tokens,
-    };
-    const json = JSON.stringify(kept);
+    const figures = { contextWindow: usage.contextWindow, tokens: usage.tokens };
+    const json = JSON.stringify(figures);
     if (json === this.#contextJson) return;
+    const kept: AgentStreamContextState = { ...figures, ...timing };
     this.#context = kept;
     this.#contextJson = json;
     this.#seq += 1;

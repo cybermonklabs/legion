@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ServingClock keeps this broker process's broker_serving row (migration 0019) beating while it
@@ -34,12 +36,18 @@ import (
 // rates from that count (api.RereadRate.SetReplicas). A beat that fails calls nothing, so the
 // last count stands until a beat commits again.
 //
+// Clock is the time Run's ticks and each beat's deadline run on; nil is the wall clock
+// (clock.Real), and a test hands it a clocktest.Fake and moves it to a tick or a deadline.
+// lock_timeout, statement_timeout and idle_in_transaction_session_timeout run on PostgreSQL's own
+// clock, which no fake reaches.
+//
 // Each ServingClock is one process in broker_serving: it draws a random id on its first beat and
 // beats on that row alone.
 type ServingClock struct {
 	Enrollments               *Service
 	Interval, NotServingAfter time.Duration
 	OnReplicas                func(replicas int)
+	Clock                     clock.Clock
 
 	processOnce sync.Once
 	process     string
@@ -53,16 +61,19 @@ const servingLock int64 = 8330019
 // that is gone (stopped, crashed, replaced) leaves its row this long at most.
 const servingPrune = time.Hour
 
-// Run beats at once, then every Interval on its own ticker, until ctx ends. A beat that fails is
-// retried at the next tick; a run of failures is logged once, when it starts, so a database that
+// Run beats at once, then at every Interval on its Clock, as a ticker would: a beat that overran
+// its interval is followed by one at once, and the ticks it overran are dropped. A beat that fails
+// is retried at the next tick; a run of failures is logged once, when it starts, so a database that
 // stays away for an hour fills no log, and once more when the clock beats again. process names
 // the clock the warning is about, so a reader of a log carrying several brokers can tell one
 // clock's run of failures from another's. timed_out says whether the failure was the beat running
 // out of its bound (its deadline, a lock it waited on past lock_timeout, or a statement past
 // statement_timeout) rather than an error the database answered at once.
 func (c *ServingClock) Run(ctx context.Context) {
-	ticker := time.NewTicker(c.Interval)
-	defer ticker.Stop()
+	timers := c.timers()
+	due := timers.Now().Add(c.Interval)
+	tick := timers.NewTimer(c.Interval)
+	defer tick.Stop()
 	failing := false
 	for {
 		err := c.Beat(ctx)
@@ -79,8 +90,17 @@ func (c *ServingClock) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tick.C():
 		}
+		// The next tick is the first moment of the grid, Interval apart from Run's start, past the
+		// moment this one is received.
+		received := timers.Now()
+		next := due.Add(c.Interval)
+		for !next.After(received) {
+			next = next.Add(c.Interval)
+		}
+		due = next
+		tick.Reset(due.Sub(received))
 	}
 }
 
@@ -101,8 +121,17 @@ func (c *ServingClock) processID() string {
 	return c.process
 }
 
+// timers is the clock Run's ticks and each beat's deadline run on: Clock, or the wall clock when
+// it is nil.
+func (c *ServingClock) timers() clock.Clock {
+	if c.Clock == nil {
+		return clock.Real()
+	}
+	return c.Clock
+}
+
 // Beat records that this broker is serving now, in one transaction bounded by Interval: the whole
-// beat runs under a deadline of Interval, and its transaction sets lock_timeout and
+// beat runs under a deadline of Interval on its Clock, and its transaction sets lock_timeout and
 // statement_timeout to it, so a beat held up on a lock or a slow statement fails within that bound
 // rather than stalling unseen, and idle_in_transaction_session_timeout too, so that the server
 // ends a beat whose connection went half-open and releases its row.
@@ -126,7 +155,7 @@ func (c *ServingClock) processID() string {
 // and hands that count to OnReplicas once the transaction commits. This process's row is one of
 // them, so the count is never zero, and a beat that fails hands over nothing.
 func (c *ServingClock) Beat(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, c.Interval)
+	ctx, cancel := c.timers().WithTimeout(ctx, c.Interval)
 	defer cancel()
 	process := c.processID()
 	tx, err := c.Enrollments.Store.Pool.Begin(ctx)

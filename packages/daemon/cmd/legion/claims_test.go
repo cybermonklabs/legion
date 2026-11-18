@@ -24,6 +24,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -39,19 +41,22 @@ const (
 	operatorRoutes      = "/legion/v1/operator/"
 )
 
-// stillTime never moves: a machine's timers are armed and never fire, so a test sees only what
-// its own requests did.
-type stillTime struct{}
+// stillTime is a clocktest.Fake nothing moves: a machine's timers are armed and never fire, so a
+// test sees only what its own requests did. Its Sleep returns at once: a machine backs off inside
+// the decision a request drives, where a wait for a move nobody makes would never end. It is an
+// interface, so a test cannot write an empty one (`stillTime{}` does not compile, where a struct
+// wrapping the fake would compile it with no fake inside and panic at its first Now); newStillTime
+// is the one way to make one.
+type stillTime interface{ clock.Clock }
 
-func (stillTime) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
+// stillAt is stillTime's one implementation.
+type stillAt struct{ *clocktest.Fake }
 
-func (stillTime) AfterFunc(time.Duration, func()) supervise.Cancel { return neverFires{} }
+func newStillTime() stillTime {
+	return stillAt{clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))}
+}
 
-func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-
-type neverFires struct{}
-
-func (neverFires) Stop() bool { return true }
+func (stillAt) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 // anyLaunch is a launch the fake runtime accepts: the machine fills in who it is for.
 type anyLaunch struct{}
@@ -215,7 +220,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	tokens := api.NewBootTokens(claims)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	claims.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: stillTime{}, Log: quiet,
+		Runtime: rt, Conns: conns, Store: tokens.Recording(claims), Specs: anyLaunch{}, Clock: newStillTime(), Log: quiet,
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
@@ -229,7 +234,13 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
+	// The daemon records only requests of the shape the command sends, its API routes
+	// (/legion/v1/…); any other is another process's, answered 404 and recorded as nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/legion/v1/") {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read the request body: %v", err)

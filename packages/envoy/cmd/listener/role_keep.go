@@ -534,7 +534,7 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 		ack, err := publish(ctx, subject, item, msgID)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
 			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
-			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
+			if waitErr := waitUnlessDone(ctx, cfg.clk(), roleKeepInProcessPause); waitErr != nil {
 				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
 			}
 			continue
@@ -686,7 +686,7 @@ func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item co
 // or a forward. The sweep starts its handovers itself, under the guard it already took
 // (sweepKeptRoleLanes). A copy's age is measured by the listener's clock (cfg.now).
 func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
-	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
+	ctx, cancel := cfg.clk().WithTimeout(context.Background(), roleKeepHandoverWindow)
 	defer cancel()
 	reportKeptRoleDrain(cfg, role, drainKeptRole(ctx, cfg, role, cfg.now))
 }
@@ -918,13 +918,13 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		if ctx.Err() != nil {
 			return ended()
 		}
-		if pause > 0 && waitUnlessDone(ctx, pause) != nil {
+		if pause > 0 && waitUnlessDone(ctx, cfg.clk(), pause) != nil {
 			return ended()
 		}
 		// Past that pause, the read before this pass is behind this handover, answered or not,
 		// and so is what the pass before this one found.
 		readErr, outcome = nil, keptRoleHandover{}
-		headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
+		headCtx, cancelHead := cfg.clk().WithTimeout(ctx, roleKeepDrainWindow)
 		head, headErr := readKeptLaneHead(headCtx, cfg.client, role)
 		cancelHead()
 		if headErr != nil {
@@ -936,8 +936,8 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		if !head.left {
 			return ended()
 		}
-		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		holderCtx, cancelHolder := cfg.clk().WithTimeout(ctx, roleKeepHolderWindow)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{SessionRegistry: cfg.sessions, clk: cfg.clk()}, role)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1141,7 +1141,7 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 // stops. A read or a write the listener's shutdown cancelled ends the walk with its error all
 // the same, which the handover around it is what quiets (handOverKeptRole).
 func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, head keptLaneHead, now func() time.Time) (roleKeepDrainResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, roleKeepDrainWindow)
+	ctx, cancel := cfg.clk().WithTimeout(ctx, roleKeepDrainWindow)
 	defer cancel()
 
 	// A copy another walk holds a claim of is that walk's to forward or to send the dead letter

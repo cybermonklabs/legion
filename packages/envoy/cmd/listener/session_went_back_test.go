@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -67,8 +66,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	for range 3 {
 		taken = append(taken, rig.store(t, agent))
 	}
-	pullCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	pullCtx := testwait.Context(t)
 	pull, err := rig.consumers.Pull(pullCtx, sessionID)
 	if err != nil {
 		t.Fatalf("pull the session's consumer: %v", err)
@@ -76,7 +74,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	for _, seq := range taken {
 		msg, err := pull.Next(pullCtx)
 		if err != nil || msg.StreamSeq != seq {
-			t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d on its agent subject within 5s", msg.StreamSeq, err, seq)
+			t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d on its agent subject", msg.StreamSeq, err, seq)
 		}
 		if err := msg.Ack(); err != nil {
 			t.Fatalf("ack %d: %v", seq, err)
@@ -148,15 +146,13 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		"stream_id":       streamID,
 		"consumer_start":  first,
 	})
-	pullCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	again, err := rig.consumers.Pull(pullCtx, sessionID)
 	if err != nil {
 		t.Fatalf("pull the session's consumer after the loss: %v", err)
 	}
 	defer again.Stop()
 	if msg, err := again.Next(pullCtx); err != nil || msg.StreamSeq != held {
-		t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d after the loss within 5s: a consumer created past the stream's end, or at the sequence after its last, skips it", msg.StreamSeq, err, held)
+		t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d after the loss: a consumer created past the stream's end, or at the sequence after its last, skips it", msg.StreamSeq, err, held)
 	}
 }
 

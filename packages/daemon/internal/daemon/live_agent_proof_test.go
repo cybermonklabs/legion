@@ -2,8 +2,8 @@
 
 // What the five live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
-// pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
-// listener a run builds before the daemon boots, the model stand-in each pane talks to, the
+// pane and of the daemon's own log, the `legion` binary, the plugins and the pane listener a run
+// builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
 // log handler those reads of the daemon's own decisions go through. The five are
 // provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
@@ -46,13 +46,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // ---- the constants every proof reads -------------------------------------------------------------
@@ -122,7 +120,7 @@ func (r *liveAgentProof) claim(token claim.Token) api.OperatorClaim {
 func (r *liveAgentProof) awaitReady(token claim.Token) {
 	r.t.Helper()
 	var held api.OperatorClaim
-	r.await(string(token)+"'s pane to register and report ready", paneReady, func() bool {
+	r.await(string(token)+"'s pane to register and report ready", func() bool {
 		held = r.claim(token)
 		if held.State == string(supervise.StateFailed) {
 			r.t.Fatalf("%s failed before its pane reported ready; its workers' output is under %s",
@@ -134,36 +132,29 @@ func (r *liveAgentProof) awaitReady(token claim.Token) {
 		token, held.State, held.Session, held.PluginContract, held.Locator.Label())
 }
 
-// await polls until want holds, failing with what it waited for. testwait.Eventually bounds its
-// own wait at a minute, which is shorter than the ladder's own gaps.
-func (r *liveAgentProof) await(what string, within time.Duration, want func() bool) {
+// await waits until want holds, failing with what it waited for. It has no bound of its own: the
+// one bound of this binary is the shared wait's (testwait), so a rung of the provider-error
+// ladder that is slower than its own span fails nothing and a fact that never comes fails the
+// proof naming it.
+func (r *liveAgentProof) await(what string, want func() bool) {
 	r.t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		if want() {
-			return
-		}
-		if time.Now().After(deadline) {
-			r.t.Fatalf("timed out after %s waiting for %s", within, what)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Eventually(r.t, what, want)
 }
 
 // awaitLog waits for the daemon to write a log record matching want, and answers the first one it
 // wrote after the wait began.
-func (r *liveAgentProof) awaitLog(what string, within time.Duration, want func(loggedRecord) bool) *loggedRecord {
+func (r *liveAgentProof) awaitLog(what string, want func(loggedRecord) bool) *loggedRecord {
 	r.t.Helper()
-	return r.awaitLogFrom(what, r.daemon.count(), within, want)
+	return r.awaitLogFrom(what, r.daemon.count(), want)
 }
 
 // awaitLogFrom is awaitLog from a mark the step took itself, before whatever it drove: the daemon
 // errors and decides inside milliseconds of each other, so a step that must read both takes one
 // mark ahead of the act rather than a mark per read.
-func (r *liveAgentProof) awaitLogFrom(what string, from int, within time.Duration, want func(loggedRecord) bool) *loggedRecord {
+func (r *liveAgentProof) awaitLogFrom(what string, from int, want func(loggedRecord) bool) *loggedRecord {
 	r.t.Helper()
 	var found *loggedRecord
-	r.await(what, within, func() bool {
+	r.await(what, func() bool {
 		found = r.daemon.firstAfter(from, want)
 		return found != nil
 	})
@@ -214,58 +205,6 @@ func indentOutput(text string) string {
 }
 
 // ---- what the run builds before the daemon boots -------------------------------------------------
-
-// takeOwnDatabase points LEGION_TEST_PG_DSN at a database this run makes for itself on the server
-// that variable names, so the fixture migrates into a database of its own rather than into the one
-// the DSN names. The daemon's live proofs share the named database on a CI service, whose role
-// owns it; in a Legion worker pod the server's `legion_test` role may create databases and may not
-// write the `public` schema of `postgres`, which a migration answers `permission denied for schema
-// public` (SQLSTATE 42501). The database is dropped at the end of the run; that role also cannot
-// terminate another backend, so a drop a connection outlives is reported and not a failure, and the
-// database goes with the pod.
-//
-// The URL of that database is testdb.DatabaseURL's, made before the connection and the create,
-// so a DSN whose rewrite names another server is refused and the run leaves no database behind
-// either. Two frames hold this run to the server its caller named, and that helper's comment and
-// the comment above require_loopback_dsn in scripts/e2e/lib/loopback-dsn.sh are where the two
-// are written.
-func takeOwnDatabase(t *testing.T) {
-	t.Helper()
-	named := os.Getenv("LEGION_TEST_PG_DSN")
-	if named == "" {
-		return // newLiveProof's own testDSN skips the test, naming the variable.
-	}
-	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
-	own, err := testdb.DatabaseURL(named, database)
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
-	ctx := context.Background()
-	server, err := pgx.Connect(ctx, named)
-	if err != nil {
-		t.Fatalf("connect the PostgreSQL LEGION_TEST_PG_DSN names: %v", err)
-	}
-	if _, err := server.Exec(ctx, "create database "+database+" strategy file_copy"); err != nil {
-		server.Close(ctx)
-		t.Fatalf("make this run's own database %s: %v", database, err)
-	}
-	if err := server.Close(ctx); err != nil {
-		t.Fatalf("close the connection the database was made on: %v", err)
-	}
-	t.Setenv("LEGION_TEST_PG_DSN", own)
-	fmt.Printf("   this run migrates into its own database %s on the server LEGION_TEST_PG_DSN names\n", database)
-	t.Cleanup(func() {
-		drop, err := pgx.Connect(context.Background(), named)
-		if err != nil {
-			t.Logf("the run's own database %s was left behind: %v", database, err)
-			return
-		}
-		defer drop.Close(context.Background())
-		if _, err := drop.Exec(context.Background(), "drop database "+database); err != nil {
-			t.Logf("the run's own database %s was left behind: %v", database, err)
-		}
-	})
-}
 
 // proofCheckoutRoot is the repository this driver was built from, found from this file's own
 // compiled path: the driver runs from a temporary directory, so nothing about its working

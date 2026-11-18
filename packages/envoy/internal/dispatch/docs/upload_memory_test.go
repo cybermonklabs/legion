@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roomAllowance is what a room in use may hold beyond the bytes its writes add to the store: the
@@ -151,6 +152,9 @@ func newLoadAgent(t *testing.T) (*loadAgent, time.Time) {
 	t.Helper()
 	start := time.Now()
 	service, artifactID := newTestService(t)
+	// Only to keep ygo's idle sweep away from the room while the agent loads it: the sweep reads
+	// the wall clock inside ygo (provider/websocket/idle_sweep.go), so no clock of the test's
+	// reaches it.
 	service.srv.RoomIdleTimeout = time.Hour
 	r := rand.New(rand.NewPCG(715, 1))
 	spec, quotes, paragraphs := docstest.LoadSpec(r, "LOAD-1", 25_000)
@@ -286,13 +290,11 @@ type roomMemory struct {
 func measureRoom(t *testing.T, agent *loadAgent) roomMemory {
 	t.Helper()
 	service, artifactID := agent.service, agent.artifactID
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
+	// The landed appends wrote the document's pending-settlement row, so the wait below sees it
+	// owed until the settlement, armed service.settle (20ms) after the last write, clears it.
 	waitForLandedAppends(t, service, artifactID)
-	// The settlement runs service.settle (20ms) after the last write; give it time to start
-	// before waiting for it to clear what it owes.
-	time.Sleep(500 * time.Millisecond)
-	waitFor(t, 2*time.Minute, "the document's settlement", func() bool {
+	waitFor(t, "the document's settlement", func() bool {
 		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
 		return err == nil && !owed
 	})

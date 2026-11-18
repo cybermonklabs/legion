@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // BenchmarkReap times one interest reaper pass over n live sessions, each with an interest and a
@@ -43,8 +43,7 @@ func benchmarkReap(b *testing.B, n int) {
 		b.Fatalf("open session registry: %v", err)
 	}
 	b.Cleanup(sessions.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(b)
 	if err := registry.WaitForCacheReady(ctx); err != nil {
 		b.Fatalf("interest cache not ready: %v", err)
 	}

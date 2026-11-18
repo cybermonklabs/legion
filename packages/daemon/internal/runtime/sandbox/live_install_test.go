@@ -12,9 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
@@ -22,16 +24,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // identity: the runtime's client is the restricted Legion daemon identity, and nothing more.
 func (r *liveRig) checkIdentity() error {
-	ctx, cancel := context.WithTimeout(r.ctx, 10*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	review, err := r.kube.AuthenticationV1().SelfSubjectReviews().Create(ctx, &authnv1.SelfSubjectReview{}, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("SelfSubjectReview through the runtime context: %w", err)
@@ -301,31 +304,43 @@ func (r *liveRig) checkImageProbe() error {
 		return err
 	}
 	p := r.imageProbe()
-	// The probe pod lives from the controller's create until ProbeImage deletes the Sandbox, so a
-	// poll started before the probe sees it in whatever phase it is in; its spec and qosClass are
-	// set at creation.
-	watching, stopWatching := context.WithCancel(r.ctx)
-	defer stopWatching()
-	probePod := make(chan *corev1.Pod, 1)
+	// The probe pod lives from the controller's create until ProbeImage deletes the Sandbox, so
+	// the read below takes it in whatever phase it is in; its spec and qosClass are set at
+	// creation. It reads the runtime's own pod informer, which already watches this pod, rather
+	// than the API server. The probe runs beside the read, and its own end makes the pod leave
+	// that store, which ends the wait rather than letting it run on.
+	type probeEnd struct {
+		report bootprobe.ImageReport
+		err    error
+	}
+	probed := make(chan probeEnd, 1)
 	go func() {
-		defer close(probePod)
-		for {
-			if pod, err := r.getPod(name); err == nil {
-				probePod <- pod
-				return
-			}
-			select {
-			case <-watching.Done():
-				return
-			case <-time.After(time.Second):
-			}
-		}
+		report, err := r.rt.ProbeImage(r.ctx, p)
+		probed <- probeEnd{report, err}
 	}()
-	report, err := r.rt.ProbeImage(r.ctx, p)
+	var probePod *corev1.Pod
+	var ended *probeEnd
+	testwait.Eventually(r.t, "the probe pod "+name+" while its probe runs", func() bool {
+		if pod := r.rt.storedPod(name); pod != nil {
+			probePod = pod
+			return true
+		}
+		select {
+		case end := <-probed:
+			ended = &end
+			return true
+		default:
+			return false
+		}
+	})
+	if ended == nil {
+		end := testwait.Receive(r.t, "the image probe of "+name+" to end", probed)
+		ended = &end
+	}
+	report, err := ended.report, ended.err
 	if err != nil {
 		return err
 	}
-	stopWatching()
 	passed, ok := r.logs.find("sandbox runtime: the worker image passed its probe")
 	if !ok {
 		return errors.New("ProbeImage returned nil without logging a pass")
@@ -348,8 +363,8 @@ func (r *liveRig) checkImageProbe() error {
 		return fmt.Errorf("the probe reports model-fallback=%q, want on or off: %s", report.ModelFallback, passed["log"])
 	}
 	note("runtime", "model-fallback=%s reported: the image's retry.modelFallback under the operator's pod", report.ModelFallback)
-	pod, ok := <-probePod
-	if !ok || pod == nil {
+	pod := probePod
+	if pod == nil {
 		return fmt.Errorf("the probe pod %s was never read while the probe ran, so its reservation and QoS are unproven", name)
 	}
 	if err := guaranteedPod(pod, map[string]corev1.ResourceRequirements{probeContainer: p.Resources}, nil, r.gvisorCPUFloor(), r.gkeEphemeralStorageClamped(), false); err != nil {
@@ -367,7 +382,7 @@ func (r *liveRig) checkImageProbe() error {
 		return fmt.Errorf("negative control: the reservation rule accepted the probe pod with its cpu limit raised to %s, or did not name the container: %v", doubled.String(), err)
 	}
 	note("runtime", "negative control: the same pod with its container's cpu limit raised to %s is refused: %v", doubled.String(), err)
-	if err := r.poll(liveGoneLimit, "probe Sandbox "+name+" to be deleted", func() (bool, error) {
+	if err := r.pollAPI("probe Sandbox "+name+" to be deleted", func() (bool, error) {
 		_, err := r.getSandbox(name)
 		return apierrors.IsNotFound(err), ignoreNotFound(err)
 	}); err != nil {
@@ -425,7 +440,7 @@ func (r *liveRig) checkImageProbeRefusal() error {
 	note("runtime", "refused: %s", lineContaining(refusal.Error(), "role oracle is not configured"))
 	_, digest, _ := strings.Cut(r.env.image, "@sha256:")
 	probe := probeName(r.env.project, digest, "")
-	if err := r.poll(liveGoneLimit, "probe Sandbox "+probe+" to be deleted", func() (bool, error) {
+	if err := r.pollAPI("probe Sandbox "+probe+" to be deleted", func() (bool, error) {
 		_, err := r.getSandbox(probe)
 		return apierrors.IsNotFound(err), ignoreNotFound(err)
 	}); err != nil {
@@ -471,7 +486,7 @@ func (r *liveRig) checkImageProbeCapabilityRefusal() error {
 	note("runtime", "refused: %s", lineContaining(refusal.Error(), "capability browser is missing"))
 	_, digest, _ := strings.Cut(r.env.image, "@sha256:")
 	probe := probeName(r.env.project, digest, "")
-	if err := r.poll(liveGoneLimit, "probe Sandbox "+probe+" to be deleted", func() (bool, error) {
+	if err := r.pollAPI("probe Sandbox "+probe+" to be deleted", func() (bool, error) {
 		_, err := r.getSandbox(probe)
 		return apierrors.IsNotFound(err), ignoreNotFound(err)
 	}); err != nil {
@@ -487,8 +502,9 @@ func (r *liveRig) checkImageProbeCapabilityRefusal() error {
 // probe on the same image refuses naming the volume, the ConfigMap runtime.kubernetes.pod.volumes
 // gives it from, and the kubelet's own `configmap "<name>" not found`: a FailedMount for an operator
 // volume whose object is missing is read on the first event read after the pod is scheduled
-// (mountRecheck), never retried to the budget. The refusal is timed from the pod's PodScheduled
-// transition, read from the second runtime's store while the probe runs. The probe runs on a
+// (mountRecheck), never retried to the budget. That is counted, not timed: the probe's own reads
+// of its pod's events are counted in the second runtime's transport (probeEventReads), and the
+// refusal comes within the first read after scheduling and two rechecks. The probe runs on a
 // second runtime, built from the run's Options with the volume and its mount added to copies of
 // the pod's slices, so the shared runtime's pod is never changed; it shares the run's listener,
 // which no probe uses, and ends with the check.
@@ -509,46 +525,17 @@ func (r *liveRig) checkImageProbeMissingVolumeRefusal() error {
 	opts.Pod.VolumeMounts = append(slices.Clone(r.pod.VolumeMounts), corev1.VolumeMount{Name: "operator-missing", MountPath: "/etc/legion-operator-missing", ReadOnly: true})
 	ctx, stop := context.WithCancel(r.ctx)
 	defer stop()
-	rt, err := New(ctx, r.rc, opts)
+	_, digest, _ := strings.Cut(r.env.image, "@sha256:")
+	probe := probeName(r.env.project, digest, "")
+	counted, reads := probeEventReads(r.rc, probe)
+	rt, err := New(ctx, counted, opts)
 	if err != nil {
 		return fmt.Errorf("a runtime whose pod mounts ConfigMap %s: %w", missing, err)
 	}
 	note("operator", "pod volumes for this probe: the fixture's %d and operator-missing from ConfigMap %s, which does not exist, mounted read-only at /etc/legion-operator-missing beside the fixture's %d mounts",
 		len(r.pod.Volumes), missing, len(r.pod.VolumeMounts))
-	_, digest, _ := strings.Cut(r.env.image, "@sha256:")
-	probe := probeName(r.env.project, digest, "")
-	// The probe pod is scheduled, then read for its FailedMount, then deleted with its Sandbox,
-	// all inside ProbeImage: the last pod the second runtime's store held is kept for its
-	// PodScheduled transition.
-	watching, stopWatching := context.WithCancel(ctx)
-	defer stopWatching()
-	lastSeen := make(chan *corev1.Pod, 1)
-	go func() {
-		var last *corev1.Pod
-		defer func() { lastSeen <- last }()
-		for {
-			if pod := rt.storedPod(probe); pod != nil {
-				last = pod
-			}
-			select {
-			case <-watching.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-		}
-	}()
 	p := r.imageProbe()
-	started := time.Now()
 	_, refusal := rt.ProbeImage(ctx, p)
-	refusedAt := time.Now()
-	stopWatching()
-	pod := <-lastSeen
-	// A refusal read on the first event read after scheduling can land inside one tick of the
-	// watcher, so it may never have sampled the pod. The Sandbox's delete is background
-	// propagation, so the store still holds the pod just after ProbeImage returns: read it once more.
-	if pod == nil {
-		pod = rt.storedPod(probe)
-	}
 	if refusal == nil {
 		return fmt.Errorf("ProbeImage passed with volume operator-missing naming ConfigMap %s, which does not exist", missing)
 	}
@@ -564,28 +551,17 @@ func (r *liveRig) checkImageProbeMissingVolumeRefusal() error {
 	if strings.Contains(refusal.Error(), "never completed within its retry budget") {
 		return fmt.Errorf("the probe retried the mount to its budget instead of refusing it on the first read: %v", refusal)
 	}
-	if pod == nil {
-		return fmt.Errorf("the probe pod %s was never read while the probe ran, so the refusal's bound from its scheduling is unproven", probe)
+	// The probe reads its pod's events once the pod is scheduled, then at most every mountRecheck;
+	// a kubelet whose first mount attempt lands after the first recheck is found on the second, so
+	// the refusal is allowed the read after scheduling and two rechecks. The refusal's own claim is
+	// "within one read of the kubelet's first FailedMount"; this count only says the attempt was
+	// not waited out to the budget, which is minutes of such reads long.
+	const allowed = 3
+	if made := reads.Load(); made == 0 || made > allowed {
+		return fmt.Errorf("the probe read its pod's events %d times before refusing, want between one and %d: the read after scheduling and two rechecks", made, allowed)
 	}
-	var scheduledAt time.Time
-	if scheduled := podCondition(pod, corev1.PodScheduled); scheduled != nil && scheduled.Status == corev1.ConditionTrue {
-		scheduledAt = scheduled.LastTransitionTime.Time
-	}
-	if scheduledAt.IsZero() {
-		return fmt.Errorf("the probe pod %s as last read (phase %s) carries no PodScheduled=True condition, so the refusal's bound from its scheduling is unproven", probe, pod.Status.Phase)
-	}
-	sinceScheduled := refusedAt.Sub(scheduledAt)
-	// The reads after scheduling fall at the first poll, then every mountRecheck; a kubelet whose
-	// first mount attempt lands after the first recheck is found on the second, so the bound allows
-	// two rechecks, with 15 s of slack for the poll's tick, the API server's second-truncated
-	// transition time and the kubelet's first volume sync. The refusal's own claim is "within one
-	// read of the kubelet's first FailedMount", which the noted durations show; this bound only says
-	// the attempt was not waited out.
-	if limit := 2*mountRecheck + 15*time.Second; sinceScheduled > limit {
-		return fmt.Errorf("the refusal came %s after the probe pod was scheduled, past the %s two event reads every %s, the poll's tick and the kubelet's first volume sync allow", sinceScheduled.Round(time.Second), limit, mountRecheck)
-	}
-	note("runtime", "refused %s after ProbeImage was called, %s after the pod was scheduled: %s", refusedAt.Sub(started).Round(time.Second), sinceScheduled.Round(time.Second), lineContaining(refusal.Error(), "cannot mount volume"))
-	if err := r.poll(liveGoneLimit, "probe Sandbox "+probe+" to be deleted", func() (bool, error) {
+	note("runtime", "refused after %d read(s) of the probe pod's events, the read after it was scheduled and at most two rechecks: %s", reads.Load(), lineContaining(refusal.Error(), "cannot mount volume"))
+	if err := r.pollAPI("probe Sandbox "+probe+" to be deleted", func() (bool, error) {
 		_, err := r.getSandbox(probe)
 		return apierrors.IsNotFound(err), ignoreNotFound(err)
 	}); err != nil {
@@ -593,6 +569,34 @@ func (r *liveRig) checkImageProbeMissingVolumeRefusal() error {
 	}
 	note("runtime", "probe Sandbox %s deleted after the attempt", probe)
 	return nil
+}
+
+// probeEventReads is rc with the reads a runtime makes of the events of the pod named pod counted:
+// the runtime's own record of how often it looked, which a check reads instead of timing the
+// looks. The count rises for the event lists the probe makes (podEvents, whose field selector
+// names the pod) and for nothing else the client sends.
+func probeEventReads(rc *rest.Config, pod string) (*rest.Config, *atomic.Int64) {
+	counting := rest.CopyConfig(rc)
+	reads := &atomic.Int64{}
+	counting.Wrap(func(next http.RoundTripper) http.RoundTripper {
+		return countingRoundTripper{next: next, pod: pod, reads: reads}
+	})
+	return counting, reads
+}
+
+// countingRoundTripper counts the event lists of one pod and sends every request on.
+type countingRoundTripper struct {
+	next  http.RoundTripper
+	pod   string
+	reads *atomic.Int64
+}
+
+func (c countingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(request.URL.Path, "/events") &&
+		strings.Contains(request.URL.Query().Get("fieldSelector"), "involvedObject.name="+c.pod) {
+		c.reads.Add(1)
+	}
+	return c.next.RoundTrip(request)
 }
 
 // imageProbe is the probe as the daemon asks for it: its contract, the references of the role

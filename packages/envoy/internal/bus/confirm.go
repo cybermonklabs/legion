@@ -9,7 +9,47 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
+
+// armedBound is the deadline a publish armed on the client's clock (armBound), carried on the
+// publish's context so that the steps that need the time it has left - the dial of a replacement
+// connection (connectWithContext), the flush that confirms a core publish (publishConfirmed) and a
+// forward's wait for the stream's acknowledgement (PendingForward.Wait) - read it on the clock
+// that armed it. ctx.Deadline() cannot stand in for it: a clocktest.Fake's deadline context
+// reports none, so a test that moves its fake would leave those steps reading no bound at all.
+type armedBound struct {
+	at    time.Time
+	clock clock.Clock
+}
+
+type armedBoundKey struct{}
+
+// armBound arms bound on the client's clock (WithClock) as ctx's deadline, or what ctx has left
+// when that is less (timeLeft), so the earlier of the caller's own deadline and bound ends it, and
+// records the deadline on the context it returns.
+func (c *Client) armBound(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
+	if left, ok := timeLeft(ctx); ok && left < bound {
+		bound = left
+	}
+	clk := c.timers()
+	at := clk.Now().Add(bound)
+	ctx, cancel := clk.WithDeadline(ctx, at)
+	return context.WithValue(ctx, armedBoundKey{}, armedBound{at: at, clock: clk}), cancel
+}
+
+// timeLeft is how long ctx has left: the bound a publish armed on it (armBound), read on the clock
+// that armed it, or else ctx's own deadline, and false when it has neither.
+func timeLeft(ctx context.Context) (time.Duration, bool) {
+	if bound, ok := ctx.Value(armedBoundKey{}).(armedBound); ok {
+		return bound.at.Sub(bound.clock.Now()), true
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline), true
+	}
+	return 0, false
+}
 
 // ErrPublishDenied is returned, wrapping nats.ErrPermissionViolation and the server's own text,
 // for a publish the server refused under its connection's publish permissions: a core publish
@@ -25,48 +65,68 @@ var ErrPublishDenied = errors.New("NATS denied the publish")
 // did not acknowledge, from one that is not known to have reached the server at all.
 var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted")
 
-// publishConfirmed publishes msg on conn with publish, flushes within ctx's deadline, and confirms
-// the server accepted it (confirmPublished). A nil error means the server accepted the publish;
-// otherwise the error is a window already spent (errWindowElapsed), nats.go's refusal before
-// sending (refused), a flush that failed or ran out of the window, ErrPublishDenied, or one
-// wrapping ErrPublishUnconfirmed. publish is conn.PublishMsg, bound to the same conn: every caller
-// reads its connection once and passes it and its PublishMsg, so publish publishes on the
-// connection observe and confirmPublished judge. It is a parameter so a test can make the server's
-// answer arrive before publish returns, which is the case the state read before it exists for.
+// ErrWindowEndedBeforePublish is also the error of a publish whose window had already ended when
+// publishConfirmed came to make it, its deadline spent or its context cancelled, so that nothing
+// was sent. Its text is no part of that error's, which stays the spent window's (errWindowElapsed)
+// for whatever matches it. A caller reads it with errors.Is to tell a publish that never left this
+// process from one whose window ended after it was made (a flush or an acknowledgement that did not
+// come in time), which may have reached its subscribers; the listener marks a role forward that
+// failed so (finishRoleForward).
+var ErrWindowEndedBeforePublish = errors.New("the window ended before the publish was made")
+
+// windowEndedBeforePublish is publishConfirmed's error for a window that ended before the publish:
+// err's text alone, and both err and ErrWindowEndedBeforePublish to errors.Is.
+type windowEndedBeforePublish struct{ err error }
+
+func (e windowEndedBeforePublish) Error() string { return e.err.Error() }
+
+func (e windowEndedBeforePublish) Unwrap() []error {
+	return []error{e.err, ErrWindowEndedBeforePublish}
+}
+
+// publishConfirmed publishes msg on conn with publish, flushes within what ctx has left (timeLeft),
+// and confirms the server accepted it (confirmPublished). A nil error means the server accepted the
+// publish; otherwise the error is a window already spent (errWindowElapsed, and before the publish
+// ErrWindowEndedBeforePublish as well), nats.go's refusal before sending (refused), a flush that
+// failed or ran out of the window, ErrPublishDenied, or one wrapping ErrPublishUnconfirmed. publish
+// is conn.PublishMsg, bound to the same conn: every caller reads its connection once and passes it
+// and its PublishMsg, so publish publishes on the connection observe and confirmPublished judge. It
+// is a parameter so a test can make the server's answer arrive before publish returns, which is the
+// case the state read before it exists for.
 //
 // A ctx that has ended - cancelled, or its deadline spent - is refused before publish is called,
 // never after: a core publish is on its way to the subject the moment publish returns, so
 // answering failure behind it tells the caller a message failed that its subscribers receive - and
-// a core subject has no duplicate window, so the caller's retry delivers it twice. The deadline is
-// also read off the clock, since it can pass before ctx's timer marks ctx done; a ctx with no
-// deadline has the zero one, already spent, though every caller bounds its own. The check after
+// a core subject has no duplicate window, so the caller's retry delivers it twice. The time left is
+// also read off the clock, since the deadline can pass before ctx's timer marks ctx done; a ctx
+// with no bound has none left, already spent, though every caller bounds its own. The check after
 // publish stays for a window that runs out during publish itself; that publish is not known to
 // have left this process, the same ambiguity a flush that runs out of the window has, and is
 // answered the same way. A cancel that lands after the check goes unseen: the publish is made.
 func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nats.Msg, publish func(*nats.Msg) error) error {
-	deadline, _ := ctx.Deadline()
+	left, _ := timeLeft(ctx)
 	err := ctx.Err()
-	if err == nil && !time.Now().Before(deadline) {
+	if err == nil && left <= 0 {
 		err = context.DeadlineExceeded
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
+		return windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)}
 	}
 	before := observe(conn)
 	if err := publish(msg); err != nil {
 		return c.refused(err, len(msg.Data))
 	}
-	return confirmFlushed(conn, msg.Subject, before, deadline)
+	left, _ = timeLeft(ctx)
+	return confirmFlushed(conn, msg.Subject, before, left)
 }
 
-// confirmFlushed flushes conn within deadline and confirms that the server accepted the core
-// publish to subject made on it after before was observed (confirmPublished).
-func confirmFlushed(conn *nats.Conn, subject string, before connState, deadline time.Time) error {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
+// confirmFlushed flushes conn within left and confirms that the server accepted the core publish
+// to subject made on it after before was observed (confirmPublished).
+func confirmFlushed(conn *nats.Conn, subject string, before connState, left time.Duration) error {
+	if left <= 0 {
 		return errWindowElapsed(subject)
 	}
-	if err := conn.FlushTimeout(remaining); err != nil {
+	if err := conn.FlushTimeout(left); err != nil {
 		return fmt.Errorf("bus: flush publish to %q: %w", subject, err)
 	}
 	return confirmPublished(conn, subject, before)

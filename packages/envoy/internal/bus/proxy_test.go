@@ -8,23 +8,24 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // relayProxy relays NATS connections to a server, so a test can act on the link between a client
-// and the server. With delay set it holds each new connection that long before it dials the
-// server, which is how a slow dial looks, and with refuse set it closes the connection after the
-// delay instead, which is how a dial to a NATS that is gone looks. Once armed, it forwards nothing
-// more the client sends on the connections it relays at that moment, as a failing link loses a
-// request in flight; drop closes every connection it relays, so nats.go reconnects in place,
-// through a relay that forwards again.
+// and the server. With a hold set it keeps each new connection until the test lets it go, which is
+// how a slow dial looks, and with refuse set it closes the connection instead of dialling the
+// server, which is how a dial to a NATS that is gone looks. Once armed, it forwards nothing more
+// the client sends on the connections it relays at that moment, as a failing link loses a request
+// in flight; drop closes every connection it relays, so nats.go reconnects in place, through a
+// relay that forwards again.
 type relayProxy struct {
 	listener net.Listener
 	target   string
 	relayed  string
-	delay    atomic.Int64
-	refuse   atomic.Bool
-	// held receives once for each connection the delay holds.
+	// hold, when not nil, is what each new connection waits on before the proxy dials or refuses
+	// it: a dial in flight for as long as the test keeps it (holdDials).
+	hold   atomic.Pointer[chan struct{}]
+	refuse atomic.Bool
+	// held receives once for each connection the hold keeps.
 	held chan struct{}
 	// swallowed receives once what an armed connection held back carries the trigger arm named.
 	swallowed chan struct{}
@@ -91,9 +92,9 @@ func (p *relayProxy) relay(client net.Conn) {
 	p.mu.Lock()
 	p.links = append(p.links, link)
 	p.mu.Unlock()
-	if delay := time.Duration(p.delay.Load()); delay > 0 {
+	if hold := p.hold.Load(); hold != nil {
 		p.held <- struct{}{}
-		time.Sleep(delay)
+		<-*hold
 	}
 	if p.refuse.Load() {
 		_ = client.Close()
@@ -173,4 +174,19 @@ func (p *relayProxy) drop() {
 func (p *relayProxy) close() {
 	_ = p.listener.Close()
 	p.drop()
+}
+
+// holdDials keeps every connection the proxy relays from here on until the test lets it go, which
+// it does as the test ends when it has not already; a dial held this way is one in flight. Each
+// held connection is reported on held.
+func (p *relayProxy) holdDials(t *testing.T) (letGo func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	p.hold.Store(&gate)
+	letGo = sync.OnceFunc(func() {
+		p.hold.Store(nil)
+		close(gate)
+	})
+	t.Cleanup(letGo)
+	return letGo
 }

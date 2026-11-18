@@ -606,7 +606,7 @@ func linkOpener(value string, offset int, scan *forwardScan) bool {
 // forwardScan answers where a byte next occurs at or after an offset of one text, remembering
 // the last answer and the bounds of delimiter runs. writeInlineText asks in offset order, so a
 // text of many `[`, `<`, `&`, `*`, or `_` costs one pass over each run, not one per character
-// (LEGION-465).
+// (LEGION-465). Each character a scan reads is a step of the render (RenderWork).
 type forwardScan struct {
 	value string
 	// closer is the last answer for `]` and `>`, which are the only closers this renderer scans.
@@ -647,6 +647,7 @@ func (s *forwardScan) indexFrom(offset int, b byte) int {
 		} else {
 			slot.next = offset + found
 		}
+		renderWork.Add(uint64(slot.next - offset + 1))
 	}
 	if slot.next == len(s.value) {
 		return -1
@@ -672,6 +673,7 @@ func (s *forwardScan) delimiterBounds(offset int, b byte) (int, int) {
 		for run.end < len(s.value) && s.value[run.end] == b {
 			run.end++
 		}
+		renderWork.Add(uint64(run.end - run.start))
 	}
 	return run.start, run.end
 }

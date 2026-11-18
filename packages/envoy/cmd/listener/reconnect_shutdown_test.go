@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -11,12 +12,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // listenerRelay lets this test hold one NATS request from the listener, then drop the live link so
@@ -215,19 +216,15 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	frames := receiveAsSession(t, holder, holderID)
 
 	relay.arm("$JS.API.CONSUMER.INFO.", 2)
-	select {
-	case <-relay.swallowed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the listener's durable bind never reached the controlled relay")
-	}
+	testwait.Receive(t, "the listener's durable bind to reach the controlled relay", relay.swallowed)
 	relay.drop()
 	// The role lane holds a connection of its own (bus.ConnectRoleLane), which reconnects, and sends
 	// its subscription again, beside the main client's.
-	waitFor(t, 10*time.Second, "the listener and its role lane to reconnect", func() bool {
+	testwait.Eventually(t, "the listener and its role lane to reconnect", func() bool {
 		output := listener.Output.String()
 		return strings.Contains(output, "envoy nats reconnected name=envoy ") && strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
 	})
-	waitFor(t, 10*time.Second, "the restore to report the bind in flight", func() bool {
+	testwait.Eventually(t, "the restore to report the bind in flight", func() bool {
 		output := listener.Output.String()
 		return strings.Contains(output, "envoy nats resubscribe left to the bind in flight") ||
 			strings.Contains(output, "envoy nats resubscribe failed")
@@ -269,13 +266,9 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 		t.Fatalf("flush role messages: %v", err)
 	}
 	for received := range messages {
-		select {
-		case frame := <-frames:
-			if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
-				t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the listener forwarded %d of %d routed role messages during the reconnect:\n%s", received, messages, listener.Output.String())
+		frame := testwait.Receive(t, fmt.Sprintf("the forward of routed role message %d of %d during the reconnect", received+1, messages), frames)
+		if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
+			t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
 		}
 	}
 

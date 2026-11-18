@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  `legion launcher` runs its child reaper on a context of its own, and stops it and waits for it
+  before it returns, so no reaper outlives the launcher that started it.

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 )
 
 // testAudience is the broker's Google exchange audience in these rows, which a metadata or an
@@ -186,9 +187,7 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 		t.Setenv("GCE_METADATA_HOST", closedAddress(t))
-		start := time.Now()
 		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
-		elapsed := time.Since(start)
 		if err != nil || source != nil {
 			t.Fatalf("DetectMachineIdentity = %#v, %v; want no identity and no error", source, err)
 		}
@@ -196,8 +195,23 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 		if got := reasons(skipped); strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("skipped = %q; want %q", got, want)
 		}
-		if elapsed > 2*time.Second {
-			t.Fatalf("finding no identity took %s; a laptop must learn it has none within 2 s", elapsed)
-		}
 	})
+}
+
+// TestFindingNoMachineIdentityIsQuick is the service level a laptop with no machine identity
+// needs: with no credentials file and a metadata address that refuses at once, DetectMachineIdentity
+// learns it has none within 2 s. The reading is of the machine's own clock, so the row runs only in
+// benchtime's timing lane; that it answers none at all, and why, is TestMachineIdentityIsFoundWithNoSetting's
+// "none" row, which every run proves.
+func TestFindingNoMachineIdentityIsQuick(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	t.Setenv("GCE_METADATA_HOST", closedAddress(t))
+	start := time.Now()
+	if _, _, err := DetectMachineIdentity(context.Background(), testAudience); err != nil {
+		t.Fatalf("DetectMachineIdentity: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("finding no identity took %s; a laptop must learn it has none within 2 s", elapsed)
+	}
 }

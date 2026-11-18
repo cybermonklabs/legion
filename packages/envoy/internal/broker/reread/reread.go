@@ -40,6 +40,17 @@ const Channel = "broker_secret_reread"
 // than that is one the pod's own five-minute reload is the backstop for.
 const refreshTimeout = 30 * time.Second
 
+// ReadMessage is the line a pod logs once it has reread a secret a peer fanned out to it, and
+// CauseFanOut the cause it names. A pod reads a secret again for one of two reasons - this
+// fan-out, or its own policy reload, which logs no line and counts as a read="list" in
+// broker_policy_store_reads_total (policy.NewStoreReads) - and the line and that count are what
+// tell a reader (and cmd/broker's fan-out rows) which of them a read came from. Nothing but the
+// cause is new: the read itself is the Refresh above.
+const (
+	ReadMessage = "broker: reread a secret a peer fanned out"
+	CauseFanOut = "fan-out"
+)
+
 // notification is what one reread sends: the secret's name, and the sender id of the process that
 // sent it, so a pod can tell its own notification from another's. Both halves marshal and parse it
 // through this one definition.
@@ -176,5 +187,7 @@ func (l *Listener) notified(ctx context.Context, payload string) {
 	defer cancel()
 	if err := l.Refresh(refresh, note.Name); err != nil {
 		slog.Warn("broker: a notification's reread of a secret did not run", "secret", note.Name, "sender", note.Sender, "error", err)
+		return
 	}
+	slog.Info(ReadMessage, "secret", note.Name, "sender", note.Sender, "cause", CauseFanOut)
 }

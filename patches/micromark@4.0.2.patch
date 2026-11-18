@@ -1,8 +1,73 @@
+diff --git a/dev/index.d.ts b/dev/index.d.ts
+index 46d294ea1d1cb82ef885834c68917966dc517675..b300863f2299be86788a270f5a59d0417e3044c9 100644
+--- a/dev/index.d.ts
++++ b/dev/index.d.ts
+@@ -76,6 +76,7 @@ export { compile } from "./lib/compile.js";
+ export { parse } from "./lib/parse.js";
+ export { postprocess } from "./lib/postprocess.js";
+ export { preprocess } from "./lib/preprocess.js";
++export { lazyLineScanSteps } from "./lib/initialize/document.js";
+ export type Options = import("micromark-util-types").Options;
+ import type { Value } from 'micromark-util-types';
+ import type { Encoding } from 'micromark-util-types';
+diff --git a/dev/index.js b/dev/index.js
+index e608e4db0b0b5fe893c51bfeb7002ee10e6ec512..f13a88f113966ece6ef05fc4fc463d3972759c68 100644
+--- a/dev/index.js
++++ b/dev/index.js
+@@ -15,6 +15,7 @@ export {compile} from './lib/compile.js'
+ export {parse} from './lib/parse.js'
+ export {postprocess} from './lib/postprocess.js'
+ export {preprocess} from './lib/preprocess.js'
++export {lazyLineScanSteps} from './lib/initialize/document.js'
+ 
+ /**
+  * Compile markdown to HTML.
+diff --git a/dev/lib/initialize/document.d.ts b/dev/lib/initialize/document.d.ts
+index c35a3f76cf96adf527d76b915c7b7373edd3b557..9163394e0200f29b91c2906e7fbd80923777df7d 100644
+--- a/dev/lib/initialize/document.d.ts
++++ b/dev/lib/initialize/document.d.ts
+@@ -1,5 +1,10 @@
+ /** @type {InitialConstruct} */
+ export const document: InitialConstruct;
++/**
++ * How many events the lazy-line test of `writeToChild` has read, over every document this module
++ * parsed since it loaded.
++ */
++export function lazyLineScanSteps(): number;
+ /**
+  * Construct and its state.
+  */
 diff --git a/dev/lib/initialize/document.js b/dev/lib/initialize/document.js
-index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed87ec3ac2f 100644
+index bca159ead63c2ccb5910d09076ef63b94c307e90..11b536e2a52b7d7e2c95e86a2a933a4bd00ea6d3 100644
 --- a/dev/lib/initialize/document.js
 +++ b/dev/lib/initialize/document.js
-@@ -46,6 +46,19 @@ function initializeDocument(effects) {
+@@ -29,6 +29,25 @@ export const document = {tokenize: initializeDocument}
+ /** @type {Construct} */
+ const containerConstruct = {tokenize: tokenizeContainer}
+ 
++/**
++ * Events the lazy-line test of `writeToChild` read, in every document this module parsed: the
++ * count `lazyLineScanSteps` answers.
++ */
++let lazyLineScanned = 0
++
++/**
++ * How many events the lazy-line test of `writeToChild` has read, over every document this module
++ * parsed since it loaded. The test reads them forwards from where the previous lazy line left off,
++ * so the count grows with the document rather than with its square, and a test reads it before
++ * and after a parse to hold the scan to that.
++ *
++ * @returns {number}
++ *   Events read.
++ */
++export function lazyLineScanSteps() {
++  return lazyLineScanned
++}
++
+ /**
+  * @this {TokenizeContext}
+  *   Self.
+@@ -46,6 +65,19 @@ function initializeDocument(effects) {
    let childToken
    /** @type {number} */
    let lineStartOffset
@@ -22,7 +87,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
  
    return start
  
-@@ -236,7 +249,12 @@ function initializeDocument(effects) {
+@@ -236,7 +268,12 @@ function initializeDocument(effects) {
        return
      }
  
@@ -36,7 +101,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
      effects.enter(types.chunkFlow, {
        _tokenizer: childFlow,
        contentType: constants.contentTypeFlow,
-@@ -286,6 +304,12 @@ function initializeDocument(effects) {
+@@ -286,6 +323,12 @@ function initializeDocument(effects) {
      childFlow.defineSkip(token.start)
      childFlow.write(stream)
  
@@ -49,7 +114,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
      // Alright, so we just added a lazy line:
      //
      // ```markdown
-@@ -320,21 +344,43 @@ function initializeDocument(effects) {
+@@ -320,21 +363,44 @@ function initializeDocument(effects) {
      // whether the lazy line started a new flow block.
      // If it did, we exit the current containers between the two flow blocks.
      if (self.parser.lazy[token.start.line]) {
@@ -84,6 +149,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
 +
 +      while (index < childEvents.length) {
 +        const other = childEvents[index][1]
++        lazyLineScanned++
 +
 +        if (other.end && other.end.offset <= lineStartOffset) {
 +          // Ended before this line: never open across it, on this line or a later one.
@@ -104,11 +170,76 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
        }
  
        // Note: this algorithm for moving events around is similar to the
+diff --git a/index.d.ts b/index.d.ts
+index 46d294ea1d1cb82ef885834c68917966dc517675..b300863f2299be86788a270f5a59d0417e3044c9 100644
+--- a/index.d.ts
++++ b/index.d.ts
+@@ -76,6 +76,7 @@ export { compile } from "./lib/compile.js";
+ export { parse } from "./lib/parse.js";
+ export { postprocess } from "./lib/postprocess.js";
+ export { preprocess } from "./lib/preprocess.js";
++export { lazyLineScanSteps } from "./lib/initialize/document.js";
+ export type Options = import("micromark-util-types").Options;
+ import type { Value } from 'micromark-util-types';
+ import type { Encoding } from 'micromark-util-types';
+diff --git a/index.js b/index.js
+index 1977e060adf85e26bc7bb642ad18a02e57ed28f7..068c14dc375a232844792a47e97d19d305e9dd64 100644
+--- a/index.js
++++ b/index.js
+@@ -14,6 +14,7 @@ export { compile } from './lib/compile.js';
+ export { parse } from './lib/parse.js';
+ export { postprocess } from './lib/postprocess.js';
+ export { preprocess } from './lib/preprocess.js';
++export { lazyLineScanSteps } from './lib/initialize/document.js';
+ 
+ /**
+  * Compile markdown to HTML.
+diff --git a/lib/initialize/document.d.ts b/lib/initialize/document.d.ts
+index c35a3f76cf96adf527d76b915c7b7373edd3b557..9163394e0200f29b91c2906e7fbd80923777df7d 100644
+--- a/lib/initialize/document.d.ts
++++ b/lib/initialize/document.d.ts
+@@ -1,5 +1,10 @@
+ /** @type {InitialConstruct} */
+ export const document: InitialConstruct;
++/**
++ * How many events the lazy-line test of `writeToChild` has read, over every document this module
++ * parsed since it loaded.
++ */
++export function lazyLineScanSteps(): number;
+ /**
+  * Construct and its state.
+  */
 diff --git a/lib/initialize/document.js b/lib/initialize/document.js
-index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9fef35454b 100644
+index 75e47495681f63306f98a1146f15b9ff4682a063..24cab0c1bee2941f657830656fc8741fb6c93097 100644
 --- a/lib/initialize/document.js
 +++ b/lib/initialize/document.js
-@@ -47,6 +47,19 @@ function initializeDocument(effects) {
+@@ -30,6 +30,25 @@ const containerConstruct = {
+   tokenize: tokenizeContainer
+ };
+ 
++/**
++ * Events the lazy-line test of `writeToChild` read, in every document this module parsed: the
++ * count `lazyLineScanSteps` answers.
++ */
++let lazyLineScanned = 0;
++
++/**
++ * How many events the lazy-line test of `writeToChild` has read, over every document this module
++ * parsed since it loaded. The test reads them forwards from where the previous lazy line left off,
++ * so the count grows with the document rather than with its square, and a test reads it before
++ * and after a parse to hold the scan to that.
++ *
++ * @returns {number}
++ *   Events read.
++ */
++export function lazyLineScanSteps() {
++  return lazyLineScanned;
++}
++
+ /**
+  * @this {TokenizeContext}
+  *   Self.
+@@ -47,6 +66,19 @@ function initializeDocument(effects) {
    let childToken;
    /** @type {number} */
    let lineStartOffset;
@@ -128,7 +259,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
    return start;
  
    /** @type {State} */
-@@ -191,7 +204,11 @@ function initializeDocument(effects) {
+@@ -191,7 +223,11 @@ function initializeDocument(effects) {
        effects.consume(code);
        return;
      }
@@ -141,7 +272,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
      effects.enter("chunkFlow", {
        _tokenizer: childFlow,
        contentType: "flow",
-@@ -236,6 +253,11 @@ function initializeDocument(effects) {
+@@ -236,6 +272,11 @@ function initializeDocument(effects) {
      childToken = token;
      childFlow.defineSkip(token.start);
      childFlow.write(stream);
@@ -153,7 +284,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
  
      // Alright, so we just added a lazy line:
      //
-@@ -271,19 +293,36 @@ function initializeDocument(effects) {
+@@ -271,19 +312,37 @@ function initializeDocument(effects) {
      // whether the lazy line started a new flow block.
      // If it did, we exit the current containers between the two flow blocks.
      if (self.parser.lazy[token.start.line]) {
@@ -181,6 +312,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
 +      let dead = true;
 +      while (index < childEvents.length) {
 +        const other = childEvents[index][1];
++        lazyLineScanned++;
 +        if (other.end && other.end.offset <= lineStartOffset) {
 +          // Ended before this line: never open across it, on this line or a later one.
 +          if (dead) {

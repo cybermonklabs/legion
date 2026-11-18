@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // R17 timing: the architect's staging shape. role:reviewer is unheld at the batch read, the
@@ -65,9 +66,8 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
 	_, _, reached = eventState(t, rig.database, comment.ID)
-	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies=%d ses-r copies=%d",
+	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies received so far=%d ses-r copies received so far=%d",
 		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.received()), len(r.received()))
 	if !sentFirst {
 		t.Errorf("ses-u's author copy was not sent in the first pass: it waited for the re-read (%v)", reread.Round(10*time.Millisecond))
@@ -108,16 +108,19 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(500 * time.Millisecond)
-	// The sender finds no holder and fails the attempt, as it does within a round trip.
+	// The sender finds no holder and fails the attempt.
 	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2`,
 		firstID, target); err != nil {
 		t.Fatal(err)
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	received := testwait.Until(t, "ses-u's copies of both events", func() ([]contracts.Envelope, bool) {
+		received := u.received()
+		return received, len(received) >= 2
+	})
 	var order []string
-	for _, item := range u.receivedNow(t, rig.client) {
+	for _, item := range received {
 		order = append(order, item.DedupeKey)
 	}
 	t.Logf("R17 ORDER: event N=%d N+1=%d; ses-u received dedupe keys in order %v", first.ID, second.ID, order)

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/natsversion"
@@ -22,13 +21,8 @@ func TestOpenConsumersRefusesAServerThatSkipsAFilter(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 
-	url := testnats.StartImage(t, testnats.SkippingImage)
-	conn, err := nats.Connect(url, nats.Name(t.Name()))
-	if err != nil {
-		t.Fatalf("connect to nats:2.10: %v", err)
-	}
-	t.Cleanup(conn.Close)
-	refused, err := jetstream.New(conn)
+	url := testnats.StartOpenImage(t, testnats.SkippingImage)
+	refused, err := jetstream.New(testnats.Connect(t, url), testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("JetStream on nats:2.10: %v", err)
 	}

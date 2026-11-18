@@ -21,7 +21,7 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 		slog.Warn("dispatch: delivery live hub could not read a freshness notification", "error", err)
 		return
 	}
-	now := h.clock.Now()
+	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError = row.LastEventAt, row.LastReconcileAt, row.LastError

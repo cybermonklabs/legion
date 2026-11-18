@@ -9,7 +9,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // grantGuardRig is one listener's registration and role routes over one account: a registry on a
@@ -37,7 +38,7 @@ import (
 // registry the route reads its live window from, and the routes' shared log.
 type grantGuardRig struct {
 	client    *bus.Client
-	clock     *listenerClock
+	clock     *clocktest.Fake
 	reads     *kvwatchtest.Waits
 	deps      *listenerDeps
 	logs      *cmdtest.LockedBuffer
@@ -51,9 +52,9 @@ type grantGuardRig struct {
 func newGrantGuardRig(t *testing.T) *grantGuardRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	clock := &listenerClock{now: time.Now()}
+	clock := clocktest.New(time.Now())
 	reads := &kvwatchtest.Waits{}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now),
+	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock),
 		store.WithRoleClaimWatch(kvwatch.WithAfterFunc(reads.After), kvwatch.WithNow(clock.Now)))
 	if err != nil {
 		t.Fatalf("open the listener's registry: %v", err)
@@ -87,7 +88,7 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 func (r *grantGuardRig) scheduled(t *testing.T) *kvwatchtest.Wait {
 	t.Helper()
 	var wait *kvwatchtest.Wait
-	waitFor(t, 10*time.Second, "the role claim watcher to arm its scheduled read", func() bool {
+	testwait.Eventually(t, "the role claim watcher to arm its scheduled read", func() bool {
 		wait = r.reads.Armed()
 		return wait != nil
 	})
@@ -101,7 +102,7 @@ func (r *grantGuardRig) repair(t *testing.T) store.RoleClaimRepairReport {
 	fired := r.scheduled(t)
 	before := r.deps.registry.RoleClaimRepair()
 	fired.Fire()
-	waitFor(t, 10*time.Second, "the fired scheduled read of the role claims to complete", func() bool {
+	testwait.Eventually(t, "the fired scheduled read of the role claims to complete", func() bool {
 		next := r.reads.Armed()
 		return next != nil && next != fired && r.deps.registry.RoleClaimRepair().Completed > before.Completed
 	})
@@ -144,8 +145,7 @@ func claimThrough(t *testing.T, set http.Handler, sessionID, role, instance stri
 // storedRoleClaim is role's claim as registry's role bucket holds it now.
 func storedRoleClaim(t *testing.T, registry *store.Registry, role string) store.RoleClaim {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claim, err := registry.RoleClaim(ctx, role)
 	if err != nil {
 		t.Fatalf("read %s's claim: %v", role, err)
@@ -168,7 +168,7 @@ func (r *grantGuardRig) seed(t *testing.T, holder, role string) store.RoleClaim 
 	if recorder := r.claim(t, holder, role, holdingProcess); recorder.Code != http.StatusOK {
 		t.Fatalf("the seed claim of %s by %s: status %d %s, want 200", role, holdingProcess, recorder.Code, recorder.Body.String())
 	}
-	waitFor(t, 10*time.Second, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
+	testwait.Eventually(t, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
 		held, err := r.deps.registry.RolesHeldBy(holder)
 		return err == nil && slices.Contains(held, role)
 	})
@@ -270,11 +270,11 @@ func (r *grantGuardRig) requireHeldBy(t *testing.T, role, instance, why string) 
 // the watcher has started, and its first read needs several round trips to the server before it
 // can complete, so the stop lands first; an open whose read completed first all the same is
 // stopped and opened again.
-func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *store.Registry {
+func unreadRegistry(t *testing.T, client *bus.Client, clock *clocktest.Fake) *store.Registry {
 	t.Helper()
 	const opens = 10
 	for range opens {
-		registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now))
+		registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
 		if err != nil {
 			t.Fatalf("open the restarted listener's registry: %v", err)
 		}

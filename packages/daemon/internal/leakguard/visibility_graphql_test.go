@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // included is a GraphQL response as `gh api --include` prints it: the status line, the headers,
@@ -184,13 +185,13 @@ func TestVisibilityReadsGraphQLThroughGh(t *testing.T) {
 			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 			var sources []VisibilitySource
 			visibility, err := New(Options{
-				Clock:        &visibilityTestClock{now: now},
+				Clock:        newVisibilityTestClock(now),
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 				Visibility: func(context.Context, string) (Visibility, error) {
 					return "", &rateLimitError{reset: reset}
 				},
-			}).Visibility(bound(t), theRepo)
+			}).Visibility(testwait.Context(t), theRepo)
 			if got := countLines(t, graphql); got != 1 {
 				t.Errorf("gh's GraphQL read ran %d times, want once", got)
 			}
@@ -250,9 +251,9 @@ func TestVisibilityKeepsGhsOutputPlain(t *testing.T) {
 		`printf 'nocolor=%s\tclicolor=%s\n' "${NO_COLOR-unset}" "${CLICOLOR_FORCE-unset}" >> `+shQuote(rest)+"\n"+spentRateLimit(now.Add(30*time.Minute), reads),
 		graphQLAnswers(graphql, "PUBLIC")))
 	visibility, err := New(Options{
-		Clock: &visibilityTestClock{now: now},
+		Clock: newVisibilityTestClock(now),
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir(), "CLICOLOR_FORCE=1"),
-	}).Visibility(bound(t), theRepo)
+	}).Visibility(testwait.Context(t), theRepo)
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
@@ -300,7 +301,8 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 		name string
 		rest func(reads string) string
 		git  string
-		// room is whether the caller's bound has room for a wait (boundPastAWait) or not (bound).
+		// room is whether the caller's bound on the test clock has room for a wait
+		// (boundPastAWait) or is a minute, which has none (boundOn).
 		room bool
 		// want is the answer, empty where the call is refused; reads how many REST reads ran, waits
 		// the waits made, gitRuns how many times git ran, and fails what a refusal says.
@@ -358,10 +360,12 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghStandIn(tc.rest(reads), graphQLAnswers(graphql, "PRIVATE")))
 			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
-			clock := &visibilityTestClock{now: now}
-			ctx := bound(t)
+			clock := newVisibilityTestClock(now)
+			var ctx context.Context
 			if tc.room {
-				ctx = boundPastAWait(t)
+				ctx = boundPastAWait(t, clock)
+			} else {
+				ctx = boundOn(t, clock.Fake, time.Minute)
 			}
 			visibility, err := New(Options{
 				Clock: clock,
@@ -391,14 +395,14 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 
 // A wait for a near reset that the caller's bound would cut short is not made: the guard reads the
 // visibility through GraphQL at once, as it does for a caller whose bound is shorter than the wait
-// and the reads after it.
+// and the reads after it. The caller's bound of 15 s is on the test clock, which the guard judges
+// the room on.
 func TestVisibilityWaitsForNoResetPastTheCallersBound(t *testing.T) {
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
 	reset := clock.Now().Add(time.Minute)
 	bin, graphql := t.TempDir(), filepath.Join(t.TempDir(), "graphql")
 	writeProgram(t, bin, "gh", graphQLAnswers(graphql, "PRIVATE"))
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	t.Cleanup(cancel)
+	ctx := boundOn(t, clock.Fake, 15*time.Second)
 	var reads int
 	visibility, err := New(Options{
 		Clock: clock,
@@ -584,7 +588,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghStandIn(spentRateLimit(reset, reads), tc.graphql(graphql)))
 			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
-			clock := &visibilityTestClock{now: now}
+			clock := newVisibilityTestClock(now)
 			var sources []VisibilitySource
 			guard := New(Options{
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
@@ -594,7 +598,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 			})
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
-			err := guard.Push(bound(t), PushRequest{
+			err := guard.Push(testwait.Context(t), PushRequest{
 				Dir:     t.TempDir(),
 				Remote:  "origin",
 				URL:     theURL,
@@ -635,44 +639,38 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 }
 
 // A GraphQL read that the caller's bound stops refuses the call at once, naming the spent limit,
-// its reset and gh's stop, and does not go on to ls-remote: no bound is left for it. The bound
-// ends only once the stand-in gh has started, so it is a running gh the bound stops.
+// its reset and gh's stop by the caller's 2 s, and does not go on to ls-remote: no bound is left
+// for it. The bound is on the test clock, which the test moves to it only once the stand-in gh
+// has started (stoppedAtItsBound), so it is a running gh the bound stops. A gh the bound did not
+// stop would end its own sleep and answer nothing GraphQL says, which names no stop.
 func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
-	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	clock := newVisibilityTestClock(time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC))
 	reset := clock.Now().Add(30 * time.Minute)
 	bin, records := t.TempDir(), t.TempDir()
 	started, record := filepath.Join(records, "started"), filepath.Join(records, "git")
 	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nsleep 30\n")
 	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
-	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	t.Cleanup(cancel)
-	ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
-	whenWritten(bound(t), started, func() {
-		<-deadline.Done()
-		close(ctx.done)
-	})
-	began := time.Now()
-	_, err := New(Options{
+	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(ctx, theRepo)
-	answeredWithin10s(t, began)
+	})
+	err := stoppedAtItsBound(t, clock.Fake, started, func(ctx context.Context) error {
+		_, err := guard.Visibility(ctx, theRepo)
+		return err
+	})
 	if err == nil {
 		t.Fatal("the visibility read passed while gh never answered")
 	}
 	for _, want := range []string{
 		"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
-		"GraphQL could not answer: gh ran ",
+		"GraphQL could not answer: gh ran 2 s and was stopped by its bound of 2 s",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the failure %q does not say %q", err, want)
 		}
-	}
-	if got := stopBound(t, err); got > 2 {
-		t.Errorf("gh was stopped by a bound of %d s, want the caller's deadline of 2 s", got)
 	}
 	if calls := readCalls(t, record); len(calls) != 0 {
 		t.Errorf("git ran %d times, want none: the caller's bound is spent", len(calls))
@@ -737,10 +735,10 @@ func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 			var sources []VisibilitySource
 			for range 2 {
 				visibility, err := New(Options{
-					Clock:        &visibilityTestClock{now: now},
+					Clock:        newVisibilityTestClock(now),
 					OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 					Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+state),
-				}).Visibility(bound(t), theRepo)
+				}).Visibility(testwait.Context(t), theRepo)
 				if err != nil || visibility != tc.want {
 					t.Fatalf("read %q, %v; want %s", visibility, err, tc.want)
 				}

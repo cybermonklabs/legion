@@ -16,6 +16,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import { appCredentialSources } from "./app-logins";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 import {
@@ -141,6 +143,7 @@ function spawnGithubApps(inputs: Record<string, string | undefined>, then: strin
   // lib's own `compgen -e` strip list and hide whether the lib's default entries are swept: the
   // child starts with no App secret of any kind, and only a case's inputs put one back.
   const env: Record<string, string | undefined> = {
+    ...bunCacheOff,
     PATH: `${fakeBin}:${process.env.PATH}`,
     HOME: home,
     LIB: join(import.meta.dir, "github-apps.sh"),
@@ -668,8 +671,16 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
     // The one secret the refresher may ask for: a round that asked for any other would print a
     // refresh failure on stderr, which this row refuses.
     copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
+    // The shell asks for the rotated release until the row's deadline, which it is handed as
+    // LEGION_PROOF_DEADLINE_MS (epoch milliseconds, from @legion/test-fixtures/wait), and no
+    // longer, so a refresher that never rotates it fails the `read` line below by name.
     const { code, stdout, stderr } = await githubApps(
-      { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore },
+      {
+        ...appInputs,
+        TOKEN_DIR: tokenDir,
+        STORE: refreshStore,
+        LEGION_PROOF_DEADLINE_MS: String(Math.floor(Date.now() + timeLeft())),
+      },
       `require_app_inputs implement review
 mint_app_tokens "$TOKEN_DIR" sjawhar
 key=$TOKEN_DIR/review/key.pem
@@ -677,8 +688,8 @@ echo "key before $(stat -c '%i %s %Y' -- "$key")"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
 printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
-for _ in $(seq 50); do
-  grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json" && break
+until grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json"; do
+  ((10#\${EPOCHREALTIME/[.,]/} / 1000 < LEGION_PROOF_DEADLINE_MS)) || break
   sleep 0.1
 done
 pid=$app_token_refresher
@@ -970,7 +981,7 @@ echo "logins $github_app_logins"`
     // And that command needs nothing of the operator's environment, which is the whole point: it
     // is run under the HOME the daemon's own environment would give it.
     const ran = Bun.spawnSync([...busyboxSh, "-c", sources.review?.command ?? ""], {
-      env: { PATH: process.env.PATH, HOME: "/nonexistent" },
+      env: { ...bunCacheOff, PATH: process.env.PATH, HOME: "/nonexistent" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -1345,44 +1356,46 @@ echo done`
     // each of them held it until the command exited before the lib's two probes released them
     // (github-apps.sh, above app_token_flag_taken, says which stage holds a line and which flag
     // releases it).
-    // So the row reads the run's stderr as it arrives rather than after the exit, and asserts the
-    // gap between the two: the line is due about 100 ms in, and the command exits about 2100 ms
-    // in, so a line that arrives 1.5 s before the exit cannot be a line that arrived with it,
-    // and a host loaded enough to spend a second of that margin on starting bash still passes.
+    // So the key command prints its line and then holds at a gate this row opens only once the
+    // line has reached the run's stderr: a stage that held the line until the command exited
+    // would hold it for good, and the row's wait for the line fails, naming it.
     const progress = "reading the review App key from the deployment store";
-    const started = performance.now();
+    const gate = join(mkdtempSync(join(dir, "gate.")), "open");
     const { child, work } = spawnGithubApps(
       {
         ...appInputs,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; sleep 2; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; while [ ! -e '${gate}' ]; do sleep 0.05; done; cat -- ${reviewKeyFile}`,
       },
       `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
 echo written`
     );
-    let firstLineAt = 0;
     let stderr = "";
     const decoder = new TextDecoder();
     const reading = (async () => {
       for await (const chunk of child.stderr as ReadableStream<Uint8Array>) {
         stderr += decoder.decode(chunk, { stream: true });
-        if (firstLineAt === 0 && stderr.includes("\n")) firstLineAt = performance.now();
       }
     })();
-    const stdout = await new Response(child.stdout).text();
-    const code = await child.exited;
-    const exitedAt = performance.now();
+    const stdout = new Response(child.stdout).text();
+    try {
+      await until("the key command's line on the run's stderr while the command holds", () =>
+        stderr.includes("\n")
+      );
+      // The line arrived while the command held at the gate, so the run had not exited either.
+      expect(child.exitCode).toBeNull();
+    } finally {
+      // The command goes on to print its key, and the run ends, whatever the row found.
+      writeFileSync(gate, "");
+    }
+    const code = await settled("the run's exit once the gate is open", child.exited);
     await reading;
     expect(code).toBe(0);
-    expect(stdout).toContain("written");
+    expect(await stdout).toContain("written");
     expect(stderr.trim()).toBe(progress);
-    // The line arrived, and it arrived while the command was still in its sleep.
-    expect(firstLineAt).toBeGreaterThan(0);
-    expect(exitedAt - firstLineAt).toBeGreaterThan(1500);
-    expect(firstLineAt - started).toBeLessThan(1000);
-    // And the key the command printed after the sleep still reached its file alone.
+    // And the key the command printed after the gate still reached its file alone.
     expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
-    holdsNoKey(stdout + stderr, keyIDs);
+    holdsNoKey((await stdout) + stderr, keyIDs);
   });
 
   test("the relay writes nothing of its own: the run's stderr holds the command's line, masked, and nothing else", async () => {

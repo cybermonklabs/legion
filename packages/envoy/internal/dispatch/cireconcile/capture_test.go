@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -183,16 +182,15 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 		delivery++
 		h.post("check_suite", capturedWebhook(t, "check_suite", item), fmt.Sprintf("suite-%d", delivery))
 	}
-	if _, err := settlements.NextMsg(15 * time.Second); err != nil {
-		t.Fatalf("the webhooks published no settlement: %v", err)
-	}
-	before := capturedRevision(t, h)
+	h.settlement(settlements, "the webhooks' settlement of the captured head")
+	_, before := h.settledRecordAt(capturedRepository, capturedNumber, capturedSHA)
 
 	h.pass()
 
-	if message, err := settlements.NextMsg(2 * time.Second); err == nil {
-		t.Fatalf("the pass published a settlement over what the webhooks recorded: %s", message.Data)
-	}
+	// The summary loop publishes a settlement only through two writes of the record, so the
+	// record still at the revision it settled at, read below, is the proof that the pass made it
+	// publish none.
+	h.noSettlement(settlements, "after the pass over what the webhooks recorded")
 	state, after := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
 	if state == nil {
 		t.Fatal("the head has no record after the pass")
@@ -209,24 +207,6 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 	if got := number(t, h.passLine(), "records"); got != 0 {
 		t.Fatalf("the pass changed %d records, want none: %v", got, h.passLine())
 	}
-}
-
-// capturedRevision is the head's record revision once the summary loop has stopped writing it:
-// publishing a settlement is itself two writes of the record, so a revision read the moment a
-// settlement arrives still moves afterwards.
-func capturedRevision(t *testing.T, h *harness) uint64 {
-	t.Helper()
-	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		state, next := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
-		if state != nil && state.SettledEmitted && state.Claim == nil && next == revision {
-			return revision
-		}
-		revision = next
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("the head's record did not settle: %+v", h.stateAt(capturedRepository, capturedNumber, capturedSHA))
-	return 0
 }
 
 // capturedWebhook is one GitHub webhook body carrying a captured object as its event, named for

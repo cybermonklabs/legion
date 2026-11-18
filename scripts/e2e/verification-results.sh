@@ -48,14 +48,16 @@
 #     bash scripts/e2e/verification-results.sh
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
-# (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own
-# parser) whose `public` schema this run empties before the server migrates it, keeping the
-# extensions that schema holds, and it leaves what the run wrote there for inspection. The driver
-# reads it too, for the one fixture no route of Dispatch can write: a stored pull request row of
-# the attribution rule before this build's. DISPATCH_BIN is optional and names a prebuilt
-# envoy-dispatch: built from the base commit it is this change's negative control, and it fails at
-# the first result write, the route it does not serve; unset, the script builds ./cmd/dispatch from
-# this checkout.
+# server (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with
+# libpq's own parser) on which the run makes a database of its own, which the server migrates;
+# Dispatch and the driver are handed that database alone, never the one DATABASE_URL names, as the
+# URI lib/loopback-dsn.sh's exec_run_database sets in each one's own environment. A run that
+# passes drops it; one that fails keeps it for inspection and names it. The driver reads and
+# writes it too, for the one fixture no route of Dispatch can write: a stored pull request row of
+# the attribution rule before this build's.
+# DISPATCH_BIN is optional and names a prebuilt envoy-dispatch: built from the base commit it is
+# this change's negative control, and it fails at the first result write, the route it does not
+# serve; unset, the script builds ./cmd/dispatch from this checkout.
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI is optional and names the bin/dispatch.ts the driver runs
 # in place of this checkout's packages/envoy-client/bin/dispatch.ts; the run refuses a value that
 # is not a readable file and makes it absolute, since `dash-refused` runs the command in another
@@ -88,12 +90,16 @@ fail() {
   echo "FAIL $check: $*" >&2
   exit 1
 }
-# What lib/rig.sh reads of its caller: start_process and await_start log under $evidence/logs, the
-# work directory's once the build makes it.
+# What lib/rig.sh reads of its caller: start_process and wait_for log under $evidence/logs and
+# $work, the work directory's once the build makes it.
 evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# Twice the longest green run on record since #4000 added the three cases of a bare `-`, rounded
+# up to the minute: 4 green e2e.yaml jobs up to 2026-11-15 (2 of them in green runs, both on that
+# pull request), the longest proof step 148 s (run 43547760198, that pull request's own).
+proof_guard 300
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI, its other input, is read beside it; the sweep leaves it.
@@ -117,6 +123,8 @@ done
 
 # The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
 work=''
+# The run's own database on DATABASE_URL's server, once made.
+database=''
 nats_pid=''
 fake_envoy_pid=''
 fake_github_pid=''
@@ -132,6 +140,12 @@ cleanup() {
   stop_pid "$fake_github_pid"
   stop_pid "$fake_envoy_pid"
   stop_pid "$nats_pid"
+  if [ -n "$database" ] && [ "$rc" -eq 0 ]; then
+    psql "$database_url" -X -q -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+      echo "could not drop the run's database $database; drop it by hand" >&2
+  elif [ -n "$database" ]; then
+    echo "the run's database $database is kept on DATABASE_URL's server for inspection" >&2
+  fi
   if [ -z "$work" ]; then
     echo "verification results e2e: FAIL at $check after $((SECONDS - started))s" >&2
   elif [ "$rc" -eq 0 ]; then
@@ -149,7 +163,7 @@ trap 'cleanup 143' TERM
 
 begin prerequisites
 [ -n "$database_url" ] ||
-  fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
+  fail "DATABASE_URL is required: it names a loopback PostgreSQL server this run makes a database of its own on (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
 for tool in go bun curl psql openssl python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
@@ -157,7 +171,7 @@ case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run creates a database there" || fail "$db_host"
 if [ -n "$dispatch_bin" ]; then
   [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
 fi
@@ -194,17 +208,24 @@ go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/
   fail "./internal/testnats/cmd/natsd did not build"
 pass
 
-begin reset-database
-# Empty, migrations included: the server migrates the new schema at boot, so a base binary and this
-# checkout's each start from a database of their own migrations. empty_public_schema
-# (lib/loopback-dsn.sh) says what goes and why the schema's extensions stay.
-empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+begin database
+# Empty, migrations included: the server migrates the new database at boot, so a base binary and
+# this checkout's each start from a database of their own migrations, and no run writes the
+# database DATABASE_URL names.
+run_db=verification_results_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
+require_run_database refusal DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" --uri || fail "$refusal"
+psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
+  fail "could not create database $run_db on DATABASE_URL's server"
+database=$run_db
+note "the run's database is $database"
 pass
 
 begin nats
 # The port is the kernel's pick (`-p -1`), read back from the line the server logs once it listens.
 start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
-await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
+wait_for "natsd to be ready" serving nats "$nats_pid" grep -q 'Server is ready' "$work/logs/nats.log"
 nats_port=$(report_port "$work/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
   fail "natsd logged no client port; see $work/logs/nats.log"
 nats_url=nats://127.0.0.1:$nats_port
@@ -213,14 +234,14 @@ pass
 
 begin fake-envoy
 FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
-await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
+wait_for "the fake Envoy listener to answer /healthz" serving fake_envoy "$fake_envoy_pid" \
   curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
 note "fake Envoy listener on http://127.0.0.1:$envoy_port"
 pass
 
 begin fake-github
 FAKE_GITHUB_PORT=$github_port start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
-await_start fake_github "$fake_github_pid" 60 "the fake GitHub to answer /healthz" \
+wait_for "the fake GitHub to answer /healthz" serving fake_github "$fake_github_pid" \
   curl -fsS --max-time 2 "http://127.0.0.1:$github_port/healthz"
 github_url=http://127.0.0.1:$github_port
 note "fake GitHub on $github_url"
@@ -239,17 +260,21 @@ begin dispatch
 # packages/dispatch/e2e/run-server.sh runs it the same way), and its first pass runs as the server
 # starts: the attribution case waits for a pass to re-judge two stored rows, and a run that waited
 # five minutes for one would be no proof a reader runs.
+#
+# DATABASE_URL is the run's own database as a URI, which exec_run_database sets as the one
+# variable of the server's environment (--env-only, the `env -i` this start had), and `env` names
+# the rest.
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+start_process dispatch exec_run_database DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" --uri --env-only DATABASE_URL -- env \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN="$agent_token" \
   DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
   DISPATCH_APP_PEM_B64="$app_pem" \
@@ -267,18 +292,22 @@ start_process dispatch env -i \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
   "$dispatch_bin"
-await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
+wait_for "envoy-dispatch to answer /healthz" serving dispatch "$dispatch_pid" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
 note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
 pass
 
 check=cases
 status=0
-VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
-  VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
-  VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
-  bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
-  status=$?
+# The driver is handed the same URI as VERIFICATION_RESULTS_E2E_DATABASE_URL, in its own
+# environment, which is otherwise this shell's without DATABASE_URL.
+(
+  VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
+    VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
+    exec_run_database DATABASE_URL "$database_url" "$run_db" "this run creates a database there" \
+    --uri --env VERIFICATION_RESULTS_E2E_DATABASE_URL -- \
+    bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url"
+) || status=$?
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
 case "$status" in
   0) ;;

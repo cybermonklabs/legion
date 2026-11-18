@@ -1,12 +1,12 @@
 package session
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A session's agent subject has two forms while every reader takes both (dispatch://INFRA-3862):
@@ -15,7 +15,7 @@ import (
 // since its consumer filters on both; a message for another session in either form is not counted.
 func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
+	now := bucketClock()
 	r := reapingRegistry(t, client, now)
 	const sessionID = "ses_counted_forms"
 	publish := func(eventID, topic string) {
@@ -36,17 +36,19 @@ func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
 	if err := r.Put(sessionID, SessionEntry{Port: 1, MachineID: "m1", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
+	// The stream stamps a message with the server's clock in milliseconds, as the registration
+	// records its own: a pause here keeps the messages after the registration rather than inside
+	// one millisecond of it.
 	time.Sleep(10 * time.Millisecond)
 	publish("old-form", contracts.LegacyAgentSubject(sessionID))
 	publish("no-project", contracts.AgentSubject(contracts.NoProject, sessionID))
 	publish("a-project", contracts.AgentSubject("INFRA", sessionID))
 	publish("another-session", contracts.AgentSubject("INFRA", "ses_other"))
-	now.advance(3 * time.Minute)
+	now.Advance(3 * time.Minute)
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}

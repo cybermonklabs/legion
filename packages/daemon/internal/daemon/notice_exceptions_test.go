@@ -174,7 +174,8 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 			architectClaimOn(t, sup, "LEGION-1", tc.architect, tc.session)
 			clock := microClock()
 			publisher := &holderPublisher{}
-			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion"}
+			obs := newObserver()
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion", observe: obs.observe}
 			runner.records = wakingRecords(runner)
 			runLanes(t, runner, clock)
 
@@ -198,10 +199,10 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 					t.Fatal("no timer armed for the re-send delay fired")
 				}
 			}
-			testwait.Eventually(t, "the re-held notice was published", func() bool {
-				_, delivered := publisher.snapshot()
-				return len(delivered) == 1 && outboxRows(t, pool) == 0
-			})
+			obs.settled(t, rowOf{issue: "LEGION-2", kind: record.OutboxKindNotice, outcome: settledFinished})
+			if _, delivered := publisher.snapshot(); len(delivered) != 1 || outboxRows(t, pool) != 0 {
+				t.Fatalf("once the re-held notice finished: delivered %+v with %d rows left, want the one copy and no row", delivered, outboxRows(t, pool))
+			}
 			_, delivered := publisher.snapshot()
 			if fmt.Sprint(deliveredKinds(t, delivered)) != "[pr-blocked to LEGION-1]" || delivered[0].key != "legion-outbox:7" {
 				t.Fatalf("delivered %v under key %q, want the re-held notice at the root architect under the key of the row it copies", deliveredKinds(t, delivered), delivered[0].key)
@@ -738,14 +739,14 @@ func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
 	if err := conn.Publish("notifications.envoy.exceptions."+topic, report.envelope(t)); err != nil {
 		t.Fatalf("publish the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for len(queuedNotices(t, pool)) == 0 && time.Now().Before(deadline) {
+	testwait.Eventually(t, "the reported notice queued again", func() bool {
 		select {
 		case err := <-failed:
 			t.Fatalf("rehold: %v", err)
-		case <-time.After(50 * time.Millisecond):
+		default:
 		}
-	}
+		return len(queuedNotices(t, pool)) != 0
+	})
 	if got := queuedNotices(t, pool); len(got) != 1 || got[0] != `LEGION-1 {"kind": "design-approved", "resends": 1, "version": 3, "resend_of": 9}` {
 		t.Fatalf("queued %v, want the design-approved notice of LEGION-1", got)
 	}
@@ -962,11 +963,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 		cancel()
 		<-stopped
 	}()
-	for deadline := time.Now().Add(5 * time.Second); !due(); time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the release loop left the ready architect's notice waiting")
-		}
-	}
+	testwait.Eventually(t, "the release loop to make the ready architect's notice due", due)
 }
 
 // A claim can read live while its session hears nothing: a pane's NATS connection is reconnecting,

@@ -29,7 +29,13 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testi
 	legionState(t)
 	var mu sync.Mutex
 	var requested []string
+	// The cluster records only requests of the shape the probe sends, Kubernetes API paths; any
+	// other is another process's, answered 404 and recorded as nothing.
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		requested = append(requested, r.Method+" "+r.URL.Path)
 		mu.Unlock()

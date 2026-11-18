@@ -3,11 +3,13 @@ package daemon
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // ignoredBy is the SigIgn mask of a process that reads its own /proc/self/status, run as wrap has
@@ -119,21 +121,34 @@ func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
 // status comes through.
 func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
 	job := &terminalJob{}
-	// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
-	launch := `exec sh -c 'trap "" INT; sleep 1; exit 0'`
 	run := func(ctrlC bool) *os.ProcessState {
 		t.Helper()
+		// The launch sets SIGINT aside, says so, and finishes normally, exit 0, once the test
+		// closes its standard input: the case no exit status carries.
+		ready := filepath.Join(t.TempDir(), "ready")
+		launch := `exec sh -c 'trap "" INT; : >"$1"; read line; exit 0' sh '` + ready + `'`
 		cmd := exec.Command("sh", "-c", job.script(launch))
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		finish, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		// Both traps are set: the attempt's shell sets its own before it runs the launch.
+		testwait.Eventually(t, "the launch to set SIGINT aside", func() bool {
+			_, err := os.Stat(ready)
+			return err == nil
+		})
 		if ctrlC {
-			time.Sleep(300 * time.Millisecond)
 			// The terminal's Ctrl-C reaches the whole foreground process group.
 			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if err := finish.Close(); err != nil {
+			t.Fatal(err)
 		}
 		_ = cmd.Wait()
 		return cmd.ProcessState

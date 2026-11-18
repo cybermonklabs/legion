@@ -14,8 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestProcAliveSeesAZombieAndAReapedProcessAsGone(t *testing.T) {
@@ -28,13 +32,7 @@ func TestProcAliveSeesAZombieAndAReapedProcessAsGone(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 	// Until Wait reaps it, the exited child stays in /proc as a zombie.
-	deadline := time.Now().Add(10 * time.Second)
-	for procAlive(pid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("exited, unreaped child %d still reads as alive", pid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, fmt.Sprintf("the exited, unreaped child %d to read as gone", pid), func() bool { return !procAlive(pid) })
 	_ = cmd.Wait()
 	if procAlive(pid) {
 		t.Fatalf("reaped child %d reads as alive", pid)
@@ -229,10 +227,14 @@ func TestHeapLiveSumsTheBinaryProfilesInuse(t *testing.T) {
 	}
 }
 
-// samplerRun runs a sampler for d against a Dispatch that serves its goroutine profile and its
-// binary heap profile, with the periodic heap read on or off, and returns the request URIs
+// samplerStart is where the sampler rows' fake clocks stand when they begin.
+var samplerStart = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+
+// samplerRun runs a sampler on a fake clock against a Dispatch that serves its goroutine profile
+// and its binary heap profile, with the periodic heap read on or off. drive moves the fake and
+// waits for what its row needs; then the step ends, and samplerRun returns the request URIs
 // Dispatch was asked for and the samples the run took.
-func samplerRun(t *testing.T, heapSamples bool, d time.Duration) ([]string, []sample) {
+func samplerRun(t *testing.T, heapSamples bool, drive func(clk *clocktest.Fake, s *sampler)) ([]string, []sample) {
 	t.Helper()
 	heapBody := heapProfileBody(t)
 	var mu sync.Mutex
@@ -252,12 +254,20 @@ func samplerRun(t *testing.T, heapSamples bool, d time.Duration) ([]string, []sa
 	}))
 	defer srv.Close()
 
+	clk := clocktest.New(samplerStart)
 	s := newSampler(endpoints{pprof: srv.URL, natsMon: "http://127.0.0.1:1", pg: unreachablePG, pids: map[string]int{}})
 	s.heapSamples = heapSamples
-	ctx, cancel := context.WithTimeout(context.Background(), d)
+	s.clock = clk
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	now := time.Now()
-	s.loop(ctx, now, now.Add(time.Minute), log.New(io.Discard, "", 0))
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		s.loop(ctx, samplerStart, samplerStart.Add(time.Minute), log.New(io.Discard, "", 0))
+	}()
+	drive(clk, s)
+	cancel()
+	testwait.Receive(t, "the sampler to stop once its step ends", stopped)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -273,7 +283,9 @@ func samplerRun(t *testing.T, heapSamples bool, d time.Duration) ([]string, []sa
 // (heap-start.pprof and heap-end.pprof in runReplay, heap.pprof and heap.txt in step.profile)
 // stay, and driving them needs a whole run.
 func TestSamplerAsksDispatchForNoHeapProfile(t *testing.T) {
-	asked, _ := samplerRun(t, false, 3*time.Second)
+	asked, _ := samplerRun(t, false, func(_ *clocktest.Fake, s *sampler) {
+		testwait.Eventually(t, "the sampler's first sample, taken as it starts", func() bool { return len(s.all()) >= 1 })
+	})
 	goroutines := 0
 	for _, uri := range asked {
 		if strings.HasPrefix(uri, "/debug/pprof/heap") {
@@ -292,7 +304,17 @@ func TestSamplerAsksDispatchForNoHeapProfile(t *testing.T) {
 // read Dispatch's heap, and reads the binary profile alone, never ?debug=1, the text form no
 // sampler reads now. The read lands in a sample, as heap_live_bytes and heap_live_objects.
 func TestSamplerUnderHeapSamplesReadsTheBinaryHeapProfile(t *testing.T) {
-	asked, samples := samplerRun(t, true, 7*time.Second)
+	carriesTheRead := func(s sample) bool {
+		return s.HeapLiveBytes == 4*mib1 && s.HeapLiveObjects == 7 && s.HeapInWindow
+	}
+	asked, samples := samplerRun(t, true, func(clk *clocktest.Fake, s *sampler) {
+		// The first heap read runs beside the first sample. Once the sampler has armed its next
+		// sample and readHeaps its next read, that read has ended and been handed on, so the
+		// first sample or the one the move below takes carries it.
+		clk.AwaitArmed(t, "the sampler's next sample and its next heap read", 2)
+		clk.Advance(sampleEvery)
+		testwait.Eventually(t, "a sample carrying the heap read", func() bool { return slices.ContainsFunc(s.all(), carriesTheRead) })
+	})
 	heaps := 0
 	for _, uri := range asked {
 		switch {
@@ -305,10 +327,7 @@ func TestSamplerUnderHeapSamplesReadsTheBinaryHeapProfile(t *testing.T) {
 	if heaps == 0 {
 		t.Fatalf("the sampler read no heap profile under -heap-samples; it asked Dispatch for %v", asked)
 	}
-	carries := slices.ContainsFunc(samples, func(s sample) bool {
-		return s.HeapLiveBytes == 4*mib1 && s.HeapLiveObjects == 7 && s.HeapInWindow
-	})
-	if !carries {
+	if !slices.ContainsFunc(samples, carriesTheRead) {
 		t.Fatalf("no sample carries the heap read (the profile's 4 MiB in 7 objects): %+v", samples)
 	}
 }
@@ -360,17 +379,30 @@ func TestSummarizeResourcesTakesNATSRatesFromTheReadsThatWorked(t *testing.T) {
 // sample.
 func TestSamplerMarksNoReadThatFailedOnceTheStepEnded(t *testing.T) {
 	down := endpoints{pprof: "http://127.0.0.1:1", natsMon: "http://127.0.0.1:1", pg: unreachablePG, pids: map[string]int{}}
-	now := time.Now()
+	now := samplerStart
 
 	var logged bytes.Buffer
+	clk := clocktest.New(samplerStart)
 	running := newSampler(down)
 	running.heapSamples = true
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	running.clock = clk
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	running.loop(ctx, now, now.Add(time.Minute), log.New(&logged, "", 0))
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		running.loop(ctx, now, now.Add(time.Minute), log.New(&logged, "", 0))
+	}()
+	// Once the sampler has armed its next sample and readHeaps its next read, the first heap
+	// read has failed and been handed on, so the first sample or the second carries it.
+	clk.AwaitArmed(t, "the sampler's next sample and its next heap read", 2)
+	clk.Advance(sampleEvery)
+	testwait.Eventually(t, "the sampler's second sample", func() bool { return len(running.all()) >= 2 })
+	cancel()
+	testwait.Receive(t, "the sampler to stop once its step ends", stopped)
 	ss := running.all()
 	if len(ss) != 2 {
-		t.Fatalf("%d samples in 7 s, want 2", len(ss))
+		t.Fatalf("%d samples once the step ended after the second, want 2", len(ss))
 	}
 	heaps := 0
 	for _, s := range ss {
@@ -399,29 +431,27 @@ func TestSamplerMarksNoReadThatFailedOnceTheStepEnded(t *testing.T) {
 	}
 }
 
-// TestSamplerHeapReadDelaysNoSample: under -heap-samples, Dispatch's heap endpoint answers 7 s
-// after it is asked, past the 5 s sample interval, and the goroutine reads keep their 5 s cadence
-// meanwhile. The heap read lands in the first sample after it ended, with its own end time, and no
-// second heap read starts before the next 15 s slot.
+// TestSamplerHeapReadDelaysNoSample: under -heap-samples, a heap read that Dispatch holds past
+// the sample interval delays no sample: the sampler's clock is a fake the test moves, and the
+// stand-in holds the heap read until the test lets it go, at 7 s, while samples come at 0 and 5 s.
+// The read lands in the first sample after it ended (10 s), with its own end time, and no second
+// heap read starts before the step ends, which the test ends once that sample is taken.
 func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
-	const heapDelay = 7 * time.Second
 	heapBody := heapProfileBody(t)
-	var mu sync.Mutex
-	var heapAsked []time.Time
+	release := make(chan struct{})
+	var heapAsked atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/debug/pprof/goroutine":
 			fmt.Fprint(w, "goroutine profile: total 7\n")
 		case "/debug/pprof/heap":
-			mu.Lock()
-			heapAsked = append(heapAsked, time.Now())
-			mu.Unlock()
+			heapAsked.Add(1)
 			if r.URL.RawQuery != "" {
 				http.Error(w, "the sampler reads the binary profile only", http.StatusBadRequest)
 				return
 			}
 			select {
-			case <-time.After(heapDelay):
+			case <-release:
 				w.Write(heapBody)
 			case <-r.Context().Done():
 			}
@@ -432,21 +462,45 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
+	// A failure before the release below still lets the held read go, before the server closes.
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 
-	start := time.Now()
+	clk := clocktest.New(samplerStart)
 	s := newSampler(endpoints{pprof: srv.URL, natsMon: srv.URL, pg: unreachablePG, pids: map[string]int{}})
 	s.heapSamples = true
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	s.clock = clk
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s.loop(ctx, start, start.Add(time.Minute), log.New(io.Discard, "", 0))
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		s.loop(ctx, samplerStart, samplerStart.Add(time.Minute), log.New(io.Discard, "", 0))
+	}()
+	testwait.Eventually(t, "sample 0, and the heap read the stand-in holds", func() bool {
+		return len(s.all()) == 1 && heapAsked.Load() == 1
+	})
+	clk.AwaitArmed(t, "the sampler's next sample", 1)
+	clk.Advance(sampleEvery)
+	// Taken while the stand-in still holds the heap read: a sampler that waited on the read
+	// would take no sample here.
+	testwait.Eventually(t, "sample 1, taken while the heap read is held", func() bool { return len(s.all()) == 2 })
+	clk.Advance(2 * time.Second)
+	letGo()
+	// Once readHeaps has armed its next read, the held one has ended (at 7 s) and been handed on.
+	clk.AwaitArmed(t, "the sampler's next sample and readHeaps' next read", 2)
+	clk.Advance(3 * time.Second)
+	testwait.Eventually(t, "sample 2", func() bool { return len(s.all()) == 3 })
+	cancel()
+	testwait.Receive(t, "the sampler to stop once its step ends", ended)
 
 	ss := s.all()
 	if len(ss) != 3 {
-		t.Fatalf("%d samples in 12 s, want 3: one each 5 s while the heap read is in flight", len(ss))
+		t.Fatalf("%d samples, want 3: at 0, 5 and 10 s", len(ss))
 	}
 	for i, x := range ss {
-		if late := x.At.Sub(start) - time.Duration(i)*5*time.Second; late < 0 || late > time.Second {
-			t.Errorf("sample %d at %s past the start, want %d s: the heap read in flight delayed it", i, x.At.Sub(start), i*5)
+		if want := samplerStart.Add(time.Duration(i) * sampleEvery); !x.At.Equal(want) {
+			t.Errorf("sample %d at %s, want %s: one each sampleEvery with the heap read in flight", i, x.At, want)
 		}
 		if x.Goroutines != 7 || slices.Contains(x.FailedReads, readGoroutines) || slices.Contains(x.FailedReads, readHeap) {
 			t.Errorf("sample %d: goroutines %d, failed reads %v; want 7 goroutines, no failed goroutine or heap read", i, x.Goroutines, x.FailedReads)
@@ -462,14 +516,11 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 		t.Errorf("sample 2 heap live %v bytes, %v objects, in window %v; want the profile's 4 MiB in 7 objects, in the window",
 			got.HeapLiveBytes, got.HeapLiveObjects, got.HeapInWindow)
 	}
-	if ended := got.HeapAt.Sub(start); ended < heapDelay || got.HeapAt.After(got.At.Add(time.Second)) || !got.HeapAt.After(ss[1].At) {
-		t.Errorf("sample 2 (at %s) carries a heap read that ended %s past the start, want its own end, after %s and after sample 1",
-			got.At.Sub(start), ended, heapDelay)
+	if want := samplerStart.Add(7 * time.Second); !got.HeapAt.Equal(want) {
+		t.Errorf("sample 2 carries a heap read that ended at %s, want its own end, %s", got.HeapAt, want)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(heapAsked) != 1 {
-		t.Errorf("heap asked at %v, want once: the next 15 s slot is past the 12 s run", heapAsked)
+	if n := heapAsked.Load(); n != 1 {
+		t.Errorf("heap asked %d times, want once: the next heap slot, 15 s, is past the step's end", n)
 	}
 }
 
@@ -477,10 +528,8 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 // returns no rate and the error, which run.log holds.
 func TestXIDRateReturnsAFailedRead(t *testing.T) {
 	var logged bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	now := time.Now()
-	rate, err := xidRate(ctx, unreachablePG, now, now, log.New(&logged, "", 0))
+	rate, err := xidRate(testwait.Context(t), unreachablePG, now, now, log.New(&logged, "", 0))
 	if rate != nil || err == nil {
 		t.Fatalf("xidRate on an unreachable Postgres = %v, %v; want no rate and an error", rate, err)
 	}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 // keyedItem is one item a keyedRunner test hands its runner: the key and a number naming it.
@@ -52,13 +52,17 @@ func (r *keyedRecorder) recorded(key string) []string {
 	return events
 }
 
+// awaitStart is the next item a handler started, read once every goroutine of the test's synctest
+// bubble has started what it can and blocked: the runner does no I/O, so what has started by
+// then is all that will until the test acts again.
 func awaitStart(t *testing.T, starts <-chan keyedItem) keyedItem {
 	t.Helper()
+	synctest.Wait()
 	select {
 	case item := <-starts:
 		return item
-	case <-time.After(5 * time.Second):
-		t.Fatal("no item started within 5s")
+	default:
+		t.Fatal("no item started")
 		return keyedItem{}
 	}
 }
@@ -67,59 +71,64 @@ func awaitStart(t *testing.T, starts <-chan keyedItem) keyedItem {
 // an item of another key runs as soon as it is given; once every key's queue is empty no goroutine
 // is left behind.
 func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
-	recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
-	runner := newKeyedRunner(recorder.handle)
+	synctest.Test(t, func(t *testing.T) {
+		recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
+		runner := newKeyedRunner(recorder.handle)
 
-	runner.run("a", keyedItem{"a", 1})
-	if item := awaitStart(t, recorder.start); item.n != 1 {
-		t.Fatalf("first start = %+v, want a1", item)
-	}
-	runner.run("a", keyedItem{"a", 2})
-	runner.run("b", keyedItem{"b", 3})
-	if item := awaitStart(t, recorder.start); item.n != 3 {
-		t.Fatalf("start while a1 is held = %+v, want b3 (a2 waits behind a1)", item)
-	}
-	select {
-	case item := <-recorder.start:
-		t.Fatalf("%+v started while a1 was still in its handler", item)
-	case <-time.After(100 * time.Millisecond):
-	}
+		runner.run("a", keyedItem{"a", 1})
+		if item := awaitStart(t, recorder.start); item.n != 1 {
+			t.Fatalf("first start = %+v, want a1", item)
+		}
+		runner.run("a", keyedItem{"a", 2})
+		runner.run("b", keyedItem{"b", 3})
+		if item := awaitStart(t, recorder.start); item.n != 3 {
+			t.Fatalf("start while a1 is held = %+v, want b3 (a2 waits behind a1)", item)
+		}
+		// awaitStart waited for every goroutine to block, so anything else that started is there.
+		select {
+		case item := <-recorder.start:
+			t.Fatalf("%+v started while a1 was still in its handler", item)
+		default:
+		}
 
-	close(recorder.gates[1])
-	if item := awaitStart(t, recorder.start); item.n != 2 {
-		t.Fatalf("start after a1 ended = %+v, want a2", item)
-	}
-	runner.wait()
-	if events, want := recorder.recorded("a"), []string{"start a1", "end a1", "start a2", "end a2"}; !slices.Equal(events, want) {
-		t.Fatalf("key a's events = %q, want %q", events, want)
-	}
-	runner.mu.Lock()
-	defer runner.mu.Unlock()
-	if len(runner.queued) != 0 {
-		t.Fatalf("keys still active after every item ended: %v", runner.queued)
-	}
+		close(recorder.gates[1])
+		if item := awaitStart(t, recorder.start); item.n != 2 {
+			t.Fatalf("start after a1 ended = %+v, want a2", item)
+		}
+		runner.wait()
+		if events, want := recorder.recorded("a"), []string{"start a1", "end a1", "start a2", "end a2"}; !slices.Equal(events, want) {
+			t.Fatalf("key a's events = %q, want %q", events, want)
+		}
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		if len(runner.queued) != 0 {
+			t.Fatalf("keys still active after every item ended: %v", runner.queued)
+		}
+	})
 }
 
 // stop hands back every item still waiting behind its key, in each key's order, and refuses every
 // later item; the item in its handler runs on, and wait returns once it has ended.
 func TestAStoppedKeyedRunnerHandsBackWhatWaits(t *testing.T) {
-	recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
-	runner := newKeyedRunner(recorder.handle)
-	runner.run("a", keyedItem{"a", 1})
-	awaitStart(t, recorder.start)
-	runner.run("a", keyedItem{"a", 2})
-	runner.run("a", keyedItem{"a", 3})
+	synctest.Test(t, func(t *testing.T) {
+		recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
+		runner := newKeyedRunner(recorder.handle)
+		runner.run("a", keyedItem{"a", 1})
+		awaitStart(t, recorder.start)
+		runner.run("a", keyedItem{"a", 2})
+		runner.run("a", keyedItem{"a", 3})
 
-	waiting := runner.stop()
-	if want := []keyedItem{{"a", 2}, {"a", 3}}; !slices.Equal(waiting, want) {
-		t.Fatalf("stop handed back %+v, want %+v", waiting, want)
-	}
-	if runner.run("b", keyedItem{"b", 4}) {
-		t.Fatal("a stopped runner took an item")
-	}
-	close(recorder.gates[1])
-	runner.wait()
-	if events, want := recorder.recorded("a"), []string{"start a1", "end a1"}; !slices.Equal(events, want) {
-		t.Fatalf("events = %q, want %q: only the item in its handler runs after stop", events, want)
-	}
+		waiting := runner.stop()
+		if want := []keyedItem{{"a", 2}, {"a", 3}}; !slices.Equal(waiting, want) {
+			t.Fatalf("stop handed back %+v, want %+v", waiting, want)
+		}
+		if runner.run("b", keyedItem{"b", 4}) {
+			t.Fatal("a stopped runner took an item")
+		}
+		close(recorder.gates[1])
+		runner.wait()
+		if events, want := recorder.recorded("a"), []string{"start a1", "end a1"}; !slices.Equal(events, want) {
+			t.Fatalf("events = %q, want %q: only the item in its handler runs after stop", events, want)
+		}
+	})
 }

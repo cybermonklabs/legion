@@ -12,7 +12,6 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // TestShareVolumesMountInAnIssuePodLive writes every case's legion.yaml, holds each to the pod
@@ -46,8 +46,7 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 		t.Fatalf("LEGION_E2E_KUBE_CONTEXT %q is no kind cluster's context (kind-<name>); the proof runs only on the cluster its script creates", env["LEGION_E2E_KUBE_CONTEXT"])
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	server := env["LEGION_E2E_SHARE_SERVER"]
 	want := map[string]config.PodConfig{

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -242,7 +243,7 @@ type GuestConfig struct {
 	Sink func(Kill)
 	// Logf writes one line of the watch's; nil discards them.
 	Logf func(format string, args ...any)
-	// Clock is the time the watch reads and waits on; nil is the wall clock.
+	// Clock is the time the watch reads and waits on; nil is clock.Real().
 	Clock Clock
 	// SessionDrain is how long after the watch sees a session process of a role (Class.Session)
 	// leave /proc a SIGKILL that the role's processes show can still be its role-init's: once the
@@ -371,7 +372,7 @@ func NewGuest(cfg GuestConfig) *Guest {
 		small:         make([]byte, 64),
 	}
 	if g.clock == nil {
-		g.clock = &wallClock{}
+		g.clock = clock.Real()
 	}
 	return g
 }
@@ -389,7 +390,8 @@ func (g *Guest) Run(ctx context.Context) {
 	defer g.cgroup.close()
 	g.begin()
 	defer g.stopWake()
-	scan := g.clock.After(guestInterval)
+	scan := g.clock.NewTimer(guestInterval)
+	defer scan.Stop()
 	for {
 		var modified <-chan struct{}
 		if g.wakes != nil {
@@ -406,9 +408,9 @@ func (g *Guest) Run(ctx context.Context) {
 				continue
 			}
 			g.wake(g.clock.Now())
-		case <-scan:
+		case <-scan.C():
 			g.tick(g.clock.Now())
-			scan = g.clock.After(guestInterval)
+			scan.Reset(guestInterval)
 		}
 	}
 }

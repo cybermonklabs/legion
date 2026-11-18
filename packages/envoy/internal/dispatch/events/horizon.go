@@ -140,8 +140,7 @@ const persistedHorizonSQL = `
 
 // StallHolderSQL names the oldest open transaction holding a transaction id, a backend's or a
 // prepared transaction's: the oldest running id is the one every snapshot's xmin waits on, so it
-// is what keeps a pending observation from being proven safe. warnStall reads it, and a test's
-// wait on the horizon reads it too (internal/dispatch/horizontest), when the warning is late.
+// is what keeps a pending observation from being proven safe. warnStall reads it.
 const StallHolderSQL = `
 	select kind, pid, started, state, application_name, database, query from (
 		select 'backend' as kind, pid, xact_start as started, coalesce(state, '') as state,

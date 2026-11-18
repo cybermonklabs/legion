@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The repair pass (RepairIssueAsks) brings the asks of an issue a release older than the
@@ -136,15 +137,10 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	if err != nil {
 		t.Fatalf("list the documents of %s: %v", issue, err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Eventually(t, fmt.Sprintf("every room of %s's documents %v to leave residency", issue, documents), func() bool {
 		resident := f.documents.ResidentRooms()
-		if !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) }) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("a room of %s's documents %v stayed resident after its close or reopen (resident: %v)", issue, documents, resident)
-		}
-	}
+		return !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
+	})
 }
 
 // appendIssueEvent appends an eventType event of issue naming actor, its payload the issue's
@@ -788,21 +784,15 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	}()
 	var indexed *int
 	var owed int
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.Eventually(t, "the block-index loop to index the closed issue's document and owe nothing", func() bool {
 		if err := f.database.Pool.QueryRow(ctx, `
 			select (select version from document_block_versions where artifact_id = $1),
 			       (select count(*) from document_block_versions where version is null)
 		`, issue.PrimaryArtifactID).Scan(&indexed, &owed); err != nil {
 			t.Fatalf("read the block index: %v", err)
 		}
-		if indexed != nil && owed == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			live, _ := documentTexts(t, f.handler, issue.PrimaryArtifactID)
-			t.Fatalf("the block-index loop left the closed issue's document indexed at %v with %d documents owed; live text:\n%s", indexed, owed, live)
-		}
-	}
+		return indexed != nil && owed == 0
+	})
 	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	settled := latest + 1
 	if got := latestVersion(t, f.database, issue.PrimaryArtifactID).Number; got != settled {
@@ -840,34 +830,24 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 // awaitOwedSettlement waits until document owes a settlement.
 func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.Eventually(t, "document "+document+" to owe a settlement", func() bool {
 		var owed bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select exists (select 1 from doc_settlements_pending where artifact_id = $1)
 		`, document).Scan(&owed); err != nil {
 			t.Fatalf("read the pending settlement: %v", err)
 		}
-		if owed {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s never owed a settlement", document)
-		}
-	}
+		return owed
+	})
 }
 
 // awaitLiveText waits until document's live text, as this server reads it, holds part.
 func awaitLiveText(t *testing.T, handler http.Handler, document, part string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.Eventually(t, fmt.Sprintf("document %s's live text to hold %q", document, part), func() bool {
 		live, _ := documentTexts(t, handler, document)
-		if strings.Contains(live, part) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("document %s live text never held %q:\n%s", document, part, live)
-		}
-	}
+		return strings.Contains(live, part)
+	})
 }
 
 // storedUpdateCount is how many updates document's stored history holds now.
@@ -886,13 +866,9 @@ func storedUpdateCount(t *testing.T, database *store.Store, document string) int
 // own, after the linger that gathers the room's next keystrokes into the same one.
 func awaitStoredUpdates(t *testing.T, database *store.Store, document string, want int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if stored := storedUpdateCount(t, database, document); stored >= want {
-			return
-		} else if time.Now().After(deadline) {
-			t.Fatalf("document %s holds %d stored updates, want %d: an append never landed", document, stored, want)
-		}
-	}
+	testwait.Eventually(t, fmt.Sprintf("document %s to hold %d stored updates", document, want), func() bool {
+		return storedUpdateCount(t, database, document) >= want
+	})
 }
 
 // documentWrites is, for each of documents, how many updates it holds and when its owed

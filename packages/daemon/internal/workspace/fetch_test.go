@@ -15,6 +15,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"math/big"
@@ -31,6 +32,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Which clone failures Fetch retries: git's fatal exit with a cause naming a connection that failed
@@ -93,27 +97,25 @@ func TestATransientCloneFailureIsToldFromAPermanentOne(t *testing.T) {
 // fatal is a clone git ended with its fatal status, 128, printing stderr.
 func fatal(stderr string) Result { return Result{ExitCode: 128, Stderr: stderr} }
 
-// testClock is the fetch's clock in a test: each wait passes at once and moves it on by its length
-// and overshoot, as a timer firing late does, and as advance does for the time an attempt takes.
+// testClock is the fetch's clock in a test: a clocktest.Fake that each wait moves on at once by its
+// length and overshoot, as a timer firing late does, recording the wait, and that a runner moves by
+// the time an attempt takes (Advance). The wait is not the Fake's own, which would wait for the
+// test to move it: Fetch sleeps on the test's own goroutine.
 type testClock struct {
-	now       time.Time
+	*clocktest.Fake
 	overshoot time.Duration
 	waits     []time.Duration
 }
 
 func newTestClock() *testClock {
-	return &testClock{now: time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC)}
+	return &testClock{Fake: clocktest.New(time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC))}
 }
 
-func (c *testClock) Now() time.Time { return c.now }
-
 func (c *testClock) Sleep(ctx context.Context, d time.Duration) error {
-	c.advance(d + c.overshoot)
+	c.Advance(d + c.overshoot)
 	c.waits = append(c.waits, d)
 	return ctx.Err()
 }
-
-func (c *testClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
 // failingClone is a runner whose every clone takes took of clock's time and then fails with
 // result — or, given less time than that, runs to its timeout and is killed there.
@@ -131,15 +133,15 @@ type cloneAttempt struct {
 	timeout time.Duration
 }
 
-func (r *failingClone) Timeout() time.Duration { return testTimeout }
+func (r *failingClone) Timeout() time.Duration { return CommandTimeout }
 
 func (r *failingClone) Run(_ context.Context, command Command) (Result, error) {
 	r.attempts = append(r.attempts, cloneAttempt{at: r.clock.Now(), timeout: command.Timeout})
 	if command.Timeout <= r.took {
-		r.clock.advance(command.Timeout)
+		r.clock.Advance(command.Timeout)
 		return Result{ExitCode: -1, TimedOut: true}, nil
 	}
-	r.clock.advance(r.took)
+	r.clock.Advance(r.took)
 	return r.result, nil
 }
 
@@ -585,10 +587,9 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 			req.Clock = clock
 			var logged []string
 			req.Log = func(line string) { logged = append(logged, line) }
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
+			ctx := testwait.Context(t)
 
-			report, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+			report, err := Fetch(ctx, NewRunner(CommandTimeout, testTools(t)), req)
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -640,10 +641,9 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 			req.Clock = clock
 			var logged []string
 			req.Log = func(line string) { logged = append(logged, line) }
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
+			ctx := testwait.Context(t)
 
-			_, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+			_, err := Fetch(ctx, NewRunner(CommandTimeout, testTools(t)), req)
 			if err == nil || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Fetch = %v, want git's %q", err, tc.says)
 			}
@@ -672,10 +672,9 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		req.Token = tokenFrom(file)
 		req.CacheURL, req.CacheToken = served.serve(t), testCacheToken
 		req.Clock = &rewritingClock{testClock: newTestClock(), file: file, token: "ghs_fresh"}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
+		ctx := testwait.Context(t)
 
-		report, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req)
+		report, err := Fetch(ctx, NewRunner(CommandTimeout, testTools(t)), req)
 		if err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
@@ -691,10 +690,9 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 		file := tokenFile(t, "ghs_stale")
 		req.Token = tokenFrom(file)
 		req.Clock = &rewritingClock{testClock: newTestClock(), file: file, token: "ghs_fresh"}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
+		ctx := testwait.Context(t)
 
-		if _, err := Fetch(ctx, NewRunner(testTimeout, testTools(t)), req); err != nil {
+		if _, err := Fetch(ctx, NewRunner(CommandTimeout, testTools(t)), req); err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
 		presented := github.presented()
@@ -1179,34 +1177,21 @@ func killGitGC(t *testing.T, feed string) {
 	t.Cleanup(func() {
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 	})
-	deadline := time.NewTimer(30 * time.Second)
-	defer deadline.Stop()
-	poll := time.NewTicker(time.Millisecond)
-	defer poll.Stop()
-	for {
-		if writing, _ := writingAPack(t, feed); writing {
-			if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil {
-				t.Fatalf("kill git gc: %v", err)
-			}
-			var ended *exec.ExitError
-			if err := command.Wait(); !errors.As(err, &ended) {
-				t.Fatalf("git gc exited cleanly after its process group was killed: %v", err)
-			} else if status, ok := ended.Sys().(syscall.WaitStatus); !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
-				t.Fatalf("git gc ended on its own, not on the kill: %v", err)
-			}
-			if left, packs := writingAPack(t, feed); !left {
-				t.Fatalf("git gc finished its pack before the kill reached it: the feed holds %q, not a repack's partial pack", packs)
-			}
-			return
-		}
-		select {
-		case <-deadline.C:
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-			_ = command.Wait()
-			_, packs := writingAPack(t, feed)
-			t.Fatalf("git gc did not start writing a pack during its repack: the feed holds %q", packs)
-		case <-poll.C:
-		}
+	testwait.Until(t, "git gc to start writing a pack during its repack", func() (string, bool) {
+		writing, packs := writingAPack(t, feed)
+		return fmt.Sprintf("the feed's objects/pack holds %q", packs), writing
+	})
+	if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill git gc: %v", err)
+	}
+	var ended *exec.ExitError
+	if err := command.Wait(); !errors.As(err, &ended) {
+		t.Fatalf("git gc exited cleanly after its process group was killed: %v", err)
+	} else if status, ok := ended.Sys().(syscall.WaitStatus); !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatalf("git gc ended on its own, not on the kill: %v", err)
+	}
+	if left, packs := writingAPack(t, feed); !left {
+		t.Fatalf("git gc finished its pack before the kill reached it: the feed holds %q, not a repack's partial pack", packs)
 	}
 }
 

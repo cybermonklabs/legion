@@ -396,7 +396,7 @@ run_attempt() {
   local arm=$1 number=$2 module=$3 attempt=$4
   local run="$arm-$number try $attempt" run_dir=$work/$arm-$number-try$attempt
   # The database is this attempt's own, named for this shell, and dropped when the attempt ends.
-  local database=ppd_${$}_${arm}_${number}_${attempt} database_url dispatch_port dispatch_url issue title
+  local database=ppd_${$}_${arm}_${number}_${attempt} dispatch_port dispatch_url issue title refusal
   local versions approved status=0
   local session_id=plan-pointer-drive-$arm-$number-try$attempt
   local -a session_env
@@ -409,15 +409,18 @@ run_attempt() {
     >>"$run_dir/logs/postgres.log" 2>&1 ||
     fail "could not create the database $database on LEGION_TEST_PG_DSN; see $run_dir/logs/postgres.log"
   databases+=("$database")
-  run_database_url database_url LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
-    "this run creates and force-drops databases there" || fail "$database_url"
+  require_run_database refusal LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
+    "this run creates and force-drops databases there" || fail "$refusal"
   note "database $database"
   pass
 
   begin "$run dispatch"
-  DATABASE_URL=$database_url FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 \
-    DISPATCH_E2E_AGENT_SECRETS_URL='' \
-    start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
+  # DATABASE_URL is this attempt's database, which exec_run_database sets in the server's own
+  # environment, so no variable of this shell holds its connection string.
+  FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 DISPATCH_E2E_AGENT_SECRETS_URL='' \
+    start_process dispatch exec_run_database LEGION_TEST_PG_DSN "$pg_dsn" "$database" \
+    "this run creates and force-drops databases there" --env DATABASE_URL -- \
+    bash "$root/packages/dispatch/e2e/run-server.sh"
   await_start dispatch "$dispatch_pid" 600 "Dispatch to report its port" \
     report_port "$run_dir/logs/dispatch.log" 'msg="dispatch: listening" addr=127\.0\.0\.1:'
   dispatch_port=$(report_port "$run_dir/logs/dispatch.log" 'msg="dispatch: listening" addr=127\.0\.0\.1:') ||

@@ -50,7 +50,9 @@ func leakCheckTarball(t *testing.T) []byte {
 }
 
 // leakCheckRepo is a stand-in for the check's repository: GitHub's tarball route at any tag,
-// answered to the bearer leakCheckLease, with a count of every request made of it.
+// answered to the bearer leakCheckLease, with a count of every request made of it under any
+// installation token. A request with none (anInstallationToken) is another process's: it is
+// answered 404 and logged, and is counted as nothing.
 type leakCheckRepo struct {
 	url   string
 	asked atomic.Int32
@@ -60,7 +62,7 @@ func serveLeakCheckRepo(t *testing.T) *leakCheckRepo {
 	t.Helper()
 	raw := leakCheckTarball(t)
 	repo := &leakCheckRepo{}
-	repo.url = githubtest.Server(t, githubtest.Spec{Token: leakCheckLease,
+	repo.url = githubtest.Server(t, githubtest.Spec{Credential: anInstallationToken, Token: leakCheckLease,
 		Record: func(*http.Request) { repo.asked.Add(1) },
 		Handle: func(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(r.URL.Path, "/repos/theorem-labs/agent-infra/tarball/") {
@@ -312,8 +314,10 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 			var tarballs atomic.Int32
 			raw := leakCheckTarball(t)
 			// GitHub as token mode reads it — the token's App, by the GraphQL viewer and the
-			// App's own route, and its bot user — and the check's tarball route.
-			github := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+			// App's own route, and its bot user — and the check's tarball route. A request that
+			// carries no installation token (anInstallationToken) is another process's: it is
+			// answered 404 and logged, and fails nothing.
+			github := githubtest.Serve(t, githubtest.Spec{Credential: anInstallationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 					fmt.Fprint(w, `{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`)

@@ -1,20 +1,22 @@
-// Package storetest gives each Postgres-backed broker test a migrated schema of its own on the
-// BROKER_TEST_DATABASE_URL server, dropped when the test ends. Every broker package's tests run
+// Package storetest gives each Postgres-backed broker test a migrated database of its own on the
+// BROKER_TEST_DATABASE_URL server, dropped after the test ends. Every broker package's tests run
 // against one server at once, and the poller's passes act on every row of their tables, so tests
-// that shared tables would act on each other's rows; with a schema per test no test can see
-// another's rows, in its own package, a sibling package, or a concurrent run of either. It also
-// writes the rows only a database writer other than the broker could (Exec, ForgeRequestSignature,
-// CopyAsOtherKind), for the tests that pin what a release or an authentication refuses. It is an
-// ordinary package rather than a _test.go file so every broker package can import it.
+// that shared tables would act on each other's rows; with a database per test no test can see
+// another's rows, in its own package, a sibling package, or a concurrent run of either. Each
+// database is a clone of a template the test binary migrates once (internal/testpg/testdb's
+// Template), a test never gets the database the variable's URL names, and no function here returns
+// that URL. It also writes the rows only a database writer other than the broker could (Exec,
+// ForgeRequestSignature, CopyAsOtherKind), for the tests that pin what a release or an
+// authentication refuses. It is an ordinary package rather than a _test.go file so every broker
+// package can import it. It links no testcontainers package (TestStoretestLinksNoContainerRuntime).
 package storetest
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,53 +26,33 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// DatabaseURLEnv names the Postgres server the broker's tests run against.
-const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
+// template is the database every URL and Open clones: an empty one carrying every broker
+// migration.
+var template = testdb.NewTemplate(testdb.BrokerServer, "broker",
+	"func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }, or brokertest.Main outside Envoy",
+	func(ctx context.Context, databaseURL string) error {
+		st, err := store.Open(ctx, databaseURL)
+		if err != nil {
+			return fmt.Errorf("open: %w", err)
+		}
+		defer st.Close()
+		return st.Migrate(ctx)
+	})
 
-// serverURL is the DatabaseURLEnv server every schema and database here is made on, skipping t
-// when the variable is unset: a run with no server is skipped rather than failed, which is the
-// contract URL, Open and DatabaseURL all state.
-func serverURL(t testing.TB) string {
-	t.Helper()
-	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
-		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed broker tests")
-	}
-	return raw
-}
-
-// randomName mints the name of the schema one test gets of its own. It is random rather than
-// derived from t.Name() because two concurrent runs of one test - this package's tests and a
-// sibling package's, against the one server - would otherwise mint the same name and act on each
-// other's rows.
-func randomName(t testing.TB) string {
-	t.Helper()
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random schema name: %v", err)
-	}
-	return "broker_test_" + hex.EncodeToString(suffix[:])
-}
-
-// URL creates a fresh schema on the DatabaseURLEnv server, migrates it, drops it when t ends, and
-// returns a connection string whose connections use that schema. params are extra connection
-// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset.
+// URL creates a migrated database of t's own on the BROKER_TEST_DATABASE_URL server, drops it
+// after t ends, and returns its connection string. params are extra connection parameters as
+// key=value (e.g. "pool_max_conns=2"). It skips t when BROKER_TEST_DATABASE_URL is unset.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
-	raw := serverURL(t)
-	ctx := context.Background()
-	schema := randomName(t)
-	admin(t, raw, "create schema "+schema)
-	t.Cleanup(func() { admin(t, raw, "drop schema "+schema+" cascade") })
-
-	parsed, err := url.Parse(raw)
+	parsed, err := url.Parse(template.Clone(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, err)
+		// url.Parse's own error quotes the URL it was given, which carries a credential.
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	query := parsed.Query()
-	query.Set("search_path", schema)
 	for _, param := range params {
 		values, err := url.ParseQuery(param)
 		if err != nil {
@@ -81,17 +63,7 @@ func URL(t testing.TB, params ...string) string {
 		}
 	}
 	parsed.RawQuery = query.Encode()
-	dsn := parsed.String()
-
-	st, err := store.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open test schema: %v", err)
-	}
-	defer st.Close()
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate test schema: %v", err)
-	}
-	return dsn
+	return parsed.String()
 }
 
 // Open is store.Open on a fresh URL(t, params...), closed when t ends.
@@ -103,6 +75,20 @@ func Open(t testing.TB, params ...string) *store.Store {
 	}
 	t.Cleanup(st.Close)
 	return st
+}
+
+// Main runs the package's tests through run, waits for their databases to drop, then drops the
+// template URL and Open clone. Every package whose tests reach URL or Open, directly or through a
+// rig, uses it as its TestMain: func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }.
+// It takes the run function so it composes with another fixture's Main.
+func Main(run func() int) int {
+	return template.Main(run)
+}
+
+// Available reports whether BROKER_TEST_DATABASE_URL is set: whether URL, Open and DatabaseURL
+// would give a database rather than skip.
+func Available() bool {
+	return testdb.BrokerServer.Available()
 }
 
 // PerPodLoginSchema applies by hand the one statement the release after this one migrates:
@@ -119,36 +105,16 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 	}
 }
 
-// DatabaseURL creates a fresh, UNMIGRATED database on the DatabaseURLEnv server, drops it when t
-// ends, and returns its DSN. URL remains the right helper for everything else: a schema is
-// cheaper than a database and isolates rows just as well. A test needs a database of its own
-// only when what it exercises is per-database rather than per-schema, and two things are.
-// LISTEN/NOTIFY is one: a channel name is a database-wide identifier, so every schema on one
-// server hears every other's notifications on the one channel constant a feature listens to, and
-// a test on a schema would hear a sibling test's sends. The migration advisory lock is the
-// other: Migrate takes it database-wide, so two processes migrating their own schemas of one
-// database still serialize on each other.
-//
-// The DSN is unmigrated because that is what both callers need: a LISTEN/NOTIFY test, which
-// reads no table at all, and a test that starts two broker processes against a database neither
-// has migrated yet, which is the race those two processes are there to settle. A caller that
-// wants tables runs store.Migrate on it itself.
+// DatabaseURL creates a fresh, UNMIGRATED database of t's own on the BROKER_TEST_DATABASE_URL
+// server, drops it when t ends, and returns its DSN. URL is the right helper for everything else:
+// its clone carries every migration. This one is unmigrated because that is what its callers
+// need: a LISTEN/NOTIFY test, which reads no table at all, and a test that starts two broker
+// processes against a database neither has migrated yet, which is the race those two processes
+// are there to settle. A caller that wants tables runs store.Migrate on it itself. It skips t
+// when BROKER_TEST_DATABASE_URL is unset.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
-	return testdb.DatabaseOn(t, serverURL(t), "broker_test")
-}
-
-func admin(t testing.TB, databaseURL, statement string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to %s: %v", DatabaseURLEnv, err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, statement); err != nil {
-		t.Fatalf("%s: %v", statement, err)
-	}
+	return testdb.BrokerServer.Database(t, "broker_test")
 }
 
 // Querier is what AwaitLockWaiters polls through: a pool, or a connection of its own when the
@@ -158,16 +124,16 @@ type Querier interface {
 }
 
 // AwaitLockWaiters waits until n backends wait on a lock behind holder's backend and answers their
-// pids, failing t after ten seconds. A backend counts when it waits on a lock (wait_event_type
-// 'Lock') that holder's backend holds, or that a backend already counted holds or is ahead of it
-// in the queue for: a second waiter for one row waits on the first waiter's tuple lock, and
-// pg_blocking_pids names only that first waiter, never the holder. Waiters behind other holders,
-// in other tests on the same server, never count.
+// pids, failing t, naming the pids it last read, when they never do. A backend counts when it
+// waits on a lock (wait_event_type 'Lock') that holder's backend holds, or that a backend already
+// counted holds or is ahead of it in the queue for: a second waiter for one row waits on the first
+// waiter's tuple lock, and pg_blocking_pids names only that first waiter, never the holder.
+// Waiters behind other holders never count.
 func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	ctx := context.Background()
 	pid := holder.Conn().PgConn().PID()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waiting := testwait.Until(t, fmt.Sprintf("%d backends to wait on a lock behind backend %d", n, pid), func() ([]int32, bool) {
 		var waiting []int32
 		if err := q.QueryRow(ctx, `with recursive waiting(pid) as (
 				select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
@@ -177,17 +143,13 @@ func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
 			select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
 			t.Fatalf("read the backends waiting behind %d: %v", pid, err)
 		}
-		if len(waiting) >= n {
-			pids := make([]uint32, len(waiting))
-			for i, w := range waiting {
-				pids[i] = uint32(w)
-			}
-			return pids
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends waited on a lock behind %d, want %d", len(waiting), pid, n)
-		}
+		return waiting, len(waiting) >= n
+	})
+	pids := make([]uint32, len(waiting))
+	for i, w := range waiting {
+		pids[i] = uint32(w)
 	}
+	return pids
 }
 
 // Exec is a tamper that runs statements as a writer other than the broker would: $1 is the

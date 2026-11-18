@@ -8,9 +8,18 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// adhocFake is the clock an ad-hoc publish below runs on, standing still: a publish that took the
+// JetStream transport would wait on the acknowledgement bound it arms there and never answer,
+// where the core publish it must take is answered by the server's confirmation.
+func adhocFake() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
+}
 
 const grantedTopic = "notifications.lxspec.granted"
 
@@ -94,12 +103,14 @@ func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
 }
 
 // An ad-hoc topic, one no stream subject captures, is published over core NATS: the publish
-// answers at once, a subscriber receives the envelope, and the stream retains nothing for it. Before
-// the fix the publish went to JetStream, which never answers it while a core subscriber holds the
-// subject, so it failed at its five-second acknowledgement deadline.
+// answers at once, a subscriber receives the envelope, and the stream retains nothing for it.
+// Before the fix the publish went to JetStream, which never answers it while a core subscriber
+// holds the subject, so it waited out its acknowledgement bound - which here is on a clock that
+// stands still, so such a publish never answers at all.
 func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T) {
 	uri := testnats.URL(t)
-	client, err := ConnectOwningStream([]string{uri})
+	fake := adhocFake()
+	client, err := ConnectOwningStream([]string{uri}, WithClock(fake), WithPublishAcknowledgementClock(fake))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -126,18 +137,20 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 		PayloadSummary: "deploy complete",
 		TraceID:        "trace-adhoc",
 	}
-	started := time.Now()
-	duplicate, err := client.PublishReportingDuplicate(envelope)
-	if err != nil {
+	published := make(chan error, 1)
+	var duplicate bool
+	go func() {
+		stored, err := client.PublishReportingDuplicate(envelope)
+		duplicate = stored
+		published <- err
+	}()
+	if err := testwait.Receive(t, "the ad-hoc publish to be answered with the clock standing still", published); err != nil {
 		t.Fatalf("publish to an ad-hoc topic: %v", err)
-	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("publish to an ad-hoc topic took %s; a core publish answers once the server confirms it", elapsed)
 	}
 	if duplicate {
 		t.Fatal("a core publish has no stream verdict and reports no duplicate")
 	}
-	msg, err := received.NextMsg(5 * time.Second)
+	msg, err := received.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("the subscriber received nothing: %v", err)
 	}
@@ -161,13 +174,16 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 	}
 }
 
-// A publish to an ad-hoc topic the server denies the publisher is a refusal naming the subject, not
-// a five-second wait: a listener whose grant leaves the topic out reports that at once.
+// A publish to an ad-hoc topic the server denies the publisher is a refusal naming the subject,
+// not a wait: a listener whose grant leaves the topic out reports that at once. The publish's
+// clock stands still, so a publish that waited on the acknowledgement bound a JetStream send arms
+// would never answer.
 func TestAnAdHocPublishNATSDeniesReturnsTheDenial(t *testing.T) {
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyGranted(t, public, grantedTopic, "_INBOX.>").URL
 	t.Setenv("NATS_NKEY_SEED", seed)
-	client, err := Connect([]string{uri})
+	fake := adhocFake()
+	client, err := Connect([]string{uri}, WithClock(fake), WithPublishAcknowledgementClock(fake))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -183,13 +199,10 @@ func TestAnAdHocPublishNATSDeniesReturnsTheDenial(t *testing.T) {
 		PayloadSummary: "denied",
 		TraceID:        "trace-denied",
 	}
-	started := time.Now()
-	err = client.Publish(envelope)
-	if !errors.Is(err, ErrPublishDenied) {
+	denied := make(chan error, 1)
+	go func() { denied <- client.Publish(envelope) }()
+	if err := testwait.Receive(t, "the denied ad-hoc publish to be answered with the clock standing still", denied); !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("denied ad-hoc publish returned %v, want ErrPublishDenied", err)
-	}
-	if elapsed := time.Since(started); elapsed >= 5*time.Second {
-		t.Fatalf("denied ad-hoc publish waited %s", elapsed)
 	}
 	envelope.Topic = grantedTopic
 	if err := client.Publish(envelope); err != nil {

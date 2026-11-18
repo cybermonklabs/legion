@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A listener whose NATS server answers slowly during its start, as a loaded machine's does, no
+  longer exits at its start. Its session relays' reply subscription waits for no answer from the
+  server, where it ended the start with `session relay reply subscription failed: no relayed frame
+  could be answered` and `nats: timeout`. Its interest registry's role-revision scan sends its
+  consumer create again, with a WARN each time, for as long as the server leaves it unanswered, and
+  /healthz answers "starting" meanwhile, where the start ended with `role revisions: create the
+  scan's consumer: context deadline exceeded (waited 10s)`. A subscription the client cannot make,
+  and a create the server refuses, still end the start.

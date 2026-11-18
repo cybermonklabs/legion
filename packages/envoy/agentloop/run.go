@@ -97,7 +97,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		opts = append(opts, aisdk.WithTools(set))
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, req.Bounds.Time)
+	runCtx, cancel := req.boundClock().WithTimeout(ctx, req.Bounds.Time)
 	defer cancel()
 	r.cancel = cancel
 	stream := aisdk.StreamText(runCtx, model, opts...)

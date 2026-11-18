@@ -75,9 +75,14 @@ func (g nestingGuard) Open(parent ast.Node, reader gmtext.Reader, pc parser.Cont
 
 // opensPastBound reports whether opens blocks, opened one inside another under parent, would take
 // the innermost inside maxNesting blocks, counting each container from parent up to the document.
+// Each container it walks up over is a step of the parse (ParseWork): the bound keeps the walk to
+// maxNesting, where a parse that let blocks nest without one would walk each one's whole depth.
 func opensPastBound(parent ast.Node, opens int) bool {
 	nesting := opens
+	walked := 0
+	defer func() { parseWork.Add(uint64(walked)) }()
 	for node := parent; node.Kind() != ast.KindDocument; node = node.Parent() {
+		walked++
 		if nesting++; nesting > maxNesting {
 			return true
 		}

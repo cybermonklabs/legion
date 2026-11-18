@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // unreachablePG is a Postgres URL that refuses every connect: each reader of the run's database is
@@ -59,20 +62,26 @@ func TestReadErrorsLogsTheFirstAndATotalPastThem(t *testing.T) {
 	}
 }
 
+// pollStart is where the poll rows' fake clocks stand when they begin.
+var pollStart = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+
+// Each read takes one slot of the fake clock, so the poll reads every slot from 0 to 30 ms: 31
+// reads, every odd one failing.
 func TestPollCountsEveryFailedRead(t *testing.T) {
 	var buf bytes.Buffer
 	lg := log.New(&buf, "", 0)
+	clk := clocktest.New(pollStart)
 	calls := 0
-	from := time.Now()
-	failed := poll(context.Background(), from, from.Add(30*time.Millisecond), time.Millisecond, "probe", lg, func(context.Context) error {
+	failed := poll(context.Background(), clk, pollStart, pollStart.Add(30*time.Millisecond), time.Millisecond, "probe", lg, func(context.Context) error {
 		calls++
+		clk.Advance(time.Millisecond)
 		if calls%2 == 0 {
 			return nil
 		}
 		return errors.New("relation does not exist")
 	})
-	if calls == 0 || failed != (calls+1)/2 {
-		t.Fatalf("%d failed of %d reads, want every odd read counted", failed, calls)
+	if calls != 31 || failed != 16 {
+		t.Fatalf("%d failed of %d reads, want 16 of the 31 slots: every odd read counted", failed, calls)
 	}
 	if logged := strings.Count(buf.String(), "relation does not exist"); logged != min(failed, pollErrorsLogged) {
 		t.Fatalf("%d failures logged of %d, want the first %d:\n%s", logged, failed, pollErrorsLogged, buf.String())
@@ -84,8 +93,7 @@ func TestPollStopsUncountedWhenTheContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	calls := 0
-	from := time.Now()
-	failed := poll(ctx, from, from.Add(time.Hour), time.Millisecond, "probe", log.New(&buf, "", 0), func(context.Context) error {
+	failed := poll(ctx, clocktest.New(pollStart), pollStart, pollStart.Add(time.Hour), time.Millisecond, "probe", log.New(&buf, "", 0), func(context.Context) error {
 		calls++
 		cancel()
 		return context.Canceled
@@ -95,16 +103,19 @@ func TestPollStopsUncountedWhenTheContextEnds(t *testing.T) {
 	}
 }
 
+// Each read takes 25 ms of the fake clock against 10 ms slots from 0 to 60 ms, so it overruns
+// the slots after it: the latest one it overran runs at once when it ends, and the others are
+// skipped. The reads start at 0 ms, at 25 (slot 20, run late) and at 50 (slot 50), and the read
+// that ends at 75 ms has overrun the last slot, 60, which is skipped.
 func TestPollSkipsTheSlotsASlowReadOverran(t *testing.T) {
-	calls := 0
-	from := time.Now()
-	failed := poll(context.Background(), from, from.Add(60*time.Millisecond), 10*time.Millisecond, "probe", log.New(&bytes.Buffer{}, "", 0), func(context.Context) error {
-		calls++
-		time.Sleep(25 * time.Millisecond)
+	clk := clocktest.New(pollStart)
+	var started []time.Duration
+	failed := poll(context.Background(), clk, pollStart, pollStart.Add(60*time.Millisecond), 10*time.Millisecond, "probe", log.New(&bytes.Buffer{}, "", 0), func(context.Context) error {
+		started = append(started, clk.Now().Sub(pollStart))
+		clk.Advance(25 * time.Millisecond)
 		return nil
 	})
-	// 7 slots (0, 10, ..., 60 ms); each 25 ms read overruns the next slot, which is skipped.
-	if failed != 0 || calls == 0 || calls >= 7 {
-		t.Fatalf("%d reads (%d failed), want fewer than the 7 slots and none failed", calls, failed)
+	if want := []time.Duration{0, 25 * time.Millisecond, 50 * time.Millisecond}; failed != 0 || !slices.Equal(started, want) {
+		t.Fatalf("reads started at %v (%d failed), want %v and none failed", started, failed, want)
 	}
 }

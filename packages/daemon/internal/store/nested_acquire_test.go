@@ -16,14 +16,20 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// refusalBound is how long a connection is allowed to be asked for before the test calls the
-// answer a wait. The guard answers without touching the database, so the honest answer takes
-// microseconds; without it the request waits for the one connection this caller's own
-// transaction or cursor holds, which no one will give back, and this bound is what makes that a
+// trackedCaller is a caller's context marked as the daemon's sequential flows mark theirs (an API
+// route where the mux is built, the boot for its own steps), whose calls end with the shared wait
+// (testwait.Context). The guard answers without touching the database, so the honest answer takes
+// microseconds; without it a request waits for the one connection this caller's own transaction
+// or cursor holds, which no one will give back, and the shared wait's end is what makes that a
 // failure here instead of a hang that runs until the test binary's own timeout kills the package.
-const refusalBound = 10 * time.Second
+func trackedCaller(t *testing.T) context.Context {
+	return WithTransactionTracking(testwait.Context(t))
+}
 
 // refusalLine is the message logRefusal writes, which is what a count of refusals in the log
 // counts.
@@ -48,11 +54,10 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 
 	// The negative control the incident's check names: the same requests, made by a caller that
 	// holds none of this pool's connections, are served.
-	served(t, pool, WithTransactionTracking(context.Background()), "a caller holding no connection")
+	served(t, pool, trackedCaller(t), "a caller holding no connection")
 
-	// The caller's context is marked as the daemon's sequential flows mark theirs: an API route
-	// where the mux is built, the boot for its own steps.
-	ctx := WithTransactionTracking(context.Background())
+	// The caller's context is marked as the daemon's sequential flows mark theirs.
+	ctx := trackedCaller(t)
 
 	var inner error
 	var took time.Duration
@@ -61,10 +66,8 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 		if _, err := tx.Exec(ctx, "select 1"); err != nil {
 			return err
 		}
-		asking, cancel := context.WithTimeout(ctx, refusalBound)
-		defer cancel()
 		started := time.Now()
-		inner = pgx.BeginFunc(asking, pool, func(pgx.Tx) error { return nil })
+		inner = pgx.BeginFunc(ctx, pool, func(pgx.Tx) error { return nil })
 		took = time.Since(started)
 		return inner
 	})
@@ -90,11 +93,9 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the caller's cursor: %v", err)
 	}
-	asking, cancel := context.WithTimeout(ctx, refusalBound)
 	started := time.Now()
-	second, err := pool.Query(asking, "select 1")
+	second, err := pool.Query(ctx, "select 1")
 	took = time.Since(started)
-	cancel()
 	if second != nil {
 		second.Close()
 	}
@@ -123,20 +124,18 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	rows.Close()
 	served(t, pool, ctx, "the caller whose cursor was closed")
 
-	served(t, pool, WithTransactionTracking(context.Background()), "a caller holding no connection")
+	served(t, pool, trackedCaller(t), "a caller holding no connection")
 	// None of the served calls logged a refusal.
 	refusalsLogged(t, logged, 2)
 }
 
-// served fails the test unless the pool serves caller a read within refusalBound: a hold the pool
-// never ended refuses it, and a connection it never got back leaves it, in a pool of one,
-// nothing to be served with.
+// served fails the test unless the pool serves caller a read before the shared wait ends (caller
+// is a trackedCaller): a hold the pool never ended refuses it, and a connection it never got back
+// leaves it, in a pool of one, nothing to be served with.
 func served(t *testing.T, pool *Pool, caller context.Context, who string) {
 	t.Helper()
-	asking, cancel := context.WithTimeout(caller, refusalBound)
-	defer cancel()
 	var one int
-	if err := pool.QueryRow(asking, "select 1").Scan(&one); err != nil || one != 1 {
+	if err := pool.QueryRow(caller, "select 1").Scan(&one); err != nil || one != 1 {
 		t.Fatalf("the read asked for by %s answered %d, %v; want it served", who, one, err)
 	}
 }
@@ -162,9 +161,7 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logged bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	testlog.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	loggedSites.Lock()
 	clear(loggedSites.seen)
 	loggedSites.Unlock()

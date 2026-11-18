@@ -264,7 +264,7 @@ func (r *Runtime) ProbeImage(ctx context.Context, p ImageProbe) (bootprobe.Image
 	// and a refusal ends the run. The capacity waits are the run's own count.
 	var report bootprobe.ImageReport
 	waits, reason := 0, ""
-	err := bootprobe.Run(ctx, "worker image", p.Retry, r.log, func(ctx context.Context) bootprobe.Outcome {
+	err := bootprobe.Run(ctx, r.timers(), "worker image", p.Retry, r.log, func(ctx context.Context) bootprobe.Outcome {
 		outcome := r.probeAttempt(ctx, p, name, digest)
 		switch {
 		case outcome.Passed:

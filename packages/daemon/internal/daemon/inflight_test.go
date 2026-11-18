@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -29,22 +30,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
-
-// stopBound is how long run may take to return once its context is cancelled, given the stop's
-// budget: the budget, then the NATS close's, the stamp's and the store close's own bounds
-// (stopBudget).
-func stopBound(budget time.Duration) time.Duration {
-	return budget + natsCloseTimeout + stampTimeout + storeCloseTimeout
-}
-
-// stopHangGuard is the bound for a row whose claim is that the stop needed none of its budget,
-// which neededNoBudget reads from the log: there the elapsed time is a hang guard and not a
-// measurement, so it is far from the work's own duration. Held to stopBound instead, such a row
-// reds on a machine that spends a few milliseconds more than the budget on a stop that in fact
-// waited for nothing - 3.005826798 s against 3 s, which is what INFRA-985 was filed for.
-func stopHangGuard(budget time.Duration) time.Duration {
-	return stopBound(budget) + time.Minute
-}
 
 // stoppedWaiting is the line the stop logs when its budget runs out with work still running.
 const stoppedWaiting = "legion daemon stopped waiting for its work"
@@ -178,14 +163,8 @@ func superviseMany(t *testing.T, cfg config.Config, o overrides, rt *stallingRun
 			Detail: "pod " + string(token) + " Failed: init container workspace-init terminated (Error, exit code 1)"})
 	}
 	waiting := map[claim.Token]bool{}
-	deadline := time.After(10 * time.Second)
 	for len(waiting) < relaunching {
-		select {
-		case token := <-rt.entered:
-			waiting[token] = true
-		case <-deadline:
-			t.Fatalf("%d of %d relaunches reached the runtime; log:\n%s", len(waiting), relaunching, logs)
-		}
+		waiting[reached(t, fmt.Sprintf("relaunch %d of %d to reach the runtime", len(waiting)+1, relaunching), rt.entered, d.done, logs)] = true
 	}
 	return d, relaunched
 }
@@ -202,31 +181,53 @@ func runLogging(t *testing.T, cfg config.Config, o overrides) (context.CancelFun
 	return cancel, done, logs
 }
 
-// stopRun cancels a daemon's context, as SIGTERM does, and waits up to bound for run to return on
-// done, failing the test with what the daemon logged meanwhile if it does not. It returns how long
-// the stop took and that log.
-func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error, logs *syncBuffer, bound time.Duration) (time.Duration, string) {
+// reached waits for one receive from ch — a call of the daemon's reaching the runtime, the
+// shim's connection, the answer of a goroutine of the test's — and fails at once when run
+// returns first, since a daemon whose run has returned makes no such call. A failure prints what
+// the daemon logged. The result run returned is put back, for whoever stops the daemon.
+func reached[T any](t *testing.T, what string, ch <-chan T, done chan error, logs *syncBuffer) T {
+	t.Helper()
+	var got T
+	testwait.Eventually(t, what, func() bool {
+		select {
+		case value := <-ch:
+			got = value
+			return true
+		case err := <-done:
+			done <- err
+			t.Fatalf("run returned %v before %s; log:\n%s", err, what, logs)
+		default:
+		}
+		return false
+	})
+	return got
+}
+
+// stopRun cancels a daemon's context, as SIGTERM does, and waits for run to return on done,
+// failing the test with what the daemon logged meanwhile if it does not. It returns how long the
+// stop took, which every row prints and none judges, and that log.
+func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error, logs *syncBuffer) (time.Duration, string) {
 	t.Helper()
 	mark := len(logs.String())
+	defer func() {
+		if t.Failed() {
+			t.Logf("the daemon logged, from the stop:\n%s", logs.String()[mark:])
+		}
+	}()
 	began := time.Now()
 	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
-	case <-time.After(bound):
-		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", bound, logs.String()[mark:])
+	if err := testwait.Receive(t, "run to return once its context was cancelled", done); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	return time.Since(began), logs.String()[mark:]
 }
 
 // stopWithin is stopRun for a daemon startDaemonLogging started.
-func stopWithin(t *testing.T, d *daemon, logs *syncBuffer, bound time.Duration) (time.Duration, string) {
+func stopWithin(t *testing.T, d *daemon, logs *syncBuffer) (time.Duration, string) {
 	t.Helper()
 	d.stopped = true
 	d.transport.CloseIdleConnections()
-	return stopRun(t, d.cancel, d.done, logs, bound)
+	return stopRun(t, d.cancel, d.done, logs)
 }
 
 // lastBootStopped is the stopped_at of the newest boot of cfg's project, nil while none is stamped.
@@ -318,7 +319,7 @@ func TestRunStopsInsideAPodGraceWhileRelaunchesWaitOnTheCluster(t *testing.T) {
 	logs := &syncBuffer{}
 	d, relaunching := superviseMany(t, cfg, fakeRuntime(rt, &built{}), rt, logs, 3)
 
-	took, stopLog := stopWithin(t, d, logs, stopHangGuard(stopBudget))
+	took, stopLog := stopWithin(t, d, logs)
 
 	t.Logf("stopped in %s with %d relaunches waiting in the runtime", took, len(relaunching))
 	stopping := logsStopping(t, stopLog)
@@ -342,7 +343,7 @@ func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T
 	o.stopBudget = time.Second
 	d, relaunching := superviseMany(t, cfg, o, rt, logs, 3)
 
-	took, stopLog := stopWithin(t, d, logs, stopBound(o.stopBudget))
+	took, stopLog := stopWithin(t, d, logs)
 
 	t.Logf("stopped in %s with %d relaunches that ignore the stop", took, len(relaunching))
 	logsStopping(t, stopLog)
@@ -357,13 +358,14 @@ func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T
 // A machine holds its lock through the runtime call its decision makes, and the listing reads every
 // machine, so a daemon with a relaunch always in flight never answered it (LEGION-650).
 func TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster(t *testing.T) {
-	const listingBound = 5 * time.Second
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
 	logs := &syncBuffer{}
 	d, relaunching := superviseMany(t, cfg, fakeRuntime(rt, &built{}), rt, logs, 3)
-	d.client.Timeout = listingBound
 
+	// The request carries the one bound the test binary has (daemon.request takes it from
+	// testwait), so a listing a relaunch's lock holds for good ends as the binary's deadline
+	// nears, naming this request, rather than at a span of the test's own choosing.
 	began := time.Now()
 	status, body := d.request(http.MethodGet, "/legion/v1/operator/claims", nil, true)
 	took := time.Since(began)
@@ -415,23 +417,12 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 			o := fakeRuntime(rt, &built{})
 			o.stopBudget = time.Second
 			cancel, done, logs := runLogging(t, cfg, o)
-			select {
-			case <-rt.entered:
-			case err := <-done:
-				t.Fatalf("run returned %v before it relaunched the unfinished launch; log:\n%s", err, logs)
-			case <-time.After(30 * time.Second):
-				t.Fatalf("the daemon never relaunched the unfinished launch; log:\n%s", logs)
-			}
+			reached(t, "the daemon to relaunch the unfinished launch", rt.entered, done, logs)
 			testwait.Eventually(t, "the daemon to say it started while its relaunch waits in the runtime", func() bool {
 				return logLine(logs.String(), "legion daemon started") != ""
 			})
 
-			bound := stopHangGuard(o.stopBudget)
-			if tc.ignoresContext {
-				// Here the budget is the measurement: the stop must wait it out and say so.
-				bound = stopBound(o.stopBudget)
-			}
-			took, stopLog := stopRun(t, cancel, done, logs, bound)
+			took, stopLog := stopRun(t, cancel, done, logs)
 
 			t.Logf("stopped in %s while it relaunched %s", took, token)
 			namesDeciding(t, logsStopping(t, stopLog), "supervise.RequestSpawn", token)
@@ -457,15 +448,9 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 	o := fakeRuntime(rt, &built{})
 	o.stopBudget = time.Second
 	cancel, done, logs := runLogging(t, cfg, o)
-	select {
-	case <-rt.reconciling:
-	case err := <-done:
-		t.Fatalf("run returned %v before its boot reconciled orphans; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
-	}
+	reached(t, "the boot to reconcile orphans", rt.reconciling, done, logs)
 
-	took, stopLog := stopRun(t, cancel, done, logs, stopHangGuard(o.stopBudget))
+	took, stopLog := stopRun(t, cancel, done, logs)
 
 	t.Logf("stopped in %s while its boot reconciled orphans", took)
 	logsStopping(t, stopLog)
@@ -497,16 +482,22 @@ func bootSwept(t *testing.T, logs *syncBuffer) {
 	})
 }
 
-// storedClaim is token's claim as the store holds it, as the next boot reads it.
-func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.Claim {
+// testStore opens one store on cfg's database for as long as the test runs: a wait that reads a
+// claim row again and again opens none of its own per read.
+func testStore(t *testing.T, cfg config.Config) *store.Store {
 	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
-	defer st.Close()
-	claims, err := st.Claims(ctx)
+	t.Cleanup(st.Close)
+	return st
+}
+
+// storedClaimOn is token's claim as st holds it.
+func storedClaimOn(t *testing.T, st *store.Store, token claim.Token) supervise.Claim {
+	t.Helper()
+	claims, err := st.Claims(context.Background())
 	if err != nil {
 		t.Fatalf("read the claims: %v", err)
 	}
@@ -523,6 +514,12 @@ func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervi
 	}
 	t.Fatalf("the store holds no claim %s", token)
 	return supervise.Claim{}
+}
+
+// storedClaim is token's claim as the store holds it, as the next boot reads it.
+func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.Claim {
+	t.Helper()
+	return storedClaimOn(t, testStore(t, cfg), token)
 }
 
 // operatorRequest sends one operator request from a goroutine of its own and answers its status on
@@ -547,6 +544,27 @@ func operatorRequest(d *daemon, method, path string, body []byte) <-chan int {
 	return answered
 }
 
+// awaitHalted waits until d's stop has halted supervision. Nothing in the halt leaves state a test
+// can read, but serve begins the API's drain only once the halt has returned, and the drain's
+// server.Shutdown closes the API's listener before anything else: a dial of the API's port refused
+// is the halt's effect, while the drain itself, which waits for the requests still in flight, stays
+// open.
+func awaitHalted(t *testing.T, d *daemon) {
+	t.Helper()
+	address := strings.TrimPrefix(d.base, "http://")
+	testwait.Eventually(t, "the daemon's API to refuse a new connection, which its drain does once the halt has returned", func() bool {
+		conn, err := net.Dial("tcp", address)
+		if err == nil {
+			conn.Close()
+			return false
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Fatalf("dial the daemon's API at %s while it stops: %v, want it accepted or refused", address, err)
+		}
+		return true
+	})
+}
+
 // An operator's spawn waiting in the runtime when the daemon is told to stop runs until the API's
 // drain ends, then ends with it inside the stop's budget, and the stop names it among the decisions
 // in flight: the operator, claims and controller routes run their decisions past a client that
@@ -565,15 +583,10 @@ func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims", body)
-	var spawning claim.Token
-	select {
-	case spawning = <-rt.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the operator's spawn never reached the runtime; log:\n%s", logs)
-	}
+	spawning := reached(t, "the operator's spawn to reach the runtime", rt.entered, d.done, logs)
 
 	bootSwept(t, logs)
-	took, stopLog := stopWithin(t, d, logs, stopHangGuard(o.stopBudget))
+	took, stopLog := stopWithin(t, d, logs)
 
 	t.Logf("stopped in %s with the operator's spawn of %s waiting in the runtime; it was answered %d", took, spawning, <-answered)
 	namesDeciding(t, logsStopping(t, stopLog), "supervise.RequestSpawn", spawning)
@@ -615,11 +628,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	token := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	readyClaim(t, d, rt.Runtime, token)
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
-	select {
-	case <-rt.stopping:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the operator's suspension never reached the runtime; log:\n%s", logs)
-	}
+	reached(t, "the operator's suspension to reach the runtime", rt.stopping, d.done, logs)
 
 	bootSwept(t, logs)
 	d.stopped = true
@@ -629,16 +638,14 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	testwait.Eventually(t, "the daemon to say it is stopping", func() bool {
 		return strings.Contains(logs.String()[mark:], `"msg":"legion daemon stopping"`)
 	})
-	// The halt runs in microseconds; the agent, already told to shut down, exits a moment after.
-	time.Sleep(100 * time.Millisecond)
+	// The agent exits a moment after the halt, inside the drain. The halt is in-memory work that
+	// the stopping line above begins, and the drain that follows it closes the API's listener
+	// first, so the exit waits for a refused connection (awaitHalted): the drain stays open, held
+	// by the suspension this test lets go only below.
+	awaitHalted(t, d)
 	close(rt.exit)
-	select {
-	case err := <-d.done:
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
-	case <-time.After(stopHangGuard(stopBudget)):
-		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopHangGuard(stopBudget), logs.String()[mark:])
+	if err := testwait.Receive(t, "run to return once its context was cancelled", d.done); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	stopLog := logs.String()[mark:]
 
@@ -682,12 +689,14 @@ exec sleep 600`},
 	return log
 }
 
-// awaitLog waits up to bound for log to hold want, failing the test with what it does hold.
-func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, why string) {
+// awaitLog waits for log to hold want, failing the test with what it waited for and what the log
+// does hold.
+func awaitLog(t *testing.T, log *syncBuffer, want, what string) {
 	t.Helper()
-	if !testwait.Holds(bound, testwait.Poll, func() bool { return strings.Contains(log.String(), want) }) {
-		t.Fatalf("%s: no %q within %s; the log holds:\n%s", why, want, bound, log)
-	}
+	testwait.Until(t, fmt.Sprintf("%s (%q in its log)", what, want), func() (string, bool) {
+		held := log.String()
+		return held, strings.Contains(held, want)
+	})
 }
 
 // A shim whose claim no API route is deciding loses its connection the moment the daemon's stop
@@ -702,6 +711,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	rec := &built{}
 	logs := &syncBuffer{}
+	rows := testStore(t, cfg)
 	d := startDaemonLogging(t, cfg, fakeRuntime(rt, rec), slog.New(slog.NewJSONHandler(logs, nil)))
 	suspended := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	readyClaim(t, d, rt.Runtime, suspended)
@@ -710,16 +720,16 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	otherToken := lastLaunch(t, rt.Runtime, other).BootToken
 	say := filepath.Join(t.TempDir(), "say")
 	shimLog := runShim(t, rec.address, otherToken, say)
-	awaitLog(t, shimLog, "[worker-shim] spawned", 10*time.Second, "the shim never spawned its agent")
-	testwait.Eventually(t, "the other claim's shim to connect", func() bool {
-		return d.claim(other).State == string(supervise.StateShimConnected)
+	awaitLog(t, shimLog, "[worker-shim] spawned", "the shim to spawn its agent")
+	// The row, not the daemon's own view of the claim: the hello is answered from memory and the
+	// claim's write commits behind it, and the cancellation below cuts a write still in flight,
+	// which the daemon logs as a claim write the database did not take (WARN) and quietStop reads
+	// as the stop's (run 43589744373, under -race).
+	testwait.Eventually(t, "the other claim's shim connection written to its row", func() bool {
+		return storedClaimOn(t, rows, other).State == supervise.StateShimConnected
 	})
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/suspend", nil)
-	select {
-	case <-rt.stopping:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the operator's suspension never reached the runtime; log:\n%s", logs)
-	}
+	reached(t, "the operator's suspension to reach the runtime", rt.stopping, d.done, logs)
 
 	bootSwept(t, logs)
 	d.stopped = true
@@ -729,8 +739,13 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	testwait.Eventually(t, "the daemon to say it is stopping", func() bool {
 		return strings.Contains(logs.String()[mark:], `"msg":"legion daemon stopping"`)
 	})
-	// Well inside the drain: the connection goes at the halt, not when the drain ends.
-	awaitLog(t, shimLog, "closed (", drainOf(stopBudget)/2, "the daemon kept the connection of a claim no route is deciding open through the drain")
+	// The connection goes at the halt, and the drain is still open: this test holds the drain
+	// open itself until it closes rt.exit below, so a daemon that kept such a connection until
+	// the drain ended would never close it and this wait would be the failure.
+	awaitLog(t, shimLog, "closed (", "the shim's connection closed at the halt")
+	// Nothing must come over the connection of the claim a route is suspending: it is held open
+	// for that claim's shutdown frame. A connection the drain ended answers at once with its end,
+	// so the window below is the moment such an end would arrive in, and not a bound on a wait.
 	if err := decided.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
@@ -740,15 +755,10 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	if err := os.WriteFile(say, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	awaitLog(t, shimLog, "\nagent_start\n", 5*time.Second, "the agent's frame never reached the shim")
+	awaitLog(t, shimLog, "\nagent_start\n", "the agent's frame to reach the shim")
 	close(rt.exit)
-	select {
-	case err := <-d.done:
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
-	case <-time.After(stopBound(stopBudget)):
-		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopBound(stopBudget), logs.String()[mark:])
+	if err := testwait.Receive(t, "run to return once its context was cancelled", d.done); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	if status := <-answered; status != http.StatusOK {
 		t.Errorf("the operator's suspension was answered %d, want 200", status)
@@ -767,16 +777,9 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 			accepted <- conn
 		}
 	}()
-	var conn net.Conn
-	select {
-	case conn = <-accepted:
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the shim never redialled the next daemon; its log:\n%s", shimLog)
-	}
+	conn := testwait.Receive(t, "the shim to redial the next daemon", accepted)
 	t.Cleanup(func() { conn.Close() })
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	readBy(t, conn)
 	lines := bufio.NewReader(conn)
 	line, err := lines.ReadBytes('\n')
 	if err != nil {
@@ -853,11 +856,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 		dialShim(t, rec.address, lastLaunch(t, rt.Runtime, token).BootToken)
 	}
 	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(root)+"/close", nil)
-	select {
-	case <-rt.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the root's release never reached the runtime; log:\n%s", logs)
-	}
+	reached(t, "the root's release to reach the runtime", rt.entered, d.done, logs)
 
 	bootSwept(t, logs)
 	d.stopped = true
@@ -867,16 +866,12 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	testwait.Eventually(t, "the daemon to say it is stopping", func() bool {
 		return strings.Contains(logs.String()[mark:], `"msg":"legion daemon stopping"`)
 	})
-	// The halt runs in microseconds; the root, already told to shut down, exits a moment after.
-	time.Sleep(100 * time.Millisecond)
+	// The root exits a moment after the halt, inside the drain, which awaitHalted reads from the
+	// API's listener closing; the drain stays open, held by the close this test lets go below.
+	awaitHalted(t, d)
 	close(rt.exit)
-	select {
-	case err := <-d.done:
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
-	case <-time.After(stopBound(stopBudget)):
-		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopBound(stopBudget), logs.String()[mark:])
+	if err := testwait.Receive(t, "run to return once its context was cancelled", d.done); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	stopLog := logs.String()[mark:]
 
@@ -916,14 +911,9 @@ func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
 	rec := &built{}
 	o := fakeRuntime(rt, rec)
 	o.stopBudget = time.Second
+	obs := observing(&o)
 	cancel, done, logs := runLogging(t, cfg, o)
-	select {
-	case <-rt.reconciling:
-	case err := <-done:
-		t.Fatalf("run returned %v before its boot reconciled orphans; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
-	}
+	reached(t, "the boot to reconcile orphans", rt.reconciling, done, logs)
 	rec.mu.Lock()
 	address := rec.address
 	rec.mu.Unlock()
@@ -935,11 +925,18 @@ func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
 	if err := shimwire.NewWriter(conn).WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
 		t.Fatal(err)
 	}
-	// The resolver reads the claim, then holds the hello until restoration is over.
-	time.Sleep(500 * time.Millisecond)
+	// The hello is held inside the daemon: the resolver reads the claim and holds the frame until
+	// restoration is over, which the stalled reconciliation keeps from ending, and reports the hold
+	// to the test's observer; the stop comes only once it has.
+	obs.next(t, "the daemon's report that it holds the planner's hello for restoration", func(e observation) bool {
+		held, ok := e.(observedHelloHeld)
+		return ok && held.claim == token
+	})
 
-	_, stopLog := stopRun(t, cancel, done, logs, stopBound(o.stopBudget))
+	_, stopLog := stopRun(t, cancel, done, logs)
 
+	// The daemon's run has returned, so a connection it closed answers at once with its end: the
+	// window below is the moment an answer would arrive in, and not a bound on a wait.
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}

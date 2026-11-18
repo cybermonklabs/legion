@@ -268,7 +268,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 			}
 			rollback := &pgx.Batch{}
 			rollback.Queue(`rollback`)
-			rollbackCtx, cancel := duty.LeaseCall()
+			rollbackCtx, cancel := duty.LeaseCall(p.clock)
 			_ = send(rollbackCtx, rollback)
 			cancel()
 		}
@@ -277,7 +277,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		}
 		// The unlock is a trip of this append like any other, counted whatever it answers.
 		trips++
-		freeRoomLock(conn, room)
+		p.freeRoomLock(conn, room)
 		if flush != nil {
 			flush.service.appendFigures.roundTrips.Add(uint64(trips))
 		}

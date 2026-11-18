@@ -36,6 +36,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -101,6 +103,10 @@ const (
 type sweepRoleKeyValue struct {
 	natsgo.KeyValue
 
+	// delay is the per-call round-trip latency this stand-in copies from the real role bucket, so a
+	// sweep's Get and Delete take the time they would against NATS. It stays as a fixed sleep (a
+	// stand-in modelling a production component's latency), not a clock the test moves: it paces no
+	// verdict of its own, only the real NATS round trips the sweep's cost is counted against.
 	delay             time.Duration
 	failDelete        map[string]error
 	beforeFirstDelete func(key string)
@@ -344,7 +350,7 @@ func assertBucketKeptOnlyTheOtherClaims(t *testing.T, reg *Registry, released []
 func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBucket(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -365,7 +371,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		t.Fatalf("open the registry over the seeded role bucket: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ready, cancelReady := context.WithTimeout(context.Background(), time.Minute)
+	ready, cancelReady := context.WithCancel(testwait.Context(t))
 	defer cancelReady()
 	if err := reg.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("wait for the caches over %d stored claims: %v", otherRoleClaims, err)
@@ -385,7 +391,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		waitForHeld(t, reg, session, roles...)
 
 		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
-		ctx, cancel := context.WithTimeout(context.Background(), sweepDeadline)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
 		started := time.Now()
 		_, err := reg.Remove(ctx, session, nil, releasedByItsProcess)
@@ -449,7 +455,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
 		counting := countRoleBucketCalls(t, cold, &sweepRoleKeyValue{delay: claimCallDelay})
 
-		ctx, cancel := context.WithTimeout(context.Background(), sweepDeadline)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
 		started := time.Now()
 		_, err := cold.Remove(ctx, session, nil, releasedByItsProcess)
@@ -601,7 +607,7 @@ func TestTheDeregistrationSweepsFallbackGoesPastAClaimItCannotReadAndFailsOnOneI
 			t.Fatalf("store a record this build cannot decode under %s: %v", unreadable, err)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
 		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket with one unreadable claim of another session's: %v, want it released and no error", session, err)
@@ -650,7 +656,7 @@ func TestTheDeregistrationSweepsFallbackGoesPastAClaimItCannotReadAndFailsOnOneI
 		refusal := errors.New("nats: the bus refused the delete")
 		countRoleBucketCalls(t, reg, &sweepRoleKeyValue{failDelete: map[string]error{held[0]: refusal}})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
 		_, err := reg.Remove(ctx, session, nil, releasedByItsProcess)
 		if !errors.Is(err, refusal) {

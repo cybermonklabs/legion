@@ -805,6 +805,17 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
+	// The count of preparations below is exact, so the acknowledgement window is a minute: far
+	// above this handling's own work and its acknowledgement's trip, so a redelivery the count
+	// would see needs the whole minute to pass first. That is the carve-out docs/testing.md gives
+	// such a count ("A test asserts no count of work a broker may repeat"), on the margin it
+	// states for TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction, a handling of the
+	// same shape: about 717 ms of work and acknowledgement trip at their largest
+	// (dispatch://INFRA-1113), a factor of about 80 below a minute. At consumerSpec's 200 ms window
+	// a late progress report let the server deliver the applied message again, and the count read
+	// a third preparation under 32 busy loops (dispatch://INFRA-3149, Job dl24-whole2-32). The
+	// retry after the failed preparation is NakDelay's, which the window does not touch.
+	spec.AckWait = time.Minute
 	var mu sync.Mutex
 	var prepared []string
 	var applied []DispatchIssue
@@ -1132,11 +1143,23 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
 	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
-	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
-		t.Fatalf("poison logs after ack wait = %d, want 2", got)
+	// A poison message comes back only while the consumer still holds it: delivered and not yet
+	// ended (NumAckPending), or not yet delivered (NumPending). Once neither holds one, a terminated
+	// message has nothing left that could deliver it again, and the consumer's delivered count says
+	// whether one already was. A third poison log is a delivery again, and fails the wait at once.
+	info := testwait.Until(t, "the Dispatch consumer to hold neither poison message", func() (*jetstream.ConsumerInfo, bool) {
+		if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
+			t.Fatalf("poison logs = %d, want 2: a terminated poison message was delivered again", got)
+		}
+		info := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
+		return info, info.NumPending == 0 && info.NumAckPending == 0
+	})
+	if info.Delivered.Consumer != 2 {
+		t.Fatalf("the Dispatch consumer delivered %d messages for the 2 poison ones, want each delivered once and terminated", info.Delivered.Consumer)
 	}
-	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
+	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
+		t.Fatalf("poison logs once neither message is held = %d, want 2", got)
+	}
 }
 
 // A GitHub envelope with no payload, as an Envoy listener published every commit status on its
@@ -1161,9 +1184,15 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	}
 	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
 		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
-	time.Sleep(3 * spec.AckWait)
+	// A terminated message comes back only while the consumer still holds it: delivered and not yet
+	// ended (NumAckPending), or not yet delivered (NumPending). assertAcknowledgedThrough waited
+	// until it holds neither, so nothing is left that could deliver the poison message again, and the
+	// consumer's delivered count says whether it already was: once, and the push once.
+	if info := consumerInfo(t, stream, githubConsumerName(spec.Project)); info.Delivered.Consumer != 2 {
+		t.Fatalf("the GitHub consumer delivered %d messages for the poison one and the push, want each delivered once", info.Delivered.Consumer)
+	}
 	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
-		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+		t.Fatalf("poison logs once the consumer holds no message = %d, want 1: a terminated message is not delivered again", got)
 	}
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }

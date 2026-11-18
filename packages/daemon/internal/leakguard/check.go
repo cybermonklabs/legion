@@ -150,6 +150,10 @@ type child struct {
 	// output run answers, which the GraphQL visibility read needs to read gh's body alone
 	// (Guard.graphQLVisibility). Nil answers the two together.
 	stderr io.Writer
+	// bound, where it is not zero, is the longest the child runs, on the guard's clock, inside
+	// ctx's own bound: the cap of the visibility read made with no credential (Guard.lsRemote).
+	// Zero leaves the child ctx's bound alone.
+	bound time.Duration
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -169,9 +173,24 @@ func program(base []string, name string) string {
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
 // together unless c.stderr takes err. The error is a child that could not be run at all: one that
-// did not start, or one the end of ctx stopped, which is a *stoppedError. A status is an answer,
-// and no status is not.
+// did not start, or one the end of ctx or of c.bound stopped, which is a *stoppedError. A status
+// is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
+	// The child's start, its bound and the time a stopped child ran are all read on the guard's
+	// clock. The bound a stop names is the earlier of ctx's deadline and c.bound, which run reads
+	// itself rather than from the bounded context: a test clock's deadline context reports its
+	// parent's deadline and never its own.
+	started := g.clock().Now()
+	deadline, bounded := ctx.Deadline()
+	bound := deadline.Sub(started)
+	if c.bound > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = g.clock().WithTimeout(ctx, c.bound)
+		defer cancel()
+		if !bounded || c.bound < bound {
+			bound, bounded = c.bound, true
+		}
+	}
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
 	base := g.base()
@@ -189,17 +208,16 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
 	}
-	started := time.Now()
 	err := procgroup.Err(cmd.Run())
 	switch {
 	case killed():
 		stopped := &stoppedError{
 			program:   filepath.Base(c.argv[0]),
-			ran:       time.Since(started),
+			ran:       g.clock().Now().Sub(started),
 			cancelled: errors.Is(ctx.Err(), context.Canceled),
 		}
-		if deadline, ok := ctx.Deadline(); ok {
-			stopped.bound = deadline.Sub(started)
+		if bounded {
+			stopped.bound = bound
 		}
 		return 0, printed.String(), stopped
 	case err != nil:
@@ -208,17 +226,17 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	return cmd.ProcessState.ExitCode(), printed.String(), nil
 }
 
-// stoppedError is a child that the end of the caller's context stopped before it exited: its
-// bound ran out, or the caller cancelled it. It carries how long the child ran and how long its
-// bound gave it, because "it did not finish" alone does not tell a person reading the line
-// whether the child was given too little time or hung.
+// stoppedError is a child that the end of the caller's context, or of its own bound, stopped
+// before it exited: a bound ran out, or the caller cancelled it. It carries how long the child ran
+// and how long its bound gave it, because "it did not finish" alone does not tell a person reading
+// the line whether the child was given too little time or hung.
 type stoppedError struct {
 	// program is the program argv[0] names, without its directory: bash, gh or git.
 	program string
 	// ran is how long the child ran before the stop.
 	ran time.Duration
-	// bound is how long the context's deadline gave the child from its start, and zero where the
-	// context has no deadline.
+	// bound is how long the earlier of the context's deadline and the child's own bound
+	// (child.bound) gave the child from its start, and zero where it had neither.
 	bound time.Duration
 	// cancelled is whether a cancel stopped the child rather than its deadline.
 	cancelled bool

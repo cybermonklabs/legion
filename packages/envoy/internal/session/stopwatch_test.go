@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // openWatchedRegistry opens a session registry whose KV watcher has finished its initial scan.
@@ -20,27 +20,32 @@ func openWatchedRegistry(t *testing.T, uri string) *SessionRegistry {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the session cache: %v", err)
 	}
 	return registry
 }
 
 // StopWatch runs in the listener's shutdown before the NATS drain and outside its deadline, so it
-// makes no request of the server: with the server unresponsive it still returns at once.
+// makes no request of the server: it sends nothing on the connection, which is why it returns with
+// the server unresponsive. The count of messages the connection sent, not a span of time, is what
+// says so.
 func TestStopWatchMakesNoRequestOfTheServer(t *testing.T) {
-	srv, uri := testnats.Start(t)
-	registry := openWatchedRegistry(t, uri)
+	_, uri := testnats.Start(t)
+	conn := testnats.Connect(t, uri)
+	t.Cleanup(conn.Close)
+	registry, err := OpenSessionRegistry(conn, WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open session registry: %v", err)
+	}
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
+		t.Fatalf("wait for the session cache: %v", err)
+	}
 
-	thaw := srv.Freeze(t)
-	t.Cleanup(thaw)
-
-	started := time.Now()
+	before := conn.Stats().OutMsgs
 	registry.StopWatch()
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("StopWatch took %s against an unresponsive server, want it to return at once", elapsed)
+	if sent := conn.Stats().OutMsgs - before; sent != 0 {
+		t.Fatalf("StopWatch sent %d messages on the connection, want none: it makes no request of the server", sent)
 	}
 }
 
@@ -54,9 +59,7 @@ func TestStopWatchIsFinal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the session cache: %v", err)
 	}
 
@@ -70,11 +73,9 @@ func TestStopWatchIsFinal(t *testing.T) {
 	if err := conn.Drain(); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !conn.IsClosed() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(500 * time.Millisecond)
+	// A Rewatch after StopWatch arms no watcher, so once the drain has closed the connection
+	// there is nothing left that could end and log: the closed connection is the last event.
+	testwait.Eventually(t, "the drain to close the connection", conn.IsClosed)
 
 	if err := registry.WatchErr(); err != nil {
 		t.Fatalf("the registry reports a failed watcher after StopWatch: %v", err)

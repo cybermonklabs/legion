@@ -18,8 +18,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -495,7 +499,9 @@ func TestStaticHandlerReleasesRetainedBytesWhenTheStoreFails(t *testing.T) {
 }
 
 // latentStore answers as a store across a network does: each object arrives after a delay, or the
-// read fails with its context's error when that ends first.
+// read fails with its context's error when that ends first. The delay is a stand-in's own, the
+// round trip to the object store the handler reads through (Context.AssetStore), which the
+// handler bounds with retainedAssetFetchTimeout; it is not a bound of the test's.
 type latentStore struct {
 	delay  time.Duration
 	object []byte
@@ -565,52 +571,60 @@ func TestStaticHandlerHoldsOnlyEachRetainedObjectsSize(t *testing.T) {
 // context carries a deadline shorter than retainedAssetFetchTimeout, standing in for a bound that
 // ran out mostly waiting on the memory cap, so the fetch's shared ctx expires in milliseconds
 // rather than the full three seconds.
+//
+// It runs in a synctest bubble: the request's deadline and the store's answer are the bubble's
+// fake time, which moves only once every goroutine waits, so the 20 ms deadline ends the fetch
+// before the store's second whatever the machine's load (the handler and the store do no network
+// I/O).
 func TestStaticHandlerAnswers503WhenTheFetchRunsOutOfTheSharedBound(t *testing.T) {
-	shortBound, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		shortBound, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
 
-	var logs bytes.Buffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&logs, nil))
+		var logs bytes.Buffer
+		logtest.SetDefault(t, slog.NewJSONHandler(&logs, nil))
 
-	handler, appContext := newTestRouter(t)
-	appContext.WebDistDir = t.TempDir()
-	appContext.AssetStore = latentStore{delay: time.Second, object: []byte("late")}
+		handler, appContext, stop := bubbleTestRouter(t)
+		defer stop()
+		appContext.WebDistDir = t.TempDir()
+		appContext.AssetStore = latentStore{delay: time.Second, object: []byte("late")}
 
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/assets/late-joiner.js", nil).WithContext(shortBound)
-	handler.ServeHTTP(recorder, req)
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/assets/late-joiner.js", nil).WithContext(shortBound)
+		handler.ServeHTTP(recorder, req)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("fetch past the shared bound: status %d with %d body bytes, want 503", recorder.Code, recorder.Body.Len())
-	}
-	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
-		t.Errorf("fetch past the shared bound: Cache-Control %q, want no-store", got)
-	}
-	if got := recorder.Header().Get("Retry-After"); got != "1" {
-		t.Errorf("fetch past the shared bound: Retry-After %q, want 1", got)
-	}
-	var warnings, errorRecords int
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		var record struct {
-			Level string `json:"level"`
-			Key   string `json:"key"`
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("fetch past the shared bound: status %d with %d body bytes, want 503", recorder.Code, recorder.Body.Len())
 		}
-		if json.Unmarshal([]byte(line), &record) != nil || record.Key != "assets/late-joiner.js" {
-			continue
+		if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("fetch past the shared bound: Cache-Control %q, want no-store", got)
 		}
-		switch record.Level {
-		case "WARN":
-			warnings++
-		case "ERROR":
-			errorRecords++
+		if got := recorder.Header().Get("Retry-After"); got != "1" {
+			t.Errorf("fetch past the shared bound: Retry-After %q, want 1", got)
 		}
-	}
-	if warnings != 1 {
-		t.Errorf("fetch past the shared bound: %d WARN records naming the key, want 1; log %q", warnings, logs.String())
-	}
-	if errorRecords != 0 {
-		t.Errorf("fetch past the shared bound: %d ERROR records naming the key, want 0; log %q", errorRecords, logs.String())
-	}
+		var warnings, errorRecords int
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var record struct {
+				Level string `json:"level"`
+				Key   string `json:"key"`
+			}
+			if json.Unmarshal([]byte(line), &record) != nil || record.Key != "assets/late-joiner.js" {
+				continue
+			}
+			switch record.Level {
+			case "WARN":
+				warnings++
+			case "ERROR":
+				errorRecords++
+			}
+		}
+		if warnings != 1 {
+			t.Errorf("fetch past the shared bound: %d WARN records naming the key, want 1; log %q", warnings, logs.String())
+		}
+		if errorRecords != 0 {
+			t.Errorf("fetch past the shared bound: %d ERROR records naming the key, want 0; log %q", errorRecords, logs.String())
+		}
+	})
 }
 
 // neverWrittenResponseWriter fails the test the moment anything is written to it: a canceled
@@ -730,58 +744,73 @@ func (s *blockingStore) GetAsset(_ context.Context, key string) ([]byte, error) 
 // ends, so abandoned requests for distinct missing chunks never hold more store reads at once than
 // the memory cap has room for. Once those reads end, every reservation comes back: the cap's whole
 // room is served again.
+//
+// It runs in a synctest bubble, since the handler and the store do no network I/O: once
+// synctest.Wait returns, every request either holds a read in the store or waits for a
+// reservation, so a read that has not arrived by then never will.
 func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t *testing.T) {
-	handler, appContext := newTestRouter(t)
-	appContext.WebDistDir = t.TempDir()
-	const requests = 20
-	store := &blockingStore{
-		object:  bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize)),
-		arrived: make(chan string, requests+int(maxRetainedBytesHeld/MaxRetainedAssetSize)),
-		release: make(chan struct{}),
-	}
-	var releaseOnce sync.Once
-	releaseStore := func() { releaseOnce.Do(func() { close(store.release) }) }
-	t.Cleanup(releaseStore)
-	appContext.AssetStore = store
-
-	cancels := make(map[string]context.CancelFunc, requests)
-	var served sync.WaitGroup
-	for i := range requests {
-		ctx, cancel := context.WithCancel(context.Background())
-		key := fmt.Sprintf("assets/missing-%d.js", i)
-		cancels[key] = cancel
-		served.Add(1)
-		go func() {
-			defer served.Done()
-			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+key, nil).WithContext(ctx))
-		}()
-	}
-	// Abandon each request as its read reaches the store, until no further read arrives: past the
-	// cap's room, the rest wait for a reservation and reach the store no more.
-	for quiet := false; !quiet; {
-		select {
-		case key := <-store.arrived:
-			cancels[key]()
-		case <-time.After(250 * time.Millisecond):
-			quiet = true
+	synctest.Test(t, func(t *testing.T) {
+		handler, appContext, stop := bubbleTestRouter(t)
+		defer stop()
+		appContext.WebDistDir = t.TempDir()
+		const requests = 20
+		store := &blockingStore{
+			object:  bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize)),
+			arrived: make(chan string, requests+int(maxRetainedBytesHeld/MaxRetainedAssetSize)),
+			release: make(chan struct{}),
 		}
-	}
-	for _, cancel := range cancels {
-		cancel()
-	}
-	served.Wait()
+		var releaseOnce sync.Once
+		releaseStore := func() { releaseOnce.Do(func() { close(store.release) }) }
+		defer releaseStore()
+		appContext.AssetStore = store
 
-	store.mu.Lock()
-	most := store.maxInFlight
-	store.mu.Unlock()
-	if room := int(maxRetainedBytesHeld / MaxRetainedAssetSize); most > room {
-		t.Errorf("%d abandoned requests held %d store reads at once, want at most the cap's room of %d", requests, most, room)
-	}
+		cancels := make(map[string]context.CancelFunc, requests)
+		var served sync.WaitGroup
+		for i := range requests {
+			ctx, cancel := context.WithCancel(context.Background())
+			key := fmt.Sprintf("assets/missing-%d.js", i)
+			cancels[key] = cancel
+			served.Add(1)
+			go func() {
+				defer served.Done()
+				handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+key, nil).WithContext(ctx))
+			}()
+		}
+		// Abandon each request as its read reaches the store, until every request is blocked
+		// with no read left to arrive: past the cap's room, the rest wait for a reservation and
+		// reach the store no more.
+		for arrived := true; arrived; {
+			synctest.Wait()
+			select {
+			case key := <-store.arrived:
+				cancels[key]()
+			default:
+				arrived = false
+			}
+		}
+		for _, cancel := range cancels {
+			cancel()
+		}
+		served.Wait()
 
-	releaseStore()
-	// Each stalled reader holds the most one object can, so all of them together need every byte
-	// of the cap back; one still held is a 503 once its fetch bound runs out.
-	stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize))
+		store.mu.Lock()
+		most := store.maxInFlight
+		store.mu.Unlock()
+		if room := int(maxRetainedBytesHeld / MaxRetainedAssetSize); most > room {
+			t.Errorf("%d abandoned requests held %d store reads at once, want at most the cap's room of %d", requests, most, room)
+		}
+
+		releaseStore()
+		// Each stalled reader holds the most one object can, so all of them together need every
+		// byte of the cap back; one still held is a 503 once its fetch bound runs out.
+		clients := stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize))
+		// The bubble ends only once every goroutine in it has, which is before its cleanups run,
+		// so the stalled clients go here.
+		for _, client := range clients {
+			close(client.gone)
+			<-client.served
+		}
+	})
 }
 
 // Every tab of another build asks for the same chunks, and a stale tab asks again on each route it
@@ -815,7 +844,9 @@ func TestStaticHandlerServesACachedAssetWithoutTheStore(t *testing.T) {
 
 // gatheringStore holds every read until want reads have arrived or wait runs out, and counts the
 // reads: requests that each read the store arrive together, while one read they share arrives
-// alone and is answered after wait.
+// alone and is answered after wait. Its one user runs in a synctest bubble, where wait is fake
+// time that moves only once every request is blocked, so every request has made its read or
+// joined the shared one before wait runs out, whatever the machine's load.
 type gatheringStore struct {
 	object  []byte
 	want    int32
@@ -840,33 +871,36 @@ func (s *gatheringStore) GetAsset(ctx context.Context, _ string) ([]byte, error)
 // A route of a stale tab, or many tabs of one build at once, ask for one chunk together before the
 // store has answered any of them: the store is read once and every request is answered with it.
 func TestStaticHandlerReadsTheStoreOnceForConcurrentMisses(t *testing.T) {
-	handler, context := newTestRouter(t)
-	context.WebDistDir = t.TempDir()
-	const object = "console.log('another build')"
-	requests := int(maxRetainedBytesHeld / MaxRetainedAssetSize)
-	store := &gatheringStore{object: []byte(object), want: int32(requests), wait: time.Second, arrived: make(chan struct{})}
-	context.AssetStore = store
+	synctest.Test(t, func(t *testing.T) {
+		handler, context, stop := bubbleTestRouter(t)
+		defer stop()
+		context.WebDistDir = t.TempDir()
+		const object = "console.log('another build')"
+		requests := int(maxRetainedBytesHeld / MaxRetainedAssetSize)
+		store := &gatheringStore{object: []byte(object), want: int32(requests), wait: time.Second, arrived: make(chan struct{})}
+		context.AssetStore = store
 
-	recorders := make([]*httptest.ResponseRecorder, requests)
-	var wg sync.WaitGroup
-	for i := range recorders {
-		recorders[i] = httptest.NewRecorder()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			handler.ServeHTTP(recorders[i], httptest.NewRequest(http.MethodGet, "/assets/shared.js", nil))
-		}()
-	}
-	wg.Wait()
-
-	for i, recorder := range recorders {
-		if recorder.Code != http.StatusOK || recorder.Body.String() != object {
-			t.Errorf("request %d: status %d body %q, want 200 %q", i, recorder.Code, recorder.Body.String(), object)
+		recorders := make([]*httptest.ResponseRecorder, requests)
+		var wg sync.WaitGroup
+		for i := range recorders {
+			recorders[i] = httptest.NewRecorder()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				handler.ServeHTTP(recorders[i], httptest.NewRequest(http.MethodGet, "/assets/shared.js", nil))
+			}()
 		}
-	}
-	if got := store.calls.Load(); got != 1 {
-		t.Errorf("%d concurrent misses of one asset read the store %d times, want once", requests, got)
-	}
+		wg.Wait()
+
+		for i, recorder := range recorders {
+			if recorder.Code != http.StatusOK || recorder.Body.String() != object {
+				t.Errorf("request %d: status %d body %q, want 200 %q", i, recorder.Code, recorder.Body.String(), object)
+			}
+		}
+		if got := store.calls.Load(); got != 1 {
+			t.Errorf("%d concurrent misses of one asset read the store %d times, want once", requests, got)
+		}
+	})
 }
 
 // The cache keeps at most maxCachedAssetBytes however much it is handed, and evicts the object used
@@ -900,5 +934,31 @@ func TestAssetCacheKeepsAtMostItsLimitEvictingTheLeastRecentlyUsed(t *testing.T)
 	}
 	if _, ok := cache.Get("assets/one-more.js"); !ok {
 		t.Error("the newest object was not kept")
+	}
+}
+
+// bubbleTestRouter is newTestRouter for a synctest bubble, with a document service of the
+// bubble's own. A bubble ends only once every goroutine in it has, and that check comes before
+// its cleanups run, so the row defers stop, which waits out the reads a request left running
+// (retainedAssetFetchTimeout of the bubble's clock) and shuts the document service down.
+func bubbleTestRouter(t *testing.T) (http.Handler, *AppContext, func()) {
+	t.Helper()
+	people := newMemoryPeople()
+	documents := docs.New(docs.Deps{Events: events.NewBroker()})
+	ctx, err := BuildAppContext(AppContextOptions{
+		SigningKey: testSigningKey,
+		People:     people,
+		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Lifetime:   t.Context(),
+		Docs:       documents,
+	})
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	standInEventLog(ctx, 0)
+	handler, _ := New(ctx)
+	return handler, ctx, func() {
+		time.Sleep(retainedAssetFetchTimeout)
+		_ = documents.Shutdown(context.Background())
 	}
 }

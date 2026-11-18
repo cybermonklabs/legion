@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/pprof/profile"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // clkTck is the kernel's USER_HZ, the unit of /proc/<pid>/stat CPU times.
@@ -88,6 +89,9 @@ type sampler struct {
 	// sets; without it the sampler sends no request to /debug/pprof/heap and every heap figure
 	// of the step is empty.
 	heapSamples bool
+	// clock is the time the samples and the heap reads are taken on: clock.Real for a run, a
+	// test's clocktest.Fake for a test that moves the sample grid itself.
+	clock clock.Clock
 	// pulls counts the pull requests on the stream's consumers; nil when the spy did not start.
 	pulls   *pullSpy
 	mu      sync.Mutex
@@ -106,7 +110,7 @@ type stackExit struct {
 
 func newSampler(ep endpoints) *sampler {
 	s := &sampler{pids: maps.Clone(ep.pids), pprof: ep.pprof, natsMon: ep.natsMon, pgURL: ep.pg,
-		stitch: map[string]*cpuStitch{}, kick: make(chan struct{}, 1), exits: map[string]stackExit{}}
+		stitch: map[string]*cpuStitch{}, kick: make(chan struct{}, 1), exits: map[string]stackExit{}, clock: clock.Real()}
 	if len(ep.pids) > 0 {
 		s.stackPath = ep.stack
 	}
@@ -379,7 +383,7 @@ func boxBusy(ctx context.Context, window time.Duration) (float64, bool) {
 	return (busy1 - busy0) / (total1 - total0), true
 }
 
-// loop samples every 5 s until ctx ends. A failed read is marked in its sample and logged as
+// loop samples every sampleEvery until ctx ends. A failed read is marked in its sample and logged as
 // readErrors does, one count each for the Postgres, the pprof and the NATS reads. A read that
 // failed once ctx had ended is neither marked nor counted, as poll does. Under heapSamples the
 // heap reads run in readHeaps; each sample takes the one that has ended since the last sample, if
@@ -409,13 +413,11 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		natsErrs.done()
 		<-heapsDone // loop returns only once ctx has ended, which ends readHeaps
 	}()
-	inWindow := func(at time.Time) bool { return !at.Before(winStart) && !at.After(winEnd.Add(5*time.Second)) }
-	t := time.NewTicker(5 * time.Second)
-	defer t.Stop()
+	inWindow := func(at time.Time) bool { return !at.Before(winStart) && !at.After(winEnd.Add(sampleEvery)) }
 	self := os.Getpid()
-	for {
+	for next := s.clock.Now(); ; {
 		s.refreshPIDs()
-		sm := sample{At: time.Now(), CPUTicks: map[string]float64{}, RSSKiB: map[string]float64{}, PGConns: map[string]int{}, NATS: map[string]float64{}}
+		sm := sample{At: s.clock.Now(), CPUTicks: map[string]float64{}, RSSKiB: map[string]float64{}, PGConns: map[string]int{}, NATS: map[string]float64{}}
 		sm.InWindow = inWindow(sm.At)
 		// failed marks and counts a failed read, unless it failed because ctx ended.
 		failed := func(read string, errs *readErrors, err error) {
@@ -495,15 +497,28 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		}
 		s.samples = append(s.samples, sm)
 		s.mu.Unlock()
+		// The next sample is due on the grid every sampleEvery from the first, a slot a slow sample
+		// overran skipped but the latest, as a time.Ticker drops ticks; a kick takes one at once and
+		// starts the grid over from it.
+		next = next.Add(sampleEvery)
+		if behind := s.clock.Now().Sub(next); behind > 0 {
+			next = next.Add(behind.Truncate(sampleEvery))
+		}
+		due := s.clock.NewTimer(next.Sub(s.clock.Now()))
 		select {
 		case <-ctx.Done():
+			due.Stop()
 			return
-		case <-t.C:
+		case <-due.C():
 		case <-s.kick:
-			t.Reset(5 * time.Second)
+			due.Stop()
+			next = s.clock.Now()
 		}
 	}
 }
+
+// sampleEvery is how often loop takes a sample.
+const sampleEvery = 5 * time.Second
 
 // heapReadEvery is how often readHeaps starts a heap read; heapReadTimeout bounds one read. The
 // runtime walks every heap record to build the profile, so a read takes longer as the heap grows.
@@ -523,17 +538,17 @@ type heapRead struct {
 // time: a slot that falls while a read is in flight, or waits for a sample to take it, is skipped.
 // It hands each ended read to out, and returns once ctx has ended.
 func (s *sampler) readHeaps(ctx context.Context, out chan<- heapRead) {
-	for next := time.Now(); sleepUntil(ctx, next); {
+	for next := s.clock.Now(); sleepUntilOn(ctx, s.clock, next); {
 		var h heapRead
 		h.bytes, h.objects, h.err = heapLive(ctx, s.pprof)
-		h.at = time.Now()
+		h.at = s.clock.Now()
 		select {
 		case out <- h:
 		case <-ctx.Done():
 			return
 		}
 		next = next.Add(heapReadEvery)
-		if behind := time.Since(next); behind > 0 {
+		if behind := s.clock.Now().Sub(next); behind > 0 {
 			next = next.Add(behind.Truncate(heapReadEvery) + heapReadEvery)
 		}
 	}

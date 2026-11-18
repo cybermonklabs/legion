@@ -32,9 +32,10 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // commentColumns is comments.sql's output contract, in order.
 var commentColumns = []string{
@@ -247,8 +248,7 @@ func (r *rig) publishAll(t *testing.T) {
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	testwait.Until(t, "the outbox to publish every event", func() (int, bool) {
 		var unpublished int
 		if err := r.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
@@ -256,14 +256,8 @@ func (r *rig) publishAll(t *testing.T) {
 		`).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events unpublished", unpublished)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // query runs one statement and returns its column names and its rows, every column read as text.

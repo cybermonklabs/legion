@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -282,7 +283,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(nil, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(nil, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle, nil, clock.Real(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)

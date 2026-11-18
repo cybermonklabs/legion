@@ -69,6 +69,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -131,11 +132,12 @@ type Kill struct {
 	Role string
 }
 
-// Clock is the time a guard reads and waits on. After is called by the guard's loop alone, one
-// wait at a time, so a clock may reuse one timer for every wait.
+// Clock is the time a guard reads and waits on: a narrowing of clock.Clock, so clock.Real() is
+// a pod's and a clocktest.Fake a test's. The guard's loop takes one timer from NewTimer and arms
+// it again for each wait, so a reading costs no timer of its own.
 type Clock interface {
 	Now() time.Time
-	After(d time.Duration) <-chan time.Time
+	NewTimer(d time.Duration) clock.Timer
 }
 
 // Signaler is how a guard ends a process: Open holds the process by its pid, so that the signal
@@ -169,7 +171,7 @@ type Config struct {
 	Sink func(Kill)
 	// Logf writes one line of the guard's; nil discards them.
 	Logf func(format string, args ...any)
-	// Clock is the time the guard reads and waits on; nil is the wall clock.
+	// Clock is the time the guard reads and waits on; nil is clock.Real().
 	Clock Clock
 	// Signal ends a process; nil is the pidfd kill, which only a Linux build has.
 	Signal Signaler
@@ -327,7 +329,7 @@ func New(cfg Config) *Guard {
 		scanMemfds:   map[memfdID]bool{},
 	}
 	if g.clock == nil {
-		g.clock = &wallClock{}
+		g.clock = clock.Real()
 	}
 	if g.signal == nil {
 		g.signal = defaultSignal()
@@ -422,16 +424,19 @@ func (g *Guard) Run(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
+	wait := g.clock.NewTimer(g.interval())
+	defer wait.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-g.clock.After(g.interval()):
+		case <-wait.C():
 		}
 		if !g.tick(false) {
 			<-ctx.Done()
 			return
 		}
+		wait.Reset(g.interval())
 	}
 }
 
@@ -1024,18 +1029,4 @@ func (g *Guard) release() {
 func share(limit uint64, percent int) uint64 {
 	p := uint64(percent)
 	return limit/100*p + limit%100*p/100
-}
-
-// wallClock is the time of the machine, with one timer reused for every wait.
-type wallClock struct{ timer *time.Timer }
-
-func (*wallClock) Now() time.Time { return time.Now() }
-
-func (c *wallClock) After(d time.Duration) <-chan time.Time {
-	if c.timer == nil {
-		c.timer = time.NewTimer(d)
-	} else {
-		c.timer.Reset(d)
-	}
-	return c.timer.C
 }

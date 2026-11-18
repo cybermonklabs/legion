@@ -37,7 +37,12 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    #
+    # The limit is at least the job's sum over its 20 newest green merge-group runs up to
+    # 2026-11-15: its other steps at their longest, 832 s (the cluster.sh test's 381 s and the
+    # vm.sh test's 185 s among them), 6 s of its clock over them, and its two go test steps'
+    # longest plus their -timeout, 9 s + 600 s and 8 s + 600 s: 2055 s, or 35 minutes.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,9 +120,11 @@ jobs:
         working-directory: packages/envoy
       # These five packages need no database, so they run here on every push. This is their one
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
-      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py. -timeout 10m
+      # against a slowest package of 16.0 s, cmd/architecture-check, in two runs under 8 busy
+      # loops on 2 CPUs at 4055c4a523 (builds Job legion-load-run-h2ndx, 2026-11-17).
       - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        run: go test -count=1 -timeout 10m ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -143,9 +150,11 @@ jobs:
       # TestWebDisplayFixture, and of TestTheWebFixtureFindsItsFilesFromAnyDirectory, which stats
       # the same file: without `--check` the first writes the fixture instead of checking it, so
       # envoy-go's unit step skips both by the same names, both texts built from
-      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
+      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py. -timeout 10m against a slowest run
+      # of 0.021 s over this job's 20 newest green merge-group runs up to 2026-11-15, when the step
+      # ran TestWebDisplayFixture alone.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        run: go test -count=1 -timeout 10m -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh

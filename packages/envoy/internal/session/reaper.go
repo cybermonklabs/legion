@@ -141,7 +141,7 @@ func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper
 	if err := r.applyMaxAge(); err != nil {
 		r.logger().Warn("session reaper could not settle the session bucket's maximum age", slog.String("error", err.Error()))
 	}
-	now := r.now()
+	now := r.clock.Now()
 	candidates := r.goneCandidates(now)
 	if len(candidates) == 0 {
 		return 0
@@ -274,7 +274,7 @@ func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessio
 	if err := json.Unmarshal(got.Value(), &stored); err != nil {
 		return 0, fmt.Errorf("judge session %s's record before deleting it: %w", sessionID, err)
 	}
-	if r.stateOf(stored, r.now()) != Gone {
+	if r.stateOf(stored, r.clock.Now()) != Gone {
 		return 0, nil
 	}
 	return got.Revision(), nil

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -97,14 +98,6 @@ const killSession = (sid: number) => {
     } catch {}
   }
 };
-// until polls real processes, which no fake clock moves, for the condition it names.
-async function until(what: string, ok: () => boolean) {
-  for (let i = 0; i < 100; i++) {
-    if (ok()) return;
-    await Bun.sleep(100);
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
 // run_processes) and stop_agent_daemons taken from the script by name. $work comes in through the
@@ -236,6 +229,5 @@ wait
       .filter(Boolean)
       .map(Number);
     expect(after).toEqual([bystander.pid]);
-  },
-  30_000
+  }
 );

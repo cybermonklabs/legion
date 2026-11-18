@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
+	"github.com/testcontainers/testcontainers-go"
 
 	"github.com/sjawhar/envoy/daemonpermissions"
 	"github.com/sjawhar/envoy/testnatsimages"
@@ -81,7 +81,25 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, time.Now().UnixMilli()))
 				// Before the consumers run, each has its one event waiting, so the state's lag read
 				// makes every request it can under the grant: each consumer's info and its oldest
-				// waiting message's stored-message get.
+				// waiting message's stored-message get. A publish's ack says the stream stored the
+				// event; the server counts it toward a consumer's pending only when the stream's
+				// signal goroutine runs, after that ack is sent (nats-server v2.15.1,
+				// processJetStreamMsg and signalConsumersLoop), so the count is waited for, read as
+				// the administrator, before the daemon's lag read is judged.
+				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
+					testwait.Eventually(t, "the server to count one event waiting for "+name, func() bool {
+						consumer, err := stream.Consumer(t.Context(), name)
+						if err != nil {
+							t.Fatalf("read the %s consumer's info: %v", name, err)
+						}
+						info := consumer.CachedInfo()
+						waiting := info.NumPending + uint64(info.NumAckPending)
+						if waiting > 1 {
+							t.Fatalf("the server counts %d events waiting for %s, more than the one published", waiting, name)
+						}
+						return waiting == 1
+					})
+				}
 				for _, lag := range restarted.consumers.Lag(t.Context()) {
 					if lag.Waiting != 1 || lag.OldestAt.IsZero() || lag.Unavailable != "" {
 						t.Fatalf("lag of %s under the daemon grant = %+v, want its one event waiting with its time and nothing unavailable", lag.Name, lag)
@@ -139,12 +157,11 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 				logs := &syncBuffer{}
 				cfg := daemonGrantConfig(uri)
-				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				attempt, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				w := grantWorkflow(t, logs)
-				if err := w.connect(attempt, cfg, natsConnection{seed: daemonSeed}); err == nil {
-					t.Fatal("the daemon connected without the dispatch consumer-create permission")
-				}
+				connected := make(chan error, 1)
+				go func() { connected <- w.connect(attempt, cfg, natsConnection{seed: daemonSeed}) }()
 
 				denied := "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS." + dispatchGrantConsumer
 				var daemonLine, serverLine string
@@ -152,6 +169,12 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					daemonLine = matchingLogLine(logs.String(), "NATS refused the daemon a permission", denied)
 					return daemonLine != ""
 				})
+				// The refusal is reported. A connect still waiting for the answer of the publish the
+				// server refused, which never comes, is ended here, where the test chooses.
+				cancel()
+				if err := testwait.Receive(t, "the daemon's connect to return", connected); err == nil {
+					t.Fatal("the daemon connected without the dispatch consumer-create permission")
+				}
 				var serverLogErr error
 				testwait.Eventually(t, "the server log naming the refused JetStream API publish", func() bool {
 					var serverLog string
@@ -286,7 +309,7 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 	return stream
 }
 
-func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
+func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *testcontainers.DockerContainer, string) {
 	t.Helper()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -300,21 +323,21 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	}); err != nil {
 		t.Fatalf("encode the daemon permissions: %v", err)
 	}
-	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
+	server, uri := testnats.StartImage(t, image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: strings.TrimSpace(permissions.String())},
 		testnats.NkeyUser{Public: adminPublic})
 	admin, err := natsauth.Connect([]string{uri}, adminSeed, t.Name()+" admin", nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("connect the admin user: %v", err)
 	}
-	js, err := jetstream.New(admin)
+	js, err := jetstream.New(admin, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream as the admin user: %v", err)
 	}
 	return daemonSeed, admin, js, server, uri
 }
 
-func daemonGrantServerLogs(t *testing.T, server *tcnats.NATSContainer) string {
+func daemonGrantServerLogs(t *testing.T, server *testcontainers.DockerContainer) string {
 	t.Helper()
 	text, err := readDaemonGrantServerLogs(server)
 	if err != nil {
@@ -323,7 +346,7 @@ func daemonGrantServerLogs(t *testing.T, server *tcnats.NATSContainer) string {
 	return text
 }
 
-func readDaemonGrantServerLogs(server *tcnats.NATSContainer) (string, error) {
+func readDaemonGrantServerLogs(server *testcontainers.DockerContainer) (string, error) {
 	logs, err := server.Logs(context.Background())
 	if err != nil {
 		return "", err

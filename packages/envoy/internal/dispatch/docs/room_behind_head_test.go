@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Two envoy-dispatch processes serve one Postgres, and a room resident in one of them takes the
@@ -116,22 +117,17 @@ func requireRoomStillWrites(t *testing.T, service *Service, artifactID string, c
 	atHead := service.srv.GetDoc(artifactID) != nil && !roomBehind(t, service, artifactID)
 	editAsConnectedPeer(t, service, artifactID, connection,
 		model.Actor{Kind: "user", ID: fmt.Sprintf("peer-%d", connection)}, appendBlocks(t, text+"\n"))
-	deadline := time.Now().Add(roomWait(t))
-	for time.Now().Before(deadline) {
-		if strings.Contains(storedMarkdown(t, service.store, artifactID), text) {
-			if head := storedHead(t, service.store, artifactID); head <= before {
-				t.Fatalf("the room's edit is stored at head %d, want one past %d", head, before)
-			}
-			waitForLandedAppends(t, service, artifactID)
-			if atHead && roomBehind(t, service, artifactID) {
-				t.Fatal("the room stood at the head before its edit and behind it after: its cursor missed its own append")
-			}
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	testwait.Until(t, fmt.Sprintf("the room's edit %q to reach the store (an append the gate refuses never does)", text), func() (string, bool) {
+		stored := strings.Contains(storedMarkdown(t, service.store, artifactID), text)
+		return fmt.Sprintf("room failure: %v", service.roomFailure(artifactID)), stored
+	})
+	if head := storedHead(t, service.store, artifactID); head <= before {
+		t.Fatalf("the room's edit is stored at head %d, want one past %d", head, before)
 	}
-	t.Fatalf("the room's edit %q never reached the store (room failure: %v): its append was refused",
-		text, service.roomFailure(artifactID))
+	waitForLandedAppends(t, service, artifactID)
+	if atHead && roomBehind(t, service, artifactID) {
+		t.Fatal("the room stood at the head before its edit and behind it after: its cursor missed its own append")
+	}
 }
 
 // A settlement from a room behind the head catches that room up under the document's lock it
@@ -176,7 +172,7 @@ func TestASettlementFromARoomBehindTheHeadCatchesItUpAndTheNextSettlesBoth(t *te
 
 	pair.taskA.settle = 20 * time.Millisecond
 	pair.taskA.scheduleSettle(pair.artifactID)
-	waitFor(t, 30*time.Second, "the settlement the catch-up armed to settle the document", func() bool {
+	waitFor(t, "the settlement the catch-up armed to settle the document", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})
@@ -213,7 +209,6 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 	pair.leaveTaskABehind(t, 2, bob, "Bob's paragraph.\n")
 	versions := latestVersionNumber(t, pair.taskA, pair.artifactID)
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
-	wait := roomWait(t)
 	var closed atomic.Bool
 	pair.taskA.afterSettleLock = func(artifactID string) {
 		if artifactID != pair.artifactID || !closed.CompareAndSwap(false, true) {
@@ -223,20 +218,15 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 		// hook waits for the room to leave the server: what the close does once it has, it may do
 		// under the document's lock this settlement holds.
 		go func() { _ = pair.taskA.srv.CloseRoom(artifactID, true) }()
-		deadline := time.Now().Add(wait)
-		for pair.taskA.srv.GetDoc(artifactID) == room {
-			if time.Now().After(deadline) {
-				t.Error("task A's room was never closed")
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
+		waitFor(t, "the close to take task A's room out of ygo's map", func() bool {
+			return pair.taskA.srv.GetDoc(artifactID) != room
+		})
 	}
 	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
 	// reads it. The delay is written once, before the settlement it arms.
 	pair.taskA.settle = 20 * time.Millisecond
 	pair.taskA.scheduleSettle(pair.artifactID)
-	waitFor(t, wait, "the document whose room closed under its settlement's catch-up to settle", func() bool {
+	waitFor(t, "the document whose room closed under its settlement's catch-up to settle", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})
@@ -323,7 +313,7 @@ func TestASettlementFromARoomBehindTheHeadKeepsItsRoomWithWorkInFlightOnIt(t *te
 				}
 				end()
 			}
-			waitFor(t, 30*time.Second, "the document to settle", func() bool {
+			waitFor(t, "the document to settle", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -486,7 +476,7 @@ func TestACloseOfAReplacedRoomLeavesTheRoomThatReplacedIt(t *testing.T) {
 			if _, err := joinedApplyOps(pair.taskA, pair.artifactID, insert, agent, nil); err != nil {
 				t.Fatalf("a write on the room that replaced the closed one: %v", err)
 			}
-			waitFor(t, 30*time.Second, "the document to settle on the room that replaced the closed one", func() bool {
+			waitFor(t, "the document to settle on the room that replaced the closed one", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -708,11 +698,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 			pair.taskA.unlockState(pair.artifactID, state)
 			return func() {
 				release()
-				select {
-				case <-done:
-				case <-time.After(roomWait(t)):
-					t.Fatal("the failed room's eviction never finished")
-				}
+				testwait.Receive(t, "the failed room's eviction to finish", done)
 			}
 		}},
 		{"a settlement's reservation", func(t *testing.T, pair processPair, live *crdt.Doc) func() {
@@ -756,11 +742,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 					t.Fatal("the catch-up's close never reserved the room, so nothing here is tested")
 				}
 				release()
-				select {
-				case <-done:
-				case <-time.After(roomWait(t)):
-					t.Fatal("the failed room's eviction never finished")
-				}
+				testwait.Receive(t, "the failed room's eviction to finish", done)
 			}
 		}},
 	} {
@@ -855,8 +837,11 @@ func TestARoomReservedForTheInstanceItReplacedIsTriedAgain(t *testing.T) {
 func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	// ygo's sweeper reads the timeout when the first room starts it, so it is set before any room:
-	// a room idle for a second is retired at the next sweep, which then runs every second.
+	// Shortened so ygo's idle sweep happens within the test: a room idle for a second is retired
+	// at the next sweep, which then runs every second, and the test waits for that through the
+	// shared wait. The sweep reads the wall clock inside ygo (provider/websocket/idle_sweep.go),
+	// so no clock of the test's reaches it; it reads the timeout when the first room starts it, so
+	// it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second
 	seedServiceText(t, service, artifactID, "before")
 	sentinel := createDocument(t, service.store, "Sentinel.")
@@ -869,34 +854,24 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 		defer state.mu.Unlock()
 		return len(state.connected)
 	}
-	waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
+	waitFor(t, "the browser to join the document's room", func() bool {
 		return connected() == 1 && service.srv.GetDoc(artifactID) != nil
 	})
 	live := service.srv.GetDoc(artifactID)
 
-	const sweepBudget = 30 * time.Second
 	var holdErr error
 	var heldThrough bool
+	// The hook runs on the test's goroutine, inside the close's Server.Apply (closeRoomInstance).
 	service.afterRoomClosePinned = func(room string) {
 		browser.Close()
 		// The service forgets the browser once ygo's teardown of it has returned, which is after
 		// that teardown stamped the room idle.
-		for deadline := time.Now().Add(10 * time.Second); connected() != 0; time.Sleep(10 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				holdErr = errors.New("the browser's leaving was never torn down")
-				return
-			}
-		}
+		waitFor(t, "the browser's leaving to be torn down", func() bool { return connected() == 0 })
 		if err := service.warmLiveDocument(context.Background(), sentinel); err != nil {
 			holdErr = fmt.Errorf("load the sentinel document's room: %w", err)
 			return
 		}
-		for deadline := time.Now().Add(sweepBudget); service.srv.GetDoc(sentinel) != nil; time.Sleep(50 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				holdErr = fmt.Errorf("the idle sweep did not retire the sentinel room within %v", sweepBudget)
-				return
-			}
-		}
+		waitFor(t, "ygo's idle sweep to retire the sentinel room", func() bool { return service.srv.GetDoc(sentinel) == nil })
 		heldThrough = service.srv.GetDoc(room) == live
 	}
 	closed, err := service.closeRoomInstance(context.Background(), artifactID, live)
@@ -972,7 +947,7 @@ func TestAWriteOpenedWhileASettlementRunsArmsItWhenItEnds(t *testing.T) {
 				}
 				end()
 			}
-			waitFor(t, 30*time.Second, "the settlement the write took over to settle the document", func() bool {
+			waitFor(t, "the settlement the write took over to settle the document", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -1014,7 +989,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 			t.Cleanup(server.Close)
 			browser := connectPeer(t, server.URL, artifactID, "alice")
-			waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
+			waitFor(t, "the browser to join the document's room", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
 			})
 			editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -1054,7 +1029,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			}
 
 			start.fire(t, service, artifactID, browser)
-			waitFor(t, 10*time.Second, "the settlement the write took over to settle the document", func() bool {
+			waitFor(t, "the settlement the write took over to settle the document", func() bool {
 				owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 				return err == nil && !owed
 			})
@@ -1506,11 +1481,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	if err := browserStyleWrite(service, artifactID, appendBlocks(t, "Alpha paragraph.\n"), make(chan struct{})); err != nil {
 		t.Fatalf("the browser's first edit: %v", err)
 	}
-	select {
-	case <-committed:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the browser's append never committed, so no window opened")
-	}
+	testwait.Receive(t, "the browser's append to commit and hold the window open", committed)
 	if err := browserStyleWrite(service, artifactID, appendBlocks(t, "Bravo paragraph.\n"), make(chan struct{})); err != nil {
 		t.Fatalf("the browser's second edit: %v", err)
 	}
@@ -1598,11 +1569,7 @@ func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 	if err := browserStyleWrite(service, artifactID, appendBlocks(t, "Alpha paragraph.\n"), make(chan struct{})); err != nil {
 		t.Fatalf("the browser's first edit: %v", err)
 	}
-	select {
-	case <-committed:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the browser's append never committed, so no window opened")
-	}
+	testwait.Receive(t, "the browser's append to commit and hold the window open", committed)
 	if err := browserStyleWrite(service, artifactID, appendBlocks(t, "Bravo paragraph.\n"), make(chan struct{})); err != nil {
 		t.Fatalf("the browser's second edit: %v", err)
 	}
@@ -1943,11 +1910,7 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 	}
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's load never reached the window it is held in")
-	}
+	testwait.Receive(t, "the room's load to reach the window it is held in", entered)
 
 	read := storedHead(t, service.store, artifactID)
 	ctx := context.Background()
@@ -1977,7 +1940,7 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 	}
 
 	close(release)
-	if err := <-loaded; err != nil {
+	if err := testwait.Receive(t, "the room's load to finish once let go", loaded); err != nil {
 		t.Fatalf("load the room while the write committed: %v", err)
 	}
 	if roomBehind(t, service, artifactID) {
@@ -2034,20 +1997,17 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 		read = storedHead(t, service.store, artifactID)
 		service.failRoom(artifactID, errors.New("test: the stamped room failed under the backfill"))
 		go func() { recovered <- service.awaitRoomRecovery(context.Background(), artifactID) }()
-		queued := false
-		for deadline := time.Now().Add(roomWait(t)); !queued && time.Now().Before(deadline); {
+		var inspectErr error
+		testwait.Eventually(t, "the failed room's eviction to queue on the document's advisory lock", func() bool {
 			waits, err := storetest.CountLockWaits(context.Background(), service.store, "%pg_advisory_lock(hashtext%")
 			if err != nil {
-				t.Errorf("inspect the document's lock waits: %v", err)
-				return
+				inspectErr = err
+				return true
 			}
-			queued = waits > 0
-			if !queued {
-				time.Sleep(2 * time.Millisecond)
-			}
-		}
-		if !queued {
-			t.Error("the failed room's eviction never queued on the document's advisory lock")
+			return waits > 0
+		})
+		if inspectErr != nil {
+			t.Errorf("inspect the document's lock waits: %v", inspectErr)
 			return
 		}
 		select {
@@ -2066,13 +2026,8 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	}
 
 	// The commit drops the lock, and the eviction the stamp held up finishes.
-	select {
-	case err := <-recovered:
-		if err != nil {
-			t.Fatalf("evict the room the backfill stamped: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the failed room was never evicted once the stamp had committed")
+	if err := testwait.Receive(t, "the failed room's eviction once the stamp had committed", recovered); err != nil {
+		t.Fatalf("evict the room the backfill stamped: %v", err)
 	}
 	head := storedHead(t, service.store, artifactID)
 	if head != read+1 {
@@ -2171,21 +2126,19 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 		t.Fatalf("hold the document's lock: %v", err)
 	}
 	typeOver(t, alice, "before", "first keystroke")
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("alice's append never came to wait on the document's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	foldHistoryPastRoom(t, holder, artifactID, head)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the document's lock: %v", err)
 	}
-	waitFor(t, roomWait(t), "alice's first keystroke to be stored", func() bool {
+	waitFor(t, "alice's first keystroke to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "first keystroke")
 	})
 	if got := held.Load(); got != 1 {
 		t.Fatalf("%d appends were admitted on the folded history, want alice's first keystroke's alone", got)
 	}
 
-	waitFor(t, roomWait(t), "the room whose history was folded under it to be closed", func() bool {
+	waitFor(t, "the room whose history was folded under it to be closed", func() bool {
 		return service.srv.GetDoc(artifactID) != room
 	})
 	requireEnds(t, alice, "the room whose history was folded under it left alice's browser connected")
@@ -2194,11 +2147,11 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 	// this browser's connect stores nothing to move that head on: the two meet. A room left on
 	// the folded history would never meet the head: no stored row at or below its cursor
 	// remains for a catch-up to read.
-	waitFor(t, roomWait(t), "the reloaded room to stand at the document's stored head", func() bool {
+	waitFor(t, "the reloaded room to stand at the document's stored head", func() bool {
 		return !roomBehind(t, service, artifactID)
 	})
 	typeOver(t, alice, "first keystroke", "second keystroke")
-	waitFor(t, roomWait(t), "alice's second keystroke to be stored", func() bool {
+	waitFor(t, "alice's second keystroke to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "second keystroke")
 	})
 	if got := held.Load(); got != 1 {

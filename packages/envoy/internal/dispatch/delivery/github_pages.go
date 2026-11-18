@@ -18,13 +18,13 @@ import (
 const githubPageAttempts = 3
 
 // githubPageRetryWait is how long a retry waits before asking again, multiplied by the attempt
-// just made (1 s, then 2 s). A var rather than a const so a test can shrink it; nothing outside
-// a test writes it.
+// just made (1 s, then 2 s). A test that exercises a retry waits it out as production does: one
+// retry costs it a second.
 //
 // One attempt's own deadline is githubapp.RequestTimeout, which githubapp.Client.request applies
 // to every call it makes. This file adds none of its own, so a page has one deadline however it
 // is read.
-var githubPageRetryWait = time.Second
+const githubPageRetryWait = time.Second
 
 // readGitHubPage performs one GET of a list page, retrying a timeout or one of GitHub's own
 // timeout answers up to githubPageAttempts times. Returns the last attempt's answer exactly as

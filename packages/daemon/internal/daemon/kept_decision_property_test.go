@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -486,12 +487,6 @@ type keptGate struct {
 // words it: the daemon reads it as the agent being busy rather than refusing the work, and charges
 // it nothing (supervise's agentBusy).
 const keptBusyRefusal = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-
-// keptSendBound is how long a step that armed the gate waits for the prompt. A send starts inside
-// the event that triggers it, on a goroutine of the machine's own, so the wait is a safety net
-// rather than a step's pace: the step that arms the gate first reads whether the send has anything
-// to carry (heldForItsTree), and takes its gate back when none came.
-const keptSendBound = 5 * time.Second
 
 func newKeptConn() *keptConn { return &keptConn{Conn: fake.NewConn()} }
 
@@ -1085,7 +1080,7 @@ func (r *keptRun) restart() {
 	}
 	sup := newSupervisor(r.ctx, nil, "legion", r.stateDir, quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: r.rt, Conns: fake.NewConns(), Store: r.claims, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: r.rt, Conns: fake.NewConns(), Store: r.claims, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		// The daemon's own readings of whether a root architect's task may be sent and of what that
 		// task says now (workflowRuntime.rootHears, rootTask), over this run's pool and store.
 		RootHears:      (&workflowRuntime{pool: r.pool, records: r.records}).rootHears,
@@ -2817,14 +2812,14 @@ func (r *keptRun) busyRefusalAfterAConfirmation(tree *keptTree) {
 	// (turnEnded's sendPending).
 	r.handle(machine, supervise.StreamTurnStart{Claim: tree.token})
 	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	if !keptArrived(gate) {
+	if !keptArrived(r.t, gate, machine) {
 		if tree.conn.standDown(gate) {
 			r.waitMachines()
 			r.tracef("busy-refusal tree=%s: nothing was sent, so no prompt met the gate; pending=%s state=%s",
 				tree.key, keptPendingID(machine.Claim()), machine.Claim().State)
 			return
 		}
-		<-gate.arrived
+		testwait.Receive(r.t, "the prompt that took the gate back from its stand-down", gate.arrived)
 	}
 	sent := keptPendingID(machine.Claim())
 	// The turn of the agent's own, which the machine takes for the task's while its send is in
@@ -3028,14 +3023,33 @@ func (r *keptRun) noteTakeBack(tree *keptTree, before string) {
 		pending.ID, row)
 }
 
-// keptArrived waits for the prompt a gate holds open, false for a send that never came.
-func keptArrived(gate *keptGate) bool {
-	select {
-	case <-gate.arrived:
-		return true
-	case <-time.After(keptSendBound):
-		return false
-	}
+// keptArrived waits for the prompt a gate holds open, false for a send that never came. A send
+// starts inside the event that triggers it, on a goroutine the machine counts (supervise's
+// Machine.Wait), so once the step's events are handled either a send is counted, and its prompt
+// meets the gate and holds there, or none is, and the machine's wait for its sends returns with
+// the gate unmet: that wait is the read of whether a send is coming at all.
+func keptArrived(t *testing.T, gate *keptGate, machine *supervise.Machine) bool {
+	t.Helper()
+	settled := make(chan struct{})
+	go func() {
+		machine.Wait()
+		close(settled)
+	}()
+	return testwait.Until(t, "the prompt at the gate, or the machine's sends settled with none meeting it", func() (bool, bool) {
+		select {
+		case <-gate.arrived:
+			return true, true
+		default:
+		}
+		select {
+		case <-settled:
+			// A prompt that met the gate holds its send open, so a machine whose sends settled
+			// sent none.
+			return false, true
+		default:
+			return false, false
+		}
+	})
 }
 
 // connected is whether a connection is registered for the tree's architect, without which no

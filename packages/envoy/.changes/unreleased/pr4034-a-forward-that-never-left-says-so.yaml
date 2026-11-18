@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `bus.ErrWindowEndedBeforePublish` marks a publish whose window ended before it was made, so that
+  nothing was sent; the error's text is unchanged, and `errors.Is` tells it from a flush or an
+  acknowledgement that ran out of the window after the publish. The listener's
+  `listener role forward failed` line carries `"window_ended_before_publish":true` for that error
+  alone. `store.WithRequestWait` gives the interest registry's open one wait for its JetStream
+  requests and its role scan in place of their 10 s and 5 s; no deployment sets it.

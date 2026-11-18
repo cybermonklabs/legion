@@ -28,7 +28,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -483,7 +482,8 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	admission := admit.New(records, engine, len(shapes), upgradeProject, log)
 	w := &workflowRuntime{pool: pool, records: record.NewStore(), admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: upgradeProject, bootID: "test-boot",
-		log: log, entrySweep: 10 * time.Millisecond}
+		log: log}
+	passes := triggeringRuntime(w)
 	swept := func() (n int) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `select count(*) from processed_events
@@ -507,7 +507,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
-	testwait.Eventually(t, "the entry sweep's fact applied", func() bool { return swept() >= 1 })
+	passes.until(t, passEntrySweep, "the entry sweep's fact applied", func() bool { return swept() >= 1 })
 	stop()
 	<-done
 	sweeps := swept()
@@ -681,7 +681,7 @@ func upgradeOwedStartGivesItsEntry(t *testing.T, st *store.Store, issue record.I
 	}
 	sup := newSupervisor(ctx, st, project, t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,

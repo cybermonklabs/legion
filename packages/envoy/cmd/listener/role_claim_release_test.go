@@ -10,13 +10,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	nats "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // releaseKeptTopic is a topic of the holder's own, not a role lane's. A release that does not
@@ -43,8 +43,7 @@ func newRoleClaimReleaseRig(t *testing.T, sessionID, role, instance string) *rol
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	registerInstance(t, sessions, sessionID, holdingProcess)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{releaseKeptTopic}); err != nil {
 		t.Fatalf("register %s's interests: %v", sessionID, err)
 	}

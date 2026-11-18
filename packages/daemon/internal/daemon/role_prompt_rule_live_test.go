@@ -40,7 +40,7 @@
 // Only the kernel's copy of the argv says which file the agent was started with.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
+// own whole-daemon harness (startDaemonLogging) over the live-proof fixture (live_proof_test.go).
 // Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by
 // localruntime_live_test.go, since a Legion pod carries no tmux, with this checkout's
 // `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own. What
@@ -241,7 +241,6 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/role-prompt-rule.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/role-prompt-rule.sh")
 	r := &rolePromptRuleLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -275,7 +274,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	return r
 }
 

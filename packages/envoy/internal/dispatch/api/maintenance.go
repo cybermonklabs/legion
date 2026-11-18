@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -52,7 +53,16 @@ func RunMaintenanceSweep(
 	ctx context.Context, pool *store.Pool, interval time.Duration, leases duty.Leases,
 	resumeDeliveries func(context.Context) error,
 ) {
-	duty.RunLeased(ctx, leases, maintenanceLease, interval, duty.TickAfterInterval, func(ctx context.Context) {
+	runMaintenanceSweepOn(ctx, clock.Real(), pool, interval, leases, resumeDeliveries)
+}
+
+// runMaintenanceSweepOn is RunMaintenanceSweep with its ticks on c (duty.RunLeasedOn), so a test
+// moves a fake to the next tick rather than shortening the interval.
+func runMaintenanceSweepOn(
+	ctx context.Context, c clock.Clock, pool *store.Pool, interval time.Duration, leases duty.Leases,
+	resumeDeliveries func(context.Context) error,
+) {
+	duty.RunLeasedOn(ctx, c, leases, maintenanceLease, interval, duty.TickAfterInterval, func(ctx context.Context) {
 		if err := sweepRequestKeys(ctx, pool); err != nil {
 			slog.Warn("dispatch: idempotency key sweep failed", "error", err)
 		}

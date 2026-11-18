@@ -13,6 +13,7 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // The class of every Key failure. A key the issuer does not publish and an issuer that cannot be
@@ -71,6 +72,9 @@ type Keys struct {
 	// HTTPClient reads the key set. A caller replaces it to route the read through a proxy or an
 	// instrumented transport; it is never nil.
 	HTTPClient *http.Client
+	// Clock is the time the lifetime and the refresh window are measured on, clock.Real by
+	// default; a test hands it a clocktest.Fake and moves the windows itself.
+	Clock clock.Clock
 
 	jwksURI string
 
@@ -112,6 +116,7 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 		MinRefresh:   DefaultKeysMinRefresh,
 		FetchTimeout: DefaultKeysFetchTimeout,
 		HTTPClient:   &http.Client{},
+		Clock:        clock.Real(),
 		jwksURI:      discovery.JWKSURI,
 	}, nil
 }
@@ -133,7 +138,7 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 	set, fetched := k.state()
 	var fetchErr error
 	read := false
-	if fetched.IsZero() || time.Since(fetched) >= k.Lifetime {
+	if fetched.IsZero() || k.Clock.Now().Sub(fetched) >= k.Lifetime {
 		read = true
 		fresh, err := k.fetch(ctx)
 		switch {
@@ -175,7 +180,7 @@ func (k *Keys) state() ([]jose.JSONWebKey, time.Time) {
 func (k *Keys) openMissWindow() bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	now := time.Now()
+	now := k.Clock.Now()
 	if !k.missed.IsZero() && now.Sub(k.missed) < k.MinRefresh {
 		return false
 	}
@@ -207,7 +212,7 @@ func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	k.mu.Lock()
 	k.inflight = nil
 	if inflight.err == nil {
-		k.keys, k.fetched = inflight.keys, time.Now()
+		k.keys, k.fetched = inflight.keys, k.Clock.Now()
 	}
 	k.mu.Unlock()
 	close(inflight.done)

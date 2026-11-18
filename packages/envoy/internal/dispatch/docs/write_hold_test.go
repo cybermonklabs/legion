@@ -119,7 +119,9 @@ func (c *anchorQueryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d
 
 func (c *anchorQueryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// countedService is newTestService on a pool whose anchor reads are counted.
+// countedService is newTestService on a pool whose anchor reads are counted, built through the
+// package's test constructor (newTestServiceWith). The store's pool is closed whole once the
+// service has shut down, the separate pools the service opened on it included (store.Pool.Close).
 func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -131,16 +133,12 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	if err != nil {
 		t.Fatalf("open counted pool: %v", err)
 	}
-	t.Cleanup(counted.Close)
-	service := New(Deps{
-		Store:  &store.Store{Pool: store.NewPool(counted)},
+	pool := store.NewPool(counted)
+	t.Cleanup(pool.Close)
+	service := newTestServiceWith(t, Deps{
+		Store:  &store.Store{Pool: pool},
 		Events: events.NewBroker(),
 		Settle: time.Hour,
-	})
-	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
 	})
 	return service, artifactID, counter
 }

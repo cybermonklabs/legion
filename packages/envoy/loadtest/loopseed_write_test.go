@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,8 +10,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -784,19 +781,10 @@ func TestLoopSeedWriteResumes(t *testing.T) {
 
 // --- a live Postgres -------------------------------------------------------------------------
 
-// loopTestPG is the Postgres a test that needs one writes to: $LEGION_TEST_PG_DSN, the pod's own
-// test server. A test skips without it, since this package's checks run where there is none.
-func loopTestPG(t *testing.T) string {
-	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("LEGION_TEST_PG_DSN must be set to run the loop seed's Postgres tests")
-	}
-	return dsn
-}
-
-// loopTestDB opens a database of this test's own on that server and drops it afterwards, so a
-// test's public.loadtest_loop_ids rows and its dispatch-shaped rows are nobody else's.
+// loopTestDB opens a database of this test's own on the pod's test server, $LEGION_TEST_PG_DSN,
+// and drops it afterwards, so a test's public.loadtest_loop_ids rows and its dispatch-shaped rows
+// are nobody else's. A test skips without that server, since this package's checks run where
+// there is none.
 func loopTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool, _ := loopTestDBAt(t)
@@ -807,42 +795,13 @@ func loopTestDB(t *testing.T) *pgxpool.Pool {
 // session setting the database carries (search_path) reaches the sessions opened after it alone.
 func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
-	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, loopTestPG(t))
-	if err != nil {
-		t.Fatalf("open the test server: %v", err)
-	}
-	defer admin.Close()
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatal(err)
-	}
-	name := "loopseed_test_" + hex.EncodeToString(suffix[:])
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		t.Fatalf("create the test database: %v", err)
-	}
-	u, err := url.Parse(loopTestPG(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = "/" + name
-	dsn := u.String()
-	pool, err := pgxpool.New(ctx, dsn)
+	dsn := testdb.LegionServer.Database(t, "loopseed_test")
+	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}
-	t.Cleanup(func() {
-		pool.Close()
-		dropper, err := pgxpool.New(context.Background(), loopTestPG(t))
-		if err != nil {
-			t.Errorf("open the test server to drop %s: %v", name, err)
-			return
-		}
-		defer dropper.Close()
-		if _, err := dropper.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			t.Errorf("drop the test database: %v", err)
-		}
-	})
+	// Registered after the database's drop, so it runs first.
+	t.Cleanup(pool.Close)
 	return pool, dsn
 }
 

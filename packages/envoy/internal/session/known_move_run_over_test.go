@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -31,9 +32,10 @@ func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
 			name: "the connection is reconnecting and the context is live",
 			arrange: func(t *testing.T, srv *testnats.Server, client *bus.Client) context.Context {
 				srv.Stop(t)
-				if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return client.Conn.Status() == nats.RECONNECTING }) {
-					t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", client.Conn.Status())
-				}
+				testwait.Until(t, "the connection to read RECONNECTING once its server stopped", func() (nats.Status, bool) {
+					status := client.Conn.Status()
+					return status, status == nats.RECONNECTING
+				})
 				return context.Background()
 			},
 		},
@@ -72,16 +74,14 @@ func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
 			known, err := OpenKnownSessions(client.Conn,
 				WithKnownSessionReplicas(1),
 				WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
-				// A retry the move arms waits an hour before its first attempt, so nothing retires
-				// it while the test reads it.
-				withKnownSessionRetry(time.Hour, time.Hour))
+				// A retry the move arms waits on a clock nothing moves before its first attempt, so
+				// nothing retires it while the test reads it.
+				withKnownSessionTimers(clocktest.New(time.Now())))
 			if err != nil {
 				t.Fatalf("open the known-session store: %v", err)
 			}
 			t.Cleanup(known.StopWatch)
-			ready, cancelReady := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancelReady()
-			if err := known.WaitForCacheReady(ready); err != nil || !known.Opened() {
+			if err := known.WaitForCacheReady(testwait.Context(t)); err != nil || !known.Opened() {
 				t.Fatalf("the store's watcher is not open (WaitForCacheReady %v, Opened %t); the case needs one open", err, known.Opened())
 			}
 			if repairRunning(known) {

@@ -1,14 +1,17 @@
 package bus
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // generationKey is the stream metadata key that holds the generation of the stream's settings,
@@ -25,7 +28,7 @@ func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -48,9 +51,7 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 		Replicas:   3,
 		Metadata:   map[string]string{generationKey: strconv.Itoa(streamConfigGeneration + 1)},
 	}
-	if _, err := js.AddStream(&newer); err != nil {
-		t.Fatalf("the newer build creates the stream: %v", err)
-	}
+	cluster.CreateStream(t, newer)
 	for _, tc := range []struct {
 		name    string
 		options []ConnectOption
@@ -164,7 +165,7 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 	}
 	t.Cleanup(client.Close)
 	admin := testnats.Connect(t, uri)
-	adminJS, err := admin.JetStream()
+	adminJS, err := admin.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -178,23 +179,16 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 
 	checker := testnats.Connect(t, uri)
 	t.Cleanup(checker.Close)
-	checkerJS, err := checker.JetStream()
+	checkerJS, err := checker.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	info := testwait.Until(t, "the stream to be recreated after the client reconnected", func() (*nats.StreamInfo, bool) {
 		info, err := checkerJS.StreamInfo(Stream)
-		if err == nil {
-			if !slices.Equal(info.Config.Subjects, streamCarriedSubjects) {
-				t.Fatalf("recreated stream subjects = %v, want %v", info.Config.Subjects, streamCarriedSubjects)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the stream was not recreated after the client reconnected: %v", err)
-		}
-		time.Sleep(100 * time.Millisecond)
+		return info, err == nil
+	})
+	if !slices.Equal(info.Config.Subjects, streamCarriedSubjects) {
+		t.Fatalf("recreated stream subjects = %v, want %v", info.Config.Subjects, streamCarriedSubjects)
 	}
 }
 
@@ -267,7 +261,9 @@ func TestATopicOnlyTheDeployedStreamCapturesIsPublishedThroughJetStream(t *testi
 
 // A client follows a subject a newer build adds while the client runs: it reads the deployed
 // subjects again every streamSubjectsRefresh, whether it owns the stream or not, and then publishes
-// a topic under the new subject through JetStream with its MsgId.
+// a topic under the new subject through JetStream with its MsgId. The refresh is a timer on the
+// client's clock, which the row moves to it once the client has armed it: before the move the
+// client still sends the topic over core NATS, so the refresh is what follows the new subject.
 func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 	const topic = "notifications.x.y"
 	for _, tc := range []struct {
@@ -286,7 +282,9 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.AddStream(&current); err != nil {
 				t.Fatalf("create the stream: %v", err)
 			}
-			client, err := tc.connect([]string{uri}, withStreamSubjectsRefresh(50*time.Millisecond))
+			clock := clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
+			refresh := clock.Now().Add(streamSubjectsRefresh)
+			client, err := tc.connect([]string{uri}, WithClock(clock))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -301,13 +299,17 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.UpdateStream(&newer); err != nil {
 				t.Fatalf("the newer build adds its subject: %v", err)
 			}
-			deadline := time.Now().Add(10 * time.Second)
-			for client.UsesCoreTransport(topic) {
-				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 10 s after the stream captured it", topic)
-				}
-				time.Sleep(20 * time.Millisecond)
+			testwait.Until(t, fmt.Sprintf("the client to arm its refresh of the deployed subjects at %s", refresh), func() ([]time.Time, bool) {
+				armed := clock.Armed()
+				return armed, slices.ContainsFunc(armed, refresh.Equal)
+			})
+			if !client.UsesCoreTransport(topic) {
+				t.Fatalf("%s takes JetStream before the client's clock reached its refresh", topic)
 			}
+			clock.Set(refresh)
+			testwait.Eventually(t, "the client to send "+topic+" through JetStream once its refresh read the subjects", func() bool {
+				return !client.UsesCoreTransport(topic)
+			})
 			envelope := contracts.Envelope{
 				EventID:        "evt-followed-subject",
 				Source:         "dispatch",
@@ -333,8 +335,8 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 // A client that connects in the background (WithConnectInBackground) while its server is down
 // reads the deployed stream's subjects at its first connection, as a client that waits reads them
 // at connect: an owning client through its ensure of the stream, any other through its read. A
-// topic under a subject only a newer build added then takes JetStream at once, without waiting a
-// streamSubjectsRefresh.
+// topic under a subject only a newer build added then takes JetStream at once, with no refresh:
+// the client's clock never moves, so its refresh (streamSubjectsRefresh) never comes.
 func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testing.T) {
 	const topic = "notifications.x.y"
 	for _, tc := range []struct {
@@ -356,7 +358,7 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 			srv.Stop(t)
 
-			client, err := tc.connect([]string{uri}, WithConnectInBackground(), withStreamSubjectsRefresh(time.Hour))
+			client, err := tc.connect([]string{uri}, WithConnectInBackground(), WithClock(clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))))
 			if err != nil {
 				t.Fatalf("connect while the server is down: %v", err)
 			}
@@ -366,13 +368,9 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 
 			srv.Start(t)
-			deadline := time.Now().Add(15 * time.Second)
-			for client.UsesCoreTransport(topic) {
-				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 15 s after the server came up", topic)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			testwait.Eventually(t, "the client to send "+topic+" through JetStream once the server came up", func() bool {
+				return !client.UsesCoreTransport(topic)
+			})
 		})
 	}
 }

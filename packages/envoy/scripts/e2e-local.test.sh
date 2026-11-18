@@ -19,10 +19,59 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  rm -f "$output_file" "$first_output_file" "${temporary_dir}/greeter.port"
+  rm -f "$output_file" "$first_output_file" "${temporary_dir}/greeter.port" "$wait_output"
   rmdir "$temporary_dir"
 }
 trap cleanup EXIT
+
+# The test's one guard and its one wait, the pair e2e-local.sh holds for itself: every wait below
+# gives up proof_margin_seconds before the guard's deadline, naming what it waited for and the
+# last output of its probe. The guard arms nothing: the job's timeout-minutes stops a hang.
+readonly proof_margin_seconds=30
+readonly wait_output="${temporary_dir}/wait-for.out"
+wait_impossible=''
+[[ -n "${EPOCHREALTIME:-}" ]] || {
+  printf 'FAIL: bash 5 or later is required (EPOCHREALTIME)\n' >&2
+  exit 1
+}
+proof_now_ms() {
+  local now=${EPOCHREALTIME/[.,]/}
+  printf '%s\n' "$((10#$now / 1000))"
+}
+# proof_guard SECONDS gives the test SECONDS from here; LEGION_PROOF_DEADLINE_MS, which it exports,
+# is that deadline less the margin, in epoch milliseconds (each run of the driver sets its own).
+proof_guard() {
+  proof_guard_seconds=$1
+  export LEGION_PROOF_DEADLINE_MS=$(($(proof_now_ms) + ($1 - proof_margin_seconds) * 1000))
+}
+# wait_for WHAT COMMAND... runs COMMAND in this shell every tenth of a second until it succeeds,
+# and gives up at LEGION_PROOF_DEADLINE_MS, failing the test with WHAT and COMMAND's last output.
+# A COMMAND that finds the fact can no longer happen sets wait_impossible to why, and the test
+# fails at once saying so.
+wait_for() {
+  local what=$1 polls=0
+  shift
+  while :; do
+    polls=$((polls + 1))
+    wait_impossible=''
+    if "$@" >"$wait_output" 2>&1; then return 0; fi
+    if [[ -n "$wait_impossible" ]]; then
+      cat "$wait_output" >&2
+      printf 'FAIL: %s (waiting for %s)\n' "$wait_impossible" "$what" >&2
+      exit 1
+    fi
+    (($(proof_now_ms) < LEGION_PROOF_DEADLINE_MS)) || break
+    sleep 0.1
+  done
+  cat "$wait_output" >&2
+  printf 'FAIL: gave up waiting for %s after %s polls, %ss before the test'\''s guard of %ss\n' \
+    "$what" "$polls" "$proof_margin_seconds" "$proof_guard_seconds" >&2
+  exit 1
+}
+# Twice the longest green run on record, rounded up past the whole run of the driver this test
+# makes, whose own guard is 300 s: 105 green envoy-e2e-local jobs in ci.yaml's 150 newest green
+# runs up to 2026-11-14, the longest "Refusal test for e2e-local.sh" step 54 s (run 43579669954).
+proof_guard 360
 
 bash "$driver" --help >"$output_file"
 [[ "$(<"$output_file")" == *"Usage: e2e-local.sh"* ]] || {
@@ -83,14 +132,12 @@ GREETER_PORT_FILE="$greeter_port_file" bun -e '
   setInterval(() => {}, 1 << 30);
 ' &
 greeter_pid=$!
-for _ in $(seq 1 100); do
-  [[ -s "$greeter_port_file" ]] && break
-  sleep 0.1
-done
-[[ -s "$greeter_port_file" ]] || {
-  printf 'the stand-in NATS greeter never reported its port\n' >&2
-  exit 1
+greeter_reported_port() {
+  [[ -s "$greeter_port_file" ]] && return 0
+  kill -0 "$greeter_pid" 2>/dev/null || wait_impossible='the stand-in NATS greeter exited before it reported its port'
+  return 1
 }
+wait_for 'the stand-in NATS greeter to report its port' greeter_reported_port
 greeter_port="$(<"$greeter_port_file")"
 readonly greeter_port
 
@@ -125,22 +172,17 @@ readonly evidence_dir="${project_root}/packages/envoy/out/e2e"
 : >"$first_output_file"
 bash "$driver" >"$first_output_file" 2>&1 &
 first_pid=$!
+# first_run_reached LINE: the first run printed LINE; a run that ended first ends the wait, naming
+# what it printed.
+first_run_reached() {
+  cat "$first_output_file"
+  grep -q "$1" "$first_output_file" && return 0
+  kill -0 "$first_pid" 2>/dev/null || wait_impossible="the first run ended before it printed ${1}"
+  return 1
+}
 # The driver prints its build line only once it holds out/e2e and has cleared it. Its output file is
 # this test's own, so nothing a finished run left behind can be mistaken for it.
-deadline=$((SECONDS + 60))
-until grep -q '^building listener and NATS server$' "$first_output_file"; do
-  if ! kill -0 "$first_pid" 2>/dev/null; then
-    cat "$first_output_file" >&2
-    printf 'FAIL: the first run ended before it held out/e2e\n' >&2
-    exit 1
-  fi
-  if ((SECONDS >= deadline)); then
-    cat "$first_output_file" >&2
-    printf 'FAIL: the first run did not hold out/e2e within 60 seconds\n' >&2
-    exit 1
-  fi
-  sleep 0.1
-done
+wait_for 'the first run to hold out/e2e' first_run_reached '^building listener and NATS server$'
 if bash "$driver" >"$output_file" 2>&1; then
   cat "$output_file" >&2
   printf 'FAIL: a second run in the same checkout passed while the first was still using out/e2e\n' >&2
@@ -170,15 +212,7 @@ printf 'PASS: refuses a second run in the same checkout, and the first finishes 
 : >"$first_output_file"
 bash "$driver" >"$first_output_file" 2>&1 &
 first_pid=$!
-deadline=$((SECONDS + 60))
-until grep -q '^waiting for listener health$' "$first_output_file"; do
-  if ! kill -0 "$first_pid" 2>/dev/null || ((SECONDS >= deadline)); then
-    cat "$first_output_file" >&2
-    printf 'FAIL: the run to be stopped never reached its listener-health wait\n' >&2
-    exit 1
-  fi
-  sleep 0.1
-done
+wait_for 'the run to be stopped to reach its listener-health wait' first_run_reached '^waiting for listener health$'
 kill -TERM "$first_pid"
 stopped_rc=0
 wait "$first_pid" || stopped_rc=$?

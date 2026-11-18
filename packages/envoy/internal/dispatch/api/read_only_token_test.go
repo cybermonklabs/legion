@@ -23,7 +23,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -477,9 +476,9 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 
 	// The trees are stored beside the request, on a goroutine of the server's background work, so
 	// the statements are read once the rows it stores are back.
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
-		t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
-	}
+	testwait.Eventually(t, "the read to store every one of the prose's trees", func() bool {
+		return storedTrees() == len(sums)
+	})
 
 	statements := marked.take()
 	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}

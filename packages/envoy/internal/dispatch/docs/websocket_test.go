@@ -18,10 +18,12 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectPeer connects login's browser to artifactID's room through the document server at
@@ -93,7 +95,7 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			}
 			setIssueClosed(true)
 			reader := connectPeer(t, httpServer.URL, artifactID, "alice")
-			if err := reader.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+			if err := reader.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 				t.Fatal(err)
 			}
 
@@ -108,13 +110,16 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			if err := reader.AskForDocument(); err != nil {
 				t.Fatalf("ask the room for the document after the reader's keystroke: %v", err)
 			}
-			select {
-			case <-reader.Answers:
-			case <-reader.Ended:
-				t.Fatal("the room closed the read-only reader's connection over its keystroke")
-			case <-time.After(10 * time.Second):
-				t.Fatal("the room did not answer the reader after its keystroke")
-			}
+			testwait.Eventually(t, "the room to answer the read-only reader after its keystroke", func() bool {
+				select {
+				case <-reader.Answers:
+					return true
+				case <-reader.Ended:
+					t.Fatal("the room closed the read-only reader's connection over its keystroke")
+				default:
+				}
+				return false
+			})
 			if text := documentText(t, service, artifactID); text != "before\n" {
 				t.Fatalf("the room took the read-only reader's keystroke: it holds %q, want %q", text, "before\n")
 			}
@@ -128,15 +133,11 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			setIssueClosed(false)
 			// The regression check: the reopen ends the connection admitted read-only, which the
 			// browser's provider answers by reconnecting.
-			select {
-			case <-reader.Ended:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the connection admitted while the issue was closed was still open 5s after the reopen")
-			}
+			testwait.Receive(t, "the reopen to end the connection admitted while the issue was closed", reader.Ended)
 			// The room a connection now loads takes edits. It loads from the store, so its copy
 			// also shows the read-only reader's keystroke never reached the store.
 			editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-			if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+			if err := editor.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 				t.Fatal(err)
 			}
 			typeOver(t, editor, "before", "after")
@@ -680,7 +681,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, time.Second, "document peer connection", func() bool {
+	waitFor(t, "document peer connection", func() bool {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -736,9 +737,16 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	if !service.hasDurableAppend(artifactID) {
 		t.Fatal("durable append finished while its advisory lock was held")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	// The caller's deadline is a context on a fake clock, which the test moves past it once
+	// Shutdown has scanned the room and is waiting on the locked append.
+	callerClock := clocktest.New(time.Now())
+	ctx, cancel := callerClock.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	if err := service.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- service.Shutdown(ctx) }()
+	waitFor(t, "Shutdown to have scanned the room", func() bool { return service.shuttingDown(artifactID) })
+	callerClock.Advance(400 * time.Millisecond)
+	if err := testwait.Receive(t, "Shutdown to return at its caller's deadline", shutdown); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown with an editor connected and an append locked = %v, want deadline exceeded", err)
 	}
 	if err := locker.Commit(context.Background()); err != nil {
@@ -748,8 +756,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	// (room.connected), and the eviction compacts the rows it can (compactRoom), so a row count is
 	// not what says the append landed. The durable-append signal alone proves the locked write
 	// reached the store; the content check below proves what it reached the store as.
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Minute)
-	defer waitCancel()
+	waitCtx := testwait.Context(t)
 	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
 		t.Fatalf("wait for the locked append to be stored: %v", err)
 	}

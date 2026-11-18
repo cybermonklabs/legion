@@ -19,6 +19,9 @@ import (
 func TestDeleteSessionAsksTheSessionRouteWithTheBearerTheMomentAndTheInstance(t *testing.T) {
 	var method, path, query, bearer string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, r.Header.Get("Authorization") == "Bearer envoy-bearer") {
+			return
+		}
 		method, path, query, bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -49,7 +52,12 @@ func TestDeleteSessionAsksTheSessionRouteWithTheBearerTheMomentAndTheInstance(t 
 // condition the stop really holds.
 func TestDeleteSessionLeavesOutAnInstanceTheEntryDoesNotName(t *testing.T) {
 	var query string
+	// The client here has no bearer, so the stand-in keeps the query of the one request it sends,
+	// the delete of the session's key; any other is another process's (fromTheDaemonWhen).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, r.Method == http.MethodDelete && r.URL.Path == "/v1/sessions/ses_old_client") {
+			return
+		}
 		query = r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -135,6 +143,9 @@ func TestDeleteSessionTellsAnAlreadyGoneSessionFromARefusal(t *testing.T) {
 func TestReadSessionRegistrationAsksTheRegistryForTheEntrysInstance(t *testing.T) {
 	var method, path, query, bearer string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, r.Header.Get("Authorization") == "Bearer envoy-bearer") {
+			return
+		}
 		method, path, query, bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{"session_id":"ses/dead","client_instance_id":"inst_dead","last_seen":1762560000000}`)

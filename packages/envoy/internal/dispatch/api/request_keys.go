@@ -320,7 +320,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		s.detached.start()
 		defer s.detached.done()
-		detached, stop := context.WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
+		detached, stop := s.clock.WithTimeout(context.WithoutCancel(r.Context()), keyedHandlerLimit)
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
 		answer := &keyedAnswer{w: w}
@@ -380,51 +380,31 @@ var keyedUploads = map[string]bool{
 	http.MethodPost + " /api/v1/agents/{session_id}/artifacts": true,
 }
 
-// keyLease is how long a keyed request holds its key without a renewal before a repeat presumes
-// its process died (IdempotencyLease; requestKeyLease in a test).
-func (s *server) keyLease() time.Duration {
-	if s.requestKeyLease > 0 {
-		return s.requestKeyLease
-	}
-	return contracts.IdempotencyLease
-}
-
-// keyedRunLimit is how long a keyed handler runs once its client's cancellation no longer bounds
-// it (keyedHandlerLimit; requestKeyRunLimit in a test).
-func (s *server) keyedRunLimit() time.Duration {
-	if s.requestKeyRunLimit > 0 {
-		return s.requestKeyRunLimit
-	}
-	return keyedHandlerLimit
-}
-
-// renewRequestKeyLease renews claim's lease every keyedLeaseRenewal until the returned stop is
-// called or run - the handler's own context, which keyedRunLimit bounds - ends, and stops by
-// itself once a renewal finds the key no longer its own. A handler that runs on past its limit,
-// ignoring its context, so holds its key for a lease past the limit and no longer: a repeat then
-// takes the key over, or is answered KEY_COMMITTED for a write the run made. stop waits for a
-// renewal under way and may be called more than once. Each renewal is its own statement on a
-// connection of its own, beside whatever transaction the handler holds.
+// renewRequestKeyLease renews claim's lease every keyedLeaseRenewal on the server's clock until
+// the returned stop is called or run - the handler's own context, which keyedHandlerLimit bounds -
+// ends, and stops by itself once a renewal finds the key no longer its own. A handler that runs
+// on past its limit, ignoring its context, so holds its key for a lease past the limit and no
+// longer: a repeat then takes the key over, or is answered KEY_COMMITTED for a write the run
+// made. stop waits for a renewal under way and may be called more than once. Each renewal is its
+// own statement on a connection of its own, beside whatever transaction the handler holds.
 func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim) (stop func()) {
-	every := keyedLeaseRenewal
-	if s.requestKeyRenewal > 0 {
-		every = s.requestKeyRenewal
-	}
 	stopped, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
-		ticker := time.NewTicker(every)
-		defer ticker.Stop()
+		renewal := s.clock.NewTimer(keyedLeaseRenewal)
+		defer renewal.Stop()
 		for {
 			select {
 			case <-stopped:
 				return
 			case <-run.Done():
 				return
-			case <-ticker.C:
-				if !s.renewRequestKey(claim) {
+			case <-renewal.C():
+				// A renewal due together with the run's bound is the bound's: the run has ended.
+				if run.Err() != nil || !s.renewRequestKey(claim) {
 					return
 				}
+				renewal.Reset(keyedLeaseRenewal)
 			}
 		}
 	}()
@@ -755,7 +735,7 @@ func (s *server) requestKeyInFlight(ctx context.Context, login, key string) (boo
 		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false)
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
-	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&inFlight)
+	`, login, key, contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&inFlight)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -779,7 +759,7 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 		       or committed_at is not null or recovery is not null
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
-	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&answers)
+	`, login, key, contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&answers)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -867,7 +847,7 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
 		       created_at < now() - make_interval(secs => $4)
 		from request_keys where login = $1 and idempotency_key = $2
-	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
+	`, login, key, contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
 		&held.digest, &held.method, &held.path, &held.attempt, &held.status, &held.headers,
 		&held.response, &held.kept, &held.recovery, &held.committed, &held.lapsed, &held.expired,
 	)
@@ -923,7 +903,7 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
 // fresh as the key, and a read would ask it for its whole body only to judge it.
 //
-// The body is read for at most drainTime (readFor): one that stops arriving is answered 409
+// The body is read for at most bodyDrainLimit (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
 // route's limit is answered the route's 413 (routeBody), as a first request's body past it is.
 // Either keeps the read's deadline for net/http's own reads after the answer; only a body read to
@@ -1119,7 +1099,7 @@ func markRequestKeyCommitted(claim requestKeyClaim, running *atomic.Bool) store.
 
 // outlivingTheClient is the context for work a handler does before it answers that must finish
 // even if its client goes away. A keyed request already runs on such a context, with the keyed
-// run's bound (keyedRunLimit), and context.WithoutCancel would drop that bound, so it is used as
+// run's bound (keyedHandlerLimit), and context.WithoutCancel would drop that bound, so it is used as
 // it is. An unkeyed request's context has the client's cancellation taken off, as before. Work
 // that runs after the handler returns still takes context.WithoutCancel: the keyed run's context
 // ends with the handler.

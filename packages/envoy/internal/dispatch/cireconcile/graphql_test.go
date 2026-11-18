@@ -24,8 +24,8 @@ import (
 
 // fakeQuery is one GraphQL query the stand-in was asked: the repository it named, the page
 // cursor it carried, the ordinal of the page that cursor names, and when the stand-in began and
-// finished answering it. A test reads these back to say which pages a pass asked for, in what
-// order, and how much of GitHub's own time the pass took.
+// finished answering it, read off the passes' own clock. A test reads these back to say which
+// pages a pass asked for, in what order, and how much of GitHub's own time the pass took.
 type fakeQuery struct {
 	repository string
 	after      string
@@ -41,7 +41,7 @@ type fakeQuery struct {
 // alone: GitHub's cursor is a keyset cursor, the key of the last node of the answer it came in
 // (cursor.after), so the page after it is the heads above that number and a pull request merged
 // below the page moves no page of the query. The ordinal decides no window at all -- it is the
-// label the stand-in's own verbs key a page by, which refusePage and stallQuery name a page
+// label the stand-in's own verbs key a page by, which refusePage and holdQuery name a page
 // with and which the query log reports (harness.pagesAsked) -- so a test may still say "the
 // second page of this repository" about a listing no position is read by.
 type queryAfter struct {
@@ -145,13 +145,13 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, started: time.Now()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, started: f.clock.Now()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
 	defer func() {
 		f.mu.Lock()
-		f.queries[asked].ended = time.Now()
+		f.queries[asked].ended = f.clock.Now()
 		f.inFlight--
 		f.mu.Unlock()
 	}()
@@ -161,7 +161,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if len(f.graphQLLimits) > 0 {
 		limit, f.graphQLLimits = &f.graphQLLimits[0], f.graphQLLimits[1:]
 	}
-	stall := f.graphQLStalls[queryKey(repository, at.page)]
+	_, held := f.heldQueries[queryKey(repository, at.page)]
 	takes := f.queryTakes
 	pulls := append([]fakePull(nil), f.pulls[repository]...)
 	refusedPage := false
@@ -174,15 +174,18 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		f.answerQueryLimit(w, *limit)
 		return
 	}
-	for _, wait := range []time.Duration{stall, takes} {
-		if wait <= 0 {
-			continue
-		}
-		select {
-		case <-time.After(wait):
-		case <-r.Context().Done():
-			return
-		}
+	if held {
+		// GitHub is slower to answer this page than the pass has left: the answer is held
+		// until the caller gives up on the request, the pass's bound falling or its caller
+		// cancelling it.
+		f.held.Add(fmt.Sprintf("the query for page %d of %s", at.page, repository))
+		<-r.Context().Done()
+		return
+	}
+	if takes > 0 {
+		// GitHub's own time over the query passes on the passes' clock while the pass waits for
+		// the answer.
+		f.clock.Advance(takes)
 	}
 	if verbatim != "" {
 		// GitHub's own answer, captured from the real API and given back byte for byte.
@@ -542,20 +545,24 @@ func (f *fakeGitHub) rateLimitQuery(limit graphQLLimit) {
 	f.graphQLLimits = append(f.graphQLLimits, limit)
 }
 
-// stallQuery holds back the answer to one page of one repository, as stall does for a REST
-// path: a wait of zero answers it as fast as every other page again.
-func (f *fakeGitHub) stallQuery(repository string, page int, wait time.Duration) {
+// holdQuery holds back the answer to one page of one repository until the request is given up,
+// as hold does for a REST path, and names each such query on held as it arrives.
+func (f *fakeGitHub) holdQuery(repository string, page int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if wait <= 0 {
-		delete(f.graphQLStalls, queryKey(repository, page))
-		return
-	}
-	f.graphQLStalls[queryKey(repository, page)] = wait
+	f.heldQueries[queryKey(repository, page)] = struct{}{}
 }
 
-// everyQueryTakes makes every query's answer take this long, which is what a test of the pass's
-// GraphQL pacing measures the pass's own waits against.
+// releaseQuery answers that page as fast as every other page again.
+func (f *fakeGitHub) releaseQuery(repository string, page int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.heldQueries, queryKey(repository, page))
+}
+
+// everyQueryTakes makes every query's answer take this long on the passes' clock, which the
+// stand-in moves on by it while it answers: what a test of the pass's GraphQL pacing measures
+// the pass's own waits against.
 func (f *fakeGitHub) everyQueryTakes(wait time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

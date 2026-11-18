@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -217,15 +217,18 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // says why. Before this it would have read the server's own bound as "meaning search failed",
 // which is what it says when something broke.
 //
-// The check answers when the statement is ended rather than at the end of its meaning allowance,
-// which is what tells the two apart: the statement was ended, not waited out. Here that
-// allowance is an hour (server.meaningBound, with the check's own allowance raised to match),
-// and the check runs while embeddings is held (holdMeaningStatements), so its meaning statement
-// cannot answer before the shortened bound ends it: a check that answered at all answered
-// because the server ended the statement, and one that waited the allowance out fails by name
-// before the binary's deadline. The text shares one word with the issue and means the same
-// thing, so the keyword stage has the item to fall back on and the meaning stage has a reason
-// to be running at all.
+// The check answers when the statement is ended rather than at the end of its three-second
+// meaning allowance, which is what tells the two apart: the statement was ended, not waited out.
+// Both checks run on a clock that never moves, so the meaning deadline cannot pass: the healthy
+// check's meaning stage answers however long a loaded machine takes it, and a keywords-only answer
+// can only be the statement's end, and a check that waited for that deadline fails by name at the
+// test binary's deadline. The second check runs while embeddings is held (holdMeaningStatements),
+// so its meaning statement cannot answer before the shortened bound ends it. The clock is the
+// server's before its first check, because a check answers while its other stage runs on and reads
+// that clock (runRelatedCheck), so a clock swapped in after the first check would be written under
+// that stage's read. The text shares one word with the issue and means the same thing, so the
+// keyword stage has the item to fall back on and the meaning stage has a reason to be running at
+// all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
@@ -238,14 +241,13 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	key := createSearchIssue(t, handler, "MBOUND", title, spec)
 	processAllPending(t, database, embedder)
 
+	srv.clock = clocktest.New(checkStart)
 	// The check searched by meaning on this server before the bound was shortened.
 	healthy := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}
 
-	const meaningBound = time.Hour
-	srv.meaningBound, srv.suggestionTimeout = meaningBound, meaningBound
 	endMeaningStatementsAt(t, "1ms")
 	release := holdMeaningStatements(t, database)
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
@@ -253,7 +255,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	})
 	release()
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
-		suggestions.SearchNote != "meaning search did not answer within "+meaningBound.String() {
+		suggestions.SearchNote != "meaning search did not answer within 3s" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the server having ended the meaning statement", suggestions)
 	}
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {

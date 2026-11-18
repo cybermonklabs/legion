@@ -5,7 +5,7 @@
 // builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers, the real outbox lanes and the real
 // entry sweep. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -41,9 +41,9 @@
 // lets the lock
 // go, so the row's work exists only in the record. With no fact of the project arriving after it,
 // the daemon's own entry sweep (intake.EntrySweep, workflowRuntime.tickEntrySweep) sends the
-// entry's own task to the implementer's live connection. The sweep's period is a Go constant with
-// a test override (the overrides' entrySweep, convergeEntrySweep here); the shipped binary keeps
-// entrySweepInterval's minute, which is why the driver sets the override rather than waiting one.
+// entry's own task to the implementer's live connection. The sweep's period is the minute the
+// shipped binary keeps (entrySweepInterval), and the driver runs the sweep's pass itself
+// (passEntrySweep) rather than waiting one out.
 //
 // One more read. The driver reads GET /legion/v1/state once and holds that the issue carries both
 // numbers on the wire, which is R6 on a booted daemon.
@@ -107,18 +107,6 @@ const (
 	convergeWakeBurst = 1
 )
 
-// convergeEntrySweep is the period this driver gives the daemon's entry sweep (the overrides'
-// entrySweep, read by workflowRuntime.tickEntrySweep) in place of the minute the shipped binary
-// keeps (entrySweepInterval): run two waits out one sweep, and the minute would be most of this
-// proof's time. Nothing else of the sweep is changed.
-const convergeEntrySweep = 2 * time.Second
-
-// convergeOwedBound is how long a step waits for a task the daemon sends by itself. It outlasts
-// the longest wait either run can owe: the outbox's own retry backoff, which doubles to a minute
-// and is capped there (retryBackoff), for the start row run one leaves waiting behind the task the
-// claim already holds, and one sweep period for run two.
-const convergeOwedBound = 2 * time.Minute
-
 // phaseEntryConvergeLive is one run of the proof: the booted daemon, the one issue it drives, the
 // GitHub stand-in its facts are read against with the pause this proof adds to it, and the two
 // roles the driver acts as over the worker stream.
@@ -126,6 +114,9 @@ type phaseEntryConvergeLive struct {
 	liveIssueProof
 	// reads is the pause of the stand-in's read of the pull request (pullRequestReadPause.pause).
 	reads *pullRequestReadPause
+	// passes runs the daemon's entry sweep when run two owes a role the work of its entry, in
+	// place of waiting out the minute the shipped binary sweeps at.
+	passes *passer
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
@@ -158,11 +149,11 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	r.seed()
 	r.cfg.WorkerWakesPerMinute, r.cfg.WorkerWakeBurst = convergeWakeRate, convergeWakeBurst
 	r.boot(func(o *overrides) {
-		// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil
+		// The wall clock, in place of this package's still one (daemon.go's clock.Real for a nil
 		// override): the launch the pacing holds runs when its timer fires, and a wake held on a
 		// clock whose timers never fire would never take its turn.
 		o.clock = nil
-		o.entrySweep = convergeEntrySweep
+		r.passes = triggering(o)
 	})
 	return r
 }
@@ -340,17 +331,14 @@ func (c *convergeClaimant) endTurn() {
 	})
 }
 
-// awaitPrompt waits for the next task the daemon sends this claim, within bound, and returns it.
-func (c *convergeClaimant) awaitPrompt(what string, bound time.Duration) shimwire.Prompt {
+// awaitPrompt waits for the next task the daemon sends this claim (what names it) and returns it.
+// A task the daemon sends by itself may come only after the outbox's own retry backoff, which
+// doubles to a minute (retryBackoff), so the wait is the shared one, whose bound is the test
+// binary's deadline.
+func (c *convergeClaimant) awaitPrompt(what string) shimwire.Prompt {
 	t := c.p.t
 	t.Helper()
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(bound):
-		t.Fatalf("the %s was sent no task within %s: %s", c.role, bound, what)
-		return shimwire.Prompt{}
-	}
+	return testwait.Receive(t, fmt.Sprintf("the %s to be sent a task: %s", c.role, what), c.prompts)
 }
 
 // drainPrompts takes every prompt the reader has already handed this claim and the steps have not
@@ -437,7 +425,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	// implementer, which is live, is prompted its merge-forward task at once.
 	releaseRead()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
-	fix := r.imp.awaitPrompt("the implementer's merge-forward task after the conflict", convergeOwedBound)
+	fix := r.imp.awaitPrompt("the implementer's merge-forward task after the conflict")
 	r.note("let the held read of #%d run, with GitHub answering %s conflicting with %s: %s is in implementing and the implementer was prompted its merge-forward task (%s)",
 		r.number, convergeFirstHead, convergeBase, r.key, firstLine(fix.Message))
 
@@ -487,7 +475,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 	r.awaitLaunch(tester)
 	r.note("the pace let the tester's launch run: the fake runtime started its process")
 	r.test = r.servedClaimant(claim.RoleTester, "ses_tester")
-	first := r.test.awaitPrompt("the tester's first task", convergeOwedBound)
+	first := r.test.awaitPrompt("the tester's first task")
 	if first.DeliveryID != stale.ID {
 		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, stale.ID)
 	}
@@ -512,7 +500,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 	// same connection as a task of its own: the start row of entry 2, which waited behind the task
 	// the claim held, hands it over on its next attempt.
 	r.test.endTurn()
-	second := r.test.awaitPrompt("the task of the entry the phase is on", convergeOwedBound)
+	second := r.test.awaitPrompt("the task of the entry the phase is on")
 	if second.DeliveryID == first.DeliveryID {
 		t.Fatalf("the tester was sent delivery %s again, want a task of its own for entry 2", second.DeliveryID)
 	}
@@ -567,7 +555,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// The reviewer, on the start the move to reviewing wrote. Its completion is what asks the
 	// daemon to read the pull request, and that read is what carries the conflicting head.
 	r.rev = r.servedClaimant(claim.RoleReviewer, "ses_reviewer")
-	r.rev.awaitPrompt("the reviewer's task", convergeOwedBound)
+	r.rev.awaitPrompt("the reviewer's task")
 	r.note("the reviewer came up on the start the move to reviewing wrote, before the lock below")
 
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
@@ -627,9 +615,11 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	}
 
 	// Nothing of the project is published from here on: what sends the entry's work is the
-	// daemon's own sweep.
+	// daemon's own sweep, whose pass this driver runs in place of waiting out its minute.
+	r.passes.pass(t, passEntrySweep)
 	task := r.imp.awaitPrompt(fmt.Sprintf("the work of entry %d, which the implementer's phases row names and whose start row %s%d this step deleted",
-		deleted.entry, outboxDeliveryPrefix, deleted.id), convergeOwedBound)
+		deleted.entry, outboxDeliveryPrefix, deleted.id))
+
 	// The delivery's id names the outbox row it came from (the outbox's outboxDeliveryPrefix), so
 	// it says in one value that the task reached the worker from a row written after the deleted
 	// one, which is the sweep's, and not from the deleted row or any row before it.
@@ -654,8 +644,8 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 		phaseEntry, givenEntry = r.entries()
 		return phaseEntry == deleted.entry && givenEntry == deleted.entry
 	})
-	r.note("read back: with no fact of the project arriving, the sweep (period %s here, %s in the shipped binary) sent the implementer %s (%s) on its own connection, row %d above the deleted row %s%d, and the state reads phaseEntry %d, givenEntry %d",
-		convergeEntrySweep, entrySweepInterval, task.DeliveryID, firstLine(task.Message), row, outboxDeliveryPrefix, deleted.id, phaseEntry, givenEntry)
+	r.note("read back: with no fact of the project arriving, the sweep (the pass this driver ran, on the shipped binary's own %s period) sent the implementer %s (%s) on its own connection, row %d above the deleted row %s%d, and the state reads phaseEntry %d, givenEntry %d",
+		entrySweepInterval, task.DeliveryID, firstLine(task.Message), row, outboxDeliveryPrefix, deleted.id, phaseEntry, givenEntry)
 	r.imp.endTurn()
 }
 

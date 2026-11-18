@@ -121,6 +121,13 @@ type Watcher struct {
 
 	// first is the handle Start watches.
 	first bus.KeyValue
+	// firstRetry is whether Start tries its first watch again when it went unanswered
+	// (WithFirstWatchRetry).
+	firstRetry bool
+	// ownerRepairs is whether the watcher's owner repairs a first watch that failed and reports a
+	// repair that does not come itself, so Start logs that failure at WARN
+	// (WithFirstWatchRepairedByOwner).
+	ownerRepairs bool
 
 	// after arms the wait between a stop nobody asked for and the ERROR that says no repair came,
 	// the wait before a read is read again, the wait before a scheduled read, the wait before the
@@ -132,6 +139,9 @@ type Watcher struct {
 	// kv is the handle the store reads and writes through: first, until a watch moves it together
 	// with the watcher, so the store writes through the connection its cache reads.
 	kv bus.KeyValue
+	// firstRetryTimer is the armed wait before Start's next attempt at its first watch
+	// (WithFirstWatchRetry), nil when none is armed; Stop clears it.
+	firstRetryTimer Timer
 	// watcher is the current generation's subscription, nil when none runs.
 	watcher    *subscription
 	generation uint64
@@ -285,6 +295,16 @@ func (w *Watcher) logger() *slog.Logger {
 // paged for a cache nothing feeds, not for a failed watch a repair has already taken over, and the
 // end of a replaced watcher is silent on the other path too (consume).
 //
+// A watcher made WithFirstWatchRetry tries a first watch whose failure was transient again
+// (transient: its stream read or its watcher's create ran out of its request wait, or found the
+// connection reconnecting, as a loaded start does), after rereadDelay on the watcher's own
+// AfterFunc, the wait a failed re-read takes: each such attempt is a WARN naming it, and the copy
+// stays a read under way (NeedsRead false) with its readiness held, so nothing else repairs it
+// meanwhile. The attempt that succeeds is the watch a first try that succeeded would have made, of
+// the same handle, so the copy it reads is the same. After firstWatchAttempts attempts it gives up
+// as above: one ERROR, the error recorded and readiness released. Any other failure (a refusal the
+// server answered, a closed connection) is not tried again, and is the ERROR at once.
+//
 // The read it orders is under way from here, not from the moment its watch takes the locks: a
 // caller's Open returns as soon as this returns, and until the watch has installed its read or
 // failed, the copy is one no Rewatch would repair, so NeedsRead must not report it. Without that
@@ -296,32 +316,74 @@ func (w *Watcher) Start() {
 		w.reading = true
 	}
 	w.mu.Unlock()
-	go func() {
-		err := w.watch(context.Background(), w.first, 0)
-		if err == nil {
-			return
-		}
+	go w.firstWatch(1)
+}
+
+// firstWatchAttempts is how many times a watcher made WithFirstWatchRetry makes its first watch
+// before it gives up: as many waits of rereadDelay as fill unrepairedDelay, the wait a stopped
+// watcher gives a repair before its ERROR, so a start that stays unanswered is reported at the same
+// minute an outage of a running watcher is.
+const firstWatchAttempts = int(unrepairedDelay / rereadDelay)
+
+// firstWatch is Start's attempt-th attempt at its first watch.
+func (w *Watcher) firstWatch(attempt int) {
+	if attempt > 1 {
 		w.mu.Lock()
-		current := w.watcher != nil
-		if !current && !w.stopped {
-			w.err = err
-			// The read this ordered never began, and nothing but a Rewatch will start one: the
-			// copy needs a read again (NeedsRead), which is how the listener's self-health
-			// rebuild finds a watcher whose own watch left it with nothing feeding the cache.
-			w.reading = false
-			// Nothing will complete a scan for this watcher until a Rewatch, so a caller waiting
-			// for a complete view reads this error rather than waiting its own ctx out.
-			w.wakeComplete()
-		}
+		w.firstRetryTimer = nil
+		// A Rewatch that installed a watcher meanwhile feeds the cache, and Stop ends the
+		// attempts: neither leaves anything for this one to do.
+		moot := w.stopped || w.watcher != nil
 		w.mu.Unlock()
-		if current {
-			w.logger().Info(w.name+" first watch failed after a rewatch replaced it; the replacement feeds the cache",
-				slog.String("error", err.Error()))
+		if moot {
 			return
 		}
-		w.logger().Error(w.name+" watch failed", slog.String("error", err.Error()))
+	}
+	err := w.watch(context.Background(), w.first, 0)
+	if err == nil {
+		return
+	}
+	w.mu.Lock()
+	current := w.watcher != nil
+	again := !current && !w.stopped && w.firstRetry && transient(err) && attempt < firstWatchAttempts
+	if again {
+		w.firstRetryTimer = w.after(rereadDelay, func() { w.firstWatch(attempt + 1) })
+	} else if !current && !w.stopped {
+		w.err = err
+		// The read this ordered never began, and nothing but a Rewatch will start one: the
+		// copy needs a read again (NeedsRead), which is how the listener's self-health
+		// rebuild finds a watcher whose own watch left it with nothing feeding the cache.
+		w.reading = false
+		// Nothing will complete a scan for this watcher until a Rewatch, so a caller waiting
+		// for a complete view reads this error rather than waiting its own ctx out.
+		w.wakeComplete()
+	}
+	w.mu.Unlock()
+	switch {
+	case current:
+		w.logger().Info(w.name+" first watch failed after a rewatch replaced it; the replacement feeds the cache",
+			slog.String("error", err.Error()))
+	case again:
+		w.logger().Warn(w.name+" first watch attempt failed; it is made again",
+			slog.Int("attempt", attempt), slog.Int("attempts", firstWatchAttempts),
+			slog.Duration("again_in", rereadDelay), slog.String("error", err.Error()))
+	case w.ownerRepairs:
+		// Its owner repairs a first watch that failed and reports the repair that does not come
+		// (WithFirstWatchRepairedByOwner), so the failure itself is no page.
+		w.logger().Warn(w.name+" first watch failed; its store repairs it", slog.Int("attempts", attempt), slog.String("error", err.Error()))
 		w.signalReady()
-	}()
+	default:
+		w.logger().Error(w.name+" watch failed", slog.Int("attempts", attempt), slog.String("error", err.Error()))
+		w.signalReady()
+	}
+}
+
+// transient reports whether err is a failure a moment later need not repeat: a request that ran out
+// of its wait with no answer, or one made while the connection was reconnecting (nats.go refuses a
+// request then, its reconnect buffer being off). A closed connection is not: it does not come back.
+func transient(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, nats.ErrConnectionReconnecting) ||
+		errors.Is(err, nats.ErrDisconnected)
 }
 
 // Rewatch opens the bucket on conn and replaces the current watcher with one there, clearing a

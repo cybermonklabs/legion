@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -213,7 +214,7 @@ func (s *Store) list(ctx context.Context, prefix string) ([]Entry, error) {
 		return nil, err
 	}
 	var entries []Entry
-	_, err := kvwatch.ScanExistingKeys(ctx, s.bucket(), prefix+"*", "list legion agents under "+prefix, ReadTimeout, s.log, func(found kvwatch.Entry) error {
+	_, err := kvwatch.ScanExistingKeys(ctx, clock.Real(), s.bucket(), prefix+"*", "list legion agents under "+prefix, ReadTimeout, s.log, func(found kvwatch.Entry) error {
 		var entry Entry
 		if err := json.Unmarshal(found.Value, &entry); err != nil {
 			return fmt.Errorf("decode legion agent key %s: %w", found.Key, err)

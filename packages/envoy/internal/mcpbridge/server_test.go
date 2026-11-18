@@ -4,9 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func buildMockBinary(t *testing.T) string {
@@ -45,13 +45,8 @@ func TestManagedServer_StartAndStop(t *testing.T) {
 	}
 
 	// The mock server sends a notification after subscribe.
-	select {
-	case uri := <-notified:
-		if uri != "whatsapp://messages/15551234567/5551234567@s.whatsapp.net" {
-			t.Fatalf("unexpected notified URI: %s", uri)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("expected a notification within 5s")
+	if uri := testwait.Receive(t, "the notification the mock server sends after its subscribe", notified); uri != "whatsapp://messages/15551234567/5551234567@s.whatsapp.net" {
+		t.Fatalf("unexpected notified URI: %s", uri)
 	}
 }
 

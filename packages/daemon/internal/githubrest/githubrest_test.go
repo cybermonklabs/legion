@@ -107,7 +107,12 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 // path. A next page on another host is refused before the token is sent there.
 func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 	var elsewhere atomic.Int32
+	// The other host counts only requests of the shape a leak would take: the client's own,
+	// under its token. Any other is another process's, answered 404 (fromTheDaemon).
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, testToken) {
+			return
+		}
 		elsewhere.Add(1)
 		if strings.HasSuffix(r.URL.Path, "/check-runs") {
 			w.Write([]byte(`{"total_count":1,"check_runs":["leaked"]}`))
@@ -141,7 +146,7 @@ func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	client := Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}
 
 	nextHost.Store(&server.URL)
 	pageTwo.Store(http.StatusOK)

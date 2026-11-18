@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rows every test here serves: PRIV is private, owned by carol and listing bob; PUB is
@@ -423,11 +424,7 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 		_, err := client.Access(context.Background(), "PRIV", "carol@example.com")
 		first <- err
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first question never reached Dispatch")
-	}
+	testwait.Receive(t, "the first question to reach Dispatch", entered)
 	clock.advance(time.Second)
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
 		t.Fatalf("the later question = %+v, %v; want not visible", answer, err)

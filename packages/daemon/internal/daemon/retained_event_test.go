@@ -116,7 +116,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 			conn := testnats.Connect(t, workflowNATS(t))
-			js, err := jetstream.New(conn)
+			js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,7 +192,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	conn := testnats.Connect(t, workflowNATS(t))
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	conn := testnats.Connect(t, workflowNATS(t))
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatal(err)
 	}

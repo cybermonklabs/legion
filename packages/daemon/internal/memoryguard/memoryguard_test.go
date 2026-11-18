@@ -13,11 +13,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
@@ -394,42 +397,40 @@ func smapsOf(fp fakeProcess) string {
 	return b.String()
 }
 
-// fakeClock hands each wait the guard asks for to the test, which fires it: a reading is then a
-// step of the test, and an hour passes in one.
-type fakeClock struct {
-	mu    sync.Mutex
-	now   time.Time
-	waits chan fakeWait
-}
-
-type fakeWait struct {
-	d    time.Duration
-	fire chan time.Time
-}
-
 var testStart = time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC)
 
-func newFakeClock() *fakeClock {
-	return &fakeClock{now: testStart, waits: make(chan fakeWait, 16)}
+// testClock is the module's fake clock, a clocktest.Fake, as the guard reads it in these tests:
+// its Now waits while the test moves it, and it counts the timers the guard takes.
+//
+// A move past the guard's wait fires the wait's timer at its deadline, and the guard's reading
+// reads Now as it starts. Held until the move has ended, that Now is the moment the move ends at,
+// so a reading the test lets come extra after the interval is one the guard takes that much late,
+// and an hour passes in one reading, as it would for a guard that did not run for an hour.
+type testClock struct {
+	*clocktest.Fake
+	moving sync.RWMutex
+	timers atomic.Int32
 }
 
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
+func newTestClock() *testClock { return &testClock{Fake: clocktest.New(testStart)} }
+
+func (c *testClock) Now() time.Time {
+	c.moving.RLock()
+	defer c.moving.RUnlock()
+	return c.Fake.Now()
 }
 
-func (c *fakeClock) After(d time.Duration) <-chan time.Time {
-	w := fakeWait{d: d, fire: make(chan time.Time, 1)}
-	c.waits <- w
-	return w.fire
+func (c *testClock) NewTimer(d time.Duration) clock.Timer {
+	c.timers.Add(1)
+	return c.Fake.NewTimer(d)
 }
 
-func (c *fakeClock) advance(d time.Duration) time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-	return c.now
+// set moves the fake to at, firing the guard's wait when at has reached its deadline, and lets no
+// Now read the fake before it is there.
+func (c *testClock) set(at time.Time) {
+	c.moving.Lock()
+	defer c.moving.Unlock()
+	c.Fake.Set(at)
 }
 
 // fakeSignal is a kill that ends nothing: it records each process the guard opened, tried to kill
@@ -573,13 +574,13 @@ func (l *lineLog) with(what string) []string {
 type harness struct {
 	t       *testing.T
 	pod     *fakePod
-	clock   *fakeClock
+	clock   *testClock
 	signal  *fakeSignal
 	log     *lineLog
 	g       *Guard
 	mu      sync.Mutex
 	kills   []Kill
-	pending fakeWait
+	pending time.Time
 	cancel  context.CancelFunc
 	done    chan struct{}
 	stopped sync.Once
@@ -587,7 +588,7 @@ type harness struct {
 
 func newHarness(t *testing.T, pod *fakePod, classify Classifier) *harness {
 	t.Helper()
-	h := &harness{t: t, pod: pod, clock: newFakeClock(), signal: &fakeSignal{}, log: &lineLog{}}
+	h := &harness{t: t, pod: pod, clock: newTestClock(), signal: &fakeSignal{}, log: &lineLog{}}
 	h.g = New(Config{
 		Proc: pod.proc, Cgroup: pod.cgroup, Classify: classify, Logf: h.log.logf,
 		Clock: h.clock, Signal: h.signal,
@@ -619,20 +620,25 @@ func (h *harness) start() {
 	h.t.Cleanup(h.stop)
 }
 
-// nextWait is the guard's next wait: the reading before it, and any scan that reading started,
-// are done.
-func (h *harness) nextWait() fakeWait {
+// nextWait is the deadline of the guard's next wait: the reading before it, and any scan that
+// reading started, are done, since the guard arms its wait again only once a reading is over.
+func (h *harness) nextWait() time.Time {
 	h.t.Helper()
-	select {
-	case w := <-h.clock.waits:
-		h.g.scans.Wait()
-		return w
-	case <-h.done:
-		h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
-		h.t.Fatalf("the guard never waited for its next reading; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	}
-	return fakeWait{}
+	var at time.Time
+	testwait.Until(h.t, "the guard's next wait for a reading (the reading is its log)", func() (string, bool) {
+		select {
+		case <-h.done:
+			h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
+		default:
+		}
+		if armed := h.clock.Armed(); len(armed) > 0 {
+			at = armed[0]
+			return "", true
+		}
+		return strings.Join(h.log.all(), "\n"), false
+	})
+	h.g.scans.Wait()
+	return at
 }
 
 // tick lets the guard take its next reading, after the interval it waits for.
@@ -642,8 +648,7 @@ func (h *harness) tick() { h.tickAfter(0) }
 // returns once that reading and all it led to are done.
 func (h *harness) tickAfter(extra time.Duration) {
 	h.t.Helper()
-	w := h.pending
-	w.fire <- h.clock.advance(w.d + extra)
+	h.clock.set(h.pending.Add(extra))
 	h.pending = h.nextWait()
 }
 
@@ -654,11 +659,7 @@ func (h *harness) stop() {
 			return
 		}
 		h.cancel()
-		select {
-		case <-h.done:
-		case <-time.After(10 * time.Second):
-			h.t.Errorf("Run did not return after ctx ended")
-		}
+		testwait.Receive(h.t, "Run's return after its context ended", h.done)
 	})
 }
 
@@ -1371,8 +1372,8 @@ func TestMemoryGuardTurnsOffWithOneLineWhenItCannotRead(t *testing.T) {
 			if len(lines) != 1 || !strings.HasPrefix(lines[0], linePrefix+fmt.Sprintf(tc.want, dir)) {
 				t.Fatalf("the log is %q, want one line starting %q", lines, linePrefix+fmt.Sprintf(tc.want, dir))
 			}
-			if len(h.clock.waits) != 0 {
-				t.Fatalf("the guard waited for another reading after it turned off")
+			if n := h.clock.timers.Load(); n != 0 {
+				t.Fatalf("the guard took %d timers to wait for another reading after it turned off", n)
 			}
 			h.requireKilled()
 		})
@@ -1405,8 +1406,8 @@ func TestMemoryGuardTakesSettingsInPlace(t *testing.T) {
 	h := newHarness(t, pod, protect("tester", 100)).run()
 	h.tick()
 	h.requireKilled()
-	if h.pending.d != 100*time.Millisecond {
-		t.Fatalf("before any acknowledgement the guard waits %v, want the default 100ms", h.pending.d)
+	if d := h.pending.Sub(h.clock.Now()); d != 100*time.Millisecond {
+		t.Fatalf("before any acknowledgement the guard waits %v, want the default 100ms", d)
 	}
 
 	settings := &shimwire.LauncherMemoryGuard{ActPercent: 60, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 200}
@@ -1418,8 +1419,8 @@ func TestMemoryGuardTakesSettingsInPlace(t *testing.T) {
 	}
 	h.tick()
 	h.requireKilled(200)
-	if h.pending.d != 200*time.Millisecond {
-		t.Fatalf("after the settings the guard waits %v, want 200ms", h.pending.d)
+	if d := h.pending.Sub(h.clock.Now()); d != 200*time.Millisecond {
+		t.Fatalf("after the settings the guard waits %v, want 200ms", d)
 	}
 	if got := len(h.log.with("started")); got != 1 {
 		t.Fatalf("%d start lines, want 1", got)

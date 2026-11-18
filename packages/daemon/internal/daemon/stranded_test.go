@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -247,11 +248,11 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
-	reported := strandedReportDone(&o)
+	obs := observing(&o)
 
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	awaitStrandedReport(t, reported)
+	obs.stranded(t)
 	lines := loggedLines(t, logs.String(), strandedLine)
 	if len(lines) != 1 {
 		t.Fatalf("the boot logged %d lines %q, want one; log:\n%s", len(lines), strandedLine, logs.String())
@@ -312,37 +313,18 @@ func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
-	reported := strandedReportDone(&o)
+	obs := observing(&o)
 
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	// The report runs beside the API: /healthz answering says nothing about whether it has read
-	// yet, so "no line" is asserted only once it has finished.
-	awaitStrandedReport(t, reported)
+	// The report runs beside the API: the daemon's report that it is ready to serve says nothing
+	// about whether it has read yet, so "no line" is asserted only once it has finished.
+	obs.stranded(t)
 	if lines := loggedLines(t, logs.String(), strandedLine); len(lines) != 0 {
 		t.Fatalf("the boot logged %v, want no line %q", lines, strandedLine)
 	}
 	if got := strandedOnTheWire(t, bootState(t, d)); len(got) != 0 {
 		t.Fatalf("strandedClaims = %v, want none", got)
-	}
-}
-
-// strandedReportDone hooks o so the returned channel closes once the boot's stranded report has
-// finished, logged or not.
-func strandedReportDone(o *overrides) <-chan struct{} {
-	reported := make(chan struct{})
-	o.strandedReported = func() { close(reported) }
-	return reported
-}
-
-// awaitStrandedReport waits for the report strandedReportDone hooked, bounded by the report's own
-// timeout with room for the boot around it.
-func awaitStrandedReport(t *testing.T, reported <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-reported:
-	case <-time.After(strandedReportTimeout + 30*time.Second):
-		t.Fatal("the boot's stranded report did not finish")
 	}
 }
 
@@ -378,29 +360,23 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 			_ = lock.Rollback(context.Background())
 		}
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("run did not return after the report lock released")
+		if err := testwait.Receive(t, "the daemon's run to return once the report lock released", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
 
+	// The subject here is /healthz's own answer while the report's read waits on the lock, which
+	// the test holds until /healthz has answered, so the answer itself is what the test reads.
 	base := "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
-	deadline := time.Now().Add(3 * time.Second)
-	for !answersHealthz(base) {
+	testwait.Eventually(t, "/healthz to answer while the stranded report's store read waits on the lock", func() bool {
 		select {
 		case err := <-done:
+			done <- err
 			t.Fatalf("the daemon exited before /healthz answered: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("/healthz did not answer while the stranded report read waited on the store")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return answersHealthz(base)
+	})
 	if err := lock.Rollback(ctx); err != nil {
 		t.Fatalf("release the report lock: %v", err)
 	}

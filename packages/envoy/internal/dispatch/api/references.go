@@ -305,7 +305,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 // started after that finds it (Horizon.Safe), and a mention above it waits for a later read. A
 // request that ends first answers Await's error.
 func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
-	wait, cancel := context.WithTimeout(ctx, referencesSinceWait)
+	wait, cancel := s.clock.WithTimeout(ctx, referencesSinceWait)
 	safe, err := s.horizon().Await(wait)
 	cancel()
 	if err == nil || ctx.Err() != nil {

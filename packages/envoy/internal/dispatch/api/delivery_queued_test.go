@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -256,7 +257,10 @@ func TestDirectMessageToAStoppedSessionIsQueued(t *testing.T) {
 // settles it behind the answer.
 func TestMentionOfAStoppedSessionIsQueuedOnOneSend(t *testing.T) {
 	listener := stoppedAndLive(t)
-	handler, database := newTargetedMessageHandler(t, listener.url)
+	// A clock that stands still: the comment's lookup of s1 is answered as the listener answers
+	// it and is never left unanswered by its bound (mentionLookupTimeout), so the comment answers
+	// its attempt pinned to s1, which this row reads.
+	handler, database := newTargetedMessageHandlerOn(t, listener.url, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "QUE", "A mention of a stopped session", "before")
 
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{

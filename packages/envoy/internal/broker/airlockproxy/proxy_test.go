@@ -16,7 +16,6 @@ package airlockproxy
 
 import (
 	"bufio"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -31,7 +30,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +37,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing: the proxy's password is a
@@ -453,32 +453,39 @@ func TestDialAllowOpensTheAddressesItNamesAndNoOthers(t *testing.T) {
 func TestTheIdleLimitEndsAQuietConnectionAndKeepsABusyOne(t *testing.T) {
 	const idle = 400 * time.Millisecond
 	t.Run("a connection with no byte is ended", func(t *testing.T) {
-		r := newRig(t, Options{Idle: idle})
-		// began is taken before the CONNECT, because the idle clock starts when the proxy
-		// accepts the connection, not when the 200 reaches this test: measured from after the
-		// answer, a tunnel ended on time reads as ended a millisecond early.
-		began := time.Now()
+		fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+		r := newRig(t, Options{Idle: idle, Clock: fake})
 		answer, conn, reader := r.connectRaw(net.JoinHostPort(echoHost, "443"), basic(workerPlaceholder))
 		if answer.StatusCode != http.StatusOK {
 			t.Fatalf("CONNECT answered %d; want 200", answer.StatusCode)
 		}
+		// Both ends of the tunnel arm the limit, and for the whole of it: the clock starts
+		// when the proxy accepts the connection, so a limit armed for anything less than
+		// idle would end a tunnel early.
+		armed := fake.AwaitArmed(t, "the idle limit on both ends of the tunnel", 2)
+		for _, at := range armed {
+			if want := fake.Now().Add(idle); !at.Equal(want) {
+				t.Fatalf("the idle limit is armed for %s; want %s, the whole of the %s window", at, want, idle)
+			}
+		}
+		// Nothing has crossed the tunnel, so the window runs out here and nowhere else: a
+		// fake's timer fires when the test moves it and at no other moment.
+		fake.Advance(idle)
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) && err == nil {
-			t.Fatalf("the quiet tunnel answered a byte after %v; want it closed", time.Since(began))
+			t.Fatal("the quiet tunnel answered a byte once its idle limit had run out; want it closed")
 		} else if err != nil && errors.Is(err, os.ErrDeadlineExceeded) {
-			t.Fatalf("the quiet tunnel was still open %v after its %v idle limit", time.Since(began), idle)
-		}
-		if took := time.Since(began); took < idle {
-			t.Fatalf("the tunnel ended after %v, before its %v idle limit had run out", took, idle)
+			t.Fatalf("the quiet tunnel was still open once its %v idle limit had run out", idle)
 		}
 	})
 	t.Run("a connection with bytes is kept", func(t *testing.T) {
-		r := newRig(t, Options{Idle: idle})
+		fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+		r := newRig(t, Options{Idle: idle, Clock: fake})
 		_, conn, reader := r.connectRaw(net.JoinHostPort(echoHost, "443"), basic(workerPlaceholder))
-		// Three times the idle limit, a byte every tenth of it: a connection the limit ends here
-		// is one whose clock a read or a write did not push out.
-		deadline := time.Now().Add(3 * idle)
-		for time.Now().Before(deadline) {
+		fake.AwaitArmed(t, "the idle limit on both ends of the tunnel", 2)
+		// Three times the idle limit, a byte every half of it: a connection the limit ends
+		// here is one whose clock a read or a write did not push out.
+		for range 6 {
 			if _, err := conn.Write([]byte("x")); err != nil {
 				t.Fatalf("the busy tunnel was closed while it was carrying bytes: %v", err)
 			}
@@ -486,7 +493,10 @@ func TestTheIdleLimitEndsAQuietConnectionAndKeepsABusyOne(t *testing.T) {
 			if _, err := reader.ReadByte(); err != nil {
 				t.Fatalf("the busy tunnel was closed while it was carrying bytes: %v", err)
 			}
-			time.Sleep(idle / 10)
+			// The byte has crossed both wrappers by now — the test read it back through
+			// them — so each has pushed its clock out, and half a window costs them
+			// nothing.
+			fake.Advance(idle / 2)
 		}
 	})
 }
@@ -506,9 +516,7 @@ func TestShutdownClosesAnOpenTunnel(t *testing.T) {
 	if _, err := reader.ReadString('\n'); err != nil {
 		t.Fatalf("the tunnel was not carrying bytes before the drain: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.proxy.Shutdown(ctx); err != nil {
+	if err := r.proxy.Shutdown(testwait.Context(t)); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -809,25 +817,6 @@ func TestARequestThatIsNoProxyRequestIsRefused(t *testing.T) {
 	}
 }
 
-// testClock is the clock a row drives Options.Now with: read on the proxy's goroutines and set
-// on the test's, so it is taken under a mutex.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *testClock) read() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *testClock) set(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = now
-}
-
 // cachedNames is the names a grant's held values still carry, which is what DropName changes.
 // Read through the same mutex the proxy's own paths take.
 func cachedNames(s *Server, grantID string) []string {
@@ -851,9 +840,9 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 		firstToken  = "ya29.the-first-access-token"
 		secondToken = "ya29.the-second-access-token"
 	)
-	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
-	expires := clock.read().Add(time.Hour)
-	r := newRig(t, Options{Now: clock.read})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	expires := fake.Now().Add(time.Hour)
+	r := newRig(t, Options{Clock: fake})
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 		workerName: {Slots: map[string]string{requests.SlotValue: firstToken}, Expires: expires, Type: "google-login"},
 	})
@@ -873,7 +862,7 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	}
 	// Six minutes off its expiry: further than mintAgainBefore, so the held value stands and
 	// the release checks are not run again.
-	clock.set(expires.Add(-6 * time.Minute))
+	fake.Set(expires.Add(-6 * time.Minute))
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 		workerName: {Slots: map[string]string{requests.SlotValue: secondToken}, Expires: expires.Add(time.Hour), Type: "google-login"},
 	})
@@ -886,7 +875,7 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 
 	// Four minutes off: inside mintAgainBefore, so the grant is read again and the call goes
 	// out on the token that read minted.
-	clock.set(expires.Add(-4 * time.Minute))
+	fake.Set(expires.Add(-4 * time.Minute))
 	if got, want := call("/v1/third"), "Bearer "+secondToken; got != want {
 		t.Fatalf("the service saw Authorization %q four minutes before the expiry; want the freshly minted %q", got, want)
 	}
@@ -1306,7 +1295,8 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 func TestATunnelToAServiceThatNeverClosesIsGoneWithinTheIdleLimit(t *testing.T) {
 	const idle = 400 * time.Millisecond
 	const sinkHost = "sink.example.net"
-	r := newRig(t, Options{Idle: idle})
+	fake := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	r := newRig(t, Options{Idle: idle, Clock: fake})
 	sink, accepted := startSink(t)
 	r.addresses[sinkHost] = []netip.Addr{netip.MustParseAddr("93.184.216.41")}
 	r.dialTo[net.JoinHostPort(sinkHost, "443")] = sink
@@ -1325,19 +1315,24 @@ func TestATunnelToAServiceThatNeverClosesIsGoneWithinTheIdleLimit(t *testing.T) 
 		t.Fatalf("half-close the command's side: %v", err)
 	}
 
-	// Within a few idle windows: no entry in the registry the drain reads, no goroutine of the
-	// tunnel left, and the service's own connection closed.
-	deadline := time.Now().Add(20 * idle)
-	for {
+	// Once the window has run out: no entry in the registry the drain reads, no goroutine of
+	// the tunnel left, and the service's own connection closed. The command's bytes and its
+	// half-close cross the tunnel on the proxy's goroutines, and a byte read or written after
+	// a move of the clock and before the timer's check pushes the window out: the check then
+	// arms the timer again for a later window, as the product should. So the row moves the fake
+	// to each window the idle timers arm until the tunnel is gone, and never reads the wall
+	// clock.
+	fake.AwaitArmed(t, "the idle limit on both ends of the tunnel", 2)
+	testwait.Until(t, "the proxy to hold no connection and no tunnel goroutine of the quiet tunnel, the fake moved to each idle window its timers arm", func() (string, bool) {
 		if openTunnels(r.proxy) == 0 && !goroutinesIn(t, "connectTunnel") {
-			break
+			return "", true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%v after a %v idle limit the proxy still holds %d connection(s) and %v tunnel goroutines",
-				20*idle, idle, openTunnels(r.proxy), goroutinesIn(t, "connectTunnel"))
+		armed := fake.Armed()
+		if len(armed) > 0 {
+			fake.Set(armed[0])
 		}
-		time.Sleep(idle / 10)
-	}
+		return fmt.Sprintf("%d connection(s) open, tunnel goroutines %v, timers armed at %v", openTunnels(r.proxy), goroutinesIn(t, "connectTunnel"), armed), false
+	})
 	upstream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	// What the command wrote is still in this socket's buffer, unread by a service that reads
 	// nothing; what the row is about is what comes after it, which must be the close - an end

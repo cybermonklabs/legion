@@ -19,8 +19,8 @@ import (
 // test's own default; the guard keeps all three, so a developer may set any of them by hand. It
 // drops the migrated template isolatedOutboxPool clones its databases from (testpg.Main), makes
 // the one database this run's tests write in (testdb.RunDatabaseMain), removes the directory the
-// tests' Envoy binaries were built into (testbuild.Main), and removes the NATS container the
-// package's tests share (testnats.Main).
+// tests' Envoy binaries were built into (testbuild.Main), and fails the run when a NATS server a
+// test started is still running after the last test (testnats.Main).
 //
 // The run's database is legion_daemon_run_<random> on the server LEGION_TEST_PG_DSN names,
 // dropped when the run ends; testDSN hands it to every test, and a daemon migrates Legion's
@@ -43,9 +43,16 @@ import (
 // serves the rig. That child serves one rig and clones no database and builds nothing, so it
 // takes neither template nor build directory, and it is told of no database either: the rig's
 // launchers run without TestPostgres, so testPGEnv takes LEGION_TEST_PG_DSN out of the child.
+//
+// The child run of TestADaemonStandInStillFailsItsTestOnTheDaemonsOwnUnexpectedRequest
+// (standInChildEnv) takes the same path: it starts stand-ins alone, and needs neither a database
+// nor a build. The two markers are a loop of one branch each, the shape fixtureenv's
+// TestEveryGuardingPackagesTestMainGuardsItsProcess reads as a helper child's (internal/launcher).
 func TestMain(m *testing.M) {
-	if os.Getenv(idleRigURLVariable) != "" {
-		os.Exit(testnats.Main(m))
+	for _, marker := range []string{idleRigURLVariable, standInChildEnv} {
+		if os.Getenv(marker) != "" {
+			os.Exit(testnats.Main(m))
+		}
 	}
 	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS")
 	os.Exit(testpg.Main("legion_daemon_test", func() int {

@@ -67,11 +67,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // --- the corpus ---
@@ -625,17 +626,16 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("asks a server about thousands of statements")
 	}
-	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set")
-	}
+	// The statements run in a database of the test's own, never in the one the server's
+	// variable names.
+	url := testdb.DispatchServer.Database(t, "pgmigrate_redaction")
 	ctx := context.Background()
 	settings := [2]string{"on", "off"}
 	var conns [2]*pgconn.PgConn
 	for i, setting := range settings {
 		config, err := pgconn.ParseConfig(url)
 		if err != nil {
-			t.Fatalf("parse DISPATCH_TEST_DATABASE_URL: %v", err)
+			t.Fatalf("parse the test database's URL: %v", err)
 		}
 		// The setting is given to the server in the startup packet, as PGOPTIONS gives it: a SET
 		// in a statement of its own would do, but a SET in the same simple-query string as the

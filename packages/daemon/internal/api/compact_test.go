@@ -2,12 +2,12 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // compactHarness is the one daemon both doors are driven against, as freshSessionHarness is: the
@@ -264,14 +265,10 @@ func waitForCompacting(t *testing.T, h *harness, token claim.Token) {
 	if !ok {
 		t.Fatalf("%s has no fake connection to hold a compaction at", token)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking && conn.CompactsHeld() > 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("%s never reported itself being compacted with the compaction held at its connection", token)
+	testwait.Eventually(t, fmt.Sprintf("%s to report itself being compacted with the compaction held at its connection", token), func() bool {
+		c := m.View().Claim
+		return c.Compacting && c.State == supervise.StateWorking && conn.CompactsHeld() > 0
+	})
 }
 
 // A second compaction of a claim already being compacted is refused, and the refusal says what

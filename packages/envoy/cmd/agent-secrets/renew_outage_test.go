@@ -46,6 +46,10 @@ type outageRig struct {
 	attempts  []leasetime.Attempt
 	renewed   time.Duration
 	renewedOK bool
+
+	// grantedAt is when the first grant was built, and firstAsked when the loop asked for its
+	// first wait: the renewer reads its lease between the two, on the same wall clock.
+	grantedAt, firstAsked time.Time
 }
 
 func (r *outageRig) gapStart() time.Duration { return r.firstWait + r.gapOffset }
@@ -61,6 +65,7 @@ func (r *outageRig) RoundTrip(*http.Request) (*http.Response, error) {
 	at := r.now
 	if r.firstWait == 0 {
 		// The renewal that grants the lease, before the outage and before any wait.
+		r.grantedAt = time.Now()
 		return r.granted(), nil
 	}
 	i := len(r.attempts)
@@ -123,6 +128,7 @@ func (r *outageRig) after(cancel context.CancelFunc, t *testing.T) func(time.Dur
 		defer r.mu.Unlock()
 		if r.firstWait == 0 {
 			r.firstWait = d
+			r.firstAsked = time.Now()
 		}
 		r.now += d
 		if r.renewedOK || len(r.attempts) > 64 {
@@ -200,13 +206,16 @@ func TestRenewLoopOutlivesAnOutageOnlyAtTheLeaseBound(t *testing.T) {
 			if got := renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, rig.after(cancel, t)); got != c.wantExit {
 				t.Fatalf("renew loop exit = %d, want %d", got, c.wantExit)
 			}
-			// The renewer reads its lease a few milliseconds after the broker granted it —
-			// signing the proof and the round trip are inside that reading — so its own walk
-			// is the model's at the lease it read, three times the wait it kept. Each lease
-			// above is at least minMargin from the boundary, far more than that reading costs,
-			// so which side of it this lease falls on is the same either way.
-			if short := leasetime.RenewAfter(c.lease) - rig.firstWait; short < 0 || short > 100*time.Millisecond {
-				t.Fatalf("the renewer waited %v after a lease of %v, want a third of it", rig.firstWait, c.lease)
+			// The renewer reads its lease after the broker granted it and before it asks for its
+			// first wait - signing the proof and the round trip are inside that reading - so its
+			// own walk is the model's at the lease it read, three times the wait it kept. That
+			// wait is a third of a lease no longer than granted and no shorter than what was left
+			// when it asked: an order of readings of one clock, which load widens and never
+			// breaks. Each lease above is at least minMargin from the boundary, far more than that
+			// reading costs, so which side of it this lease falls on is the same either way.
+			left := c.lease - rig.firstAsked.Sub(rig.grantedAt)
+			if rig.firstWait > leasetime.RenewAfter(c.lease) || rig.firstWait < leasetime.RenewAfter(left) {
+				t.Fatalf("the renewer waited %v after a lease of %v, of which %v was left when it asked, want a third of what it read", rig.firstWait, c.lease, left)
 			}
 			walked := model.Walk(leasetime.RenewerAgentSecrets, leasetime.RenewDivisor*rig.firstWait, rig.gap, rig.gapStart(), delays...)
 			if !slices.Equal(rig.attempts, walked.Attempts) {

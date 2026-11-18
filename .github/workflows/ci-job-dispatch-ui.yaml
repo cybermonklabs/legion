@@ -23,6 +23,10 @@ on:
 jobs:
   dispatch-ui:
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 117 s, 5 s of its clock over them, and its two test steps' longest
+    # plus their package scripts' guards, the proof editor's 31 s + 45 s and the dashboard's
+    # 106 s + 70 s (its two bun test commands' 10 s and 60 s): 374 s, or 7 minutes.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

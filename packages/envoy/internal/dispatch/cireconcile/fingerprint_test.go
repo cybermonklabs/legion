@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
@@ -369,13 +368,12 @@ func TestACutPassKeepsTheFingerprintsOfTheHeadsItRead(t *testing.T) {
 	h.mapRepository(rowRepository)
 	// Twenty-five open pull requests are two pages of a query: twenty and five.
 	pulls := unchangingHeads(h, 25)
-	h.reconciler.PassTimeout = 2 * time.Second
 	// GitHub never answers the second page within what the pass has left, so the pass's own
 	// bound ends it there, after the twenty heads of the first page.
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	h.github.holdQuery(gitHubRepository, 1)
 	counted := h.countWrites()
 
-	h.pass()
+	h.passCutByItsBound()
 
 	line := h.passLine()
 	if line["deadline_reached"] != true {
@@ -384,9 +382,8 @@ func TestACutPassKeepsTheFingerprintsOfTheHeadsItRead(t *testing.T) {
 	if got, want := number(t, line, "heads"), pullsPerQuery; got != want {
 		t.Fatalf("the cut pass read %d heads, want the %d of the page it got: %v", got, want, line)
 	}
-	// GitHub answers again, and the pass that takes the cycle up has as long as it needs.
-	h.github.stallQuery(gitHubRepository, 1, 0)
-	h.reconciler.PassTimeout = 0
+	// GitHub answers again, and the pass that takes the cycle up reads every page left.
+	h.github.releaseQuery(gitHubRepository, 1)
 	counted.forget()
 
 	h.pass()

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two migrations the fill runs behind, read from the store's own directory rather than
@@ -290,17 +291,13 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 		t.Fatalf("commit the version write: %v", err)
 	}
 
-	select {
-	case answer := <-done:
-		if answer.err != nil {
-			t.Fatalf("fill document_search beside a committing version write: %v", answer.err)
-		}
-		if answer.written != documents-1 {
-			t.Fatalf("the fill wrote %d rows over %d documents, want one for every document but the raced one, whose row names a higher version than the fill read",
-				answer.written, documents)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the fill did not finish once the version write committed")
+	answer := testwait.Receive(t, "the fill to finish once the version write committed", done)
+	if answer.err != nil {
+		t.Fatalf("fill document_search beside a committing version write: %v", answer.err)
+	}
+	if answer.written != documents-1 {
+		t.Fatalf("the fill wrote %d rows over %d documents, want one for every document but the raced one, whose row names a higher version than the fill read",
+			answer.written, documents)
 	}
 	requireDocumentSearchRow(t, database, notes.ID, 2, "zebra", "quagga")
 }
@@ -310,20 +307,13 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 // names it, so no other session queued on the same lock is taken for it.
 func awaitFillQueued(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Eventually(t, "the fill's batch to queue behind the open version write", func() bool {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%document_search_backfill for update%")
 		if err != nil {
 			t.Fatalf("read the sessions waiting on a lock: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the fill's batch never queued behind the open version write")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return waiting > 0
+	})
 }
 
 // The cheap boot: once the pass is finished, a run reads the progress row and nothing else. The

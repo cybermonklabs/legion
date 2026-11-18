@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleClaimInstance is the client instance a test claim names: the process that holds it, as a
@@ -29,7 +31,7 @@ func TestAClaimThisBuildWritesNamesItsHoldersProcessAndWhenItLastAnswered(t *tes
 
 	reg, _ := coldRegistry(t, conn)
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
-	reg.now = func() time.Time { return claimed }
+	reg.clock = clocktest.New(claimed)
 	const (
 		role   = "legion-controller"
 		holder = "ses_claiming_process"
@@ -97,7 +99,7 @@ func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t
 	logs := captureRegistryLogs(t)
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -121,7 +123,7 @@ func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -154,13 +156,13 @@ func renewedRoleClaim(t *testing.T, role, holder string) (*Registry, func(time.D
 	t.Cleanup(cleanup)
 	reg, _ := coldRegistry(t, conn)
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
-	var elapsed atomic.Int64
-	reg.now = func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }
+	fake := clocktest.New(claimed)
+	reg.clock = fake
 	claim := RoleClaimRequest{SessionID: holder, MachineID: "example-host", ClientInstanceID: roleClaimInstance, Role: role}
 	if _, err := reg.SetRoleWithPrevious(context.Background(), claim); err != nil {
 		t.Fatalf("claim %s for %s: %v", role, holder, err)
 	}
-	return reg, func(since time.Duration) { elapsed.Store(int64(since)) }
+	return reg, func(since time.Duration) { fake.Set(claimed.Add(since)) }
 }
 
 // The incident this guards: a second process resumed the holder's session id and deregistered it,
@@ -239,7 +241,7 @@ func TestClaimRenewedWithinWeighsEveryClaimAgainstTheWindowItIsGiven(t *testing.
 	now := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	const liveWindow = time.Minute
 	at := func(age time.Duration) int64 { return now.Add(-age).UnixMilli() }
-	reg := &Registry{now: func() time.Time { return now }}
+	reg := &Registry{clock: clocktest.New(now)}
 	for name, tc := range map[string]struct {
 		claim      RoleClaim
 		liveWindow time.Duration
@@ -282,13 +284,13 @@ func renewableRoleClaim(t *testing.T, role, holder, instance string) (*Registry,
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
-	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
+	fake := clocktest.New(claimed)
+	reg, err := Open(conn, WithReplicas(1), WithClock(fake))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -304,7 +306,7 @@ func renewableRoleClaim(t *testing.T, role, holder, instance string) (*Registry,
 	if _, err := reg.SetRoleWithPrevious(ctx, claim); err != nil {
 		t.Fatalf("claim %s for %s: %v", role, holder, err)
 	}
-	return reg, func(since time.Duration) { elapsed.Store(int64(since)) }
+	return reg, func(since time.Duration) { fake.Set(claimed.Add(since)) }
 }
 
 // storedRoleClaim reads role's claim back from the bucket, with the revision the record stands at.

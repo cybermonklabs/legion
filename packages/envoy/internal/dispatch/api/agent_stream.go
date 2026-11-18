@@ -126,7 +126,7 @@ func (q *agentStreamQueue) release(size int) {
 func (s *server) replayAgentStream(
 	ctx context.Context, source agentstream.Source, sessionID string,
 ) (agentstream.Frame, bool) {
-	replayCtx, cancel := context.WithTimeout(ctx, agentStreamReplayTimeout)
+	replayCtx, cancel := s.clock.WithTimeout(ctx, agentStreamReplayTimeout)
 	defer cancel()
 	replay, err := source.Replay(replayCtx, sessionID)
 	if errors.Is(err, agentstream.ErrNoResponder) {

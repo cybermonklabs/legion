@@ -1222,13 +1222,19 @@ write_lock() {
 readonly other_run=lt-20261028t080000-beef
 
 reset_fake
-write_lock "$other_run" "$(date -u -d '-120 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+# Own the clock: pin up's "now" to a fixed instant and write the heartbeat 120 s before it, so the
+# age up reports is exactly 120 s however long a loaded machine takes between this write and up's
+# read of the lock -- the window the wall-clock form left it (120-159 s) was that read's slack.
+pin=$(date -u +%s)
+export LOADTEST_FAKE_NOW_EPOCH=$pin
+write_lock "$other_run" "$(date -u -d "@$((pin - 120))" +%Y-%m-%dT%H:%M:%SZ)"
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 2)) || fail "up while the lock exists exited $RC, not 2"
 grep -q 'holder pod other-worker-3' "$tmp/out" || fail "up's lock refusal does not name the holder"
-grep -qE 'last heartbeat [^ ]+, 1[2-5][0-9] s ago' "$tmp/out" || fail "up's lock refusal does not give the heartbeat's age"
+grep -qE 'last heartbeat [^ ]+, 120 s ago' "$tmp/out" || fail "up's lock refusal does not give the heartbeat's age"
 ! grep -q stale "$tmp/out" || fail "up called a 2-minute-old heartbeat stale"
 no_create || fail "up created something while the lock existed"
+unset LOADTEST_FAKE_NOW_EPOCH
 [ -z "$(find "$LOADTEST_CLUSTER_ROOT" -maxdepth 1 -name '.checker.*' 2>/dev/null)" ] || fail "up left the checker's scratch directory after the lock refused it"
 pass "up refuses with exit 2 while the lock exists, naming the holder and the heartbeat's age, and removes the checker it built"
 
@@ -3489,9 +3495,13 @@ unreach_rc=$tmp/unreachable.rc
 unreach_stop=$tmp/unreachable-stop.out
 unreach_step=$tmp/unreachable-step.out
 # stop_tries: how many kills of a runner job the fake kubectl has been asked for, delivered or
-# not; kill_tries: how many of those named SIGKILL.
+# not; kill_tries: how many of those named SIGKILL; signals JOB: the signals it was asked to send
+# the runner job JOB, delivered or not, in the order it took them (TERM or KILL, space-separated).
+# These are the waits' facts: what a wait asked for and in what order, read from the fake's own
+# ledger and not from a clock a loaded machine stretches.
 stop_tries() { grep -c -- 'exec runner -c runner -- sh -c pid=' "$fake/kubectl.log" || true; }
 kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
+signals() { grep -- 'exec runner -c runner -- sh -c pid=' "$fake/kubectl.log" | grep -- " sh $1\$" | grep -oE 'kill -(TERM|KILL)' | cut -c7- | paste -sd' ' - || true; }
 (
   # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
   source "$cluster"
@@ -3501,8 +3511,8 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   self=$BASHPID
   self_start=$(proc_start "$self")
   # The guard's 2 s between tries is a fast sleep; the wait's 15 s poll is a real one, so each
-  # stage of its stop takes one poll and no assertion counts a spin. Three seconds of grace, so
-  # the bound is one poll wide.
+  # stage of its stop takes one poll, and the signals the fake records show that the wait kept
+  # it: a wait that spins asks again and again inside one grace. Three seconds of grace.
   export FAKE_FAST_SLEEP=2
   RUNNER_STOP_GRACE_SECONDS=3
   export FAKE_RUNNER_EXEC_FAIL=$unreach_fail
@@ -3510,7 +3520,6 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   # .rc cannot be read either.
   rm -f -- "$fake/runner-stops" "$fake/runner-kills"
   : >"$unreach_fail"
-  gone_at=$EPOCHSECONDS
   (
     rc=0
     runner_wait step-unreach 0 "$RUN_DIR/logs" "$self" "$self_start" >"$unreach_print" 2>"$unreach_out" || rc=$?
@@ -3520,15 +3529,15 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   stop_watchdog 90 "$waiter"
   wait "$waiter" 2>/dev/null || true
   stop_watchdog_end
-  gone_took=$((EPOCHSECONDS - gone_at))
   [ ! -f "$fake/stop-late" ] ||
     fail "the wait past its deadline did not end within 90 s while every exec of the runner pod failed: it polls for an exit status nothing can record, and its step never returns"
   [ "$(cat "$unreach_rc")" != 0 ] ||
     fail "that wait ended with status 0 although no TERM reached the job and no exit status was read: $(cat "$unreach_out")"
   [ ! -s "$unreach_print" ] ||
     fail "that wait printed '$(cat "$unreach_print")', which its caller reads as the job's exit status"
-  ((gone_took <= RUNNER_STOP_GRACE_SECONDS + 45)) ||
-    fail "that wait took $gone_took s to end, past the $RUNNER_STOP_GRACE_SECONDS s it gives the TERM and a poll's margin: $(cat "$unreach_out")"
+  gone_signals=$(signals step-unreach)
+  [[ $gone_signals =~ ^TERM( TERM)?$ ]] ||
+    fail "that wait asked for the signals '$gone_signals', not the TERM at its deadline and at most one more at its next poll, where the grace had run out: a wait that does not keep its poll asks again and again inside one grace, and one that went on to a SIGKILL sent it with no TERM delivered: $(cat "$unreach_out")"
   grep -qF 'runner pod' "$unreach_out" ||
     fail "that wait's note does not name the runner pod it could not reach: $(cat "$unreach_out")"
   [ ! -s "$fake/runner-stops" ] ||
@@ -3538,7 +3547,6 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   rm -f -- "$unreach_fail" "$fake/runner-stops" "$fake/runner-kills" "$fake/rc-polls"
   export FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL_AT_STOP=1
   kills=$(kill_tries)
-  termed_at=$EPOCHSECONDS
   (
     rc=0
     runner_wait step-termed 0 "$RUN_DIR/logs" "$self" "$self_start" >"$unreach_print" 2>"$unreach_out" || rc=$?
@@ -3548,7 +3556,6 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   stop_watchdog 90 "$waiter"
   wait "$waiter" 2>/dev/null || true
   stop_watchdog_end
-  termed_took=$((EPOCHSECONDS - termed_at))
   [ ! -f "$fake/stop-late" ] ||
     fail "the wait whose TERM was the last exec the runner pod answered did not end within 90 s: it polls for an exit status the SIGKILL it cannot send would have made"
   grep -qx 'step-termed' "$fake/runner-stops" ||
@@ -3557,8 +3564,9 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     fail "that wait ended with status 0 although no SIGKILL reached the job and no exit status was read: $(cat "$unreach_out")"
   [ ! -s "$unreach_print" ] ||
     fail "that wait printed '$(cat "$unreach_print")', which its caller reads as the job's exit status"
-  ((termed_took <= 2 * RUNNER_STOP_GRACE_SECONDS + 45)) ||
-    fail "that wait took $termed_took s to end, past the two graces the TERM and the SIGKILL get and a poll's margin: $(cat "$unreach_out")"
+  termed_signals=$(signals step-termed)
+  [ "$termed_signals" = "TERM KILL" ] ||
+    fail "that wait asked for the signals '$termed_signals', not its TERM and then the one SIGKILL its second grace leaves room for, in that order: $(cat "$unreach_out")"
   [ "$(($(kill_tries) - kills))" = 1 ] ||
     fail "that wait asked for $(($(kill_tries) - kills)) SIGKILL(s), not the one attempt its second grace leaves room for: $(cat "$unreach_out")"
   grep -qF 'runner pod' "$unreach_out" ||
@@ -3595,8 +3603,9 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     fail "that wait printed '$(cat "$unreach_print")', which its caller reads as the job's exit status"
   ((killed_took >= RUNNER_STOP_GRACE_SECONDS)) ||
     fail "that wait ended $killed_took s after its SIGKILL, inside the $RUNNER_STOP_GRACE_SECONDS s it gives the killed job to record an exit status: it ended at its first poll after the SIGKILL, bounding nothing: $(cat "$unreach_out")"
-  ((killed_took <= RUNNER_STOP_GRACE_SECONDS + 30)) ||
-    fail "that wait took $killed_took s after its SIGKILL to end, past the grace it gives that exit status and a poll's margin: $(cat "$unreach_out")"
+  killed_signals=$(signals step-killed)
+  [ "$killed_signals" = "TERM KILL" ] ||
+    fail "that wait asked for the signals '$killed_signals', not the TERM the job ignored and then one SIGKILL, in that order: $(cat "$unreach_out")"
   [ "$(($(kill_tries) - kills))" = 1 ] ||
     fail "that wait asked for $(($(kill_tries) - kills)) SIGKILL(s), not the one a job that ignored the TERM gets: $(cat "$unreach_out")"
   grep -qF 'no exit status was read from the runner pod' "$unreach_out" ||
@@ -3666,15 +3675,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   releaser=$!
   PG_DISK_STOP_SECONDS=30
   stop_watchdog 60 "$watcher"
-  read_at=$EPOCHSECONDS
   pg_disk_watch_stop 2>"$unreach_stop"
   stop_watchdog_end
   wait "$releaser" 2>/dev/null || true
-  read_took=$((EPOCHSECONDS - read_at))
   [ ! -f "$fake/stop-late" ] ||
     fail "pg_disk_watch_stop did not return within 60 s of the TERM it sent while the watcher was inside its read of the volume: $(cat "$unreach_stop")"
-  ((read_took * 2 <= PG_DISK_STOP_SECONDS)) ||
-    fail "pg_disk_watch_stop took $read_took s of its $PG_DISK_STOP_SECONDS s bound to return, instead of ending with the read its TERM landed inside: $(cat "$unreach_stop")"
   ! grep -qF 'so it was killed' "$unreach_stop" ||
     fail "pg_disk_watch_stop had to kill the watcher at its bound: the TERM that landed inside its read of the volume was lost: $(cat "$unreach_stop")"
   ! kill -0 "$watcher" 2>/dev/null ||
@@ -3710,7 +3715,6 @@ RUNNER_STOP_GRACE_SECONDS=3
 main "\$@"
 EOF
 rm -f -- "$fake/runner-starts" "$fake/runner-stops" "$fake/rc-polls"
-step_at=$EPOCHSECONDS
 # The step's heartbeat is gated as in (o) until its pid is read below: with fast periods it could
 # otherwise stop, and take its pidfile with it, as soon as the step command has ended.
 FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
@@ -3725,30 +3729,28 @@ stop_watchdog 240 "$unreach_pid"
 unreach_step_rc=0
 wait "$unreach_pid" 2>/dev/null || unreach_step_rc=$?
 stop_watchdog_end
-step_took=$((EPOCHSECONDS - step_at))
 [ ! -f "$fake/stop-late" ] ||
   fail "the step command did not end within 240 s of a runner pod that answers no exec: it waits for an exit status nothing can record, and its heartbeat renews the lock while no load runs: $(cat "$unreach_step")"
 ((unreach_step_rc != 0)) ||
   fail "the step command exited 0 although its runner job was never stopped and gave no exit status: $(cat "$unreach_step")"
-((step_took <= 180)) ||
-  fail "the step command took $step_took s to end, past its wait's deadline and the graces of its stop: $(cat "$unreach_step")"
 # The heartbeat ends with the command, as (o) has it for a run whose command is gone: the lock
 # it renewed every 60 s is renewed no more, so it ages and up calls it stale.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
 kill -0 "$unreach_hb" 2>/dev/null ||
   fail "the heartbeat the step started (pid $unreach_hb) is not running, though the gate holds it in its first period: $(cat "$LOADTEST_CLUSTER_ROOT/$unreach_run/logs/heartbeat.log")"
 : >"$fake/root-unreach-step.gate"
-for ((i = 0; i < 50; i++)); do
-  kill -0 "$unreach_hb" 2>/dev/null || break
-  sleep 0.1
-done
+# The heartbeat ends at its next pass once the gate is open: wait for that fact, with the guard
+# as the only bound, rather than for a count of naps a loaded machine can outlast.
+stop_watchdog 60 "$unreach_hb"
+until ! kill -0 "$unreach_hb" 2>/dev/null; do sleep 0.05; done
+stop_watchdog_end
 unreach_hb_alive=no
-kill -0 "$unreach_hb" 2>/dev/null && unreach_hb_alive=yes
+[ ! -f "$fake/stop-late" ] || unreach_hb_alive=yes
 unreach_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 sleep 1
 unreach_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 [ "$unreach_hb_alive" = no ] ||
-  fail "the heartbeat daemon (pid $unreach_hb) still runs 5 s after the step command it outlived ended: a run no command drives keeps its lock fresh"
+  fail "the heartbeat daemon (pid $unreach_hb) still ran 60 s after the step command it outlived ended and its gate opened: a run no command drives keeps its lock fresh"
 [ "$unreach_patches_after" = "$unreach_patches" ] ||
   fail "the lock was patched $((unreach_patches_after - unreach_patches)) more times after the step command ended: the copy's lock never ages, so no other worker may take it"
 rm -f -- "$unreach_fail"

@@ -12,11 +12,13 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refusedPublish is an envelope of the shape the publish route builds for a role-lane publish,
@@ -99,14 +101,9 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 
 	publishRefusalException(client, logger, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(logs.String(), exceptionPublishFailedLine) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("a refusal exception that could not be published logged %q, want %q", logs.String(), exceptionPublishFailedLine)
+	testwait.Eventually(t, "the refusal exception that could not be published to be logged", func() bool {
+		return strings.Contains(logs.String(), exceptionPublishFailedLine)
+	})
 }
 
 // The exception goes out behind the 404, never in front of it: publishRefusalException hands the
@@ -117,29 +114,29 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 // must return long before that.
 func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	server, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	// The client's publish bound runs on this frozen fake, so a publish made while the bus is
+	// reconnecting blocks on a deadline this test never moves: an in-line publish would wait here
+	// for a connection for ever, and one handed to a goroutine returns at once.
+	frozen := clocktest.New(time.Now())
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithClock(frozen))
 	if err != nil {
 		t.Fatalf("connect the listener's bus: %v", err)
 	}
 	t.Cleanup(client.Close)
 	server.Stop(t)
-	deadline := time.Now().Add(10 * time.Second)
-	for client.Connected() || !client.Conn.IsReconnecting() {
-		if time.Now().After(deadline) {
-			t.Fatal("the client is not reconnecting 10 s after its server stopped")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if client.Connected() || !client.Conn.IsReconnecting() {
-		t.Fatal("the client must be reconnecting, not connected or closed")
-	}
+	testwait.Eventually(t, "the client to be reconnecting after its server stopped", func() bool {
+		return !client.Connected() && client.Conn.IsReconnecting()
+	})
 
-	started := time.Now()
-	publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("publishRefusalException took %s against a reconnecting bus, want it back within 500ms: the 404 waits for it",
-			elapsed)
-	}
+	// publishRefusalException hands the publish to a goroutine and returns, so it comes back while
+	// that goroutine is still blocked on the frozen publish bound. An in-line publish would block
+	// there with it, and the wait below would name the call that never returned.
+	returned := make(chan struct{})
+	go func() {
+		publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
+		close(returned)
+	}()
+	testwait.Receive(t, "publishRefusalException to return against a reconnecting bus", returned)
 }
 
 // A non-live state outside roleholder is not a refusal reason the Legion daemon knows, so it raises

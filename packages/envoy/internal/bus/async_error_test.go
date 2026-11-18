@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A KV watcher's ordered consumer reports nats.ErrConsumerNotActive only while its connection is
@@ -105,14 +109,11 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 		}
 		return out
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for len(lines()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the client never reported the handshake the server closed")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got, want := lines()[0], "WARN envoy nats reconnect attempt failed"; got != want {
+	first := testwait.Until(t, "the client's report of the handshake the server closed", func() ([]string, bool) {
+		found := lines()
+		return found, len(found) > 0
+	})
+	if got, want := first[0], "WARN envoy nats reconnect attempt failed"; got != want {
 		t.Fatalf("a reconnect handshake the server closed logged %q, want %q", got, want)
 	}
 	for _, line := range lines() {
@@ -134,6 +135,124 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 	}
 	if got, want := strings.Join(levels, " | "), "ERROR envoy nats async error EOF | ERROR envoy nats async error nats: slow consumer, messages dropped"; got != want {
 		t.Fatalf("other async errors logged %q, want %q", got, want)
+	}
+}
+
+// A server that does not answer a reconnect's handshake in time - a slow reconnect on a loaded
+// machine - makes nats.go's handshake read run out of its deadline (Opts.Timeout), and report that
+// timeout to the async error callback with no subscription, as it reports the EOF of a handshake the
+// server closed above. It is a failed reconnect attempt: a WARN on the reconnect throttle naming the
+// timeout, and no ERROR. The fake server completes the first handshake, drops that connection, and
+// then accepts every reconnect dial, sends INFO, and never answers its CONNECT and PING, holding the
+// connection open so the read times out rather than ending.
+func TestAReconnectHandshakeThatTimesOutIsAFailedReconnectAttempt(t *testing.T) {
+	logs := captureLogs(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	held := make(chan net.Conn, 64)
+	t.Cleanup(func() {
+		_ = listener.Close()
+		for {
+			select {
+			case conn := <-held:
+				_ = conn.Close()
+			default:
+				return
+			}
+		}
+	})
+	connected := make(chan net.Conn, 1)
+	go func() {
+		for first := true; ; first = false {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = io.WriteString(conn, `INFO {"server_id":"fake","version":"2.10.29","proto":1,"max_payload":1048576}`+"\r\n")
+			if !first {
+				// Never answered, and never closed while the test runs: the handshake's read waits
+				// out its deadline.
+				select {
+				case held <- conn:
+				default:
+					_ = conn.Close()
+				}
+				continue
+			}
+			reader := bufio.NewReader(conn)
+			if _, err := reader.ReadString('\n'); err != nil { // CONNECT
+				_ = conn.Close()
+				continue
+			}
+			if _, err := reader.ReadString('\n'); err != nil { // PING
+				_ = conn.Close()
+				continue
+			}
+			_, _ = io.WriteString(conn, "PONG\r\n")
+			connected <- conn
+		}
+	}()
+
+	url := "nats://" + listener.Addr().String()
+	nc, err := options("handshake-timeout-test", []string{url}, nil, nil, nil, nil, nil).Connect()
+	if err != nil {
+		t.Fatalf("connect to the fake server: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	_ = (<-connected).Close()
+
+	lines := func() []string {
+		var out []string
+		for _, record := range logs.records(t) {
+			if text, _ := record["error"].(string); record["name"] == "handshake-timeout-test" && strings.Contains(text, "i/o timeout") {
+				out = append(out, fmt.Sprint(record["level"], " ", record["msg"]))
+			}
+		}
+		return out
+	}
+	first := testwait.Until(t, "the client's report of the reconnect handshake that timed out", func() ([]string, bool) {
+		found := lines()
+		return found, len(found) > 0
+	})
+	if got, want := first[0], "WARN envoy nats reconnect attempt failed"; got != want {
+		t.Fatalf("a reconnect handshake that timed out logged %q, want %q", got, want)
+	}
+	for _, record := range logs.records(t) {
+		if record["name"] == "handshake-timeout-test" && record["level"] == "ERROR" {
+			t.Fatalf("a reconnect handshake that timed out logged an ERROR: %v", record)
+		}
+	}
+}
+
+// A read that times out on a connection that is connected is no reconnect handshake: the async
+// error callback reports it, with no subscription, as the ERROR every other async error is, and
+// logs no failed reconnect attempt. The connection is a real one to the package's server, so its
+// status is CONNECTED; the error is a net.Error whose Timeout is true, as a read's deadline makes.
+func TestATimeoutOnAConnectedConnectionStaysAnError(t *testing.T) {
+	logs := captureLogs(t)
+	nc, err := nats.Connect(testnats.URL(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	if status := nc.Status(); status != nats.CONNECTED {
+		t.Fatalf("connection status = %v, want CONNECTED", status)
+	}
+	timedOut := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	if !timedOut.Timeout() {
+		t.Fatal("the error under test is no timeout")
+	}
+	options("connected-timeout-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB(nc, nil, timedOut)
+	var levels []string
+	for _, record := range logs.records(t) {
+		if record["name"] == "connected-timeout-test" {
+			levels = append(levels, fmt.Sprint(record["level"], " ", record["msg"]))
+		}
+	}
+	if got, want := strings.Join(levels, " | "), "ERROR envoy nats async error"; got != want {
+		t.Fatalf("a timeout on a connected connection logged %q, want %q", got, want)
 	}
 }
 

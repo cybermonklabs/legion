@@ -272,7 +272,6 @@ describe("a dispatch command's head", () => {
         "dispatch comment --issue X-1 --body hi # '--advisor-rebuttal' 'r'"
       );
       expect(accepted.length).toBeGreaterThan(20);
-    },
-    60_000
+    }
   );
 });

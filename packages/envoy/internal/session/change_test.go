@@ -7,6 +7,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sessionChange is one id OnChange reported, with what Get answered for it at the time, as the
@@ -30,15 +32,10 @@ func watchSessionChanges(t *testing.T, r *SessionRegistry) (<-chan sessionChange
 
 func awaitSessionChange(t *testing.T, changes <-chan sessionChange, want func(sessionChange) bool, what string) sessionChange {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
 	for {
-		select {
-		case change := <-changes:
-			if want(change) {
-				return change
-			}
-		case <-deadline:
-			t.Fatalf("no change reported: %s", what)
+		change := testwait.Receive(t, "a session change: "+what, changes)
+		if want(change) {
+			return change
 		}
 	}
 }
@@ -53,8 +50,7 @@ func TestOnChangeReportsWritesDeletesAndAnotherListenersWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the following registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := follower.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("follower cache ready: %v", err)
 	}
@@ -108,9 +104,8 @@ func TestOnChangeReportsWritesDeletesAndAnotherListenersWrites(t *testing.T) {
 // that deadline afterwards, so PruneLapsed is what finds the lapse and nothing can have swept it
 // before OnChange was registered.
 func TestOnChangeReportsALapseOncePruneLapsedFindsIt(t *testing.T) {
-	moved := &clock{}
-	r := newTestRegistry(5 * time.Minute)
-	r.now = moved.Now
+	moved := clocktest.Held()
+	r := newTestRegistryOn(5*time.Minute, moved)
 	now := moved.Now()
 	// ses_live's heartbeat is now, since a row's state is read from its own UpdatedAt and List
 	// answers the live rows alone.
@@ -119,7 +114,7 @@ func TestOnChangeReportsALapseOncePruneLapsedFindsIt(t *testing.T) {
 		"ses_lapsed": {entry: SessionEntry{MachineID: "m1", Delivery: DeliveryConsumer, UpdatedAt: now.Add(-6 * time.Minute).UnixMilli()}, expiresAt: now.Add(30 * time.Second)},
 	})
 	changes, _ := watchSessionChanges(t, r)
-	moved.advance(time.Minute)
+	moved.Advance(time.Minute)
 
 	r.PruneLapsed()
 

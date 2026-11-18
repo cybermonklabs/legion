@@ -11,19 +11,16 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// waitCompleteCtx bounds every WaitComplete these tests make, and waitCompleteWake, well inside
-// it, bounds the answer each one waits for. A cause whose wakeComplete is missing therefore fails
-// its test at waitCompleteWake, naming the cause, rather than letting the call sit until ctx ends
-// or hanging the suite.
-const (
-	waitCompleteCtx  = 5 * time.Second
-	waitCompleteWake = 2 * time.Second
-)
+// The waits below hold through the shared wait, with no bound of their own: a cause whose
+// wakeComplete is missing leaves WaitComplete blocked, and answerWithin then gives up naming the
+// cause rather than hanging the suite.
 
 // blockedInWaitComplete reports whether a goroutine is parked in WaitComplete, which is the select
 // it waits on: a wait that has read the state and found the copy not servable.
@@ -44,21 +41,15 @@ func waitCompleteBlocked(t *testing.T, ctx context.Context, w *kvwatch.Watcher) 
 	t.Helper()
 	answers := make(chan error, 1)
 	go func() { answers <- w.WaitComplete(ctx) }()
-	eventually(t, "WaitComplete to block on its wake-up", blockedInWaitComplete)
+	testwait.Eventually(t, "WaitComplete to block on its wake-up", blockedInWaitComplete)
 	return answers
 }
 
-// answerWithin reads the answer of a WaitComplete waiting on cause, failing the test when none
-// comes within waitCompleteWake: that is the wake-up cause does not make.
+// answerWithin reads the answer of a WaitComplete waiting on cause. A cause whose wakeComplete is
+// missing leaves it blocked, and the shared wait gives up naming the cause.
 func answerWithin(t *testing.T, cause string, answers <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-answers:
-		return err
-	case <-time.After(waitCompleteWake):
-		t.Fatalf("WaitComplete did not return within %s of %s; a caller gating its start on a servable copy waits its whole bound out", waitCompleteWake, cause)
-		return nil
-	}
+	return testwait.Receive(t, "WaitComplete to answer "+cause, answers)
 }
 
 // refillingWatcher is a watcher of the test bucket whose first read stalls and ends at its scan's
@@ -75,10 +66,10 @@ func refillingWatcher(t *testing.T, kv bus.KeyValue) (*kvwatch.Watcher, *armed) 
 		kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read to begin", func() bool { return len(into.reads()) == 1 })
-	now.advance(kvwatch.ScanIdleTimeout)
+	testwait.Eventually(t, "the first read to begin", func() bool { return len(into.reads()) == 1 })
+	now.Advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	eventually(t, "the first read to end as timed out", w.Ready)
+	testwait.Eventually(t, "the first read to end as timed out", w.Ready)
 	if err := w.Servable(); !errors.Is(err, kvwatch.ErrRefilling) {
 		t.Fatalf("a copy no read of the bucket completed answers Servable %v; nothing would block in WaitComplete", err)
 	}
@@ -94,9 +85,7 @@ func TestWaitCompleteReturnsOnAFailedFirstStart(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen())
 	t.Cleanup(w.Stop)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
-	answers := waitCompleteBlocked(t, ctx, w)
+	answers := waitCompleteBlocked(t, testwait.Context(t), w)
 	w.Start()
 
 	err := answerWithin(t, "a first start that failed with no watcher current", answers)
@@ -129,7 +118,7 @@ func (s recreatedStreams) Stream(ctx context.Context, name string) (jetstream.St
 func anotherBucketsStream(t *testing.T, conn *natsgo.Conn) string {
 	t.Helper()
 	const bucket = "kvwatch-test-other-stream"
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -151,9 +140,7 @@ func TestWaitCompleteReturnsWhenCheckFindsTheBucketRecreated(t *testing.T) {
 	streams := recreatedStreams{JetStream: kv.Streams(), other: anotherBucketsStream(t, conn), recreated: recreated}
 	w, _ := refillingWatcher(t, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), streams))
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
-	answers := waitCompleteBlocked(t, ctx, w)
+	answers := waitCompleteBlocked(t, testwait.Context(t), w)
 	recreated.Store(true)
 	if err := w.Check(); err != nil {
 		t.Fatalf("Check on the recreated bucket: %v", err)
@@ -173,9 +160,7 @@ func TestWaitCompleteReturnsWhenTheWatcherEndsOnItsOwn(t *testing.T) {
 	conn, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
-	answers := waitCompleteBlocked(t, ctx, w)
+	answers := waitCompleteBlocked(t, testwait.Context(t), w)
 	conn.Close()
 
 	err := answerWithin(t, "the watcher ending on its own", answers)
@@ -191,9 +176,7 @@ func TestWaitCompleteReturnsWhenStopRetiresTheWatcher(t *testing.T) {
 	_, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
-	answers := waitCompleteBlocked(t, ctx, w)
+	answers := waitCompleteBlocked(t, testwait.Context(t), w)
 	w.Stop()
 
 	err := answerWithin(t, "Stop retiring the watcher", answers)
@@ -213,9 +196,7 @@ func TestWaitCompleteReturnsWhenTheWatchersOwnReReadCompletes(t *testing.T) {
 	}
 	w, arm := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
-	answers := waitCompleteBlocked(t, ctx, w)
+	answers := waitCompleteBlocked(t, testwait.Context(t), w)
 	arm.fireIt(t)
 
 	if err := answerWithin(t, "the watcher's own re-read completing", answers); err != nil {
@@ -234,10 +215,15 @@ func TestWaitCompleteReturnsItsContextsErrorWhileTheCopyIsRefilling(t *testing.T
 	_, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// The 200 ms deadline is the wait's own input under test: it is on a clock of the test's own,
+	// which the test moves past it once WaitComplete is parked on it.
+	clk := clocktest.New(time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC))
+	ctx, cancel := clk.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	answers := make(chan error, 1)
 	go func() { answers <- w.WaitComplete(ctx) }()
+	testwait.Eventually(t, "WaitComplete to block on a refilling copy", blockedInWaitComplete)
+	clk.Advance(200 * time.Millisecond)
 
 	err := answerWithin(t, "its context ending", answers)
 	if !errors.Is(err, context.DeadlineExceeded) {

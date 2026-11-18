@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -82,14 +83,15 @@ func warmUpDrain(stopGrace, grace time.Duration) time.Duration {
 	return max(stopGrace-grace-DrainTimeout, MinWarmUpDrain)
 }
 
-// Clock is the time the shim waits on: the backoff between dials and the grace before a kill.
+// Clock is the time the shim waits on and reads: the backoff between dials, the grace before a
+// kill, the budget of each command the daemon asks for, and how long those commands have been
+// ended for (drainCommands). It is a narrowing of clock.Clock: clock.Real unless Config.Clock
+// names a test's clocktest.Fake.
 type Clock interface {
+	Now() time.Time
 	After(d time.Duration) <-chan time.Time
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
-
-type realClock struct{}
-
-func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // Config is one shim's resolved flags. Every refusal belongs to the readers in config.go and has
 // happened before Run: Run dials, and spawns once acked.
@@ -153,7 +155,7 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) (int, error) {
 	s := &shim{cfg: cfg, clock: cfg.Clock, grace: cfg.Grace, stopGrace: cfg.StopGrace, childExited: make(chan struct{}), started: time.Now()}
 	if s.clock == nil {
-		s.clock = realClock{}
+		s.clock = clock.Real()
 	}
 	if s.grace == 0 {
 		s.grace = DefaultGrace
@@ -237,11 +239,9 @@ type shim struct {
 	// (drainCommands).
 	commands       context.Context
 	cancelCommands context.CancelFunc
-	// commandsEnded is when endCommands first ran, as a monotonic offset from s.started — the
-	// reading time.Since takes, never a wall-clock one, so a clock step during a stop can neither
-	// stretch the drain's wait nor skip it — and 0 before it has run: where drainCommands' bound
-	// starts counting.
-	commandsEnded atomic.Int64
+	// commandsEnded is when endCommands first ran, on the shim's clock, and nil before it has run:
+	// where drainCommands' bound starts counting.
+	commandsEnded atomic.Pointer[time.Time]
 	// commandRuns is every goroutine answer started, which drainCommands waits for.
 	// commandsInFlight is how many of those goroutines have not returned yet — raised in answer,
 	// lowered in the goroutine's own defer — which is what decides whether there is anything to

@@ -1177,7 +1177,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			}
 			park.Store(true)
 			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
-				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
+				Locator: *before.Locator, Kind: runtime.Gone, At: stillMoment,
 			}}); err != nil {
 				t.Fatalf("post the death of %s's process: %v", token, err)
 			}

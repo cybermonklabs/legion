@@ -131,7 +131,7 @@ func (r *Runtime) deleteStoredSandbox(ctx context.Context, name string) error {
 
 // awaitSandboxDeleted waits, up to the boot timeout, until the API no longer has the Sandbox name.
 func (r *Runtime) awaitSandboxDeleted(ctx context.Context, name string) error {
-	deadline := time.NewTimer(r.bootTimeout)
+	deadline := r.timers().NewTimer(r.bootTimeout)
 	defer deadline.Stop()
 	for {
 		_, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
@@ -144,7 +144,7 @@ func (r *Runtime) awaitSandboxDeleted(ctx context.Context, name string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-deadline.C:
+		case <-deadline.C():
 			return fmt.Errorf("confirm Sandbox %s deletion: timed out after %s", name, r.bootTimeout)
 		case <-time.After(recheckInterval):
 		}

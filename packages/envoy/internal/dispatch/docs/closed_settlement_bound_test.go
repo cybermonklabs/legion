@@ -321,7 +321,7 @@ func resumptionCounts(t *testing.T, service *Service, ids []string) map[string]i
 // meets no row a settlement holds.
 func waitForSettlementsToEnd(t *testing.T, service *Service, rooms []string) {
 	t.Helper()
-	waitFor(t, roomWait(t), fmt.Sprintf("the %d settlements the pass armed to end", len(rooms)), func() bool {
+	waitFor(t, fmt.Sprintf("the %d settlements the pass armed to end", len(rooms)), func() bool {
 		return !slices.ContainsFunc(rooms, func(room string) bool { return settlementUnderway(service, room) })
 	})
 }

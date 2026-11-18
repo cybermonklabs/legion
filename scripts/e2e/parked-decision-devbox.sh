@@ -103,7 +103,7 @@ dispatch_keeper_pid=
 port_daemon=
 port_listener=
 port_dispatch=
-port_pg=
+pg_sockets= # Postgres's socket directory (start_postgres_container, lib/containers.sh)
 port_nats=
 dispatch_base=
 # Every proof-human write carries no actor: the X-Dispatch-User header alone names the person
@@ -183,6 +183,7 @@ cleanup() {
   stop_agent_daemons
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets" || true
   close_unpassed_run_pull_requests
   remove_run_branches >&2
   collect_transcripts
@@ -242,7 +243,7 @@ start_dispatch() {
   # HOME and XDG_CONFIG_HOME are the scratch home, so the server reads no envoy.json of the
   # operator's: make_omp_home exports the operator's XDG_CONFIG_HOME. They are the server's alone,
   # set by its env, not the held-port helper's that runs it.
-  DATABASE_URL="postgres://legion:$pg_password@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
+  DATABASE_URL="postgres://legion:$pg_password@/dispatch?host=$pg_sockets&sslmode=disable" \
     DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
@@ -260,7 +261,7 @@ write_legion_config() {
   cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $port_daemon
-postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port_pg/legion?sslmode=disable
+postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@/legion?host=$pg_sockets&sslmode=disable
 state_dir: $state
 operator_token_file: $work/operator-token
 omp_invocation: mise x $pin -- omp
@@ -676,21 +677,18 @@ chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") || fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 docker ps >/dev/null
-# Docker assigns the containers' host ports when it binds them, so neither can lose a race. The
-# Postgres image and its data path are Stage 3's.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+# The Postgres image and its data path are Stage 3's. Neither container publishes a port
+# (lib/containers.sh): Postgres listens on a unix socket in a directory of the run's own, and NATS
+# binds a loopback port the kernel chooses.
+start_postgres_container "$pg_container" pg_sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
-port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
-[ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
-until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
+  -- mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+until_true 60 "Postgres to accept connections on its socket" postgres_container_ready "$pg_container"
 docker exec "$pg_container" createdb -U legion legion
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
-port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
-[ -n "$port_nats" ] || fail "docker assigned NATS no host port"
-until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
+start_nats_container "$nats_container" --cpus 1 --memory 512m -- "$nats_image" -js
+until_true 60 "NATS to be ready" nats_container_ready "$nats_container" port_nats
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null
@@ -721,7 +719,7 @@ walk, file no issue, and post no daily report. Handle each \`parked-decision\` n
 parked-root walk as \`skill://legion-controller\` says, without waiting for any message, for this
 run's roots alone, whose titles end \`($work)\`; leave every other root as it is.
 EOF
-note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), NATS/Postgres ports $port_nats/$port_pg, listener $port_listener, Dispatch $port_dispatch"
+note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), NATS port $port_nats, Postgres socket in $pg_sockets, listener $port_listener, Dispatch $port_dispatch"
 pass
 done_with rig
 

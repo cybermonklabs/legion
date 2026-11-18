@@ -814,11 +814,12 @@ func TestAReferenceWritingAnIDAnotherWayIsNoFiveHundred(t *testing.T) {
 // the id: the body it refuses a request without, and whether the route is an agent's alone, so
 // a person's cookie is turned away before the row is read. The body is written here rather than
 // drawn from routeProbeBody because what this test needs is the opposite of that one's probe: a
-// request complete in everything but the id it names. A body that holds a time is a func the
-// request calls when it is sent: a time computed when the package starts can be past by the
-// time a long, loaded package run reaches this test.
+// request complete in everything but the id it names. at, when set, builds the body at the
+// request instead, from the database the handler serves from, for a route that judges a moment
+// in its body by that database's clock.
 type unknownIDRouteProbe struct {
 	body   any
+	at     func(t *testing.T, database queryer) any
 	bearer bool
 }
 
@@ -831,8 +832,11 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	// second connection under the transaction), so its probe names a person who has signed in.
 	"PUT /api/v1/asks/{id}/asked-of": {body: map[string]any{"asked_of": "alice"}},
 	"POST /api/v1/asks/{id}/resolve": {body: map[string]any{"kind": "resolved", "reason": "Settled elsewhere."}},
-	"PUT /api/v1/me/asks/{id}/snooze": {body: func() any {
-		return map[string]any{"snoozed_until": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+	// The snooze refuses a moment that has passed by the database's now() before it reads the ask
+	// (putAskSnooze), so its moment is that now() an hour on, read at the request: one taken when
+	// the test binary started would have passed once the binary is an hour old.
+	"PUT /api/v1/me/asks/{id}/snooze": {at: func(t *testing.T, database queryer) any {
+		return map[string]any{"snoozed_until": databaseNow(t, database).Add(time.Hour).UTC().Format(time.RFC3339)}
 	}},
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},
 	"POST /api/v1/comments/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},
@@ -851,9 +855,6 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 // bearer the three routes a person may not call need (routes_table_test's "bearer" credential).
 func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path string, probe unknownIDRouteProbe, fallback string) *httptest.ResponseRecorder {
 	t.Helper()
-	if at, ok := probe.body.(func() any); ok {
-		probe.body = at()
-	}
 	if !probe.bearer {
 		if probe.body != nil {
 			return dispatchRequest(t, handler, method, path, probe.body, "alice")
@@ -885,7 +886,7 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 // to that: its answer is anything but a 404.
 func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 	// Every route the table mounts, the test hooks' one that takes a document id included.
-	handler, _ := newTestHandlerWithTestHooks(t)
+	handler, database := newTestHandlerWithTestHooks(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unknown ids", "# Spec\n\nA passage.")
 	unknown := chosenID("e0000009", 7)
 	fill := func(pattern, id, blockID string) string {
@@ -918,6 +919,9 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 				})
 			}
 			for _, each := range probes {
+				if probe.at != nil {
+					probe.body = probe.at(t, database.Pool)
+				}
 				answer := unknownIDRouteRequest(t, handler, route.Method, each.path, probe, routeProbeBody(route))
 				if each.want == notFoundNone {
 					if answer.Code == http.StatusNotFound {

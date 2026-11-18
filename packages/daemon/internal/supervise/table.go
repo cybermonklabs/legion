@@ -201,10 +201,10 @@ type StalePlugin struct {
 	// exempt from the pacing and takes no credit (reserveWake); a claim the pass read in a
 	// turn, whose relaunch takes no wake until that turn's end asks the gate itself
 	// (holdStaleRelaunch, afterTurn, R2); and a post a test or another daemon path makes with
-	// no gate behind it. The machine holds what it is handed until the decision that raises the
-	// relaunch ends with no refresh wake of this claim's waiting, and gives it straight back to
-	// the gate where it already holds one of its own (refreshPlugin, refreshCredit,
-	// endRefreshLane).
+	// no gate behind it. The machine takes what it is handed as the decision of this post begins,
+	// whatever that decision then does, and holds it until a decision ends with no refresh wake of
+	// this claim's waiting, giving it straight back where it already holds one of its own
+	// (takeRefreshCredit, Machine.Handle, refreshCredit, endRefreshLane, dispatch://INFRA-3149).
 	Admitted bool
 }
 
@@ -2027,7 +2027,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
-		if err := m.refreshPlugin(ctx, *held, false); err != nil {
+		if err := m.refreshPlugin(ctx, *held); err != nil {
 			return err
 		}
 	}

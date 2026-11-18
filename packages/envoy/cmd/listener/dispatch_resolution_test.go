@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // This file is the one proof that spans both services. Every other test of INFRA-249 exercises
@@ -158,8 +159,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		t.Fatalf("start the session relays: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		relays.stop(ctx)
 	})
 	// This listener holds the machine's durable binding, which is what makes it relay the
@@ -304,23 +304,20 @@ func (rig *dispatchRig) endSession(t *testing.T, sessionID string) {
 // consumer carried.
 func (s *rigSession) awaitFrame(t *testing.T) string {
 	t.Helper()
-	select {
-	case frame := <-s.standIn.frames:
-		return string(frame.msg.Data)
-	case <-time.After(15 * time.Second):
-		t.Fatalf("no frame reached %s's own consumer", s.id)
-		return ""
-	}
+	return string(testwait.Receive(t, "the frame the listener relays to "+s.id+"'s own consumer", s.standIn.frames).msg.Data)
 }
+
+// rigSessionQuiet is the span noFrame holds for a frame it wants none of: the frames are a
+// session stand-in's reads of its own consumer, which neither this rig's state nor a later
+// action of its own reaches, since a frame the listener never relayed and one the stand-in has
+// not read yet look alike here.
+const rigSessionQuiet = 500 * time.Millisecond
 
 // noFrame reports that nothing reached this session's consumer in the window a frame would have.
 func (s *rigSession) noFrame(t *testing.T) {
 	t.Helper()
-	select {
-	case frame := <-s.standIn.frames:
-		t.Fatalf("%s received %s, want nothing", s.id, frame.item.EventID)
-	case <-time.After(500 * time.Millisecond):
-	}
+	testwait.Quiet(t, "a frame reaching "+s.id+"'s own consumer", s.standIn.frames, rigSessionQuiet,
+		"the frames are a session stand-in's reads of its own consumer, which neither this rig's state nor a later action of its own reaches")
 }
 
 // asHuman makes one Dispatch request as the person who signed in: a comment and a broadcast carry
@@ -436,28 +433,22 @@ type rigBroadcast struct {
 // work cancelled by its own t.Context() rather than finished.
 func (rig *dispatchRig) awaitBroadcastDeliveries(t *testing.T, broadcastID string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		read := rig.asHuman(t, http.MethodGet, "/api/v1/broadcasts/"+broadcastID, nil)
-		if read.Code != http.StatusOK {
-			t.Fatalf("read the broadcast: status=%d body=%s", read.Code, read.Body.String())
-		}
-		stored := decodeRigBody[rigBroadcast](t, read)
-		settled := len(stored.Recipients) > 0
-		for _, recipient := range stored.Recipients {
-			if len(recipient.Message.Deliveries) == 0 ||
-				recipient.Message.Deliveries[0].State == "pending" {
-				settled = false
+	testwait.Until(t, "every recipient of broadcast "+broadcastID+" to hold a settled attempt",
+		func() (rigBroadcast, bool) {
+			read := rig.asHuman(t, http.MethodGet, "/api/v1/broadcasts/"+broadcastID, nil)
+			if read.Code != http.StatusOK {
+				t.Fatalf("read the broadcast: status=%d body=%s", read.Code, read.Body.String())
 			}
-		}
-		if settled {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("recipients still without a settled attempt: %#v", stored.Recipients)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+			stored := decodeRigBody[rigBroadcast](t, read)
+			settled := len(stored.Recipients) > 0
+			for _, recipient := range stored.Recipients {
+				if len(recipient.Message.Deliveries) == 0 ||
+					recipient.Message.Deliveries[0].State == "pending" {
+					settled = false
+				}
+			}
+			return stored, settled
+		})
 }
 
 type rigFailure struct {
@@ -480,26 +471,20 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 			sessionID, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
-		if read.Code != http.StatusOK {
-			t.Fatalf("read the comment: status=%d body=%s", read.Code, read.Body.String())
-		}
-		stored := decodeRigBody[struct {
-			Comment rigComment `json:"comment"`
-		}](t, read).Comment
-		if len(stored.Deliveries) != 1 {
-			t.Fatalf("the comment's deliveries = %#v, want the one mention's attempt", stored.Deliveries)
-		}
-		if stored.Deliveries[0].State != "pending" {
-			return stored.Deliveries[0]
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the mention's attempt is still pending: %#v", stored.Deliveries[0])
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return testwait.Until(t, "the attempt of the mention of "+sessionID+" to settle",
+		func() (rigDelivery, bool) {
+			read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
+			if read.Code != http.StatusOK {
+				t.Fatalf("read the comment: status=%d body=%s", read.Code, read.Body.String())
+			}
+			stored := decodeRigBody[struct {
+				Comment rigComment `json:"comment"`
+			}](t, read).Comment
+			if len(stored.Deliveries) != 1 {
+				t.Fatalf("the comment's deliveries = %#v, want the one mention's attempt", stored.Deliveries)
+			}
+			return stored.Deliveries[0], stored.Deliveries[0].State != "pending"
+		})
 }
 
 // A person mentions a session the listener Dispatch asks has not refilled into its cache. Before

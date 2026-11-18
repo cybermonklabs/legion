@@ -14,7 +14,15 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
+
+// Clock is the time StopGrace is measured on: a narrowing of clock.Clock, which clock.Real and the
+// tests' clocktest.Fake both satisfy.
+type Clock interface {
+	NewTimer(d time.Duration) clock.Timer
+}
 
 // WaitDelay is the one value Configure sets: how long Wait keeps waiting, once the command's own
 // leader process has exited, for whatever still holds its output pipes open to close them on its
@@ -49,18 +57,18 @@ const WaitDelay = time.Second
 // a blind sleep would add a whole second to every timed-out probe, token command, image probe and
 // provisioning command.
 //
-// One second: the grace and WaitDelay together stay inside the three seconds
-// TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires (internal/workspace) allows a killed fetch
-// past its own timeout, which is what bounds the value, and no constant the tree pins grows for it.
+// One second: a git that handles SIGTERM removes its lock files in milliseconds, and the grace and
+// WaitDelay together are the span the shim's drain gives its commands' stop inside a role's stop
+// grace (internal/shim's drainCommands), so no constant the tree pins grows for it.
 //
-// It is exported beside WaitDelay because the rows of internal/workspace bound their own stops by
-// it rather than by a copy of their own (stopsignal_test.go, realtools_test.go).
+// It is exported beside WaitDelay because that drain bounds its commands' stop by the two, and the
+// rows of internal/workspace move their fake clocks past the grace by it (stopsignal_test.go).
 const StopGrace = time.Second
 
 // stopPoll is how often the grace asks whether the group is gone. Short enough that a command
 // which leaves on its SIGTERM ends the grace about as soon as the kernel has reported its exit,
 // long enough that a command which ignores SIGTERM costs fifty questions over the grace rather
-// than thousands.
+// than thousands. It paces the questions only: the grace's end is StopGrace on the clock.
 const stopPoll = 20 * time.Millisecond
 
 // Configure sets cmd's own process group (SysProcAttr.Setpgid), a Cancel that stops the whole
@@ -94,6 +102,12 @@ const stopPoll = 20 * time.Millisecond
 // job's Ctty, for one): it replaces cmd.SysProcAttr whole, and the caller's own fields need to
 // land on the same struct afterward.
 func Configure(cmd *exec.Cmd) (killed func() bool) {
+	return ConfigureOn(cmd, clock.Real())
+}
+
+// ConfigureOn is Configure with the clock StopGrace is measured on: a caller that takes a clock
+// of its own (internal/workspace's runner) passes it, and a test hands a clocktest.Fake.
+func ConfigureOn(cmd *exec.Cmd, c Clock) (killed func() bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		group := -cmd.Process.Pid
@@ -108,7 +122,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 			// finished on its own" — an error equivalent to os.ErrProcessDone.
 			return os.ErrProcessDone
 		}
-		if groupOutlivedGrace(group) {
+		if groupOutlivedGrace(c, group) {
 			// The SIGKILL's own error is dropped rather than returned: an ESRCH here is the group
 			// having gone between the last question and this signal, and a Cancel that answered it
 			// would read as "nothing was killed", which turns a timed-out clone into a retryable
@@ -122,22 +136,28 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 	return KilledByContext(cmd)
 }
 
-// groupOutlivedGrace reports whether the process group still answers once StopGrace is over. group
-// is the negated leader pid, as kill takes a group. It asks every stopPoll with signal 0, which
-// signals nothing and answers ESRCH once no member of the group is left, and stops at the first
-// such answer, so a command that leaves on its SIGTERM costs the grace nothing; any other answer
-// (EPERM for a member this process may not signal) counts as still there. The window between the
-// last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
-// so the poll can only send fewer signals than the kill alone did.
-func groupOutlivedGrace(group int) bool {
-	for deadline := time.Now().Add(StopGrace); ; time.Sleep(stopPoll) {
-		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
-			return false
-		}
-		if !time.Now().Before(deadline) {
-			return true
+// groupOutlivedGrace reports whether the process group still answers once StopGrace is over on c.
+// group is the negated leader pid, as kill takes a group. It asks every stopPoll with signal 0,
+// which signals nothing and answers ESRCH once no member of the group is left, and stops at the
+// first such answer, so a command that leaves on its SIGTERM costs the grace nothing; any other
+// answer (EPERM for a member this process may not signal) counts as still there. It asks once more
+// as the grace ends. The window between the last question and the caller's SIGKILL is the one a
+// cancel that kills unconditionally has too, so the poll can only send fewer signals than the kill
+// alone did.
+func groupOutlivedGrace(c Clock, group int) bool {
+	gone := func() bool { return errors.Is(syscall.Kill(group, 0), syscall.ESRCH) }
+	grace := c.NewTimer(StopGrace)
+	defer grace.Stop()
+	poll := time.NewTicker(stopPoll)
+	defer poll.Stop()
+	for !gone() {
+		select {
+		case <-grace.C():
+			return !gone()
+		case <-poll.C:
 		}
 	}
+	return false
 }
 
 // KilledByContext wraps cmd.Cancel, which exec runs once cmd's context ends before Wait has seen

@@ -493,8 +493,9 @@ func testReleaseClaimLane(t *testing.T) {
 	client := &claimReleaseDispatch{outboxDispatch: &outboxDispatch{}, t: t,
 		shown:  dispatch.Issue{Status: "backlog", Claim: sessionClaim(claimTreeSession)},
 		answer: func(int) error { return claimConflict(dispatch.IssueClaimed) }}
+	obs := newObserver()
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", dispatch: client,
-		notices: publisher, supervisor: sup, project: "legion"}
+		notices: publisher, supervisor: sup, project: "legion", observe: obs.observe}
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock)
 
@@ -508,19 +509,15 @@ func testReleaseClaimLane(t *testing.T) {
 	commitRows(t, pool, runner.records, "board",
 		mustOutboxRow(t, claimIssue, record.OrdinaryStatusWrite("icebox", "backlog", ""), clock.Now()),
 		mustOutboxRow(t, claimIssue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now()))
-	testwait.Eventually(t, "the status write and the notice ran while the release waited", func() bool {
-		_, delivered := publisher.snapshot()
-		return len(client.statusWrites()) == 1 && len(delivered) == 1
-	})
 	// A delivered row leaves the outbox when its finish commits, which comes after the delivery
-	// the wait above saw, so the count is waited for rather than read once: read once, it can run
-	// between the two and find a delivered row still there.
-	var left int
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
-		left = outboxRowsOf(t, pool, claimIssue)
-		return left == 1
-	}) {
-		t.Fatalf("rows left on %s = %d, want the waiting release alone", claimIssue, left)
+	// itself, so the rows are read once the outbox has reported both finishes (observedOutboxSettled).
+	obs.settled(t, rowOf{issue: claimIssue, kind: record.OutboxKindDispatchStatus, outcome: settledFinished},
+		rowOf{issue: claimIssue, kind: record.OutboxKindNotice, outcome: settledFinished})
+	if _, delivered := publisher.snapshot(); len(delivered) != 1 {
+		t.Fatalf("delivered %+v once the notice's row finished, want the one notice", delivered)
+	}
+	if left := outboxRowsOf(t, pool, claimIssue); left != 1 {
+		t.Fatalf("rows left on %s = %d once the status write and the notice finished, want the waiting release alone", claimIssue, left)
 	}
 	if got := client.statusWrites(); !slices.Equal(got, []string{"icebox"}) {
 		t.Fatalf("statuses written = %v, want the one icebox write", got)

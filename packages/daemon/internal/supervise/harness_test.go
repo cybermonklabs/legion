@@ -14,9 +14,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const (
@@ -34,20 +37,24 @@ const (
 
 var epoch = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 
-// fakeClock is time that moves only when the test says so. Advance fires every timer that falls
-// due, in deadline order, synchronously and outside the clock's lock — a timer's callback is a
-// machine's Handle, which may arm the next timer.
+// fakeClock is the machines' time: a clocktest.Fake that moves only when the test says so. Its
+// Advance fires every timer that falls due, in deadline order, and returns once each timer's
+// decision has run — a timer's function is a machine's Handle, which may arm the next timer, and
+// that one fires in the same Advance when it falls due inside it. Beside the Fake it keeps what the
+// harness reads that the Fake does not: every wait a machine slept, and every timer a machine
+// armed, which a restart drops with the machine that armed it.
 type fakeClock struct {
+	*clocktest.Fake
 	mu     sync.Mutex
-	now    time.Time
-	timers []*fakeTimer
-	armed  int
+	timers []clock.Timer
 	// slept is every wait a machine asked to Sleep, in order.
 	slept []time.Duration
 }
 
 // Sleep records d and returns at once, with ctx's error when it has ended: a machine's wait costs
-// the test nothing, and the test reads what it waited.
+// the test nothing, and the test reads what it waited. It is not the Fake's, because a machine
+// backs off inside the decision a test drives on its own goroutine (Handle), where a wait for the
+// test's Advance would never end.
 func (c *fakeClock) Sleep(ctx context.Context, d time.Duration) error {
 	c.mu.Lock()
 	c.slept = append(c.slept, d)
@@ -55,91 +62,29 @@ func (c *fakeClock) Sleep(ctx context.Context, d time.Duration) error {
 	return ctx.Err()
 }
 
-type fakeTimer struct {
-	clock   *fakeClock
-	at      time.Time
-	order   int
-	f       func()
-	stopped bool
-	fired   bool
-}
+func newFakeClock() *fakeClock { return &fakeClock{Fake: clocktest.New(epoch)} }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: epoch} }
-
-func (c *fakeClock) Now() time.Time {
+func (c *fakeClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	timer := c.Fake.AfterFunc(d, f)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.armed++
-	timer := &fakeTimer{clock: c, at: c.now.Add(d), order: c.armed, f: f}
 	c.timers = append(c.timers, timer)
-	return timer
-}
-
-func (t *fakeTimer) Stop() bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	if t.stopped || t.fired {
-		return false
-	}
-	t.stopped = true
-	return true
-}
-
-// Advance moves time forward by d, firing what falls due on the way.
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	until := c.now.Add(d)
 	c.mu.Unlock()
-	for {
-		c.mu.Lock()
-		var next *fakeTimer
-		for _, timer := range c.timers {
-			if timer.stopped || timer.fired || timer.at.After(until) {
-				continue
-			}
-			if next == nil || timer.at.Before(next.at) || (timer.at.Equal(next.at) && timer.order < next.order) {
-				next = timer
-			}
-		}
-		if next == nil {
-			c.now = until
-			c.mu.Unlock()
-			return
-		}
-		next.fired = true
-		c.now = next.at
-		c.mu.Unlock()
-		next.f()
-	}
+	return timer
 }
 
 // dropAll is every armed timer dying with the process that armed it.
 func (c *fakeClock) dropAll() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, timer := range c.timers {
-		timer.stopped = true
+	timers := c.timers
+	c.timers = nil
+	c.mu.Unlock()
+	for _, timer := range timers {
+		timer.Stop()
 	}
 }
 
 // Live is how many timers are armed and neither fired nor stopped.
-func (c *fakeClock) Live() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	live := 0
-	for _, timer := range c.timers {
-		if !timer.stopped && !timer.fired {
-			live++
-		}
-	}
-	return live
-}
+func (c *fakeClock) Live() int { return len(c.Armed()) }
 
 // memStore is the store as a double: what was written, in order, and a way to fail a write.
 type memStore struct {
@@ -1018,13 +963,7 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 
 func waitFor(t *testing.T, what string, ch <-chan string) string {
 	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-		return ""
-	}
+	return testwait.Receive(t, what, ch)
 }
 
 var errBoom = errors.New("boom")

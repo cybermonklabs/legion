@@ -37,7 +37,7 @@ func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.Session
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

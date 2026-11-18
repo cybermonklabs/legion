@@ -1,9 +1,9 @@
 package launcher
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -199,7 +200,7 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 
 	workspace := f.secondPod("ws2")
 	notice := f.restoreInto(workspace, saved, 1)
-	if !strings.Contains(notice, "restored") {
+	if !strings.Contains(notice, "is restored") {
 		t.Fatalf("the restore's notice is %q", notice)
 	}
 	f.requireRestored(workspace, saved)
@@ -549,27 +550,15 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	}()
 	f.t.Cleanup(func() {
 		cancel()
-		select {
-		case <-exited:
-		case <-time.After(20 * time.Second):
-			f.t.Error("the shim did not leave after its context ended")
-		}
+		testwait.Receive(f.t, "the shim's return after its context ended", exited)
 	})
 
-	conn, err := listener.Accept()
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	// The shim's connection opens with its hello under the boot token it was given; any other
+	// connection is another process's, closed and failing nothing (fromTheCode).
+	accepted := fromTheCode(f.t, listener, "the shim's connection", shimHello("boot"))
+	conn := accepted.conn
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
-		f.t.Fatal(err)
-	}
-	reader := shimwire.NewReader(bufio.NewReader(conn))
-	if line, err := reader.ReadLine(); err != nil {
-		f.t.Fatalf("the shim's hello: %v", err)
-	} else if frame, err := shimwire.Decode(line); err != nil || frame.FrameType() != shimwire.TypeHello2 {
-		f.t.Fatalf("the shim opened with %v (%v)", frame, err)
-	}
+	reader := shimwire.NewReader(accepted.reader)
 	writer := shimwire.NewWriter(conn)
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		f.t.Fatal(err)
@@ -580,7 +569,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	}
 	var chunks shimwire.Reassembler
 	for {
-		line, err := reader.ReadLine()
+		line, err := answered(f.t, "the shim's answer to the bundle request", reader.ReadLine)
 		if err != nil {
 			f.t.Fatalf("read the shim's answer: %v", err)
 		}
@@ -622,9 +611,9 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 const bundleRelease int64 = 9
 
 // restoreInto drives one replacement pod's launcher: the bundle in launcher_bundle slices, then
-// the generation's start, which applies the restore before its child runs. It returns the notice
-// the launcher wrote for the restore, having held it to the report the launcher sent the daemon,
-// and stops the generation.
+// the generation's start, which applies the restore before its child runs. It stops the
+// generation and ends the launcher, and returns the notice the launcher wrote for the restore,
+// having held it to the report the launcher sent the daemon.
 func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBundle, generation uint64) string {
 	f.t.Helper()
 	g := newRig(f.t)
@@ -649,6 +638,17 @@ func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBu
 	}
 	published(f.t, marker)
 	g.stop(generation)
+	// The launcher ends before the caller's own jj and git run. Run as its pod's PID 1 (a run
+	// under `unshare --pid`), its reaper reaps every exited child of this process it does not
+	// hold, and would take a fixture command's exit before that command's own wait read it
+	// (`waitid: no child processes`); Run returns only once its reaper has. Its log is whole then.
+	g.cancel()
+	ended := testwait.Receive(f.t, "the launcher's return", g.result)
+	// The rig's cleanup reads the result too.
+	g.result <- ended
+	if !errors.Is(ended, context.Canceled) {
+		f.t.Fatalf("Run = %v, want the container's shutdown", ended)
+	}
 	// The daemon deletes its saved copy on this report and on nothing else, so the start that
 	// ran the restore sends it before it answers.
 	report := g.restored

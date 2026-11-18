@@ -19,6 +19,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // trailerLegion is a `legion` for a test's commands: a two-line script that runs this test binary
@@ -71,14 +73,13 @@ func trailerRun(t *testing.T, dir string, env []string, stdin, name string, args
 
 // trailerRunInput runs name with args in dir, with env, and with stdin as its standard input: a
 // pipe for any reader but an *os.File, which the command gets as its descriptor 0. It answers the
-// exit status and what the command printed. A command that cannot start, or that runs for a
-// minute, fails the test. The command runs in a process group of its own, and the minute kills the
-// whole group, so a chain of gits that run one another without end stops there too and holds no
-// output pipe open.
+// exit status and what the command printed. A command that cannot start, or that runs until the
+// shared wait's bound (testwait.Context), fails the test. The command runs in a process group of
+// its own, and that bound kills the whole group, so a chain of gits that run one another without
+// end stops there too and holds no output pipe open.
 func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, name string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, stdin
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -88,7 +89,7 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("%s %q ran for a minute: %s", name, args, errb.String())
+		t.Fatalf("%s %q ran until the shared wait's bound: %s", name, args, errb.String())
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -905,27 +906,36 @@ func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// A command the signal did not end is killed when the test ends, as the wait below gives up.
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	reader.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	// The reads before standard input take well under a second; the signal finds the read.
-	time.Sleep(1500 * time.Millisecond)
+	// The signal must find the read, or the row proves nothing of it: a signal sent before the
+	// read ends the command as surely. So the test writes the start of a message, and signals once
+	// the pipe holds none of it (TIOCINQ, Linux's FIONREAD, reads a pipe's unread bytes from either
+	// end): the command has read it, and reads on for the rest, which never comes.
+	if _, err := writer.WriteString("the start of a message"); err != nil {
+		t.Fatalf("write the message's start: %v", err)
+	}
+	testwait.Until(t, "legion git to read the message's start from its standard input", func() (int, bool) {
+		unread, err := unix.IoctlGetInt(int(writer.Fd()), unix.TIOCINQ)
+		if err != nil {
+			t.Fatalf("read the pipe's unread bytes: %v", err)
+		}
+		return unread, unread == 0
+	})
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal legion git: %v", err)
 	}
-	select {
-	case err := <-done:
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
-		}
-		status, _ := exit.Sys().(syscall.WaitStatus)
-		if !(status.Signaled() && status.Signal() == syscall.SIGTERM) && exit.ExitCode() != 128+int(syscall.SIGTERM) {
-			t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("legion git still runs 10 s after SIGTERM")
+	err = testwait.Receive(t, "legion git to end after SIGTERM", done)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
+	}
+	status, _ := exit.Sys().(syscall.WaitStatus)
+	if !(status.Signaled() && status.Signal() == syscall.SIGTERM) && exit.ExitCode() != 128+int(syscall.SIGTERM) {
+		t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
 	}
 	if code, _, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-parse", "--verify", "-q", "HEAD"); code == 0 {
 		t.Fatal("a commit was made")

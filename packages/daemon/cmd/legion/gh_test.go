@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -835,14 +836,15 @@ func ghWrapperDir(t *testing.T) string {
 // legionGhCommand is the command legionGhIn runs and the one environment a `legion gh` of these
 // tests is given: this test binary as `legion gh args…` in the working directory dir, with env
 // and nothing of this process's own but PATH, whose head is a pane's `gh` wrapper
-// (ghWrapperDir) unless env names a PATH of its own. A test that drives the run itself — one
-// that signals it, or starts it under a shell of its own — takes the command and runs it, so
-// that base environment is built in one place.
+// (ghWrapperDir) unless env names a PATH of its own, and with `legion gh`'s two bounds held
+// (testGhBoundsHeldEnv), which every `legion gh` it starts in turn inherits. A test that drives
+// the run itself — one that signals it, or starts it under a shell of its own — takes the command
+// and runs it, so that base environment is built in one place.
 func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], append([]string{"gh"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = []string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+	cmd.Env = []string{testMainEnv + "=1", testGhBoundsHeldEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
@@ -1593,6 +1595,11 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // one it reads public as held, which it does not scan, so a public the guard kept for a
 // repository made private since must not answer it. A kept public, which the guard's own
 // Visibility does answer with, is passed over for the read, and no answer is kept.
+//
+// Each subtest runs `legion gh` in this process (legionGhHere) with its answer's bound,
+// visibilityAnswerBound, on a fake clock nothing moves, so no bound of the machine's time decides
+// an answer however slow the stand-ins' processes are to run;
+// TestLegionGhEndsTheSharedChecksVisibilityReadAtItsBound is the bound's own row.
 func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1697,20 +1704,15 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 				keepPublic(t, state)
 			}
 			kept := keptFiles(t, state)
+			visibilityOnAFakeClock(t)
 			stub := filepath.Join(bin, "real-gh")
-			script := "#!/bin/sh\nfor last; do :; done\n" +
-				"if [ \"$last\" = --help ]; then\n" +
-				"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-				"if [ \"$4\" = graphql ]; then\n  :\n" + tc.graphql + "fi\n" +
-				"echo rest >> \"$GH_STANDIN_RECORD\"\n" + tc.rest
-			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+			if err := os.WriteFile(stub, []byte(visibilityStandIn(help, tc.graphql, tc.rest)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			code, stdout, stderr := legionGh(t, map[string]string{
+			code, stdout, stderr := legionGhHere(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
 				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: slug,
@@ -1733,6 +1735,229 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// visibilityStandIn is the real gh the shared check's visibility read reaches through the guard's
+// reads: it answers a help request with the saved help, runs graphql for a GraphQL read, and
+// records `rest` and runs rest for the REST read.
+func visibilityStandIn(help, graphql, rest string) string {
+	return "#!/bin/sh\nfor last; do :; done\n" +
+		"if [ \"$last\" = --help ]; then\n" +
+		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
+		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+		"if [ \"$4\" = graphql ]; then\n  :\n" + graphql + "fi\n" +
+		"echo rest >> \"$GH_STANDIN_RECORD\"\n" + rest
+}
+
+// visibilityOnAFakeClock puts answerVisibilityRead's bound, and its guard's clock, on a fake clock
+// that moves only when the test moves it, for the test's life, and answers that clock.
+func visibilityOnAFakeClock(t *testing.T) *clocktest.Fake {
+	t.Helper()
+	fake := clocktest.New(time.Now())
+	was := visibilityClock
+	visibilityClock = fake
+	t.Cleanup(func() { visibilityClock = was })
+	return fake
+}
+
+// ghHereEnv sets env on this test process for the test's life, beside what legionGhCommand gives
+// a child `legion gh`, for a `legion gh` this process runs itself (runGh): the guard's reads of
+// such a run still leave the process, through the `gh` wrapper on env's PATH, which runs this test
+// binary as `legion gh` (testMainEnv) with `legion gh`'s two bounds held (testGhBoundsHeldEnv).
+func ghHereEnv(t *testing.T, env map[string]string) {
+	t.Helper()
+	for name, value := range map[string]string{testMainEnv: "1", testGhBoundsHeldEnv: "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull} {
+		t.Setenv(name, value)
+	}
+	for name, value := range env {
+		t.Setenv(name, value)
+	}
+}
+
+// The variables that tell this package's test binary, run as `legion` (TestMain), to hold both
+// of `legion gh`'s bounds — visibilityAnswerBound, on visibilityClock, and ghHelpBound, on
+// ghHelpClock — on a fake clock nothing in that process moves (holdGhBounds); and the file such a
+// run records the clocks its bounds run on in.
+const (
+	testGhBoundsHeldEnv   = "LEGION_TEST_GH_BOUNDS_HELD"
+	testGhBoundsRecordEnv = "LEGION_TEST_GH_BOUNDS_RECORD"
+)
+
+// holdGhBounds is TestMain's half of testGhBoundsHeldEnv: with it set, both of `legion gh`'s
+// bounds run on a clocktest.Fake that nothing in the process moves, so neither runs out. Each is
+// sized to a real program — the answer's 15 s to the installed shared check's 20 s wait, the help
+// read's 30 s to the real gh — and in these tests each is all the time a `legion gh` this binary
+// starts again has to start and reach a stand-in: on a loaded machine the starts alone outran
+// them (dispatch://INFRA-4228, dispatch://INFRA-3149). A child's clock is its own, which no test
+// can move, so the test holds it: the child then waits for the facts its stand-ins give, and a
+// read that never answers holds the test to its binary's deadline, as the shared wait does. Each
+// bound is proven in this process instead, on a fake the row moves past it
+// (TestLegionGhEndsTheSharedChecksVisibilityReadAtItsBound, TestGhHelpReadEndsAtItsBound). With
+// testGhBoundsRecordEnv set it appends one line naming the clocks the bounds then run on, read
+// from the product's own variables, so a row reads whether the variable reached them
+// (TestLegionGhChildrenHoldTheBoundsTheirTestNames). Only this test binary reads the variables;
+// the legion binary has none.
+func holdGhBounds() {
+	if os.Getenv(testGhBoundsHeldEnv) == "1" {
+		held := clocktest.New(time.Now())
+		visibilityClock, ghHelpClock = held, held
+	}
+	record := os.Getenv(testGhBoundsRecordEnv)
+	if record == "" {
+		return
+	}
+	file, err := os.OpenFile(record, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	fmt.Fprintf(file, "visibilityClock=%T ghHelpClock=%T\n", visibilityClock, ghHelpClock)
+}
+
+// The `legion gh` that answers the shared check's own visibility read, and the `legion gh` the
+// guard's REST read runs through, each hold both of `legion gh`'s bounds when their test names
+// testGhBoundsHeldEnv, as every test here does through legionGhCommand: each records the clocks
+// its bounds run on, and each names the held fake. A run that did not take the variable records
+// the wall clock, whatever the load.
+func TestLegionGhChildrenHoldTheBoundsTheirTestNames(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const slug = "sjawhar/legion"
+	bin, reads, bounds := t.TempDir(), filepath.Join(t.TempDir(), "reads"), filepath.Join(t.TempDir(), "bounds")
+	stub := filepath.Join(bin, "real-gh")
+	rest := "printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' public\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(visibilityStandIn(help, "", rest)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := legionGh(t, map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root, "GH_STANDIN_RECORD": reads,
+		"XDG_STATE_HOME": t.TempDir(), leakguard.VisibilityReadVar: slug, testGhBoundsRecordEnv: bounds,
+	}, leakguard.VisibilityReadArgs(slug)...)
+	if code != 0 || stdout != "public\n" {
+		t.Fatalf("legion gh = exit %d, stdout %q, stderr %q; want exit 0 and the stand-in's public", code, stdout, stderr)
+	}
+	const want = "visibilityClock=*clocktest.Fake ghHelpClock=*clocktest.Fake"
+	recorded := strings.Split(strings.TrimSuffix(readRecord(t, bounds), "\n"), "\n")
+	if len(recorded) < 2 || slices.ContainsFunc(recorded, func(line string) bool { return line != want }) {
+		t.Fatalf("the runs of legion gh recorded the clocks of their bounds as %q, want %q from each, the answering one and the guard's REST read's", recorded, want)
+	}
+}
+
+// gh's help read has a bound of its own, ghHelpBound, sized to the real gh: a gh that has not
+// printed a command's help by then refuses the call that needed it. The bound runs on
+// ghHelpClock, a fake the row moves past it only once a gh that never answers has been asked the
+// help, so the bound, and nothing of the machine's time, is what ends the read.
+func TestGhHelpReadEndsAtItsBound(t *testing.T) {
+	fake := clocktest.New(time.Now())
+	was := ghHelpClock
+	ghHelpClock = fake
+	t.Cleanup(func() { ghHelpClock = was })
+	asked := filepath.Join(t.TempDir(), "asked")
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '"+asked+"'\nexec sleep 3600\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		help string
+		err  error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		help, err := readGhHelp(stub, []string{"api"})
+		answered <- answer{help, err}
+	}()
+	testwait.Until(t, "gh to be asked its help of api", func() (string, bool) {
+		got := readRecord(t, asked)
+		return got, got == "api --help\n"
+	})
+	// The read arms its bound before it starts gh, and nothing but this row moves the fake. The
+	// gh never ends on its own, so a read that has returned before the move was ended by
+	// something other than the bound.
+	if ends, armed := fake.Now().Add(ghHelpBound), fake.Armed(); !slices.Contains(armed, ends) {
+		t.Fatalf("with gh asked its help the help read's clock holds %v armed, want its %s bound at %v", armed, ghHelpBound, ends)
+	}
+	select {
+	case got := <-answered:
+		t.Fatalf("the help read answered %q, %v before its %s bound passed, from a gh that never answers", got.help, got.err, ghHelpBound)
+	default:
+	}
+	fake.Advance(ghHelpBound)
+	// The bound's end stops gh, and the read refuses with what gh's stop said: on the wall clock
+	// the context's deadline (exec answers ctx.Err()), on this fake the kill's own status.
+	got := testwait.Receive(t, "the help read once its bound passed", answered)
+	if got.err == nil || got.help != "" || !strings.HasPrefix(got.err.Error(), "gh answered its help with ") {
+		t.Fatalf("the help read answered %q, %v; want no help and the refusal of a gh its bound stopped", got.help, got.err)
+	}
+}
+
+// legionGhHere is `legion gh args…` run in this process (runGh) with env (ghHereEnv), and its
+// exit status and what it printed: a run whose bounds are this process's clocks, which the test
+// can hold (visibilityOnAFakeClock).
+func legionGhHere(t *testing.T, env map[string]string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	ghHereEnv(t, env)
+	var out, errb bytes.Buffer
+	code = runGh(testwait.Context(t), args, &out, &errb)
+	return code, out.String(), errb.String()
+}
+
+// The shared check's visibility read has a bound of its own, visibilityAnswerBound, which keeps
+// the answer inside the check's 20 s wait: a read that has not answered by then ends the answer
+// with nothing on standard output and exit 1, and standard error names the bound. The bound runs
+// on visibilityClock, a fake the row moves past it only once the REST read has reached a stand-in
+// that never answers it, so the bound, and nothing of the machine's time, is what ends the read.
+func TestLegionGhEndsTheSharedChecksVisibilityReadAtItsBound(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const slug = "sjawhar/legion"
+	fake := visibilityOnAFakeClock(t)
+	bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+	stub := filepath.Join(bin, "real-gh")
+	// The REST read never answers: the stand-in sleeps for longer than any row lasts, and the
+	// guard's stop of the read's process group at the bound ends it.
+	if err := os.WriteFile(stub, []byte(visibilityStandIn(help, "", "exec sleep 3600\n")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ghHereEnv(t, map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PATH": ghWrapperDir(t) + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
+		"XDG_STATE_HOME": t.TempDir(), leakguard.VisibilityReadVar: slug,
+	})
+	type answer struct {
+		code           int
+		stdout, stderr string
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		var out, errb bytes.Buffer
+		code := runGh(testwait.Context(t), leakguard.VisibilityReadArgs(slug), &out, &errb)
+		answered <- answer{code, out.String(), errb.String()}
+	}()
+	testwait.Until(t, "the REST read to reach the stand-in gh", func() (string, bool) {
+		reads := readRecord(t, record)
+		return reads, reads == "rest\n"
+	})
+	// The answer arms its bound before the guard reads, and nothing but this row moves the fake.
+	if ends, armed := fake.Now().Add(visibilityAnswerBound), fake.Armed(); !slices.Contains(armed, ends) {
+		t.Fatalf("with the REST read in flight the answer's clock holds %v armed, want its %s bound at %v", armed, visibilityAnswerBound, ends)
+	}
+	fake.Advance(visibilityAnswerBound)
+	got := testwait.Receive(t, "legion gh's answer once its bound passed", answered)
+	if got.code != 1 || got.stdout != "" {
+		t.Errorf("legion gh = exit %d, stdout %q, stderr %q; want exit 1 and nothing on standard output", got.code, got.stdout, got.stderr)
+	}
+	if want := "legion gh: no read answered the visibility of " + slug + " within " + visibilityAnswerBound.String(); !strings.Contains(got.stderr, want) {
+		t.Errorf("legion gh's standard error is %q, want a line naming the bound: %q", got.stderr, want)
+	}
+	if reads := readRecord(t, record); reads != "rest\n" {
+		t.Errorf("the stand-ins recorded the reads %q, want the one REST read the bound ended", reads)
 	}
 }
 
@@ -2052,17 +2277,15 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	if err := command.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	// The run is given a second to end on that hangup before gh is released. Where the hangup
-	// is forwarded, gh catches it and ends the run inside that second, and the failure says so;
-	// where it stays ignored, nothing happens in it, which is what the rest of this reads.
+	// The run is held quiet for a second before gh is released. Where the hangup is forwarded, gh
+	// catches it and ends the run inside that second, and the failure says so.
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	select {
-	case waited := <-done:
-		t.Fatalf("legion gh ended on a hangup it was started ignoring: %v; gh recorded %q, printed %q",
-			waited, readRecord(t, ghRecord), readRecord(t, printed.Name()))
-	case <-time.After(time.Second):
-	}
+	testwait.Quiet(t, "legion gh's run", done, time.Second,
+		"what this row denies is a hangup reaching gh, and no state of legion gh says whether it armed a "+
+			"handler for one; the run is a real child process, which no synctest bubble holds; and the one "+
+			"later action here, the release below, lets gh exit on its own before a forwarded hangup could "+
+			"reach it, which is the race this span covers")
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

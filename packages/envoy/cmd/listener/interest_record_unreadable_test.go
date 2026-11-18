@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -106,7 +107,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	}{
 		{"/v1/sessions", sessionsHandler(registry, sessions)},
 		{"/v1/registry/" + unreadable, sessionEntryHandler(state)},
-		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, logging.New("test"))},
+		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, clock.Real(), nil, logging.New("test"))},
 	} {
 		t.Run(route.path, func(t *testing.T) {
 			recorder := get(route.handler, route.path)

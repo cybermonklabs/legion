@@ -15,9 +15,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -27,7 +29,9 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The probe Sandbox testImage gets in testProject: the project, then the digest's first 12 hex.
@@ -35,6 +39,10 @@ const (
 	probeSandboxName = "legion-probe-legion-1d10089a0000"
 	testDigestHex    = "1d10089a0000000000000000000000000000000000000000000000000000beef"
 )
+
+// anthropicKeyVariable is the provider-key environment variable the providers-Secret rows mount:
+// its value is the key's name in the Secret, which the probe's refusal names.
+const anthropicKeyVariable = "ANTHROPIC_API_KEY"
 
 var sandboxesResource = schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}
 
@@ -243,7 +251,8 @@ const testRoleReferencesJSON = `{"LEGION_PROMPT_AGENTS":{"oracle":["roles/core/p
 // probeOptions allow two attempts, so a definitive verdict shows as one attempt and a transient one
 // as two. Each attempt's budget is long enough that a pod the stand-ins answer at once is judged
 // within it on a loaded machine too; an attempt ends as soon as the pod answers, so it costs a
-// passing test nothing. A test whose attempt must run out sets unfinishedBudget.
+// passing test nothing. A test whose attempt must run out sets unfinishedBudget, on the runtime's
+// clock (withClock, probeAnswer).
 func probeOptions(t *testing.T) ImageProbe {
 	return ImageProbe{
 		Contract: 3, Budget: 10 * time.Second, RoleReferences: testRoleReferences,
@@ -253,7 +262,7 @@ func probeOptions(t *testing.T) ImageProbe {
 }
 
 // unfinishedBudget is the attempt budget of a test in which no pod ever answers, so the attempt
-// runs out.
+// runs out: on the runtime's clock, which the test moves past it (probeAnswer).
 const unfinishedBudget = 300 * time.Millisecond
 
 // probe runs the image probe through the rig's Prober when it has one, else its runtime.
@@ -266,6 +275,88 @@ func (g *probeRig) probe(p ImageProbe) error {
 		_, err = g.r.ProbeImage(g.ctx, p)
 	}
 	return err
+}
+
+// holdsTheAttempt is whether the runtime's own stores hold the probe Sandbox the rig holds and its
+// pod as the rig's stand-ins leave them for good: the pod the container stand-in has finished, at
+// the status it wrote, or, while the rig holds pods back, no pod. A row reads it inside a synctest
+// bubble at a moment every goroutine of the rig is blocked (inBubble), so the runtime's wait has
+// by then judged what the stores hold: it has read all it ever will, and only its budget ends it.
+func (g *probeRig) holdsTheAttempt() bool {
+	s := g.sandbox(probeSandboxName)
+	stored, err := g.r.storedSandbox(probeSandboxName)
+	if s == nil || err != nil || stored == nil || stored.UID != s.UID {
+		return false
+	}
+	pod, storedPod := g.pod(probeSandboxName), g.r.storedPod(probeSandboxName)
+	if g.hold.Load() {
+		return pod == nil && storedPod == nil
+	}
+	if pod == nil || !ownedBy(pod, s.UID) || storedPod == nil || storedPod.UID != pod.UID {
+		return false
+	}
+	g.mu.Lock()
+	finished := g.finishedUID[pod.UID]
+	g.mu.Unlock()
+	return finished && equality.Semantic.DeepEqual(storedPod.Status, pod.Status)
+}
+
+// probeAnswer is the probe's answer on result, from the row's ProbeImage run inside a synctest
+// bubble on fake, the runtime's clock (withClock). The clock moves only past a wait nothing else
+// will end, read at a moment every goroutine of the rig is blocked (inBubble): the wait of an
+// attempt whose Sandbox and pod the runtime's stores hold as the rig's stand-ins leave them
+// (holdsTheAttempt), so the attempt has judged all it ever will, whose one armed deadline it
+// asserts is budget from the clock's present; and the retry's wait (bootprobe.Run) once an attempt
+// has ended and given its Sandbox back, whose one armed deadline it asserts is backoff on. An
+// attempt that ends on its own, a refusal, a capacity wait or a pass, ends before either and moves
+// nothing, so a verdict the row expects within the budget is never cut short by it.
+func probeAnswer[T any](g *probeRig, fake *clocktest.Fake, result <-chan T, budget, backoff time.Duration) T {
+	g.t.Helper()
+	// retried is how many attempts' retry waits the clock has been moved past.
+	var retried int32
+	for {
+		var answer T
+		answered, held, retrying := false, false, false
+		inBubble(func() bool {
+			select {
+			case answer = <-result:
+				answered = true
+			default:
+				created := g.creates.Load()
+				held = created > 0 && g.holdsTheAttempt()
+				retrying = created > retried && g.sandbox(probeSandboxName) == nil && len(fake.Armed()) > 0
+			}
+			return answered || held || retrying
+		})
+		switch {
+		case answered:
+			return answer
+		case held:
+			g.armedAlone(fake, fmt.Sprintf("attempt %d's wait", g.creates.Load()), budget)
+			fake.Advance(budget)
+		default:
+			g.armedAlone(fake, fmt.Sprintf("the retry's wait after attempt %d", g.creates.Load()), backoff)
+			fake.Advance(backoff)
+			retried = g.creates.Load()
+		}
+	}
+}
+
+// probedInBubble runs probe p on the rig, inside a synctest bubble on fake, the runtime's clock
+// (withClock), and answers what it returned, its attempts' budget being budget (probeAnswer).
+func (g *probeRig) probedInBubble(fake *clocktest.Fake, p ImageProbe, budget time.Duration) error {
+	g.t.Helper()
+	result := make(chan error, 1)
+	go func() { result <- g.probe(p) }()
+	return probeAnswer(g, fake, result, budget, p.Retry.Initial)
+}
+
+// armedAlone fails the test unless the one deadline armed on fake is d from its present.
+func (g *probeRig) armedAlone(fake *clocktest.Fake, what string, d time.Duration) {
+	g.t.Helper()
+	if armed, want := fake.Armed(), fake.Now().Add(d); len(armed) != 1 || !armed[0].Equal(want) {
+		g.t.Fatalf("%s armed %v on the runtime's clock, want %s alone, %s from its present", what, armed, want, d)
+	}
 }
 
 func wantContains(t *testing.T, err error, wants ...string) {
@@ -406,32 +497,35 @@ func TestProbeImageRefusesABudgetWithoutCommandTime(t *testing.T) {
 	}
 }
 
+// A probe pod that has not started when its startup budget runs out fails the attempt, naming the
+// budget, the pod's phase and why its container waits, and the attempt never reaches its command.
+// The budget runs on the runtime's clock (withClock), which the row moves past it only once the
+// runtime's stores hold the pod Pending with its container waiting and the attempt has judged
+// that (probeAnswer).
 func TestProbeImageRefusesAProbePodThatDoesNotStart(t *testing.T) {
-	g := newProbeRig(t, nil).waits("ErrImagePull")
-	phases := make(chan string, 1)
-	releaseStartup := make(chan struct{})
-	probe := probeOptions(t)
-	probe.Budget = 100 * time.Millisecond
-	probe.startupBudget = 100 * time.Millisecond
-	probe.Retry.Attempts = 1
-	probe.onPhase = func(phase string) {
-		phases <- phase
-		if phase == "startup" {
-			<-releaseStartup
-		}
-	}
-	result := make(chan error, 1)
-	go func() { result <- g.probe(probe) }()
+	synctest.Test(t, func(t *testing.T) {
+		const startup = 100 * time.Millisecond
+		fake := clocktest.New(time.Now())
+		g := newProbeRig(t, nil, withClock(fake)).waits("ErrImagePull")
+		phases := make(chan string, 2)
+		probe := probeOptions(t)
+		probe.Budget = startup
+		probe.startupBudget = startup
+		probe.Retry.Attempts = 1
+		probe.onPhase = func(phase string) { phases <- phase }
+		result := make(chan error, 1)
+		go func() { result <- g.probe(probe) }()
 
-	if phase := <-phases; phase != "startup" {
-		t.Fatalf("first phase = %q, want startup", phase)
-	}
-	g.eventually("the probe pod pending before the startup bound", func() bool {
-		pod := g.pod(probeSandboxName)
-		return pod != nil && pod.Status.Phase == corev1.PodPending && probeWaiting(pod) != nil
+		wantContains(t, probeAnswer(g, fake, result, startup, probe.Retry.Initial), "did not start within 100ms", "phase Pending", "container probe waiting: ErrImagePull")
+		if phase := <-phases; phase != "startup" {
+			t.Fatalf("first phase = %q, want startup", phase)
+		}
+		select {
+		case phase := <-phases:
+			t.Fatalf("the attempt went on to its %s phase, want it ended in startup", phase)
+		default:
+		}
 	})
-	close(releaseStartup)
-	wantContains(t, <-result, "did not start within 100ms", "phase Pending", "container probe waiting: ErrImagePull")
 }
 
 func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
@@ -605,7 +699,9 @@ func TestProbeImageHoldsTheProvidersSecretToTheDaemonsSeed(t *testing.T) {
 }
 
 // A pod that never finished within the budget, or a Sandbox that never got one, says nothing
-// about the image: the probe runs again, and gives up only when its retry does.
+// about the image: the probe runs again, and gives up only when its retry does. Each attempt's
+// budget and the retry's backoff run on the runtime's clock (withClock), which the row moves past
+// each only once the attempt has judged what the stand-ins leave its pod at (probeAnswer).
 func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string
@@ -681,19 +777,20 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 			"the load probe is waiting"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil)
-			testCase.setup(g)
+			synctest.Test(t, func(t *testing.T) {
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withClock(fake))
+				testCase.setup(g)
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
+				err := g.probedInBubble(fake, p, unfinishedBudget)
 
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
-
-			err := g.probe(p)
-
-			wantContains(t, err, append([]string{"the worker image probe never completed within its retry budget (2 attempts)"}, testCase.want...)...)
-			if n := g.creates.Load(); n != 2 {
-				t.Errorf("ran the probe %d times, want the retry's 2", n)
-			}
-			g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+				wantContains(t, err, append([]string{"the worker image probe never completed within its retry budget (2 attempts)"}, testCase.want...)...)
+				if n := g.creates.Load(); n != 2 {
+					t.Errorf("ran the probe %d times, want the retry's 2", n)
+				}
+				inBubble(func() bool { return g.sandbox(probeSandboxName) == nil })
+			})
 		})
 	}
 }
@@ -880,6 +977,8 @@ func TestEveryBootProbesTheImage(t *testing.T) {
 // the answer, a refusal naming the Secret, the keys, and the kubelet's message, given once rather
 // than retried to the budget. Any other FailedMount on the volume is one the kubelet retries (its
 // Secret watch not yet synced, kubernetes/kubernetes#99475), and the attempt runs to its budget.
+// The budget runs on the runtime's clock, moved only past an attempt nothing else will end
+// (probeAnswer), so a refusal is never cut short by it.
 func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 	mount := `MountVolume.SetUp failed for volume "providers" : `
 	for _, testCase := range []struct {
@@ -892,34 +991,37 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 		{"the kubelet's secret cache not synced", mount + "failed to sync secret cache: timed out waiting for the condition", false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"} }))
-			g.waits("ContainerCreating")
-			if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-				ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-				InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-				Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: testCase.message,
-			}, metav1.CreateOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
-
-			err := g.probe(p)
-
-			if testCase.refused {
-				wantContains(t, err, "cannot mount the providers Secret "+ProvidersSecretName(testProject), "(SESSION_DSN, anthropic)", testCase.message)
-				if n := g.creates.Load(); n != 1 {
-					t.Errorf("ran the probe %d times for a Secret the pod cannot mount, want once", n)
+			synctest.Test(t, func(t *testing.T) {
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{anthropicKeyVariable: "anthropic"} }), withClock(fake))
+				g.waits("ContainerCreating")
+				if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+					ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
+					InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+					Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: testCase.message,
+				}, metav1.CreateOptions{}); err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
-			if err != nil && strings.Contains(err.Error(), "cannot mount the providers Secret") {
-				t.Errorf("ProbeImage = %v, refused a mount failure the kubelet retries", err)
-			}
-			if n := g.creates.Load(); n != 2 {
-				t.Errorf("ran the probe %d times, want the retry's 2", n)
-			}
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
+
+				err := g.probedInBubble(fake, p, unfinishedBudget)
+
+				if testCase.refused {
+					wantContains(t, err, "cannot mount the providers Secret "+ProvidersSecretName(testProject), "(SESSION_DSN, anthropic)", testCase.message)
+					if n := g.creates.Load(); n != 1 {
+						t.Errorf("ran the probe %d times for a Secret the pod cannot mount, want once", n)
+					}
+					return
+				}
+				wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
+				if err != nil && strings.Contains(err.Error(), "cannot mount the providers Secret") {
+					t.Errorf("ProbeImage = %v, refused a mount failure the kubelet retries", err)
+				}
+				if n := g.creates.Load(); n != 2 {
+					t.Errorf("ran the probe %d times, want the retry's 2", n)
+				}
+			})
 		})
 	}
 }
@@ -932,7 +1034,8 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 // ConfigMap and Secret sources, its token source not among them; a volume the pod block does not
 // name is said so. Any other FailedMount is one the kubelet retries (its ConfigMap cache not yet
 // synced, the object not yet registered with its manager, the pod's volumes not all mounted yet),
-// and the attempt runs to its budget.
+// and the attempt runs to its budget. The budget runs on the runtime's clock, moved only past an
+// attempt nothing else will end (probeAnswer), so a refusal is never cut short by it.
 func TestProbeImageRefusesAnOperatorVolumeThePodCannotMount(t *testing.T) {
 	configMap := func(volume, name string) corev1.Volume {
 		return corev1.Volume{Name: volume, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}}}
@@ -985,37 +1088,40 @@ func TestProbeImageRefusesAnOperatorVolumeThePodCannotMount(t *testing.T) {
 			"Unable to attach or mount volumes: unmounted volumes=[operator-route], unattached volumes=[]: timed out waiting for the condition", false, nil},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Pod.Volumes, o.Pod.VolumeMounts = volumes, mounts }))
-			g.waits("ContainerCreating")
-			if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-				ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-				InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-				Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: testCase.message,
-			}, metav1.CreateOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
-
-			err := g.probe(p)
-
-			if testCase.refused {
-				wantContains(t, err, append(testCase.want, testCase.message)...)
-				if err != nil && strings.Contains(err.Error(), "never completed within its retry budget") {
-					t.Errorf("ProbeImage = %v, retried a volume the pod can never mount", err)
+			synctest.Test(t, func(t *testing.T) {
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Pod.Volumes, o.Pod.VolumeMounts = volumes, mounts }), withClock(fake))
+				g.waits("ContainerCreating")
+				if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+					ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
+					InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+					Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: testCase.message,
+				}, metav1.CreateOptions{}); err != nil {
+					t.Fatal(err)
 				}
-				if n := g.creates.Load(); n != 1 {
-					t.Errorf("ran the probe %d times for a volume the pod cannot mount, want once", n)
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
+
+				err := g.probedInBubble(fake, p, unfinishedBudget)
+
+				if testCase.refused {
+					wantContains(t, err, append(testCase.want, testCase.message)...)
+					if err != nil && strings.Contains(err.Error(), "never completed within its retry budget") {
+						t.Errorf("ProbeImage = %v, retried a volume the pod can never mount", err)
+					}
+					if n := g.creates.Load(); n != 1 {
+						t.Errorf("ran the probe %d times for a volume the pod cannot mount, want once", n)
+					}
+					return
 				}
-				return
-			}
-			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
-			if err != nil && strings.Contains(err.Error(), "cannot mount volume") {
-				t.Errorf("ProbeImage = %v, refused a mount failure the kubelet retries", err)
-			}
-			if n := g.creates.Load(); n != 2 {
-				t.Errorf("ran the probe %d times, want the retry's 2", n)
-			}
+				wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
+				if err != nil && strings.Contains(err.Error(), "cannot mount volume") {
+					t.Errorf("ProbeImage = %v, refused a mount failure the kubelet retries", err)
+				}
+				if n := g.creates.Load(); n != 2 {
+					t.Errorf("ran the probe %d times, want the retry's 2", n)
+				}
+			})
 		})
 	}
 }
@@ -1039,33 +1145,28 @@ func TestProbeImageFindsAFailedMountOnTheRecheck(t *testing.T) {
 	})
 	g.waits("ContainerCreating")
 	message := `MountVolume.SetUp failed for volume "operator-route" : configmap "legion-operator-route" not found`
-	stop := make(chan struct{})
-	t.Cleanup(func() { close(stop) })
-	go func() {
-		// The kubelet's turn: after the first read, the event, then time passes.
-		for eventReads.Load() == 0 {
-			select {
-			case <-stop:
-				return
-			case <-time.After(5 * time.Millisecond):
-			}
-		}
-		time.Sleep(50 * time.Millisecond) // a few passes of the wait loop with the clock still
-		if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-			ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-			Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message,
-		}, metav1.CreateOptions{}); err != nil {
-			t.Error(err)
-			return
-		}
-		g.advance(mountRecheck)
-		if pod := g.pod(probeSandboxName); pod != nil {
-			g.update(pod, func(*corev1.Pod) {}) // nudge the wait loop rather than waiting on its tick
-		}
-	}()
+	probed := make(chan error, 1)
+	go func() { probed <- g.probe(probeOptions(t)) }()
 
-	err := g.probe(probeOptions(t))
+	// The kubelet's turn, once the probe has read the pod's events once and found no FailedMount,
+	// so the event lands after that first read: the first read sets the recheck's clock (mountRead),
+	// and until the clock moves past mountRecheck the probe reads no events again (stuck), so the
+	// event cannot be found before the recheck. That first read is the gate, not a span waited out;
+	// the event and a clock move then make the recheck read find it.
+	testwait.Eventually(t, "the probe's first read of the pod's events", func() bool { return eventReads.Load() >= 1 })
+	if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+		Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message,
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	g.advance(mountRecheck)
+	if pod := g.pod(probeSandboxName); pod != nil {
+		g.update(pod, func(*corev1.Pod) {}) // nudge the wait loop rather than waiting on its tick
+	}
+
+	err := testwait.Receive(t, "the probe to finish", probed)
 
 	wantContains(t, err, `cannot mount volume "operator-route"`, `ConfigMap "legion-operator-route"`, message)
 	if err != nil && strings.Contains(err.Error(), "never completed within its retry budget") {
@@ -1084,7 +1185,9 @@ func TestProbeImageFindsAFailedMountOnTheRecheck(t *testing.T) {
 // waiting CreateContainerConfigError, never Failed: a waiting message saying the ConfigMap or
 // Secret, or the key, is missing is the answer, a refusal naming the container and the kubelet's
 // message, given once rather than retried to the budget. A CreateContainerConfigError saying
-// anything else is left to the budget, whose detail quotes the waiting reason.
+// anything else is left to the budget, whose detail quotes the waiting reason. The budget runs on
+// the runtime's clock, moved only past an attempt nothing else will end (probeAnswer), so a
+// refusal is never cut short by it.
 func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
 	for _, testCase := range []struct {
 		name, message string
@@ -1097,30 +1200,33 @@ func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
 		{"a container spec the kubelet could not generate for another reason", `failed to generate container "probe" spec: something else`, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil)
-			g.waitsSaying("CreateContainerConfigError", testCase.message)
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			synctest.Test(t, func(t *testing.T) {
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withClock(fake))
+				g.waitsSaying("CreateContainerConfigError", testCase.message)
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
 
-			err := g.probe(p)
+				err := g.probedInBubble(fake, p, unfinishedBudget)
 
-			if testCase.refused {
-				wantContains(t, err, "cannot configure its container probe", "CreateContainerConfigError", testCase.message)
-				if err != nil && strings.Contains(err.Error(), "never completed within its retry budget") {
-					t.Errorf("ProbeImage = %v, retried a container the kubelet can never configure", err)
+				if testCase.refused {
+					wantContains(t, err, "cannot configure its container probe", "CreateContainerConfigError", testCase.message)
+					if err != nil && strings.Contains(err.Error(), "never completed within its retry budget") {
+						t.Errorf("ProbeImage = %v, retried a container the kubelet can never configure", err)
+					}
+					if n := g.creates.Load(); n != 1 {
+						t.Errorf("ran the probe %d times for a container the kubelet cannot configure, want once", n)
+					}
+					return
 				}
-				if n := g.creates.Load(); n != 1 {
-					t.Errorf("ran the probe %d times for a container the kubelet cannot configure, want once", n)
+				wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)", "(container probe waiting: CreateContainerConfigError)")
+				if err != nil && strings.Contains(err.Error(), "cannot configure its container") {
+					t.Errorf("ProbeImage = %v, refused a CreateContainerConfigError the kubelet may yet clear", err)
 				}
-				return
-			}
-			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)", "(container probe waiting: CreateContainerConfigError)")
-			if err != nil && strings.Contains(err.Error(), "cannot configure its container") {
-				t.Errorf("ProbeImage = %v, refused a CreateContainerConfigError the kubelet may yet clear", err)
-			}
-			if n := g.creates.Load(); n != 2 {
-				t.Errorf("ran the probe %d times, want the retry's 2", n)
-			}
+				if n := g.creates.Load(); n != 2 {
+					t.Errorf("ran the probe %d times, want the retry's 2", n)
+				}
+			})
 		})
 	}
 }
@@ -1134,7 +1240,9 @@ func TestProbeImageRefusesAContainerTheKubeletCannotConfigure(t *testing.T) {
 // the pod block is the one claim's; with two claims it names the PersistentVolume and both. The
 // kubelet's `Unable to attach or mount volumes` summary is left to the budget, and so is a share
 // failure in a pod block naming no share at all. The messages are the kubelet's own, read from
-// gVisor pods on a kind node and from a gVisor pod on GKE Autopilot.
+// gVisor pods on a kind node and from a gVisor pod on GKE Autopilot. The budget runs on the
+// runtime's clock, moved only past an attempt nothing else will end (probeAnswer), so a refusal is
+// never cut short by it.
 func TestProbeImageRefusesAShareThePodCannotMount(t *testing.T) {
 	// retried is the event's count: 1 for a failure the kubelet has met once, else 2, the least
 	// the probe refuses a CSI failure at.
@@ -1199,45 +1307,48 @@ Output: mount.nfs: Connection timed out for ` + export + ` on /var/lib/kubelet/p
 		{"a CSI failure the kubelet has not yet retried", []corev1.Volume{claim("team", "team-share")}, csi, false, nil, false, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			var mounts []corev1.VolumeMount
-			for _, volume := range testCase.volumes {
-				mounts = append(mounts, corev1.VolumeMount{Name: volume.Name, MountPath: "/mnt/" + volume.Name, ReadOnly: true})
-			}
-			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Pod.Volumes, o.Pod.VolumeMounts = testCase.volumes, mounts }))
-			g.waits("ContainerCreating")
-			at := metav1.NewTime(rigNow.Add(-time.Minute))
-			if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-				ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-				InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-				Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: testCase.message, LastTimestamp: at, Count: retried(testCase.once),
-			}, metav1.CreateOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			if testCase.pulledAfter {
+			synctest.Test(t, func(t *testing.T) {
+				var mounts []corev1.VolumeMount
+				for _, volume := range testCase.volumes {
+					mounts = append(mounts, corev1.VolumeMount{Name: volume.Name, MountPath: "/mnt/" + volume.Name, ReadOnly: true})
+				}
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Pod.Volumes, o.Pod.VolumeMounts = testCase.volumes, mounts }), withClock(fake))
+				g.waits("ContainerCreating")
+				at := metav1.NewTime(rigNow.Add(-time.Minute))
 				if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-					ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".pull", Namespace: testNamespace},
+					ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
 					InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-					Reason:         "Pulling", Type: corev1.EventTypeNormal, Message: `Pulling image "worker"`, LastTimestamp: metav1.NewTime(at.Add(time.Second)),
+					Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: testCase.message, LastTimestamp: at, Count: retried(testCase.once),
 				}, metav1.CreateOptions{}); err != nil {
 					t.Fatal(err)
 				}
-			}
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
-
-			err := g.probe(p)
-
-			if testCase.refused {
-				wantContains(t, err, append(testCase.want, testCase.message)...)
-				if n := g.creates.Load(); n != 1 {
-					t.Errorf("ran the probe %d times for a share the pod cannot mount, want once", n)
+				if testCase.pulledAfter {
+					if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+						ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".pull", Namespace: testNamespace},
+						InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+						Reason:         "Pulling", Type: corev1.EventTypeNormal, Message: `Pulling image "worker"`, LastTimestamp: metav1.NewTime(at.Add(time.Second)),
+					}, metav1.CreateOptions{}); err != nil {
+						t.Fatal(err)
+					}
 				}
-				return
-			}
-			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
-			if err != nil && strings.Contains(err.Error(), "cannot mount") {
-				t.Errorf("ProbeImage = %v, refused a mount it should have left to the budget", err)
-			}
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
+
+				err := g.probedInBubble(fake, p, unfinishedBudget)
+
+				if testCase.refused {
+					wantContains(t, err, append(testCase.want, testCase.message)...)
+					if n := g.creates.Load(); n != 1 {
+						t.Errorf("ran the probe %d times for a share the pod cannot mount, want once", n)
+					}
+					return
+				}
+				wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
+				if err != nil && strings.Contains(err.Error(), "cannot mount") {
+					t.Errorf("ProbeImage = %v, refused a mount it should have left to the budget", err)
+				}
+			})
 		})
 	}
 }
@@ -1249,7 +1360,9 @@ Output: mount.nfs: Connection timed out for ` + export + ` on /var/lib/kubelet/p
 // pod's age, and never a capacity wait: no node the pool adds places it. A claim the pod block does
 // not name is no operator's mistake and falls to the capacity rule, and so does a claim that exists
 // but is not bound yet (`pod has unbound immediate PersistentVolumeClaims`), which is left to the
-// budget rather than counted as waiting on capacity, since it may yet bind.
+// budget rather than counted as waiting on capacity, since it may yet bind. The budget runs on the
+// runtime's clock, moved only past an attempt nothing else will end (probeAnswer), so a refusal is
+// never cut short by it.
 func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 	team := corev1.Volume{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}
 	unplaced := func(message string, age time.Duration) func(*corev1.Pod) {
@@ -1274,39 +1387,43 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 		{"the claim not bound yet, past the boot timeout", "0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. not found", testOptions().BootTimeout + time.Second, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			logged := &lockedLog{}
-			g := newProbeRig(t, nil, withOptions(func(o *Options) {
-				o.Log = slogTo(logged)
-				o.Pod.Volumes = []corev1.Volume{team}
-				o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-			}))
-			g.finishes(unplaced(testCase.message, testCase.age))
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			synctest.Test(t, func(t *testing.T) {
+				logged := &lockedLog{}
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withOptions(func(o *Options) {
+					o.Log = slogTo(logged)
+					o.Pod.Volumes = []corev1.Volume{team}
+					o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
+				}), withClock(fake))
+				g.finishes(unplaced(testCase.message, testCase.age))
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
 
-			err := g.probe(p)
+				err := g.probedInBubble(fake, p, unfinishedBudget)
 
-			if testCase.refused {
-				wantContains(t, err, `cannot mount volume "team", which runtime.kubernetes.pod.volumes gives it from PersistentVolumeClaim "team-share": `+testCase.message)
-				if n := g.creates.Load(); n != 1 {
-					t.Errorf("ran the probe %d times for a claim that is not there, want once", n)
+				if testCase.refused {
+					wantContains(t, err, `cannot mount volume "team", which runtime.kubernetes.pod.volumes gives it from PersistentVolumeClaim "team-share": `+testCase.message)
+					if n := g.creates.Load(); n != 1 {
+						t.Errorf("ran the probe %d times for a claim that is not there, want once", n)
+					}
+					return
 				}
-				return
-			}
-			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
-			if err != nil && strings.Contains(err.Error(), "cannot mount") {
-				t.Errorf("ProbeImage = %v, blamed the pod block for a claim it does not name or that may yet bind", err)
-			}
-			if strings.Contains(testCase.message, unboundClaims) && strings.Contains(logged.String(), "waiting on capacity") {
-				t.Errorf("an unbound claim was read as a capacity wait:\n%s", logged.String())
-			}
+				wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
+				if err != nil && strings.Contains(err.Error(), "cannot mount") {
+					t.Errorf("ProbeImage = %v, blamed the pod block for a claim it does not name or that may yet bind", err)
+				}
+				if strings.Contains(testCase.message, unboundClaims) && strings.Contains(logged.String(), "waiting on capacity") {
+					t.Errorf("an unbound claim was read as a capacity wait:\n%s", logged.String())
+				}
+			})
 		})
 	}
 }
 
 // A CSI driver's final failure the kubelet has met twice is refused, whether the event records the
 // repeat in its Count or, as an events.k8s.io/v1 recorder does, in its Series alone; a CSI failure
-// met once is left to the budget.
+// met once is left to the budget. The budget runs on the runtime's clock, moved only past an
+// attempt nothing else will end (probeAnswer), so a refusal is never cut short by it.
 func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
 	message := `MountVolume.MountDevice failed for volume "pvc-1b2c" : rpc error: code = Internal desc = mount failed: exit status 32`
 	for _, testCase := range []struct {
@@ -1320,29 +1437,32 @@ func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
 		{"met once", 1, nil, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, withOptions(func(o *Options) {
-				o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
-				o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-			}))
-			g.waits("ContainerCreating")
-			if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-				ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-				InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-				Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message,
-				LastTimestamp: metav1.NewTime(rigNow.Add(-time.Minute)), Count: testCase.count, Series: testCase.series,
-			}, metav1.CreateOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			p := probeOptions(t)
-			p.Budget = unfinishedBudget
+			synctest.Test(t, func(t *testing.T) {
+				fake := clocktest.New(time.Now())
+				g := newProbeRig(t, nil, withOptions(func(o *Options) {
+					o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
+					o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
+				}), withClock(fake))
+				g.waits("ContainerCreating")
+				if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+					ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
+					InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+					Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message,
+					LastTimestamp: metav1.NewTime(rigNow.Add(-time.Minute)), Count: testCase.count, Series: testCase.series,
+				}, metav1.CreateOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				p := probeOptions(t)
+				p.Budget = unfinishedBudget
 
-			err := g.probe(p)
+				err := g.probedInBubble(fake, p, unfinishedBudget)
 
-			if testCase.refused {
-				wantContains(t, err, `cannot mount volume "team", which runtime.kubernetes.pod.volumes gives it from PersistentVolumeClaim "team-share": `+message)
-				return
-			}
-			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
+				if testCase.refused {
+					wantContains(t, err, `cannot mount volume "team", which runtime.kubernetes.pod.volumes gives it from PersistentVolumeClaim "team-share": `+message)
+					return
+				}
+				wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
+			})
 		})
 	}
 }
@@ -1350,62 +1470,71 @@ func TestProbeImageCountsACSIFailureBySeries(t *testing.T) {
 // A ReadWriteOncePod claim another pod holds leaves the probe pod Unschedulable for as long as any
 // issue pod runs, since every Legion pod mounts the pod block's claims: the scheduler's
 // ErrReasonReadWriteOncePodConflict is a refusal naming the claims, at once, never a capacity wait.
+// The budget runs on the runtime's clock, moved only past an attempt nothing else will end
+// (probeAnswer), so the refusal is never cut short by it.
 func TestProbeImageRefusesAReadWriteOncePodClaimInUse(t *testing.T) {
-	message := "0/3 nodes are available: 3 node(s) unavailable due to PersistentVolumeClaim with ReadWriteOncePod access mode already in-use by another pod. preemption: not eligible"
-	g := newProbeRig(t, nil, withOptions(func(o *Options) {
-		o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
-		o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-	}))
-	g.finishes(func(p *corev1.Pod) {
-		p.Spec.NodeName = ""
-		p.Status = corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{
-			Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable,
-			Message: message, LastTransitionTime: metav1.NewTime(rigNow),
-		}}}
+	synctest.Test(t, func(t *testing.T) {
+		message := "0/3 nodes are available: 3 node(s) unavailable due to PersistentVolumeClaim with ReadWriteOncePod access mode already in-use by another pod. preemption: not eligible"
+		fake := clocktest.New(time.Now())
+		g := newProbeRig(t, nil, withOptions(func(o *Options) {
+			o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
+			o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
+		}), withClock(fake))
+		g.finishes(func(p *corev1.Pod) {
+			p.Spec.NodeName = ""
+			p.Status = corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{
+				Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable,
+				Message: message, LastTransitionTime: metav1.NewTime(rigNow),
+			}}}
+		})
+		p := probeOptions(t)
+		p.Budget = unfinishedBudget
+
+		err := g.probedInBubble(fake, p, unfinishedBudget)
+
+		wantContains(t, err, "a ReadWriteOncePod claim it mounts is held by another pod", "gives volumes team from, so they must be ReadWriteMany: "+message)
+		if n := g.creates.Load(); n != 1 {
+			t.Errorf("ran the probe %d times, want once", n)
+		}
 	})
-	p := probeOptions(t)
-	p.Budget = unfinishedBudget
-
-	err := g.probe(p)
-
-	wantContains(t, err, "a ReadWriteOncePod claim it mounts is held by another pod", "gives volumes team from, so they must be ReadWriteMany: "+message)
-	if n := g.creates.Load(); n != 1 {
-		t.Errorf("ran the probe %d times, want once", n)
-	}
 }
 
 // A FailedMount for a volume an admission webhook injected into the probe pod names a volume the
 // admitted pod carries but the pod block does not: it is that volume's, never blamed on the pod
-// block's one claim as its PersistentVolume would be.
+// block's one claim as its PersistentVolume would be. The budget runs on the runtime's clock,
+// moved only past an attempt nothing else will end (probeAnswer).
 func TestProbeImageNeverBlamesAClaimForAnInjectedVolume(t *testing.T) {
-	g := newProbeRig(t, nil, withOptions(func(o *Options) {
-		o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
-		o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-	}))
-	g.finishes(func(p *corev1.Pod) {
-		p.Spec.NodeName = "ip-192-0-2-7"
-		p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "istiod-ca-cert", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{Driver: "mesh.example"}}})
-		p.Status = corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{
-			Name: probeContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}},
-		}}}
+	synctest.Test(t, func(t *testing.T) {
+		fake := clocktest.New(time.Now())
+		g := newProbeRig(t, nil, withOptions(func(o *Options) {
+			o.Pod.Volumes = []corev1.Volume{{Name: "team", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "team-share"}}}}
+			o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
+		}), withClock(fake))
+		g.finishes(func(p *corev1.Pod) {
+			p.Spec.NodeName = "ip-192-0-2-7"
+			p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "istiod-ca-cert", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{Driver: "mesh.example"}}})
+			p.Status = corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{
+				Name: probeContainer, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}},
+			}}}
+		})
+		message := `MountVolume.SetUp failed for volume "istiod-ca-cert" : rpc error: code = Unknown desc = mesh agent down`
+		if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+			ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
+			Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message, LastTimestamp: metav1.NewTime(rigNow.Add(-time.Minute)), Count: 3,
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		p := probeOptions(t)
+		p.Budget = unfinishedBudget
+
+		err := g.probedInBubble(fake, p, unfinishedBudget)
+
+		if err != nil && strings.Contains(err.Error(), `PersistentVolumeClaim "team-share"`) {
+			t.Fatalf("ProbeImage = %v, blamed the operator's claim for an injected volume", err)
+		}
+		wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
 	})
-	message := `MountVolume.SetUp failed for volume "istiod-ca-cert" : rpc error: code = Unknown desc = mesh agent down`
-	if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
-		ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: probeSandboxName, Namespace: testNamespace},
-		Reason:         "FailedMount", Type: corev1.EventTypeWarning, Message: message, LastTimestamp: metav1.NewTime(rigNow.Add(-time.Minute)), Count: 3,
-	}, metav1.CreateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	p := probeOptions(t)
-	p.Budget = unfinishedBudget
-
-	err := g.probe(p)
-
-	if err != nil && strings.Contains(err.Error(), `PersistentVolumeClaim "team-share"`) {
-		t.Fatalf("ProbeImage = %v, blamed the operator's claim for an injected volume", err)
-	}
-	wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)")
 }
 
 // A share the kubelet mounted on the node but whose root the node cannot read — an NFS server that
@@ -1473,65 +1602,83 @@ const unschedulableMessage = "0/83 nodes are available: 25 Insufficient cpu, 58 
 // wait with the scheduler's reason. A pod Unschedulable for less than the boot timeout is a pool
 // still adding a node: the attempt waits on it to its budget, as it does any Pending pod.
 func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
+	// The attempt's budget and the retry's wait run on the runtime's clock (withClock). Each
+	// attempt ends on its own, the first on capacity and the second on its pass, so the clock moves
+	// past the retry's wait alone (probeAnswer); an attempt held to its budget instead would end
+	// transient and fail the one attempt the run has.
 	t.Run("unschedulable past the boot timeout, then placed", func(t *testing.T) {
-		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
-		g.with(func() { g.log = okLine(3) + "\n" })
-		var pods atomic.Int32
-		g.finishes(func(p *corev1.Pod) {
-			if pods.Add(1) == 1 {
-				unschedulable(testOptions().BootTimeout + time.Second)(p)
-				return
+		synctest.Test(t, func(t *testing.T) {
+			logged := &lockedLog{}
+			fake := clocktest.New(time.Now())
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withClock(fake))
+			g.with(func() { g.log = okLine(3) + "\n" })
+			var pods atomic.Int32
+			g.finishes(func(p *corev1.Pod) {
+				if pods.Add(1) == 1 {
+					unschedulable(testOptions().BootTimeout + time.Second)(p)
+					return
+				}
+				p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
+					Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+				}}}
+			})
+			// One attempt: the pass needs two, so a wait that spent an attempt would fail the run.
+			p := probeOptions(t)
+			p.Retry.Attempts = 1
+			type probed struct {
+				report bootprobe.ImageReport
+				err    error
 			}
-			p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
-				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
-			}}}
+			result := make(chan probed, 1)
+			go func() { report, err := g.r.ProbeImage(g.ctx, p); result <- probed{report, err} }()
+
+			got := probeAnswer(g, fake, result, p.Budget, p.Retry.Max)
+			report, err := got.report, got.err
+
+			if err != nil {
+				t.Fatalf("ProbeImage = %v, want the pass after one capacity wait", err)
+			}
+			if n := g.creates.Load(); n != 2 {
+				t.Errorf("created the probe Sandbox %d times, want the unplaceable pod's and the one that passed", n)
+			}
+			wantReason := "probe pod " + probeSandboxName + " is Unschedulable: " + unschedulableMessage
+			if report.CapacityWaits != 1 || report.CapacityReason != wantReason {
+				t.Errorf("report = %d waits, reason %q; want 1 and %q", report.CapacityWaits, report.CapacityReason, wantReason)
+			}
+			if got := strings.Count(logged.String(), "boot probe is waiting on capacity; running it again"); got != 1 {
+				t.Errorf("logged %d capacity waits, want 1:\n%s", got, logged.String())
+			}
+			if !strings.Contains(logged.String(), `probe="worker image"`) || !strings.Contains(logged.String(), unschedulableMessage) {
+				t.Errorf("the wait was not logged with the probe and the scheduler's reason:\n%s", logged.String())
+			}
+			if strings.Contains(logged.String(), "failed transiently") {
+				t.Errorf("a capacity wait was logged as a transient failure:\n%s", logged.String())
+			}
+			inBubble(func() bool { return g.sandbox(probeSandboxName) == nil })
 		})
-		// One attempt: the pass needs two, so a wait that spent an attempt would fail the run.
-		p := probeOptions(t)
-		p.Retry.Attempts = 1
-
-		report, err := g.r.ProbeImage(g.ctx, p)
-
-		if err != nil {
-			t.Fatalf("ProbeImage = %v, want the pass after one capacity wait", err)
-		}
-		if n := g.creates.Load(); n != 2 {
-			t.Errorf("created the probe Sandbox %d times, want the unplaceable pod's and the one that passed", n)
-		}
-		wantReason := "probe pod " + probeSandboxName + " is Unschedulable: " + unschedulableMessage
-		if report.CapacityWaits != 1 || report.CapacityReason != wantReason {
-			t.Errorf("report = %d waits, reason %q; want 1 and %q", report.CapacityWaits, report.CapacityReason, wantReason)
-		}
-		if got := strings.Count(logged.String(), "boot probe is waiting on capacity; running it again"); got != 1 {
-			t.Errorf("logged %d capacity waits, want 1:\n%s", got, logged.String())
-		}
-		if !strings.Contains(logged.String(), `probe="worker image"`) || !strings.Contains(logged.String(), unschedulableMessage) {
-			t.Errorf("the wait was not logged with the probe and the scheduler's reason:\n%s", logged.String())
-		}
-		if strings.Contains(logged.String(), "failed transiently") {
-			t.Errorf("a capacity wait was logged as a transient failure:\n%s", logged.String())
-		}
-		g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
 	})
 
+	// Each attempt's budget and the retry's backoff run on the runtime's clock (withClock), which the
+	// row moves past each only once the attempt has judged the Unschedulable pod (probeAnswer).
 	t.Run("unschedulable within the boot timeout waits to the budget", func(t *testing.T) {
-		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
-		g.finishes(unschedulable(testOptions().BootTimeout / 2))
-		p := probeOptions(t)
-		p.Budget = unfinishedBudget
+		synctest.Test(t, func(t *testing.T) {
+			logged := &lockedLog{}
+			fake := clocktest.New(time.Now())
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withClock(fake))
+			g.finishes(unschedulable(testOptions().BootTimeout / 2))
+			p := probeOptions(t)
+			p.Budget = unfinishedBudget
+			err := g.probedInBubble(fake, p, unfinishedBudget)
 
-		err := g.probe(p)
-
-		wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)",
-			"probe pod "+probeSandboxName+" did not start within 300ms (phase Pending)")
-		if strings.Contains(logged.String(), "waiting on capacity") {
-			t.Errorf("a pod unschedulable for less than the boot timeout was read as a capacity wait:\n%s", logged.String())
-		}
-		if n := g.creates.Load(); n != 2 {
-			t.Errorf("ran the probe %d times, want the retry's 2", n)
-		}
+			wantContains(t, err, "the worker image probe never completed within its retry budget (2 attempts)",
+				"probe pod "+probeSandboxName+" did not start within 300ms (phase Pending)")
+			if strings.Contains(logged.String(), "waiting on capacity") {
+				t.Errorf("a pod unschedulable for less than the boot timeout was read as a capacity wait:\n%s", logged.String())
+			}
+			if n := g.creates.Load(); n != 2 {
+				t.Errorf("ran the probe %d times, want the retry's 2", n)
+			}
+		})
 	})
 }
 
@@ -1545,72 +1692,87 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 // the recheck interval; a budget shorter than that delay can never observe the jump.
 func TestProbeImagesCapacityStopNeedsTheBudgetToOutliveTheBootTimeout(t *testing.T) {
 	const bootTimeout = 600 * time.Millisecond
-	ageOutAfter := func(t *testing.T, g *probeRig, delay time.Duration) {
-		t.Helper()
-		stop := make(chan struct{})
-		t.Cleanup(func() { close(stop) })
-		go func() {
-			select {
-			case <-stop:
-				return
-			case <-time.After(delay):
-			}
-			g.advance(bootTimeout + time.Second)
-			if pod := g.pod(probeSandboxName); pod != nil {
-				g.update(pod, func(*corev1.Pod) {})
-			}
-		}()
+	// capacityResult is what the probe returns, carried off the goroutine the subtests run it on so
+	// the bubble's clock can reach the boot timeout's worth of wall-clock while the probe waits.
+	type capacityResult struct {
+		report bootprobe.ImageReport
+		err    error
+	}
+	// ageOut jumps the rig's clock past the boot timeout and nudges the pod, so the probe's wait
+	// notices the pod has been Unschedulable that long without waiting on the recheck interval: the
+	// capacity stop (stuck) that an attempt whose budget outlives the boot timeout's wall-clock cost
+	// can witness, and one whose budget is shorter cannot.
+	ageOut := func(g *probeRig) {
+		g.advance(bootTimeout + time.Second)
+		if pod := g.pod(probeSandboxName); pod != nil {
+			g.update(pod, func(*corev1.Pod) {})
+		}
 	}
 
 	t.Run("a budget that outlives the boot timeout ends the attempt waiting on capacity", func(t *testing.T) {
-		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
-		g.with(func() { g.log = okLine(3) + "\n" })
-		var pods atomic.Int32
-		g.finishes(func(p *corev1.Pod) {
-			if pods.Add(1) == 1 {
-				unschedulable(0)(p)
-				return
+		synctest.Test(t, func(t *testing.T) {
+			logged := &lockedLog{}
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
+			g.with(func() { g.log = okLine(3) + "\n" })
+			var pods atomic.Int32
+			g.finishes(func(p *corev1.Pod) {
+				if pods.Add(1) == 1 {
+					unschedulable(0)(p)
+					return
+				}
+				p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
+					Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+				}}}
+			})
+			p := probeOptions(t)
+			p.Budget = bootTimeout + time.Second // ProbeBudget's shape: the boot timeout plus a margin that outlasts the rig's recheckInterval.
+			p.Retry.Attempts = 1
+
+			probed := make(chan capacityResult, 1)
+			go func() { report, err := g.r.ProbeImage(g.ctx, p); probed <- capacityResult{report, err} }()
+			// The bubble's clock reaches the boot timeout's worth of wall-clock, every goroutine of
+			// the probe blocked, before the pod ages out; the attempt's budget, a bubble timer, is a
+			// second past that, so the attempt is still waiting and witnesses the capacity stop.
+			time.Sleep(bootTimeout)
+			ageOut(g)
+			res := <-probed
+
+			if res.err != nil {
+				t.Fatalf("ProbeImage = %v, want the pass after one capacity wait", res.err)
 			}
-			p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
-				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
-			}}}
+			if res.report.CapacityWaits != 1 {
+				t.Errorf("report = %d capacity waits, want 1", res.report.CapacityWaits)
+			}
+			if got := strings.Count(logged.String(), "boot probe is waiting on capacity; running it again"); got != 1 {
+				t.Errorf("logged %d capacity waits, want 1:\n%s", got, logged.String())
+			}
 		})
-		ageOutAfter(t, g, bootTimeout)
-		p := probeOptions(t)
-		p.Budget = bootTimeout + time.Second // ProbeBudget's shape: the boot timeout plus a margin that outlasts the rig's recheckInterval.
-		p.Retry.Attempts = 1
-
-		report, err := g.r.ProbeImage(g.ctx, p)
-
-		if err != nil {
-			t.Fatalf("ProbeImage = %v, want the pass after one capacity wait", err)
-		}
-		if report.CapacityWaits != 1 {
-			t.Errorf("report = %d capacity waits, want 1", report.CapacityWaits)
-		}
-		if got := strings.Count(logged.String(), "boot probe is waiting on capacity; running it again"); got != 1 {
-			t.Errorf("logged %d capacity waits, want 1:\n%s", got, logged.String())
-		}
 	})
 
 	t.Run("a budget below the boot timeout never sees the capacity wait", func(t *testing.T) {
-		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
-		g.finishes(unschedulable(0))
-		// The pod ages out exactly as above, but the one attempt's budget has run out by then.
-		ageOutAfter(t, g, bootTimeout)
-		p := probeOptions(t)
-		p.Budget = 300 * time.Millisecond // slow_command_timeout_seconds's old shape: below the boot timeout.
-		p.Retry.Attempts = 1
+		synctest.Test(t, func(t *testing.T) {
+			logged := &lockedLog{}
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged); o.BootTimeout = bootTimeout }))
+			g.finishes(unschedulable(0))
+			p := probeOptions(t)
+			p.Budget = 300 * time.Millisecond // slow_command_timeout_seconds's old shape: below the boot timeout.
+			p.Retry.Attempts = 1
 
-		err := g.probe(p)
+			probed := make(chan capacityResult, 1)
+			go func() { _, err := g.r.ProbeImage(g.ctx, p); probed <- capacityResult{err: err} }()
+			// The budget, a bubble timer, runs out at 300ms; the pod ages out only once the bubble's
+			// clock reaches the boot timeout at 600ms, by when the one attempt has already ended, so
+			// it never witnesses the capacity stop.
+			time.Sleep(bootTimeout)
+			ageOut(g)
+			err := (<-probed).err
 
-		wantContains(t, err, "the worker image probe never completed within its retry budget (1 attempts)",
-			"probe pod "+probeSandboxName+" did not start within 300ms (phase Pending)")
-		if strings.Contains(logged.String(), "waiting on capacity") {
-			t.Errorf("a budget below the boot timeout read a capacity wait it never had time to see:\n%s", logged.String())
-		}
+			wantContains(t, err, "the worker image probe never completed within its retry budget (1 attempts)",
+				"probe pod "+probeSandboxName+" did not start within 300ms (phase Pending)")
+			if strings.Contains(logged.String(), "waiting on capacity") {
+				t.Errorf("a budget below the boot timeout read a capacity wait it never had time to see:\n%s", logged.String())
+			}
+		})
 	})
 }
 

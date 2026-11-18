@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // openListener opens the listener's own store, which creates the CI bucket and starts the cache
@@ -26,9 +27,7 @@ func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
 	if err != nil {
 		t.Fatalf("open the listener's cistore: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(ctx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("the listener's cache is not ready: %v", err)
 	}
 	return store

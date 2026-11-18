@@ -43,7 +43,14 @@ func newStubBroker(t *testing.T, refusal string) *stubBroker {
 func newStubBrokerFixingASession(t *testing.T, refusal, fixed string) *stubBroker {
 	t.Helper()
 	broker := &stubBroker{}
+	// The broker counts only a request of the shape the command's trade sends, an OAuth token
+	// exchange form (grant_type); any other is another process's, answered 404 and counted as
+	// nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.ParseForm() != nil || r.PostForm.Get("grant_type") == "" {
+			http.NotFound(w, r)
+			return
+		}
 		broker.trades.Add(1)
 		form := url.Values{}
 		if err := r.ParseForm(); err == nil {

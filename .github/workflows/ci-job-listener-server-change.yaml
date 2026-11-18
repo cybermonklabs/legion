@@ -32,6 +32,10 @@ env:
 jobs:
   listener-server-change:
     runs-on: ubuntu-24.04
+    # The step's -timeout 15m is 5.9 times the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 152.28 s (run 43582507175). The limit is at least
+    # the job's sum over those runs: its other steps at their longest, 28 s, 5 s of its clock over
+    # them, and the step's longest 234 s plus its 15 minutes: 1167 s, or 20 minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

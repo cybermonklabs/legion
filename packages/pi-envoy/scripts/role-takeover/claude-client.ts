@@ -26,6 +26,8 @@
  */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { settled } from "@legion/test-fixtures/wait";
 import type { Subprocess } from "bun";
 
 interface Options {
@@ -81,6 +83,7 @@ const { PATH } = process.env;
 const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(["bun", options.server], {
   cwd: options.stateDirectory,
   env: {
+    ...bunCacheOff,
     PATH: PATH ?? "",
     HOME: options.stateDirectory,
     CLAUDE_CONFIG_DIR: options.configDirectory,
@@ -121,23 +124,22 @@ void (async () => {
 
 let nextRequestID = 0;
 
-/** Sends one MCP request and resolves with the server's answer to it. */
+/** Sends one MCP request and resolves with the server's answer to it. The wait for the answer is
+ *  @legion/test-fixtures/wait's, which ends at the smoke's deadline (LEGION_PROOF_DEADLINE_MS,
+ *  which smoke-role-takeover.sh's proof_guard sets). */
 async function request(method: string, params: unknown): Promise<unknown> {
   nextRequestID += 1;
   const id = nextRequestID;
-  const settled = Promise.withResolvers<void>();
-  waiters.set(id, settled.resolve);
+  const answered = Promise.withResolvers<void>();
+  waiters.set(id, answered.resolve);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
   child.stdin.flush();
-  const deadline = setTimeout(() => {
-    settled.reject(
-      new Error(`the channel server did not answer ${method} within 60s: ${serverStderr}`)
-    );
-  }, 60_000);
   try {
-    await settled.promise;
+    await settled(`the channel server to answer ${method}`, answered.promise);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${reason}: ${serverStderr}`, { cause: error });
   } finally {
-    clearTimeout(deadline);
     waiters.delete(id);
   }
   return answers.get(id);

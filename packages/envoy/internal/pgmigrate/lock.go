@@ -28,14 +28,13 @@ import (
 const LockTimeout = 5 * time.Second
 
 // diagnosisCleanupTimeout bounds the rollback and the close that end a diagnosis's connection,
-// which run together on a context of their own once the diagnosis is done: the diagnosis's own
-// context may have run out, and the one left by taking its cancellation off (context.WithoutCancel
-// keeps the values and drops the deadline) carries no bound at all, so a transport that has failed
-// without saying so would hold the runner for as long as that transport takes to notice - while
-// the runner is already reporting a failed migration and someone is waiting on that report. The
-// rollback and the close are one round trip each on a connection already open, so a second is far
-// longer than either needs. The timer starts when the cleanup does, so diagnoseHolders returns
-// within LockTimeout and a second however slow the diagnosis itself was.
+// which run together on a context and a goroutine of their own once the diagnosis is read: the
+// diagnosis's own context may have run out, and the one left by taking its cancellation off
+// (context.WithoutCancel keeps the values and drops the deadline) carries no bound at all, so a
+// transport that has failed without saying so would keep that goroutine and its connection for as
+// long as that transport takes to notice. The rollback and the close are one round trip each on a
+// connection already open, so a second is far longer than either needs. The runner does not wait
+// for them: diagnoseHolders returns within LockTimeout however its cleanup fares.
 const diagnosisCleanupTimeout = 1 * time.Second
 
 // lockNotAvailable is the SQLSTATE Postgres cancels a statement with when its lock_timeout runs
@@ -350,7 +349,7 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 	if errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable {
 		timedOut := &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
 		if wait != nil {
-			timedOut.Diagnoses = diagnoseHolders(ctx, dial, wait.Holders)
+			timedOut.Diagnoses, timedOut.cleaned = diagnoseHolders(ctx, dial, wait.Holders)
 		}
 		return timedOut
 	}
@@ -360,40 +359,47 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 // diagnoseHolders reads holderDiagnosis for each of holders on a connection of its own, in a
 // read-only transaction, within LockTimeout: the migration's own transaction is aborted by its
 // cancellation, and a diagnosis that cannot be had must not hold the runner up. A connection that
-// cannot be had is one diagnosis saying why. Rolling that transaction back and closing that
-// connection run on a context of their own, bounded by diagnosisCleanupTimeout, so neither holds
-// the runner up either.
-func diagnoseHolders(ctx context.Context, dial func(context.Context) (*pgx.Conn, error), holders []Session) []string {
+// cannot be had is one diagnosis saying why. It returns the diagnoses as soon as they are read:
+// rolling that transaction back and closing that connection run after, on a goroutine of their own
+// and a context bounded by diagnosisCleanupTimeout, so neither holds the runner up, and the
+// channel it returns is closed once they are done.
+func diagnoseHolders(ctx context.Context, dial func(context.Context) (*pgx.Conn, error), holders []Session) ([]string, <-chan struct{}) {
+	cleaned := make(chan struct{})
 	if len(holders) == 0 {
-		return nil
+		close(cleaned)
+		return nil, cleaned
 	}
 	ctx, cancel := context.WithTimeout(ctx, LockTimeout)
 	defer cancel()
 	conn, err := dial(ctx)
 	if err != nil {
-		return []string{"diagnosis not collected: " + err.Error()}
+		close(cleaned)
+		return []string{"diagnosis not collected: " + err.Error()}, cleaned
 	}
 	// The rollback goes first and the close second: the rollback needs the connection the close
 	// ends. Both run on one context of their own (diagnosisCleanupTimeout), which bounds the two
-	// together.
+	// together, and on a goroutine of their own, started as this returns.
 	var tx pgx.Tx
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisCleanupTimeout)
-		defer cancel()
-		if tx != nil {
-			_ = tx.Rollback(cleanupCtx)
-		}
-		_ = conn.Close(cleanupCtx)
+		go func(tx pgx.Tx) {
+			defer close(cleaned)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisCleanupTimeout)
+			defer cancel()
+			if tx != nil {
+				_ = tx.Rollback(cleanupCtx)
+			}
+			_ = conn.Close(cleanupCtx)
+		}(tx)
 	}()
 	tx, err = conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return []string{"diagnosis not collected: " + diagnosisFailure(err)}
+		return []string{"diagnosis not collected: " + diagnosisFailure(err)}, cleaned
 	}
 	diagnoses := make([]string, len(holders))
 	for i, holder := range holders {
 		diagnoses[i] = holderDiagnosis(ctx, tx, holder.PID)
 	}
-	return diagnoses
+	return diagnoses, cleaned
 }
 
 // LockWait is a lock a migration's backend was waiting for and the sessions ahead of it.
@@ -492,6 +498,10 @@ type LockTimeoutError struct {
 	Diagnoses []string
 	// Err is Postgres's own cancellation.
 	Err error
+	// cleaned is closed once the diagnosis's connection has been rolled back and closed, which
+	// runs after the error is made (diagnoseHolders); nil when no diagnosis was read. A runner
+	// does not wait for it; a test that must not end with that connection open does.
+	cleaned <-chan struct{}
 }
 
 func (e *LockTimeoutError) Error() string {

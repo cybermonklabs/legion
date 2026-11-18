@@ -29,12 +29,12 @@ import (
 	"github.com/sjawhar/envoy/brokertest"
 )
 
-// newBrokerRig is brokertest.NewRig, failing rather than skipping on GitHub Actions when
-// BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go job names its Postgres service
-// there, and a silent skip would let the contract tests stop running unnoticed.
+// newBrokerRig is brokertest.NewRig, failing rather than skipping on GitHub Actions when the
+// broker's test database server is not named (brokertest.Available): ci.yaml's daemon-go job names
+// its Postgres service there, and a silent skip would let the contract tests stop running unnoticed.
 func newBrokerRig(t *testing.T) *brokertest.Rig {
 	t.Helper()
-	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
+	if !brokertest.Available() && os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
 	}
 	return brokertest.NewRig(t)
@@ -153,8 +153,9 @@ func TestContractARenewalKeepsTheCredentialAndItsPods(t *testing.T) {
 	}
 	before := c.snapshot().cred
 	enrolled := enrollPod(t, rig, c, "pod-uid-1")
-	time.Sleep(10 * time.Millisecond)
-	// The kubelet's next token, which outlives the first, so the renewed credential expires later.
+	// The kubelet's next token, which outlives the first, so the renewed credential expires later:
+	// the broker ends a credential at the earlier of its token's expiry and an hour from its login,
+	// the first one at its token's, which this login's token and this login's hour both outlast.
 	c.TokenFile = daemonTokenFile(t, rig, brokertest.DaemonAccount, time.Hour+30*time.Second)
 	renewed, err := c.Login(ctx)
 	if err != nil {

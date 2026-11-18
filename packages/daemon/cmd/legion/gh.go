@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
@@ -1003,10 +1004,18 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	return nil
 }
 
+// ghHelpBound is the longest readGhHelp waits for the real gh to print a command's help, on
+// ghHelpClock.
+const ghHelpBound = 30 * time.Second
+
+// ghHelpClock is the clock ghHelpBound runs on: clock.Real(), which a test replaces with a
+// clocktest.Fake.
+var ghHelpClock clock.Clock = clock.Real()
+
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
-// gh's own), refused when gh answers it with an error.
+// gh's own), refused when gh answers it with an error or not within ghHelpBound.
 func readGhHelp(gh string, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := ghHelpClock.WithTimeout(context.Background(), ghHelpBound)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	var stdout, stderr bytes.Buffer

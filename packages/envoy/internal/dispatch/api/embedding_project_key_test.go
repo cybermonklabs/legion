@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
@@ -159,13 +161,13 @@ func TestTheFillLabelsEveryEmbeddingRowStoredBeforeTheColumn(t *testing.T) {
 	}
 }
 
-// fillRetryEvery sets how long a process waits before trying for the fill's lease again, for the
-// length of the test: the deployment's five minutes would be five minutes of a test's life.
-func fillRetryEvery(t *testing.T, every time.Duration) {
+// anotherFillTry moves the fill's clock to its next try: the loop waits
+// embeddingProjectKeyFillRetry, jittered, between two tries, and that wait is the only thing
+// armed on this clock, so moving to it is one more try and costs no wall clock.
+func anotherFillTry(t *testing.T, fake *clocktest.Fake) {
 	t.Helper()
-	previous := embeddingProjectKeyFillRetry
-	t.Cleanup(func() { embeddingProjectKeyFillRetry = previous })
-	embeddingProjectKeyFillRetry = every
+	armed := fake.AwaitArmed(t, "the fill's wait before its next try", 1)
+	fake.Set(armed[0])
 }
 
 // The fill is one to two hours of labelling on a deployment of a million vectors, so the two
@@ -200,8 +202,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	if _, err := database.Pool.Exec(ctx, "update embeddings set project_key = null"); err != nil {
 		t.Fatalf("unlabel the stored rows: %v", err)
 	}
-	const retry = 50 * time.Millisecond
-	fillRetryEvery(t, retry)
+	fake := clocktest.New(time.Now())
 
 	// The process that is about to die, with a pool of its own on the same database: it takes
 	// the lease through the machinery the server takes it through and stands inside its pass.
@@ -229,25 +230,29 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other process never took the embeddings-project-key-fill lease")
-	}
+	testwait.Receive(t, "the other process to take the embeddings-project-key-fill lease", taken)
 
-	// This process, as the boot starts it.
+	// This process, as the boot starts it, on a clock the test moves try by try.
 	leases := sweepLeases(t, database)
 	fillCtx, stopFill := context.WithCancel(ctx)
 	defer stopFill()
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
+		runEmbeddingProjectKeyFillOn(fillCtx, fake, database, leases)
 	}()
 
 	// Twenty of its retries pass while the lease is held elsewhere, and it labels nothing in
-	// any of them.
-	time.Sleep(20 * retry)
+	// any of them. The last move starts a twenty-first try, which is in flight when the loop
+	// ends; it has to find the lease held too, and arm its wait before the next try, before the
+	// holder dies. Released while that try was still on its way to the lease, the holder would
+	// hand the lease to it rather than to the next one, the fill would finish and return there,
+	// and no wait would ever be armed again for the move after the death to find: a loaded run
+	// waited on that move until the test binary's deadline and failed every row after it.
+	for range 20 {
+		anotherFillTry(t, fake)
+	}
+	afterTheLastSkip := fake.AwaitArmed(t, "the fill's wait after the last try the held lease turned away", 1)
 	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
 		t.Errorf("the fill labelled %d rows under a lease held elsewhere; want none", labelled)
 	}
@@ -275,11 +280,9 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	}
 	dying.Pool.Close()
 
-	select {
-	case <-returned:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the process that skipped never took the lease the dead holder left, so the rows it did not label wait for the next boot")
-	}
+	// Its next try takes the lease the dead holder left.
+	fake.Set(afterTheLastSkip[0])
+	testwait.Receive(t, "the process that skipped to finish the fill once the holder died", returned)
 	if left := countRows(t, database,
 		"select count(*) from embeddings where kind = any($1) and project_key is null", embeddingProjectKinds); left != 0 {
 		t.Errorf("%d rows are still unlabelled after the fill that took the lease; want none", left)
@@ -324,7 +327,8 @@ func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressTableIsGone(t *testing.T)
 
 // fillStopsWhenItsProgressIsGone runs the loop on a database the statement gone has taken the
 // fill's progress from, and holds it to the two properties above: it returns, and it writes one
-// error line however many retry intervals pass.
+// error line. It runs on a fake clock nothing moves, so a loop that waited for another try
+// would wait for ever and never return, which is what the wait below fails on.
 func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 	t.Helper()
 	ctx := context.Background()
@@ -332,8 +336,6 @@ func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 	if _, err := database.Pool.Exec(ctx, gone); err != nil {
 		t.Fatalf("take the fill's progress away with %q: %v", gone, err)
 	}
-	const retry = 50 * time.Millisecond
-	fillRetryEvery(t, retry)
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 
@@ -345,16 +347,10 @@ func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
+		runEmbeddingProjectKeyFillOn(fillCtx, clocktest.New(time.Now()), database, leases)
 	}()
-	select {
-	case <-returned:
-	case <-time.After(20 * retry):
-		t.Fatalf("the fill kept trying after %q, so it takes the lease every interval for the life of the process", gone)
-	}
+	testwait.Receive(t, "the fill to stop once its progress is gone, rather than take the lease every interval", returned)
 
-	// Long enough for a loop that had not stopped to have tried again several times.
-	time.Sleep(10 * retry)
 	var failures []string
 	for _, record := range records.Records() {
 		if record.Level >= slog.LevelError {

@@ -44,27 +44,18 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 	if w.idlePeriod <= 0 || w.idleStore == nil || w.idleRuntime == nil {
 		return
 	}
-	interval := w.idleTick
-	if interval <= 0 {
-		interval = idleTickInterval
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// The release of a pod no claim owns runs first, and outside the gate the idle
-			// release reads (workflowRuntime.listenerLive). That gate exists because an idle
-			// release suspends live claims, and such a claim comes back for a role or an agent
-			// message only while the Envoy listener reports those messages. This release
-			// suspends no claim and leaves none waiting for a message, and the two starts that
-			// build its pod again — an operator's retry and a start the daemon queues — read no
-			// listener, so nothing of that reasoning reaches it.
-			w.releaseUnownedPods(ctx)
-			w.releaseIdlePods(ctx)
-		}
+	ticks := newPassTimer(w.timers(), w.passes, passIdle, idleTickInterval)
+	defer ticks.stop()
+	for pass := uint64(1); ticks.next(ctx); pass = passEnded(w.observe, passIdle, pass) {
+		// The release of a pod no claim owns runs first, and outside the gate the idle
+		// release reads (workflowRuntime.listenerLive). That gate exists because an idle
+		// release suspends live claims, and such a claim comes back for a role or an agent
+		// message only while the Envoy listener reports those messages. This release
+		// suspends no claim and leaves none waiting for a message, and the two starts that
+		// build its pod again — an operator's retry and a start the daemon queues — read no
+		// listener, so nothing of that reasoning reaches it.
+		w.releaseUnownedPods(ctx)
+		w.releaseIdlePods(ctx)
 	}
 }
 
@@ -98,7 +89,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // completes, since that is where the bundle it saved is known (outbox.releaseIssue, through
 // recordPodRelease).
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
-	now := time.Now().UTC()
+	now := w.timers().Now().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
@@ -210,7 +201,7 @@ func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
 // something else stopped. Three of this rule's nine holds are such a hold, and recordableHold is
 // what says which. The release itself is recorded where it completes (outbox.releaseIssue).
 func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (workflow.IdleHold, bool) {
-	now := time.Now().UTC()
+	now := w.timers().Now().UTC()
 	if _, present := w.idleRuntime.IssueSandbox(issue); !present {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue,
 			"hold", workflow.IdleHoldUnownedSandboxGone.String())

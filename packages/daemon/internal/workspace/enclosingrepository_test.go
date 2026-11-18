@@ -234,12 +234,12 @@ func TestTheRunnerRefusesACommandWithNoAbsoluteWorkingDirectory(t *testing.T) {
 			marker := filepath.Join(dir, "ran")
 			stub := filepath.Join(dir, "git")
 			writeExecutable(t, stub, "#!/bin/sh\n: > '"+marker+"'\n")
-			command := Command{Argv: []string{"git", "status", "--porcelain"}, Dir: tc.dir, Timeout: testTimeout}
+			command := Command{Argv: []string{"git", "status", "--porcelain"}, Dir: tc.dir, Timeout: CommandTimeout}
 			if tc.own {
 				command.Dir = dir
 			}
 
-			_, err := NewRunner(testTimeout, map[string]string{"git": stub}).Run(context.Background(), command)
+			_, err := NewRunner(CommandTimeout, map[string]string{"git": stub}).Run(context.Background(), command)
 			_, ran := os.Stat(marker)
 			switch {
 			case tc.own:

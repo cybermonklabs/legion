@@ -21,6 +21,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -30,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type fakeStreamInfo struct {
@@ -814,9 +816,7 @@ func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
 		if err != nil {
 			t.Fatalf("open the %s's session registry: %v", name, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := sessions.WaitForCacheReady(ctx); err != nil {
+		if err := sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 			t.Fatalf("warm the %s's session cache: %v", name, err)
 		}
 		return withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
@@ -1044,18 +1044,11 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 	if err := claimant.sessions.Delete(context.Background(), "ses_gone"); err != nil {
 		t.Fatalf("end ses_gone's session: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, "the observer's interest cache to hold both interests", func() bool {
 		_, fresh := observer.registry.Cached("ses_fresh")
 		_, gone := observer.registry.Cached("ses_gone")
-		if fresh && gone {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the observer's interest cache never held both interests")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fresh && gone
+	})
 	if _, err := observer.sessions.Get("ses_fresh"); err == nil {
 		t.Fatal("the observer's session cache already holds ses_fresh, so the reaper's bucket read is not under test")
 	}
@@ -1138,7 +1131,26 @@ func (discardingCache) CompleteRead(kvwatch.Read)         {}
 // timeout): a lookup and a soft claim answer 503, a role delivery reports delivery_failed, and the
 // reaper keeps the claim.
 func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
-	const bound = 5 * time.Second
+	// Each route below holds its own bound on a fake clock the test moves (listenerDeps.clock),
+	// so a 503 comes when the budget is spent rather than when the machine's clock reaches it,
+	// and a route that left the stalled read to nats.go's own timeout would arm nothing.
+	answered := func(t *testing.T, now *clocktest.Fake, what string, serve func(*httptest.ResponseRecorder)) *httptest.ResponseRecorder {
+		t.Helper()
+		recorders := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			recorder := httptest.NewRecorder()
+			serve(recorder)
+			recorders <- recorder
+		}()
+		awaitArmedBeforeReturn(t, now, what+"'s own bound on the stalled session read", timersArmed(1), answerReturned(recorders))
+		select {
+		case recorder := <-recorders:
+			t.Fatalf("%s answered %d before its bound was spent: %s", what, recorder.Code, recorder.Body.String())
+		default:
+		}
+		now.Advance(sendRequestBudget)
+		return testwait.Receive(t, what+"'s answer once its bound was spent", recorders)
+	}
 	holderOf := func(t *testing.T, d *listenerDeps, role string) string {
 		t.Helper()
 		holder, err := d.registry.RoleHolder(role)
@@ -1149,13 +1161,15 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 	}
 	t.Run("lookup", func(t *testing.T) {
 		claimant, observer := trailingListeners(t)
+		now := clocktest.Held()
+		observer.clock = now
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, observer.sessions)
-		started := time.Now()
-		recorder := httptest.NewRecorder()
-		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
-		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
-			t.Fatalf("GET /v1/roles/unread while the session bucket cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
+		recorder := answered(t, now, "GET /v1/roles/unread", func(recorder *httptest.ResponseRecorder) {
+			roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
+		})
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET /v1/roles/unread while the session bucket cannot be read: status %d %s, want 503", recorder.Code, recorder.Body.String())
 		}
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
 			t.Fatalf("the claim after the lookup is held by %q, want ses_holder", holder)
@@ -1163,17 +1177,19 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 	})
 	t.Run("soft claim", func(t *testing.T) {
 		claimant, observer := trailingListeners(t)
+		now := clocktest.Held()
+		observer.clock = now
 		claimRole(t, claimant, "ses_holder", "unread")
 		if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 			t.Fatalf("register ses_resumer: %v", err)
 		}
 		stallSessionReads(t, observer.sessions)
-		started := time.Now()
-		recorder := httptest.NewRecorder()
-		roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
-			strings.NewReader(`{"session_id":"ses_resumer","role":"unread","soft":true}`)))
-		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
-			t.Fatalf("soft claim while the session bucket cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
+		recorder := answered(t, now, "the soft claim", func(recorder *httptest.ResponseRecorder) {
+			roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+				strings.NewReader(`{"session_id":"ses_resumer","role":"unread","soft":true}`)))
+		})
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("soft claim while the session bucket cannot be read: status %d %s, want 503", recorder.Code, recorder.Body.String())
 		}
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
 			t.Fatalf("the claim after the soft claim is held by %q, want ses_holder", holder)
@@ -1186,16 +1202,16 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		if claimant.sessions, err = session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
 			t.Fatalf("open the claimant's session registry: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := harness.sessions.WaitForCacheReady(ctx); err != nil {
+		if err := harness.sessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 			t.Fatalf("warm the session cache: %v", err)
 		}
 		harness.sessions.StopWatch()
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, harness.sessions)
 		var forwards atomic.Int32
+		now := clocktest.Held()
 		cfg := harness.config
+		cfg.clock = now
 		cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 			forwards.Add(1)
 			return nil
@@ -1210,12 +1226,21 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		if err := harness.client.Conn.Flush(); err != nil {
 			t.Fatalf("flush exception probe: %v", err)
 		}
-		started := time.Now()
-		coreNATSDeliveryHandler(cfg)(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
-		elapsed := time.Since(started)
+		// The delivery holds its own bound on the fake, so it gives up when this test moves the
+		// clock past it rather than when the machine's clock reaches it.
+		delivered := make(chan struct{})
+		go func() {
+			defer close(delivered)
+			coreNATSDeliveryHandler(cfg)(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
+		}()
+		awaitArmedBeforeReturn(t, now, "the role delivery's own bound on the stalled session read", timersArmed(1), closeReturned(delivered, func() string {
+			return fmt.Sprintf("the delivery returned having forwarded %d times", forwards.Load())
+		}))
+		now.Advance(roleHolderReadTimeout)
+		testwait.Receive(t, "the role delivery to give up once its bound was spent", delivered)
 		cfg.roleForwards.settled(t)
-		if elapsed > bound || forwards.Load() != 0 {
-			t.Fatalf("role delivery while the session bucket cannot be read took %s and forwarded %d times, want none within %s", elapsed, forwards.Load(), bound)
+		if forwards.Load() != 0 {
+			t.Fatalf("role delivery while the session bucket cannot be read forwarded %d times, want none", forwards.Load())
 		}
 		assertDeliveryException(t, probe, item, "delivery_failed")
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
@@ -1464,9 +1489,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 		t.Fatalf("persisted claim = %+v", persisted)
 	}
 
-	var elapsed atomic.Int64
-	opened := time.Now()
-	clock := func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
+	clock := clocktest.New(time.Now())
 	restoredRegistry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
 	if err != nil {
 		t.Fatalf("restore role registry: %v", err)
@@ -1475,9 +1498,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore session registry: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := restoredSessions.WaitForCacheReady(readyCtx); err != nil {
+	if err := restoredSessions.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("restore session cache: %v", err)
 	}
 	restoredState := &listenerDeps{client: client, registry: restoredRegistry, sessions: restoredSessions}
@@ -1512,7 +1533,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	// which a deployment raises past the gone horizon for reasons that have nothing to do with
 	// how long a restarted listener waits for a holder.
 	live, _ := restoredSessions.Windows()
-	elapsed.Store(int64(live))
+	clock.Advance(live)
 	if response := get(); response.Code != http.StatusNotFound {
 		t.Fatalf("expired role status = %d, want 404; body = %s", response.Code, response.Body.String())
 	}
@@ -1820,9 +1841,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 		_, sessions, _, post := setup(t)
 		registerInstance(t, sessions, "ses_claimant", claimantInstance)
 		claim(t, post, fmt.Sprintf(`{"session_id":"ses_claimant","role":"sre","soft":true,"client_instance_id":%q}`, otherInstance))
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		stored, err := sessions.Refresh(ctx, "ses_claimant")
+		stored, err := sessions.Refresh(testwait.Context(t), "ses_claimant")
 		if err != nil {
 			t.Fatalf("read the claimant's entry back from the bucket: %v", err)
 		}
@@ -1833,18 +1852,29 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 
 	t.Run("a predecessor whose entry cannot be read keeps the role", func(t *testing.T) {
 		// A read that does not answer takes nothing from a holder, predecessor or not: the claim
-		// is the bus-unavailable 503, inside the bound its reads hold.
-		const bound = 5 * time.Second
+		// is the bus-unavailable 503, at the bound its reads hold on the clock this test moves.
 		claimant, observer := trailingListeners(t)
+		now := clocktest.Held()
+		observer.clock = now
 		claimRole(t, claimant, "ses_pred", "unread-predecessor")
 		registerInstance(t, observer.sessions, "ses_claimant", claimantInstance)
 		stallSessionReads(t, observer.sessions)
-		started := time.Now()
-		recorder := httptest.NewRecorder()
-		roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
-			strings.NewReader(`{"session_id":"ses_claimant","role":"unread-predecessor","soft":true,"previous_session_id":"ses_pred"}`)))
-		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
-			t.Fatalf("soft claim whose predecessor cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
+		recorders := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			recorder := httptest.NewRecorder()
+			roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+				strings.NewReader(`{"session_id":"ses_claimant","role":"unread-predecessor","soft":true,"previous_session_id":"ses_pred"}`)))
+			recorders <- recorder
+		}()
+		awaitArmedBeforeReturn(t, now, "the soft claim's own bound on the stalled predecessor read", timersArmed(1), answerReturned(recorders))
+		select {
+		case recorder := <-recorders:
+			t.Fatalf("the soft claim answered %d before its bound was spent: %s", recorder.Code, recorder.Body.String())
+		default:
+		}
+		now.Advance(sendRequestBudget)
+		if recorder := testwait.Receive(t, "the soft claim's answer once its bound was spent", recorders); recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("soft claim whose predecessor cannot be read: status %d %s, want 503", recorder.Code, recorder.Body.String())
 		}
 		if holder := holderOf(t, claimant.registry, "unread-predecessor"); holder != "ses_pred" {
 			t.Fatalf("holder after the unanswered read = %q, want ses_pred", holder)
@@ -1861,8 +1891,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 		registerInstance(t, observer.sessions, "ses_pred", claimantInstance)
 		registerInstance(t, claimant.sessions, "ses_pred", otherInstance)
 		registerInstance(t, observer.sessions, "ses_claimant", claimantInstance)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if cached, err := observer.sessions.Get("ses_pred"); err != nil || cached.ClientInstanceID != claimantInstance {
 			t.Fatalf("the observer's cached predecessor = %+v, %v; want the claimant's instance %q", cached, err, claimantInstance)
 		}
@@ -1968,7 +1997,7 @@ func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
 	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -2175,20 +2204,11 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 	}()
 	// The lookup never answers, so the handler can only respond by abandoning it at the check's
 	// own deadline. The wait below only turns a blocked handler into a failure instead of a hang.
-	select {
-	case <-responded:
-	case <-time.After(30 * time.Second):
-		t.Fatal("subscribe is still waiting on a stream-info lookup that never answers")
-	}
+	testwait.Receive(t, "subscribe to answer rather than wait on a stream-info lookup that never answers", responded)
 	// The lookup goroutine records its deadline when it runs, which need not be before the handler
 	// abandons it, so wait for the record rather than expecting it to be there already.
-	select {
-	case remaining := <-lookup.deadlines:
-		if remaining > unwiredRepositoryWarningTimeout {
-			t.Fatalf("stream-info lookup was issued with a deadline %s away, want at most the %s advisory bound", remaining, unwiredRepositoryWarningTimeout)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("no stream-info lookup was issued with a deadline")
+	if remaining := testwait.Receive(t, "the stream-info lookup's own deadline", lookup.deadlines); remaining > unwiredRepositoryWarningTimeout {
+		t.Fatalf("stream-info lookup was issued with a deadline %s away, want at most the %s advisory bound", remaining, unwiredRepositoryWarningTimeout)
 	}
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
@@ -2292,8 +2312,7 @@ func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) 
 		sessionID = "ses_unsubscribe_role"
 		role      = "legion-controller"
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRequest := store.RoleClaimRequest{SessionID: sessionID, MachineID: "test-machine", ClientInstanceID: holdingProcess, Role: role}
 	if _, err := registry.SetRoleWithPrevious(ctx, claimRequest); err != nil {
 		t.Fatalf("claim %s for %s: %v", role, sessionID, err)
@@ -2568,9 +2587,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 		t.Run(route.name, func(t *testing.T) {
 			client := setupPublishTestClient(t)
 			registry, sessions := setupSessionsTest(t, nil, []string{target})
-			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			registry.EndWatch(endCtx)
-			cancel()
+			registry.EndWatch(testwait.Context(t))
 			writer, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the writing listener's registry: %v", err)
@@ -2649,9 +2666,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 		t.Run(route.name, func(t *testing.T) {
 			client := setupPublishTestClient(t)
 			registry, sessions := setupSessionsTest(t, nil, []string{target})
-			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			sessions.EndWatch(endCtx)
-			cancel()
+			sessions.EndWatch(testwait.Context(t))
 			writer, err := session.OpenSessionRegistry(setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the writing listener's session registry: %v", err)
@@ -4118,19 +4133,29 @@ func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
 // under the listener's 10 s HTTP write timeout), and never in the words a caller takes for a
 // session that has ended.
 func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer(t *testing.T) {
-	const bound = 5 * time.Second
 	claimant, observer := trailingListeners(t)
+	now := clocktest.Held()
+	observer.clock = now
 	if err := claimant.sessions.Put("ses_unread", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register ses_unread: %v", err)
 	}
 	stallSessionReads(t, observer.sessions)
 
-	started := time.Now()
-	answer := sessionEntryRoute(t, observer, "ses_unread")
-	elapsed := time.Since(started)
-	if answer.Code != http.StatusServiceUnavailable || elapsed > bound {
-		t.Fatalf("GET /v1/registry/ses_unread while the session bucket cannot be read: status %d %s after %s, want 503 within %s",
-			answer.Code, answer.Body.String(), elapsed, bound)
+	// The route's own bound runs on the clock this test moves, so the 503 comes when the budget
+	// is spent rather than when the machine's clock reaches it.
+	answers := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answers <- sessionEntryRoute(t, observer, "ses_unread") }()
+	awaitArmedBeforeReturn(t, now, "the registry route's own bound on the stalled session read", timersArmed(1), answerReturned(answers))
+	select {
+	case answer := <-answers:
+		t.Fatalf("GET /v1/registry/ses_unread answered %d before its bound was spent: %s", answer.Code, answer.Body.String())
+	default:
+	}
+	now.Advance(sendRequestBudget)
+	answer := testwait.Receive(t, "GET /v1/registry/ses_unread's answer once its bound was spent", answers)
+	if answer.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /v1/registry/ses_unread while the session bucket cannot be read: status %d %s, want 503",
+			answer.Code, answer.Body.String())
 	}
 	if retryAfter := answer.Header().Get("Retry-After"); retryAfter != "1" {
 		t.Fatalf("Retry-After = %q, want \"1\"", retryAfter)
@@ -4408,7 +4433,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 
 	// Past the live window and inside the gone horizon: the full answer asked without include is
 	// the 404 it has always been, and the registration view answers the record.
-	now.advance(90 * time.Second)
+	now.Advance(90 * time.Second)
 	if refused := sessionEntryRoute(t, d, "ses_stopped"); refused.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/registry/ses_stopped without include: status %d %s, want the 404 this view is asked instead of",
 			refused.Code, refused.Body.String())
@@ -4426,7 +4451,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 
 	// Past the gone horizon the record still stands in the bucket, and this view answers it: a
 	// registration no state filter would show is exactly the one a stop is owed for.
-	now.advance(2 * time.Minute)
+	now.Advance(2 * time.Minute)
 	gone := registrationViewRoute(t, d, "ses_stopped")
 	if gone.Code != http.StatusOK {
 		t.Fatalf("GET /v1/registry/ses_stopped?view=registration past the gone horizon: status %d %s, want 200",
@@ -4526,7 +4551,7 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 	d, now := stalledSessionsRig(t)
 	const target = "ses_counted_recipient"
 	register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
-	now.advance(90 * time.Second)
+	now.Advance(90 * time.Second)
 	met := metrics.New()
 	d.sendsToUnresponsive = met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
 	counted := func() string {

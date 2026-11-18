@@ -13,9 +13,11 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // /healthz answers 503 unhealthy once the listener's durable consumer has been recreated
@@ -73,8 +75,7 @@ func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer strin
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer readyCancel()
+	readyCtx := testwait.Context(t)
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
@@ -102,24 +103,34 @@ func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer strin
 // listener does, with the probe and the rebuild both reading consumer. It returns the flag the
 // monitor's terminate callback sets and a stop function that ends the monitor and waits for it,
 // so each test keeps only its own logger, handler and assertions.
-func startUnboundDurableMonitor(t *testing.T, client *bus.Client, consumer string, logger *logging.Logger, handler natsgo.MsgHandler) (*atomic.Bool, func()) {
+func startUnboundDurableMonitor(t *testing.T, client *bus.Client, consumer string, logger *logging.Logger, handler natsgo.MsgHandler) (*atomic.Bool, *atomic.Int64, *clocktest.Fake, func()) {
 	t.Helper()
 	caches := []listenerCache{}
 	ctx, cancel := context.WithCancel(context.Background())
-	probe := func() error { return durableProbe(ctx, client, consumer) }
+	// probes counts the passes the monitor has made, so a test holds the monitor to a number of
+	// its own passes rather than to a span of the test's.
+	probes := &atomic.Int64{}
+	probe := func() error {
+		probes.Add(1)
+		return durableProbe(ctx, client, consumer)
+	}
 	terminated := &atomic.Bool{}
 	done := make(chan struct{})
+	// The monitor ticks on this fake at the listener's own selfHealthInterval; a caller makes its
+	// passes happen with passUntil rather than waiting a shortened interval out.
+	now := clocktest.Held()
 	go func() {
 		defer close(done)
 		runSelfHealthMonitor(
 			ctx,
 			logger,
+			now,
 			func() error { return checkSelfHealth(caches, probe) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, client, caches) },
 			client.Connected,
 			func() error { return rebuildListenerDependencies(ctx, client, caches, probe, consumer, handler, nil) },
 			func() { terminated.Store(true) },
-			50*time.Millisecond,
+			selfHealthInterval,
 			3,
 		)
 	}()
@@ -128,7 +139,7 @@ func startUnboundDurableMonitor(t *testing.T, client *bus.Client, consumer strin
 		<-done
 	}
 	t.Cleanup(stop)
-	return terminated, stop
+	return terminated, probes, now, stop
 }
 
 // recreateListenerDurable is what `nats consumer rm` then `nats consumer add` does: the same
@@ -168,16 +179,13 @@ func TestTheSelfHealthMonitorRebindsARecreatedDurable(t *testing.T) {
 		t.Fatalf("publish after the recreation: %v", err)
 	}
 
-	terminated, stop := startUnboundDurableMonitor(t, client, consumer, logging.New("test"), handler)
+	terminated, _, now, stop := startUnboundDurableMonitor(t, client, consumer, logging.New("test"), handler)
 
-	// The probe's confirming read alone costs 250ms, so the repair takes several intervals.
-	deadline := time.Now().Add(10 * time.Second)
-	for delivered.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the message published after the recreation was never delivered")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The probe's confirming read alone costs 250ms; the repair takes several of the monitor's
+	// passes, which this test makes happen rather than waiting them out.
+	passUntil(t, now, "the message published after the recreation to be delivered", func() bool {
+		return delivered.Load() > 0
+	})
 	if terminated.Load() {
 		t.Fatal("the monitor terminated the listener instead of rebinding its durable")
 	}
@@ -202,15 +210,17 @@ func TestABoundDurableNeverFailsItsProbe(t *testing.T) {
 
 	// The monitor logs from its own goroutine, so the buffer the test reads back is guarded.
 	logs := &lockedBuffer{}
-	terminated, stop := startUnboundDurableMonitor(t, client, consumer, logging.NewWithWriter("test", logs), nil)
+	terminated, probes, now, stop := startUnboundDurableMonitor(t, client, consumer, logging.NewWithWriter("test", logs), nil)
 
-	deadline := time.Now().Add(15 * 50 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	// Fifteen of the monitor's own passes, made by this test and counted, with /healthz read on
+	// each: a bound durable fails no probe however many passes run.
+	const passes = 15
+	passUntil(t, now, "fifteen passes of the self-health monitor over a durable that is bound", func() bool {
 		if code, body := get(); code != http.StatusOK || body["status"] != "healthy" {
 			t.Fatalf("with nothing wrong: /healthz = %d %v, want 200 healthy", code, body)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return probes.Load() >= passes
+	})
 	stop()
 
 	captured := logs.String()

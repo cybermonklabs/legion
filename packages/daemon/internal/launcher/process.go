@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
@@ -320,6 +321,23 @@ func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*mana
 	}
 }
 
+// pidOneReaper is PID 1's reaper over managers and guard, ready to run until its context ends
+// (reapOrphans): it takes SIGCHLD from the moment it is made, so an exit before its run starts is
+// still reaped, and it stops taking it as its run returns. It is nil in a process that is not its
+// PID namespace's init, which adopts no orphan. A variable for the test that holds a reaper's
+// return, to show that Run waits for it.
+var pidOneReaper = func(managers []*manager, guard *pidGuard) func(context.Context) {
+	if os.Getpid() != 1 {
+		return nil
+	}
+	exits := make(chan os.Signal, 1)
+	signal.Notify(exits, syscall.SIGCHLD)
+	return func(ctx context.Context) {
+		defer signal.Stop(exits)
+		reapOrphans(ctx, exits, managers, guard)
+	}
+}
+
 // namespaceReapPoll is how often a wait for a role's processes to go asks again: the span between
 // two passes of reapNamespace, here and in role-init's own drain (roleNamespaceDrain,
 // roleinit_linux.go). Ten milliseconds, because what either wait is there for is a git or a jj
@@ -337,7 +355,8 @@ const namespaceReapPoll = 10 * time.Millisecond
 // exits to their own waits, and it waits for none of them (pidGuard.reap). None can run then
 // today, since in the controller's pod the leak-check install runs before the first start and a
 // restore inside a start, which is refused while a generation is still the manager's; the drain
-// leaves them alone all the same, so a step that one day runs then keeps its child.
+// leaves them alone all the same, so a step that one day runs then keeps its child. Its grace and
+// the pause between its passes are on the launcher's clock (Config.Clock).
 func (m *manager) cleanExitedGeneration() {
 	if os.Getpid() != 1 {
 		return
@@ -345,7 +364,8 @@ func (m *manager) cleanExitedGeneration() {
 	if err := m.guard.signalNamespace(syscall.SIGTERM); err != nil {
 		panic(err)
 	}
-	deadline := time.Now().Add(m.cfg.StopGrace)
+	clk := m.cfg.clock()
+	deadline := clk.Now().Add(m.cfg.StopGrace)
 	for {
 		remaining, err := m.guard.reap()
 		if err != nil {
@@ -357,12 +377,12 @@ func (m *manager) cleanExitedGeneration() {
 		// Past the grace every pass kills what is left again: a signal sent process by process
 		// (signalNamespace, while the guard holds a child) misses a process forked after the read
 		// of /proc it went by, which the next pass finds.
-		if !time.Now().Before(deadline) {
+		if !clk.Now().Before(deadline) {
 			if err := m.guard.signalNamespace(syscall.SIGKILL); err != nil {
 				panic(err)
 			}
 		}
-		time.Sleep(namespaceReapPoll)
+		_ = clk.Sleep(context.Background(), namespaceReapPoll)
 	}
 }
 
@@ -382,20 +402,24 @@ func (m *manager) signalChild(active *child, sig syscall.Signal) error {
 	return nil
 }
 
-// endGeneration stops active's child: SIGTERM, then SIGKILL once grace is over. The first stop's
-// end of grace is recorded (child.stopBy), which bounds a Claude Code keeper's last save (wait).
+// endGeneration stops active's child: SIGTERM, then SIGKILL once grace is over on the launcher's
+// clock. The first stop's end of grace is recorded (child.stopBy), which bounds a Claude Code
+// keeper's last save (wait).
 func (m *manager) endGeneration(active *child, grace time.Duration) error {
+	clk := m.cfg.clock()
 	m.mu.Lock()
 	if active.stopBy.IsZero() {
-		active.stopBy = time.Now().Add(grace)
+		active.stopBy = clk.Now().Add(grace)
 	}
 	m.mu.Unlock()
 	if err := m.signalChild(active, syscall.SIGTERM); err != nil {
 		return err
 	}
+	graceOver := clk.NewTimer(grace)
+	defer graceOver.Stop()
 	select {
 	case <-active.done:
-	case <-time.After(grace):
+	case <-graceOver.C():
 		if err := m.signalChild(active, syscall.SIGKILL); err != nil {
 			return err
 		}

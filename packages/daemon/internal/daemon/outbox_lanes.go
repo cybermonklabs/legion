@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -40,7 +42,7 @@ type outboxLane struct {
 // a test built by hand without one.
 func (r *outbox) timers() supervise.Clock {
 	if r.clock == nil {
-		return supervise.RealClock{}
+		return clock.Real()
 	}
 	return r.clock
 }
@@ -57,9 +59,10 @@ func nudge(wake chan struct{}) {
 // every unfinished row, and the rows written while the outbox was not yet attached, without waiting
 // for a wake — and then sweeps every outboxLease on the clock. A sweep whose read fails (a Postgres
 // restart drops the pool's connections) is logged and tried again at the next tick, so the runner
-// outlives the failure instead of ending with it. Once ctx ends it closes the registry, so no wake
-// starts a lane, and waits for every lane to return: a row mid-run ends and settles first
-// (runRow), so the daemon's stop is a real join.
+// outlives the failure instead of ending with it. Between sweeps it answers a test's trigger for the
+// merge-queue reads' retry (passMergeQueueRetry, expediteMergeQueueReads), which production never
+// sets. Once ctx ends it closes the registry, so no wake starts a lane, and waits for every lane to
+// return: a row mid-run ends and settles first (runRow), so the daemon's stop is a real join.
 func (r *outbox) Run(ctx context.Context) {
 	if r.log == nil {
 		r.log = slog.Default()
@@ -70,23 +73,71 @@ func (r *outbox) Run(ctx context.Context) {
 		r.lanes = map[record.LaneKey]*outboxLane{}
 	}
 	r.mu.Unlock()
-	clock := r.timers()
+	timers := r.timers()
 	poke := make(chan struct{}, 1)
+	retries, retried := r.passes.at(passMergeQueueRetry), uint64(1)
 	for {
 		r.sweep(ctx)
-		tick := clock.AfterFunc(outboxLease, func() { nudge(poke) })
-		select {
-		case <-ctx.Done():
-			tick.Stop()
-			r.mu.Lock()
-			r.running = false
-			r.mu.Unlock()
-			r.wg.Wait()
-			return
-		case <-poke:
+		tick := timers.AfterFunc(outboxLease, func() { nudge(poke) })
+	waiting:
+		for {
+			select {
+			case <-ctx.Done():
+				tick.Stop()
+				r.mu.Lock()
+				r.running = false
+				r.mu.Unlock()
+				r.wg.Wait()
+				return
+			case <-poke:
+				break waiting
+			case <-retries:
+				r.expediteMergeQueueReads(ctx)
+				retried = passEnded(r.observe, passMergeQueueRetry, retried)
+			}
 		}
 	}
 }
+
+// expediteMergeQueueReads makes due now every merge-queue read of the project that waits out the
+// wait between two reads of GitHub (mergeQueueRead's mergeStateWait, or GitHub's Retry-After): the
+// pass a test runs in place of that wait (passMergeQueueRetry). A row that is running, or not yet
+// settled from its last read, holds a lease and is left alone. The expedites run in a transaction
+// of their own, which owns the commit hooks they register (projectRecords, intake.OnCommit), so
+// each read's lane is woken once they commit, as releaseWaiting's are. Production never runs it:
+// its trigger is nil there.
+func (r *outbox) expediteMergeQueueReads(ctx context.Context) {
+	now := r.now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+		// Every read the retry can name is due within the longest wait it may take; the rows
+		// due by then, which nothing holds now, are the reads waiting on their next attempt.
+		rows, err := r.records.DueRows(scoped, tx, r.dispatchProject, "", []record.OutboxKind{record.OutboxKindMergeQueueRead}, now.Add(mergeQueueRetryHorizon))
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if !row.NextAt.After(now) || (row.LeaseUntil != nil && row.LeaseUntil.After(now)) {
+				continue
+			}
+			if err := r.records.ExpediteOutbox(scoped, tx, row, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		if ctx.Err() == nil {
+			r.log.Error("outbox could not make the merge-queue reads waiting on their retry due", "error", err)
+		}
+		return
+	}
+	committed()
+}
+
+// mergeQueueRetryHorizon is how far ahead expediteMergeQueueReads looks for a merge-queue read
+// waiting on its retry: past the half minute the read waits itself (mergeStateLadderWait) and any
+// Retry-After GitHub is likely to ask for.
+const mergeQueueRetryHorizon = time.Hour
 
 // sweep wakes every lane of the project with a row still in the outbox: due, running, backing off
 // or held. A lane that has nothing to run goes back to waiting, so the sweep costs an idle lane one
@@ -153,8 +204,8 @@ func (r *outbox) runLane(ctx context.Context, lane *outboxLane) {
 	// second connection it asks for while holding one (store.ErrNestedAcquire).
 	ctx = store.ForConcurrentWorker(ctx)
 	kinds := record.LaneKinds(lane.key.Lane)
-	clock := r.timers()
-	var next supervise.Cancel
+	timers := r.timers()
+	var next clock.Timer
 	defer func() {
 		if next != nil {
 			next.Stop()
@@ -186,7 +237,7 @@ func (r *outbox) runLane(ctx context.Context, lane *outboxLane) {
 				drained = false
 			case ok:
 				later = true
-				next = clock.AfterFunc(at.Sub(now), func() { nudge(lane.wake) })
+				next = timers.AfterFunc(at.Sub(now), func() { nudge(lane.wake) })
 			}
 		}
 		if drained && !later {
@@ -296,9 +347,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	}
 	if limit, ok := r.deferral(row.Kind, r.now().UTC()); ok {
 		cause := fmt.Errorf("deferred until %s behind row %d's GitHub rate limit: %w", limit.until.Format(time.RFC3339), limit.row, limit.err)
+		outcome := settledDeferred
 		if err := r.retryAt(ctx, row, limit.until, cause); err != nil {
+			outcome = settledNotRecorded
 			r.log.Error("outbox row deferral not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 		}
+		r.settled(row, outcome)
 		return nil
 	}
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
@@ -330,14 +384,14 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 type leaseRenewal struct {
 	mu      sync.Mutex
 	stopped bool
-	tick    supervise.Cancel
+	tick    clock.Timer
 	lost    bool
 	warned  map[int64]bool
 }
 
 // arm schedules the next tick unless the run has ended, so a tick in flight when stop is called
 // re-arms nothing.
-func (l *leaseRenewal) arm(schedule func() supervise.Cancel) {
+func (l *leaseRenewal) arm(schedule func() clock.Timer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.stopped {
@@ -392,10 +446,10 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 // is what an operator looks at when a stop or a start of the issue does not happen.
 func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow) *leaseRenewal {
 	renewal := &leaseRenewal{warned: map[int64]bool{}}
-	clock := r.timers()
+	timers := r.timers()
 	lifecycle := record.LaneOf(row.Kind) == record.LaneLifecycle
 	var tick func()
-	schedule := func() supervise.Cancel { return clock.AfterFunc(outboxLease/3, tick) }
+	schedule := func() clock.Timer { return timers.AfterFunc(outboxLease/3, tick) }
 	tick = func() {
 		if renewal.ended() {
 			return

@@ -138,6 +138,9 @@ func TestEditorUpdateAppliesOnARoomAndRelays(t *testing.T) {
 	if refused != 0 || readOnly != 0 || closes != 0 {
 		t.Fatalf("refused %d, read-only %d, closes %d; want none", refused, readOnly, closes)
 	}
+	// The tool under test is a latency meter on the wall clock, so its reading is checked against
+	// that clock: an order (0 <= relay <= send-to-now) that a slow machine moves both sides of
+	// alike, which only a meter in the wrong unit or on the wrong pair of moments breaks.
 	if relay < 0 || relay > float64(time.Since(sentAt))/1e6 {
 		t.Fatalf("relay latency %.3f ms is outside the send-to-now interval", relay)
 	}
@@ -156,5 +159,5 @@ func TestEditorUpdateAppliesOnARoomAndRelays(t *testing.T) {
 
 func waitUntil(t *testing.T, what string, done func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, what, done)
+	testwait.Eventually(t, what, done)
 }

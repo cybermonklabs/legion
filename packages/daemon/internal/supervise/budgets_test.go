@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func TestLaunchFailuresRunOutIntoFailed(t *testing.T) {
@@ -537,20 +538,11 @@ func TestASpawnCutShortByItsContextIsChargedNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(h.ctx)
 	launched := make(chan error, 1)
 	go func() { launched <- h.m.Handle(ctx, RequestSpawn{Claim: testToken}) }()
-	select {
-	case <-gated.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the launch never reached the runtime")
-	}
+	testwait.Receive(t, "the launch to reach the runtime", gated.entered)
 	cancel()
 
-	select {
-	case err := <-launched:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the cut-short launch returned %v, want its context's cancellation", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the launch did not end with its context")
+	if err := testwait.Receive(t, "the launch's return once its context ended", launched); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the cut-short launch returned %v, want its context's cancellation", err)
 	}
 	h.m.Wait()
 	h.wantState(StateLaunching)

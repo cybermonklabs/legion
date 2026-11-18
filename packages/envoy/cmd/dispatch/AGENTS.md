@@ -908,14 +908,16 @@ requires a user sets `NATS_NKEY_SEED_FILE` too.
 ```sh
 cd packages/envoy
 export DISPATCH_TEST_DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable'
-go test -timeout 20m ./internal/dispatch/api
-go test -timeout 20m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
+go test -timeout 60m ./internal/dispatch/api
+go test -timeout 60m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
 go vet ./...
 ```
 
-`internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about
-600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it
-(`docs/testing.md`, "Go's package deadline").
+`internal/dispatch/api` runs first and on its own, with 60 minutes: it took up to 1508.156 s under
+`-race` in CI's `envoy-go-race-api`, and a plain run is faster (about 600 s on a workstation).
+The second command's slowest package is `internal/dispatch/docs`, whose plain run took 1690 s in
+an issue pod, so it takes the 60 minutes `docs/testing.md` gives that package ("Go's package
+deadline" and the cleanup detector's section).
 
 The real-process memory tests (`memory_test.go`, LEGION-481) start a Dispatch server per row and
 read its resident memory from `/proc`, so they build only under the `memory` tag and run in their
@@ -923,8 +925,13 @@ own CI job (`dispatch-memory` in `.github/workflows/ci.yaml`), past `go test`'s
 default ten-minute deadline:
 
 ```sh
-env DISPATCH_TEST_DATABASE_URL=… go test -tags memory -count=1 -timeout 60m ./cmd/dispatch
+env DISPATCH_TEST_DATABASE_URL=… go test -tags memory -count=1 -timeout 80m ./cmd/dispatch
 ```
+
+That command runs the package's untagged tests beside the memory tests, so its 80 minutes are
+twice the two together over CI's 20 newest green merge-group runs up to 2026-11-15: 419.11 s in
+`envoy-go`'s unit step and 1963.339 s in `dispatch-memory`, whose own step runs the memory tests
+alone under 70 minutes.
 
 The `dispatch-memory` job runs only when a file its `dispatch_memory` filter in
 `.github/workflows/ci.yaml` names changes. `cmdtest.Build` builds `./cmd/dispatch`
@@ -949,8 +956,13 @@ under the `multiprocess` tag and run in their own CI job (`dispatch-multiprocess
 `.github/workflows/ci.yaml`), because two servers and their NATS take minutes rather than seconds:
 
 ```sh
-env DISPATCH_TEST_DATABASE_URL=… go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch
+env DISPATCH_TEST_DATABASE_URL=… go test -tags multiprocess -count=1 -timeout 40m ./cmd/dispatch
 ```
+
+That command runs the package's untagged tests beside the two-process tests, so its 40 minutes
+are twice the two together over CI's 20 newest green merge-group runs up to 2026-11-15: 419.11 s
+in `envoy-go`'s unit step and 718.638 s in `dispatch-multiprocess`, whose own step runs the
+two-process tests alone under 25 minutes.
 
 The `dispatch-multiprocess` job runs only when a file its `dispatch_multiprocess` filter in
 `.github/workflows/ci.yaml` names changes; `packages/envoy/AGENTS.md` (Critical
@@ -985,6 +997,11 @@ bash packages/envoy/scripts/build-dispatch-build.sh --previous-release --out "$T
 bash packages/envoy/scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"   # legion-envoy-v30.20.2
 env DISPATCH_TEST_DATABASE_URL=… DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
 ```
+
+That command is the `dispatch-two-builds` job's own step, which passes no `-run`, so there too it
+runs the package's untagged tests beside the two-build tests: its 30 minutes are 3.1 times that
+step's slowest run over the job's 8 green merge-group runs up to 2026-11-15, which are all it has
+had since it landed, 575.933 s (run 43717090111).
 
 A developer who runs only the block above runs none of the tagged suites, which is why each is
 named here: the evidence for anything about two processes serving one database is in the

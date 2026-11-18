@@ -106,12 +106,15 @@ func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
 	}
 
 	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
-	restarted := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	restarted := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), observe: obs.observe}
 	runLanes(t, restarted, clock)
 
-	testwait.Eventually(t, "the due row and the lapsed lease's row ran on the boot sweep", func() bool {
-		return client.count() == 2 && outboxRows(t, pool) == 1
-	})
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchStatus, outcome: settledFinished},
+		rowOf{issue: "LEGION-209", kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if got, remaining := client.count(), outboxRows(t, pool); got != 2 || remaining != 1 {
+		t.Fatalf("once the boot sweep's two rows finished: writes = %d with %d rows left, want two and the later row", got, remaining)
+	}
 	testwait.Eventually(t, "the later row's lane armed its wait for the hour", func() bool {
 		live, _ := clock.armed(time.Hour)
 		return live == 1
@@ -133,9 +136,10 @@ func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
 	if fired := clock.fire(time.Hour); fired != 1 {
 		t.Fatalf("hour timers fired = %d, want the later row's lane's", fired)
 	}
-	testwait.Eventually(t, "the later row ran at its hour", func() bool {
-		return client.count() == 3 && outboxRows(t, pool) == 0
-	})
+	obs.settled(t, rowOf{issue: "LEGION-210", kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if got, remaining := client.count(), outboxRows(t, pool); got != 3 || remaining != 0 {
+		t.Fatalf("once the later row ran at its hour: writes = %d with %d rows left, want three and none", got, remaining)
+	}
 }
 
 func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
@@ -214,7 +218,7 @@ func outboxRows(t *testing.T, pool *store.Pool) int {
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
 // template (testpg.ClonePool). The rigs' own stores share the package's run database instead
-// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
+// (testDSN, testdb.RunDatabase): only the tests that need rows of their own come here.
 func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
 	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
@@ -1013,7 +1017,8 @@ func TestOutboxRunSurvivesAFailedClaimAndAFailedFinish(t *testing.T) {
 	records := &flakyOutboxStore{Store: record.NewStore(), claimFailures: 1, finishFailures: 1}
 	clock := microClock()
 	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
+	obs := newObserver()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), observe: obs.observe}
 	runLanes(t, runner, clock)
 
 	// This outbox has no workflow writing through projectRecords, so the test wakes the lane the
@@ -1027,7 +1032,10 @@ func TestOutboxRunSurvivesAFailedClaimAndAFailedFinish(t *testing.T) {
 	}
 
 	fireSweep(t, clock)
-	testwait.Eventually(t, "the row executed and its finish failed", func() bool { return client.count() == 1 && records.failedFinishes() == 1 })
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchStatus, outcome: settledNotRecorded})
+	if got, failed := client.count(), records.failedFinishes(); got != 1 || failed != 1 {
+		t.Fatalf("once the row's finish was not recorded: writes = %d after %d failed finishes, want one of each", got, failed)
+	}
 
 	// Under the lease the failed finish left, the row is no one's to run: the sweep before the
 	// lapse wakes its lane, which finds nothing due and exits.
@@ -1039,9 +1047,9 @@ func TestOutboxRunSurvivesAFailedClaimAndAFailedFinish(t *testing.T) {
 
 	clock.advance(outboxLease + time.Second)
 	fireSweep(t, clock)
-	testwait.Eventually(t, "the row finished after its lease lapsed", func() bool { return outboxRows(t, pool) == 0 })
-	if got := client.count(); got != 2 {
-		t.Fatalf("status writes = %d, want the first run and the one after the lease lapsed", got)
+	obs.settled(t, rowOf{issue: "LEGION-208", kind: record.OutboxKindDispatchStatus, outcome: settledFinished})
+	if got, remaining := client.count(), outboxRows(t, pool); got != 2 || remaining != 0 {
+		t.Fatalf("once the row finished after its lease lapsed: writes = %d with %d rows left, want the first run and the one after the lapse, and no row", got, remaining)
 	}
 }
 

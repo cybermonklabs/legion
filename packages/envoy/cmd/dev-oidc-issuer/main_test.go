@@ -39,18 +39,11 @@ var listening = regexp.MustCompile(`issuer listening url=(\S+)`)
 // awaitListening waits for the command to log its URL on stderr and answers it.
 func awaitListening(t *testing.T, stderr *lockedBuffer) string {
 	t.Helper()
-	var url string
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
-		match := listening.FindStringSubmatch(stderr.String())
-		if match == nil {
-			return false
-		}
-		url = match[1]
-		return true
-	}) {
-		t.Fatalf("the issuer never logged its URL:\n%s", stderr.String())
-	}
-	return url
+	match := testwait.Until(t, "the issuer to log its URL", func() (string, bool) {
+		logged := stderr.String()
+		return logged, listening.MatchString(logged)
+	})
+	return listening.FindStringSubmatch(match)[1]
 }
 
 // TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses runs the issuer with a
@@ -113,16 +106,12 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 		t.Fatalf("the token file's mode is %v, want 0600: it is a credential", info.Mode().Perm())
 	}
 
-	var second string
-	if !testwait.Holds(3*lifetime, 20*time.Millisecond, func() bool {
-		// Only the rewritten token is verified: the first one is allowed to lapse while this
-		// loop waits, and verifying it again would make a slow machine look like a broken
-		// issuer.
-		second = readRaw()
-		return second != first
-	}) {
-		t.Fatalf("the token file still holds its first token %s after it was minted, want it rewritten before it lapses", 3*lifetime)
-	}
+	// Only the rewritten token is verified: the first one is allowed to lapse while this wait
+	// waits, and verifying it again would make a slow machine look like a broken issuer.
+	second := testwait.Until(t, "the token file to hold a token rewritten after its first", func() (string, bool) {
+		raw := readRaw()
+		return raw, raw != first
+	})
 	rewritten := verify(second)
 	if rewritten.PodUID != claims.PodUID || rewritten.Subject != testAccount {
 		t.Fatalf("the rewritten token names %s's pod %q, want %s's pod %q kept across rewrites", rewritten.Subject, rewritten.PodUID, testAccount, claims.PodUID)

@@ -282,7 +282,7 @@ func (s *server) owedDeliveries(ctx context.Context) ([]owedDelivery, error) {
 	owed = append(owed, messages...)
 
 	rows, err = s.deps.Store.Pool.Query(ctx, owedKeyedSendsQuery,
-		s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds(), deliverySweepBatch)
+		contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds(), deliverySweepBatch)
 	if err != nil {
 		return nil, fmt.Errorf("read the keyed sends with no attempt: %w", err)
 	}

@@ -32,6 +32,10 @@ env:
 jobs:
   broker-multiprocess:
     runs-on: ubuntu-24.04
+    # The step's -timeout 20m is many times the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 60.731 s (run 43582507175). The limit is at least
+    # the job's sum over those runs: its other steps at their longest, 51 s, 6 s of its clock over
+    # them, and the step's longest 187 s plus its 20 minutes: 1444 s, or 25 minutes.
     timeout-minutes: 30
     services:
       postgres:

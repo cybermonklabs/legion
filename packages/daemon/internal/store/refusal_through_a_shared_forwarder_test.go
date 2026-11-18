@@ -33,20 +33,18 @@ func TestRefusalsThroughAForwarderTheCompilerKeepsWholeLogOneLineEach(t *testing
 	pool := store.Pool()
 	logged := captureLog(t)
 
-	ctx := WithTransactionTracking(context.Background())
+	ctx := trackedCaller(t)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "select 1"); err != nil {
 			return err
 		}
-		asking, cancel := context.WithTimeout(ctx, refusalBound)
-		defer cancel()
 		for range 2 {
-			if err := askThroughFromA(asking, pool); !errors.Is(err, ErrNestedAcquire) {
+			if err := askThroughFromA(ctx, pool); !errors.Is(err, ErrNestedAcquire) {
 				t.Fatalf("caller A's transaction through the forwarder = %v, want %v", err, ErrNestedAcquire)
 			}
 			refusalsLogged(t, logged, 1)
 		}
-		if err := askThroughFromB(asking, pool); !errors.Is(err, ErrNestedAcquire) {
+		if err := askThroughFromB(ctx, pool); !errors.Is(err, ErrNestedAcquire) {
 			t.Fatalf("caller B's transaction through the forwarder = %v, want %v", err, ErrNestedAcquire)
 		}
 		refusalsLogged(t, logged, 2)

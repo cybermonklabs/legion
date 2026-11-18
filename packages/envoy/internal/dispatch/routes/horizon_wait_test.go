@@ -11,8 +11,9 @@ import (
 
 // Two waits here stand behind the event horizon, whose proof is instance-wide: the event feed's
 // events_start (waitEventsStart) and a horizon proven and persisted above the log's newest event
-// (horizontest.AwaitPersisted). No fixed deadline bounds either; each waits on the horizon's own
-// account of itself (internal/dispatch/horizontest), which the router's horizon logs in this
+// (horizontest.AwaitPersisted). Neither has a bound of its own: each goes through the shared wait,
+// fails at once only on a hold of the test's own database, and prints the horizon's own account of
+// itself if it gives up (internal/dispatch/horizontest), which the router's horizon logs in this
 // process at horizontest.StallWarning (storeRouter). The 10 s and 30 s these tests had failed
 // whenever another client of the instance held a transaction for longer.
 

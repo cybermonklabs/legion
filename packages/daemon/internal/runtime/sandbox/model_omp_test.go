@@ -3,7 +3,6 @@ package sandbox
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,10 +16,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // runOmp runs one Oh My Pi command to its end on the frames given, and returns what it wrote. The
@@ -28,9 +27,7 @@ import (
 // profile the measurement is of.
 func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin string) (stdout, stderr string, err error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(testwait.Context(t), argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, environ, strings.NewReader(stdin)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -102,7 +99,14 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var systems []string
+	// The provider endpoint records only a request under the profile's API key ("unused"), the
+	// credential Oh My Pi presents to it (ompProfileKey); any other is another process's, answered
+	// 404.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ompProfileKey(r) {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -288,7 +292,14 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 	}
 	var mu sync.Mutex
 	hits := map[string]int{}
+	// Each provider endpoint counts only a request under the profile's API key ("unused"), the
+	// credential Oh My Pi presents to it (ompProfileKey); any other is another process's, answered
+	// 404.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ompProfileKey(r) {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		first := strings.HasPrefix(r.URL.Path, "/first")
 		if first {
@@ -373,9 +384,7 @@ func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
 // turn is answered.
 func promptOnce(t *testing.T, argv []string, dir string, environ []string, message string) ([]testbin.OMPFrame, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(testwait.Context(t), argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, environ
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
@@ -423,4 +432,11 @@ func promptOnce(t *testing.T, argv []string, dir string, environ []string, messa
 		t.Fatalf("omp %s never answered the prompt\nstderr: %s", strings.Join(argv[1:], " "), errOut.String())
 	}
 	return frames, errOut.String()
+}
+
+// ompProfileKey reports whether r carries the API key the test profiles give each provider,
+// "unused": omp 18.16.0 sends it as a bearer (Authorization: Bearer unused), and Anthropic's own
+// header (x-api-key) is taken too.
+func ompProfileKey(r *http.Request) bool {
+	return r.Header.Get("Authorization") == "Bearer unused" || r.Header.Get("x-api-key") == "unused"
 }

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The delivery harness names its counters test_messages_*; they are the listener's
@@ -129,8 +132,7 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	// delivering listener's cache is warmed and its watcher stopped, and the target is registered
 	// through a second registry on the same account, so the record reaches the bucket and never
 	// reaches the cache.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := harness.sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("warm the delivering listener's session cache: %v", err)
 	}
@@ -185,6 +187,99 @@ type unplaceableDeliveryRun struct {
 	exceptions *natsgo.Subscription
 	// consumer names the run's durable, for a test that reads back what the stream still holds.
 	consumer string
+	// handled records each delivery the run's subscription handed its handler, once the handler
+	// returned.
+	handled *handledDeliveries
+}
+
+// handledDeliveries is a run's record of the deliveries its handler returned from: for each, in
+// order, how many exceptions the run's probe held once a round trip on the harness's connection
+// followed the return, or -1 where that round trip or the read failed. A delivery raises its
+// exception before its handler returns, and the exception reached the server before its publish
+// returned (noException), so until the test reads the probe, the count after delivery n is every
+// exception deliveries 1 to n raised. The subscription runs its handler one delivery at a time,
+// so each count is taken before the next delivery's handler starts.
+type handledDeliveries struct {
+	mu   sync.Mutex
+	held []int
+}
+
+// record notes one delivery whose handler returned, with the exceptions the probe holds after a
+// round trip on conn. It runs on the subscription's goroutine, which may outlive the test, so it
+// fails nothing itself and records a failure as -1.
+func (h *handledDeliveries) record(ctx context.Context, conn *natsgo.Conn, exceptions *natsgo.Subscription) {
+	held := -1
+	if conn.FlushWithContext(ctx) == nil {
+		if pending, _, err := exceptions.Pending(); err == nil {
+			held = pending
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.held = append(h.held, held)
+}
+
+// count is how many deliveries the handler has returned from.
+func (h *handledDeliveries) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.held)
+}
+
+// exceptionsAfter waits for the run's handler to return from delivery n and answers how many
+// exceptions the probe held then (handledDeliveries). Read before the test reads the probe, it
+// is every exception deliveries 1 to n raised.
+func (r unplaceableDeliveryRun) exceptionsAfter(t *testing.T, n int) int {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the run's handler to return from delivery %d", n), func() (string, bool) {
+		handled := r.handled.count()
+		return fmt.Sprintf("it has returned from %d", handled), handled >= n
+	})
+	r.handled.mu.Lock()
+	defer r.handled.mu.Unlock()
+	held := r.handled.held[n-1]
+	if held < 0 {
+		t.Fatalf("the round trip after delivery %d of %s failed, so what it raised is unknown", n, r.item.Topic)
+	}
+	return held
+}
+
+// settle waits until the run's durable holds nothing pending for the message and the handler has
+// returned from every delivery the durable made, and answers the durable's state. The durable
+// delivers the message no more, so nothing raises an exception for it afterwards.
+func (r unplaceableDeliveryRun) settle(t *testing.T) *natsgo.ConsumerInfo {
+	t.Helper()
+	var info *natsgo.ConsumerInfo
+	testwait.Until(t, "the durable to hold nothing pending for the message and the handler to return from each of its deliveries", func() (string, bool) {
+		read, err := r.harness.client.JS().ConsumerInfo(bus.Stream, r.consumer)
+		if err != nil {
+			return fmt.Sprintf("read the durable %s: %v", r.consumer, err), false
+		}
+		info = read
+		handled := r.handled.count()
+		return fmt.Sprintf("the handler returned from %d deliveries; the durable delivered %d, acknowledged through %d, holds %d unacknowledged and %d undelivered",
+				handled, read.Delivered.Consumer, read.AckFloor.Consumer, read.NumAckPending, read.NumPending),
+			read.NumPending == 0 && read.NumAckPending == 0 && uint64(handled) == read.Delivered.Consumer
+	})
+	return info
+}
+
+// noExceptionHeld fails, saying what, when the run's probe holds an exception the test has not
+// read. It is noException with its round trip made here, on the harness's connection, which the
+// run's handler and the harness's own handler publish on: call it once the code that could raise
+// one has returned (settle, or a handler called in line). It shows at most 512 bytes of the
+// exception, since one row's notice is past the server's max payload.
+func (r unplaceableDeliveryRun) noExceptionHeld(t *testing.T, what string) {
+	t.Helper()
+	if err := r.harness.client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
+	}
+	// A timeout of zero reads what the subscription already holds and waits for nothing.
+	if message, err := r.exceptions.NextMsg(0); err == nil {
+		t.Fatalf("%s: the probe holds an exception of %d bytes on %s: %.512s", what, len(message.Data), message.Subject, message.Data)
+	} else if !errors.Is(err, natsgo.ErrTimeout) {
+		t.Fatalf("read the exception probe: %v", err)
+	}
 }
 
 // oneDeferralWindow is a retry window that buys exactly one deferral: the handler spends a window
@@ -251,10 +346,23 @@ func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness,
 	if err := harness.client.Publish(item); err != nil {
 		t.Fatalf("publish %s to %s: %v", item.EventID, subject, err)
 	}
+	// soak ages the message in the stream before the consumer exists, a stand-in for a backlog
+	// message replayed into a cold listener. It is the row's input and not a wait: it ends before
+	// anything is delivered, no verdict reads it, and a loaded machine only ages the message more.
+	// The age it makes is the server's own store clock (the StoredAt JetStream stamps), which no
+	// clock this test or the listener holds reaches: the aged-message row needs a real StoredAt
+	// older than the deferral window to lock that the window counts from the first delivery and
+	// not from the store time. Every other caller passes 0.
 	time.Sleep(soak)
 
 	inbox := natsgo.NewInbox()
-	subscription, err := harness.client.Conn.Subscribe(inbox, handler)
+	handled := &handledDeliveries{}
+	// Taken here, on the test's goroutine: the subscription's goroutine may outlive the test.
+	roundTrips := testwait.Context(t)
+	subscription, err := harness.client.Conn.Subscribe(inbox, func(msg *natsgo.Msg) {
+		handler(msg)
+		handled.record(roundTrips, harness.client.Conn, exceptions)
+	})
 	if err != nil {
 		t.Fatalf("subscribe the delivery handler on %s: %v", inbox, err)
 	}
@@ -276,7 +384,7 @@ func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness,
 		t.Fatalf("create the durable %s over %s: %v", consumer, subject, err)
 	}
 	t.Cleanup(func() { _ = harness.client.JS().DeleteConsumer(bus.Stream, consumer) })
-	return unplaceableDeliveryRun{harness: harness, item: item, exceptions: exceptions, consumer: consumer}
+	return unplaceableDeliveryRun{harness: harness, item: item, exceptions: exceptions, consumer: consumer, handled: handled}
 }
 
 // A message for a session this listener cannot place is kept in the stream and redelivered for the
@@ -298,7 +406,7 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 		run := startUnplaceableDeliveryRun(t, "ses_unplaceable_retried", oneDeferralWindow, 0)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the first delivery to be deferred", func() bool {
+		testwait.Eventually(t, "the first delivery to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		deferrals := deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")
@@ -327,12 +435,14 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 			}
 		}
 		// The no_holder notice goes out once, when the message is given up: published per attempt
-		// it would be read back by every listener in the fleet a dozen times over.
-		if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
-			t.Fatalf("a deferred delivery published a delivery exception already: %s", string(message.Data))
+		// it would be read back by every listener in the fleet a dozen times over. What the probe
+		// held once the deferral's handler returned is all the deferral raised, and it is read
+		// before the redelivery's handler starts (handledDeliveries).
+		if held := run.exceptionsAfter(t, 1); held != 0 {
+			t.Fatalf("a deferred delivery published %d delivery exception(s) already", held)
 		}
 
-		waitFor(t, 20*time.Second, "the redelivered message to be given up", func() bool {
+		testwait.Eventually(t, "the redelivered message to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -360,16 +470,17 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 			t.Fatalf("%s = %d, want no series at all - a message given up is not a skip:\n%s", deliveredSeries("skipped"), got, body)
 		}
 		assertDeliveryException(t, run.exceptions, run.item, "no_holder")
-		if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
-			t.Fatalf("a second delivery exception went out for one message: %s", string(message.Data))
-		}
+		// Once the durable holds nothing pending and the handler has returned from both
+		// deliveries, nothing raises another exception for the message.
+		run.settle(t)
+		run.noExceptionHeld(t, "a second delivery exception went out for one message")
 	})
 
 	t.Run("a zero window gives up on the first delivery", func(t *testing.T) {
 		run := startUnplaceableDeliveryRun(t, "ses_unplaceable_at_once", 0, 0)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the first delivery to be given up", func() bool {
+		testwait.Eventually(t, "the first delivery to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -401,7 +512,7 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 		run := startUnplaceableDeliveryRun(t, "ses_unplaceable_aged", oneDeferralWindow, oneDeferralWindow+time.Second)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the aged message's first delivery to be deferred", func() bool {
+		testwait.Eventually(t, "the aged message's first delivery to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		logs := harness.logs.String()
@@ -422,8 +533,8 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 		if got := counterValue(t, body, deliveredSeries("unplaceable_no_record")); got != -1 {
 			t.Fatalf("%s = %d, want no series at all - nothing has been given up yet:\n%s", deliveredSeries("unplaceable_no_record"), got, body)
 		}
-		if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
-			t.Fatalf("the aged message's first delivery published a delivery exception: %s", string(message.Data))
+		if held := run.exceptionsAfter(t, 1); held != 0 {
+			t.Fatalf("the aged message's first delivery published %d delivery exception(s)", held)
 		}
 	})
 }
@@ -477,7 +588,7 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 		noWayToReceive: {reason: "no_session_record", status: "unplaceable_no_record"},
 	}
 
-	waitFor(t, 20*time.Second, "every unplaceable cause to be deferred", func() bool {
+	testwait.Eventually(t, "every unplaceable cause to be deferred", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) >= len(want)
 	})
 	deferrals := deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")
@@ -502,7 +613,7 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 		t.Fatalf("the deferral lines name %v, want one for each retried cause - a cause given up on its first delivery is a cause this listener never waited for:\n%s", deferred, harness.logs.String())
 	}
 
-	waitFor(t, 25*time.Second, "every deferred cause to be given up", func() bool {
+	testwait.Eventually(t, "every deferred cause to be given up", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) >= len(want)
 	})
 	logs := harness.logs.String()
@@ -571,7 +682,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		cfg.deferredUnplaceable = held
 		run := startUnplaceableDelivery(t, harness, cfg, "ses_cap_reached", 0)
 
-		waitFor(t, 15*time.Second, "the delivery that found the cap reached to be given up", func() bool {
+		testwait.Eventually(t, "the delivery that found the cap reached to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -604,7 +715,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		cfg.deferredUnplaceable = held
 		startUnplaceableDelivery(t, harness, cfg, "ses_cap_last_slot", 0)
 
-		waitFor(t, 15*time.Second, "the delivery in the last slot to be deferred", func() bool {
+		testwait.Eventually(t, "the delivery in the last slot to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		if got := held.size(); got != unplaceableDeferralCap {
@@ -649,7 +760,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 	cfg.deferredUnplaceable = held
 	startUnplaceableDelivery(t, harness, cfg, "ses_slot_released", 0)
 
-	waitFor(t, 30*time.Second, "the redelivery of the deferred message to be deferred again", func() bool {
+	testwait.Eventually(t, "the redelivery of the deferred message to be deferred again", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) >= 2
 	})
 	logs := harness.logs.String()
@@ -669,7 +780,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 		t.Fatalf("%d give-up lines while the window still has a deferral left, want none:\n%s", got, logs)
 	}
 
-	waitFor(t, 30*time.Second, "the message to be given up once its deferrals are spent", func() bool {
+	testwait.Eventually(t, "the message to be given up once its deferrals are spent", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 	})
 	if got := held.size(); got != unplaceableDeferralCap-1 {
@@ -723,7 +834,7 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 	t.Run("at the cap, the redelivery is given up and every slot stays held", func(t *testing.T) {
 		harness, held := start(t, "ses_untaken_release_at_cap", unplaceableDeferralCap)
 
-		waitFor(t, 15*time.Second, "the redelivery that found the cap reached to be given up", func() bool {
+		testwait.Eventually(t, "the redelivery that found the cap reached to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -742,7 +853,7 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 	t.Run("one slot under the cap, the same redelivery is deferred", func(t *testing.T) {
 		harness, held := start(t, "ses_untaken_release_last_slot", unplaceableDeferralCap-1)
 
-		waitFor(t, 15*time.Second, "the redelivery to be deferred in the last slot", func() bool {
+		testwait.Eventually(t, "the redelivery to be deferred in the last slot", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		logs := harness.logs.String()
@@ -800,7 +911,7 @@ func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
 		run := start(t, "ses_window_past_max_deliver", unplaceableMaxDeliveries)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery at the cap to be disposed of", func() bool {
+		testwait.Eventually(t, "the delivery at the cap to be disposed of", func() bool {
 			logs := harness.logs.String()
 			return len(deliveryRecords(t, logs, "listener agent delivery given up"))+
 				len(deliveryRecords(t, logs, "listener agent delivery deferred")) > 0
@@ -825,7 +936,7 @@ func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
 		run := start(t, "ses_window_under_max_deliver", unplaceableMaxDeliveries-1)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery under the cap to be deferred", func() bool {
+		testwait.Eventually(t, "the delivery under the cap to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		logs := harness.logs.String()
@@ -882,19 +993,12 @@ func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	cfg.unplaceableRetryWindow = oneDeferralWindow
 	run := startEnvelopeDeliveryThrough(t, harness, jetStreamDeliveryHandler(cfg), target, item, 0)
 
-	waitFor(t, 20*time.Second, "the message to be given up and its notice to fail", func() bool {
+	testwait.Eventually(t, "the message to be given up and its notice to fail", func() bool {
 		logs := harness.logs.String()
 		return len(deliveryRecords(t, logs, "listener agent delivery given up")) > 0 &&
 			len(deliveryRecords(t, logs, exceptionPublishFailedLine)) > 0
 	})
-	waitFor(t, 10*time.Second, "the durable to hold nothing pending for the message", func() bool {
-		info, err := harness.client.JS().ConsumerInfo(bus.Stream, run.consumer)
-		return err == nil && info.NumAckPending == 0
-	})
-	info, err := harness.client.JS().ConsumerInfo(bus.Stream, run.consumer)
-	if err != nil {
-		t.Fatalf("read the durable %s back: %v", run.consumer, err)
-	}
+	info := run.settle(t)
 	if want := uint64(2); info.Delivered.Consumer != want || info.AckFloor.Consumer != want {
 		t.Fatalf("the durable delivered %d and acknowledged through %d, want both %d - the delivery that gave the message up acknowledges it, notice or none", info.Delivered.Consumer, info.AckFloor.Consumer, want)
 	}
@@ -921,9 +1025,7 @@ func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	if got := counterValue(t, body, nakedCounter); got != 1 {
 		t.Fatalf("%s = %d, want 1 - the deferral's NAK and nothing for the notice that failed:\n%s", nakedCounter, got, body)
 	}
-	if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
-		t.Fatalf("a notice past the server's max payload was published after all (%d bytes): the run proves nothing about a notice that cannot go out", len(message.Data))
-	}
+	run.noExceptionHeld(t, "a notice past the server's max payload was published after all: the run proves nothing about a notice that cannot go out")
 }
 
 // Two listeners, each on its own machine id and so its own durable, both read a message to a

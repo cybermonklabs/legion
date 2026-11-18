@@ -37,7 +37,7 @@ func pullRequestStandIn(t *testing.T, head string, updated time.Time, listed *at
 	t.Helper()
 	pull := `{"number":86,"state":"open","html_url":"https://github.com/acme/widgets/pull/86","body":"Dispatch: CAPTURE-1",` +
 		`"base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"` + head + `","repo":{"full_name":"acme/widgets"}},"updated_at":"` + updated.Format(time.RFC3339) + `","mergeable":true,"mergeable_state":"clean"}`
-	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: aLease, Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch strings.ToLower(r.URL.Path) {
 		case "/repos/acme/widgets/pulls":
 			if r.URL.Query().Get("head") != "acme:legion/CAPTURE-1" || r.URL.Query().Get("state") != "open" {
@@ -479,7 +479,7 @@ func (g *activityGitHub) moved(head string, updated time.Time, activity ...strin
 
 func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 	t.Helper()
-	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Record: func(r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: aLease, Token: "outbox-token", Record: func(r *http.Request) {
 		g.reads.add(r.URL.Path)
 	}, Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()

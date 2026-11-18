@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // chanListener is how a connection the outer server hijacked reaches the inner one: a listener
@@ -86,25 +88,26 @@ func (c *prefixConn) Read(b []byte) (int, error) {
 // bytes costs two atomic stores per buffer and at most two timer wakeups per idle window.
 type idleConn struct {
 	net.Conn
-	idle time.Duration
-	last atomic.Int64 // the last byte's time, UnixNano
+	idle  time.Duration
+	clock clock.Clock
+	last  atomic.Int64 // the last byte's time, UnixNano
 
 	// The timer and the closed flag are the one piece of shared state the timer's own
 	// goroutine and the connection's touch. The lock is held over the timer's first arming
 	// too, so the goroutine that fires it cannot read the field before it is written.
 	mu     sync.Mutex
-	timer  *time.Timer
+	timer  clock.Timer
 	closed bool
 }
 
-func newIdleConn(c net.Conn, idle time.Duration) net.Conn {
+func newIdleConn(c net.Conn, idle time.Duration, cl clock.Clock) net.Conn {
 	if idle <= 0 {
 		return c
 	}
-	ic := &idleConn{Conn: c, idle: idle}
-	ic.last.Store(time.Now().UnixNano())
+	ic := &idleConn{Conn: c, idle: idle, clock: cl}
+	ic.last.Store(cl.Now().UnixNano())
 	ic.mu.Lock()
-	ic.timer = time.AfterFunc(idle, ic.check)
+	ic.timer = cl.AfterFunc(idle, ic.check)
 	ic.mu.Unlock()
 	return ic
 }
@@ -118,7 +121,7 @@ func (c *idleConn) check() {
 		c.mu.Unlock()
 		return
 	}
-	if since := time.Since(time.Unix(0, c.last.Load())); since < c.idle {
+	if since := c.clock.Now().Sub(time.Unix(0, c.last.Load())); since < c.idle {
 		c.timer.Reset(c.idle - since)
 		c.mu.Unlock()
 		return
@@ -130,7 +133,7 @@ func (c *idleConn) check() {
 func (c *idleConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
 	if n > 0 {
-		c.last.Store(time.Now().UnixNano())
+		c.last.Store(c.clock.Now().UnixNano())
 	}
 	return n, err
 }
@@ -138,7 +141,7 @@ func (c *idleConn) Read(b []byte) (int, error) {
 func (c *idleConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
 	if n > 0 {
-		c.last.Store(time.Now().UnixNano())
+		c.last.Store(c.clock.Now().UnixNano())
 	}
 	return n, err
 }

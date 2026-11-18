@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // answering is a TCP server that writes name to every connection and closes it, so a client
@@ -96,13 +98,8 @@ func TestTheFrontRoundRobinsOverBackendsItLearnsAfterItBound(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("the front exited %d on a cancelled context; want 0", code)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the front did not stop when its context ended")
+	if code := testwait.Receive(t, "the front to stop when its context ended", done); code != 0 {
+		t.Fatalf("the front exited %d on a cancelled context; want 0", code)
 	}
 }
 

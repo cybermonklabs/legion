@@ -68,15 +68,18 @@ env:
 jobs:
   daemon-go:
     runs-on: ubuntu-24.04
-    # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
-    # prints the goroutine dump that names it. A step's worst case is therefore its largest
-    # measured green duration plus its own -timeout: the setup before the plain step is now this
-    # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
-    # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
-    # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
-    # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
-    # push runs).
-    timeout-minutes: 70
+    # Each guarded step's -timeout or proof_guard must fire before the runner cancels the job, so a
+    # hung test prints what it was waiting on. This job has no green run of its own yet, so the
+    # limit is read from the 15 green merge-group runs of ci.yaml's `test` job, which carried these
+    # three steps until #2945, from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to
+    # 2026-11-16T05:39Z: at most 504 s for the steps that run no guarded command (that job's, an
+    # upper bound for this one's setup, which is a part of them), 6 s the job's clock holds over
+    # its steps, and each guarded step's longest green duration plus its guard - the plain Go step
+    # 597 s + 900 s, the race step 997 s + 1800 s and the Stage 1 proof 6 s + 240 s - and the step
+    # of what the race build cannot run, which #4289 added after those runs, at most 28 s over its
+    # two green merge-group runs to 2026-11-18T09:14Z (run 44267329843) + 600 s: 5678 s, or 95
+    # minutes.
+    timeout-minutes: 95
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -154,15 +157,18 @@ jobs:
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
       - uses: ./.github/actions/install-uv
 
-      # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
-      # for the one test of its refusal), and, for its grant test, Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+      # The daemon's NATS tests run their servers in the test process. Its grant test,
+      # TestDaemonPermissionsOnRealServers, runs Envoy's two published NATS images, Image and
+      # HubImage (packages/envoy/testnatsimages), and the one test of its refusal of a server that
+      # can skip a message (intake's TestOpenConsumersRefusesAServerThatSkipsAFilter) runs
+      # SkippingImage (nats:2.10), since an in-process server cannot be that version; all three are
+      # pulled first for the reason the action gives.
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
-            packages/daemon/internal/testnats/nats.go Image
-            packages/daemon/internal/testnats/nats.go SkippingImage
+            packages/envoy/internal/testnats/nats.go Image
+            packages/daemon/internal/testnats/image.go SkippingImage
             packages/envoy/internal/testnats/nats.go HubImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,
@@ -193,6 +199,11 @@ jobs:
       # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
       # and the other job's from the one list and holds each step to it, so the skip and the run
       # cannot come to name different tests.
+      #
+      # Its -timeout 15m is 2.6 times its slowest package over the 15 green merge-group runs of
+      # ci.yaml's `test` job, which carried this step until #2945, from 2026-11-15T20:47Z, when
+      # main's memory guard (#4021) landed, to 2026-11-16T05:39Z: internal/store, 342.597 s (run
+      # 43767908385).
       - name: Test the Go daemon
         run: |
           set -o pipefail
@@ -211,11 +222,12 @@ jobs:
       # they are deterministic under it.
       #
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
-      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
-      # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
+      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, ran
+      # the ten minutes out on main at job 125691048644 (run 41562777668). No single test dominates
+      # it: a local run timed 648 tests one after another, the slowest at 44 s. Over the 15 green
+      # merge-group runs of ci.yaml's `test` job, which carried this step until #2945, from
+      # 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to 2026-11-16T05:39Z it took at
+      # most 833.358 s (run 43760034112), and the 30 minutes are 2.2 times that.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
@@ -235,7 +247,9 @@ jobs:
       # package list and the source, so the two cannot drift). The first is internal/launcher's
       # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
       # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
-      # peak, and the detector multiplies both.
+      # peak, and the detector multiplies both. Its -timeout 10m is 27.8 times its package over the
+      # two green merge-group runs of ci.yaml that ran it, both since #4289 added it, to
+      # 2026-11-18T09:14Z: internal/launcher, 21.604 s (run 44267329843).
       - name: Test what the race build cannot run
         run: |
           go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher

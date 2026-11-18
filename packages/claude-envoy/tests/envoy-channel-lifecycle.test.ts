@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { FakeNatsServer } from "./fake-nats-server"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
@@ -42,6 +43,7 @@ test("a hangup from the Claude process group deregisters the session before the 
   const server = Bun.spawn(["bun", entry], {
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
@@ -67,4 +69,4 @@ test("a hangup from the Claude process group deregisters the session before the 
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+})

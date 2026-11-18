@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Two refusals name the bound that ended them. When `legion gh`'s answer to the shared leak
+  check's visibility read is ended by its 15 s bound, standard error gets a line of its own beside
+  the guard's: `legion gh: no read answered the visibility of <repo> within 15s, the bound that
+  keeps this answer inside the shared check's own wait`; standard output and the exit status are
+  unchanged. A launch's push of the shared public leak check to its pod's launcher that the hop's
+  own deadline ends says `did not answer the install of <tag> within <bound>` rather than a write
+  pipe's `i/o timeout`, whichever of the write and the deadline came first.

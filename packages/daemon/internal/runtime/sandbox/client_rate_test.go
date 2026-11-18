@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -312,7 +313,9 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 	const pods, speedup = 25, 100
 	limit := newFakeLimiter(2, speedup)
 	objects, hellos := reconnectingPods(t, pods)
-	g := newRig(t, objects, withClientLimiter(limit), withOptions(func(o *Options) { o.BootTimeout = 5 * time.Minute }))
+	// The rig's boot timeout is the daemon's own two minutes (testOptions), which outlasts the
+	// limiter's 30 s queue as production's does, so every wait a launch takes behind it ends.
+	g := newRig(t, objects, withClientLimiter(limit))
 
 	accept := g.r.LauncherResolver()
 	var sent, accepted atomic.Int64
@@ -343,13 +346,8 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 		go func() { launched <- machines[i].Handle(g.ctx, supervise.RequestSpawn{Claim: spec.Claim}) }()
 	}
 	for range specs {
-		select {
-		case err := <-launched:
-			if err != nil {
-				t.Errorf("a launch in flight failed: %v", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("the launches in flight did not end")
+		if err := testwait.Receive(t, "a launch in flight to end", launched); err != nil {
+			t.Errorf("a launch in flight failed: %v", err)
 		}
 	}
 	for i, spec := range specs {
@@ -607,40 +605,49 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 // A request's own timeout starts once the client's limiter lets it go (client-go's
 // Request.request), which is what lets a launch wait out a queue longer than apiTimeout: here the
 // limiter holds a request of the requests' client twice its timeout, and it succeeds. A timeout
-// that covered the queue would end the request where it stands, so the queue is what the row
-// reads — the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
-// request's success to say anything — and not the span of the call, which also carries a loopback
-// round trip a loaded machine makes slow. The timeout is a second rather than the 50 ms it was
-// so that an ordinary round trip ends well inside it and only the queue can spend it. That is a
-// wider bound, not independence from the machine: it is the product's own timeout rather than a
-// wall clock this test chose, and it is proven at the load this row is sized for - two and eight
-// busy loops on these cores, 30 runs of 30 - while starvation past that (thirty-two loops, eight
-// times the cores) can still spend a second on the round trip, which is outside what the row
-// claims rather than a mode it rules out.
+// that covered the queue would end the request where it stands — the fake limiter refuses at once
+// a wait that lies past its context's deadline, as x/time/rate does — so the queue is what the row
+// reads: the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
+// request's success to say anything. The timeout is the runtime's own (requestConfig's apiTimeout).
+// The row runs in a synctest bubble, on whose clock both client-go's timeout and the limiter's hold
+// run, over an API server in the test's own memory (secretAnswer): the minute's hold costs the row
+// nothing, and no round trip spends any of the timeout.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"held","namespace":"legion"}}`)
-	}))
-	t.Cleanup(server.Close)
-	requests := requestConfig(&rest.Config{Host: server.URL})
-	// One slot every two seconds: the Wait below takes the free one, and the request waits out the
-	// next.
-	limit := newFakeLimiter(0.5, 1)
-	if err := limit.Wait(context.Background()); err != nil {
-		t.Fatal(err)
+	synctest.Test(t, func(t *testing.T) {
+		requests := requestConfig(&rest.Config{Host: "http://kube.invalid", Transport: secretAnswer{}})
+		// One slot every twice the timeout: the Wait below takes the free one, and the request waits
+		// out the next.
+		limit := newFakeLimiter(1/(2*requests.Timeout.Seconds()), 1)
+		if err := limit.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		requests.RateLimiter = limit
+		kube, err := kubernetes.NewForConfig(requests)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := kube.CoreV1().Secrets("legion").Get(context.Background(), "held", metav1.GetOptions{}); err != nil {
+			t.Fatalf("a request the limiter held past its client's timeout failed: %v", err)
+		}
+		if held := limit.heldLast(); held <= requests.Timeout {
+			t.Fatalf("the limiter held the request %s, want longer than the %s timeout it is to outlast", held, requests.Timeout)
+		}
+	})
+}
+
+// secretAnswer is an API server in the test's own memory: it answers every request with the one
+// Secret, and a request whose context has ended with that context's error, as the connection of a
+// request that ran out does.
+type secretAnswer struct{}
+
+func (secretAnswer) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
 	}
-	requests.RateLimiter, requests.Timeout = limit, time.Second
-	kube, err := kubernetes.NewForConfig(requests)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := kube.CoreV1().Secrets("legion").Get(context.Background(), "held", metav1.GetOptions{}); err != nil {
-		t.Fatalf("a request the limiter held past its client's timeout failed: %v", err)
-	}
-	if held := limit.heldLast(); held <= requests.Timeout {
-		t.Fatalf("the limiter held the request %s, want longer than the %s timeout it is to outlast", held, requests.Timeout)
-	}
+	return &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Request: req,
+		Body: io.NopCloser(strings.NewReader(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"held","namespace":"legion"}}`)),
+	}, nil
 }
 
 // sameClients is c as both of a runtime's client sets, for a test whose fakes need not tell the

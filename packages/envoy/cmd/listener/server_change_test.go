@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -51,8 +52,13 @@ const (
 
 	// serverChangeSendInterval is how often each sender sends one numbered message.
 	serverChangeSendInterval = 250 * time.Millisecond
-	// serverChangeMinimumSending is the least time the senders send for, as the spec asks.
+	// serverChangeMinimumSending is the least time the senders send for, as the spec asks. The run
+	// counts it in messages, serverChangeMinimumMessages, from the soak's own record of what each
+	// sender sent, rather than reading the machine's clock.
 	serverChangeMinimumSending = time.Minute
+	// serverChangeMinimumMessages is serverChangeMinimumSending in the messages one sender sends,
+	// one every serverChangeSendInterval.
+	serverChangeMinimumMessages = int(serverChangeMinimumSending / serverChangeSendInterval)
 	// serverChangeDisruptionsOfEachKind is the least number of lame ducks, and of kills, a run makes.
 	serverChangeDisruptionsOfEachKind = 2
 	// serverChangeGateWindow is how long the stand-in is kept off the hub after its connection
@@ -267,7 +273,7 @@ func runServerChange(t *testing.T, run serverChangeRun) {
 	}
 	s.quietSending(t)
 	disruptions := map[bool]int{}
-	for round := 0; time.Since(sendStart) < serverChangeMinimumSending ||
+	for round := 0; s.fewestSent() < serverChangeMinimumMessages ||
 		disruptions[true] < serverChangeDisruptionsOfEachKind || disruptions[false] < serverChangeDisruptionsOfEachKind; round++ {
 		lameDuck := round%2 == 0
 		s.disrupt(t, lameDuck)
@@ -282,11 +288,7 @@ func runServerChange(t *testing.T, run serverChangeRun) {
 		s.calls.Wait()
 		close(finished)
 	}()
-	select {
-	case <-finished:
-	case <-time.After(2*serverChangeAttemptTimeout + serverChangeRetryDelay + 5*time.Second):
-		t.Fatalf("publish calls were still running past envoy-client's two attempts after the last send")
-	}
+	testwait.Receive(t, "the publish calls to finish their envoy-client attempts after the last send", finished)
 	// The plan names this wait: late frames land in it.
 	time.Sleep(serverChangeTail)
 	s.awaitConsumerDrained(t)
@@ -351,7 +353,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 // registration that listener has not read yet.
 func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
-	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
+	testwait.Eventually(t, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
 		var sessions []sessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {
@@ -429,15 +431,24 @@ func (s *serverChangeSoak) record(envelope contracts.Envelope, subject string, a
 	s.frames = append(s.frames, soakFrame{kind: kind, number: number, envelope: envelope, subject: subject, at: at})
 }
 
+// fewestSent is how many messages the sender that has sent the fewest has sent: the soak's own
+// record of its sending, which the run's minimum is counted in.
+func (s *serverChangeSoak) fewestSent() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var sent [kindCount]int
+	for _, message := range s.messages {
+		sent[message.kind]++
+	}
+	return slices.Min(sent[:])
+}
+
 // onDrop records the stand-in's connection going down and tells a waiting disruption.
 func (s *serverChangeSoak) onDrop(at time.Time) {
 	s.mu.Lock()
 	s.outages = append(s.outages, soakOutage{dropped: at})
 	s.mu.Unlock()
-	select {
-	case s.dropped <- at:
-	default:
-	}
+	offer(s.dropped, at)
 }
 
 // onReconnect records where the stand-in's connection came back and tells a waiting disruption.
@@ -450,41 +461,41 @@ func (s *serverChangeSoak) onReconnect(at time.Time, server string) {
 		s.outages[n-1].server = server
 	}
 	s.mu.Unlock()
+	offer(s.reconnected, server)
+}
+
+// offer hands value to whoever waits on signal, and drops it when nobody does: the stand-in's
+// connection callbacks must never block on a disruption that is not waiting.
+func offer[T any](signal chan<- T, value T) {
 	select {
-	case s.reconnected <- server:
+	case signal <- value:
 	default:
 	}
 }
 
 // awaitConsumerDrained waits until the stand-in's session consumer holds nothing: every message
 // the stream stored for it was relayed and acknowledged, so the assertions read every copy the
-// relay had to send. It waits serverChangeRecovery and not the tail, because a relay the last
-// outage paused sends again only after its backoff (relayPauseFirst, doubling to relayPauseMax).
-// A consumer that does not drain is logged, not fatal: the assertions then name the messages that
-// are actually missing.
+// relay had to send. A relay the last outage paused sends again only after its backoff
+// (relayPauseFirst, doubling to relayPauseMax), which runs on the listener child's own clock, so
+// this waits for the consumer's own report rather than for a span of the machine's clock.
 func (s *serverChangeSoak) awaitConsumerDrained(t *testing.T) {
 	t.Helper()
 	consumer, ok := bus.SessionConsumerName(serverChangeSession)
 	if !ok {
 		t.Fatalf("no session consumer name for %s", serverChangeSession)
 	}
-	deadline := time.Now().Add(serverChangeRecovery)
-	for {
-		info, err := s.js.ConsumerInfo(bus.Stream, consumer)
-		switch {
-		case err == nil && info.NumPending == 0 && info.NumAckPending == 0:
-			return
-		case time.Now().After(deadline):
-			t.Logf("the stand-in's consumer still held messages %s after the last send: %+v, %v",
-				serverChangeRecovery, info, err)
-			return
-		}
+	testwait.Until(t, "the stand-in's session consumer to hold no message after the last send", func() (string, bool) {
 		select {
 		case <-s.stopped:
-			return
-		case <-time.After(500 * time.Millisecond):
+			return "the soak stopped", true
+		default:
 		}
-	}
+		info, err := s.js.ConsumerInfo(bus.Stream, consumer)
+		if err != nil {
+			return fmt.Sprintf("consumer info: %v", err), false
+		}
+		return fmt.Sprintf("%+v", info), info.NumPending == 0 && info.NumAckPending == 0
+	})
 }
 
 // heartbeat registers the stand-in again through H every serverChangeHeartbeat, as a plugin keeps
@@ -530,9 +541,12 @@ func (s *serverChangeSoak) sendEvery(kind int, stop <-chan struct{}) {
 }
 
 // publish sends message through the senders' listener's POST /v1/messages/publish (via) as
-// envoy-client's publish does: a UUID idempotency key, a 5 s timeout per attempt, and one retry
-// after 250 ms with the same key on a 5xx or a transport error. Any other answer than 200 from the
-// last attempt is the sender's error.
+// envoy-client's publish does: a UUID idempotency key, a timeout per attempt of
+// serverChangeAttemptTimeout (contracts.ListenerCallTimeout, envoy-client's own), and one retry
+// after serverChangeRetryDelay (envoy-client's 250 ms) with the same key on a 5xx or a transport
+// error. It is a stand-in for that client, so its two attempts and both bounds are the client's
+// production settings, not waits of this test. Any other answer than 200 from the last attempt is
+// the sender's error.
 func (s *serverChangeSoak) publish(message *soakMessage) {
 	defer close(message.done)
 	kind := serverChangeKinds[message.kind]
@@ -563,9 +577,10 @@ func (s *serverChangeSoak) publish(message *soakMessage) {
 }
 
 // call sends one request to a listener's /v1 as the test's shared-token caller, bounded by timeout,
-// and returns its status and body, or the transport error. Unlike callListener it fails no test, so
-// the senders, the heartbeat and the sweeper call it from their own goroutines and count a failure
-// as an outcome.
+// and returns its status and body, or the transport error. It stands in for envoy-client's call,
+// whose timeout the callers pass (serverChangeAttemptTimeout, contracts.ListenerCallTimeout).
+// Unlike callListener it fails no test, so the senders, the heartbeat and the sweeper call it from
+// their own goroutines and count a failure as an outcome.
 func (s *serverChangeSoak) call(port int, method, path string, body any, timeout time.Duration) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -607,8 +622,11 @@ func (s *serverChangeSoak) quietSending(t *testing.T) {
 	outagesBefore := len(s.outages)
 	s.mu.Unlock()
 	from := time.Now()
-	// The plan names this time: 3 s of quiet sending after each recovery.
-	time.Sleep(serverChangeQuiet)
+	// The plan names this time: 3 s of quiet sending after each recovery. It is the soak's own
+	// load shape, and what must not happen in it - the stand-in's connection moving - is the hub's
+	// and the child listeners' doing, which neither this test's state, synctest nor a later
+	// action of its own reaches.
+	testwait.Span(t, serverChangeQuiet, "the quiet window is the soak's own load shape, and a move of the stand-in's connection inside it is a NATS cluster's and child processes' doing, which neither this test's state, synctest nor a later action reaches")
 	to := time.Now()
 	s.mu.Lock()
 	moved := len(s.outages) != outagesBefore
@@ -623,13 +641,8 @@ func (s *serverChangeSoak) quietSending(t *testing.T) {
 	if moved || !s.standIn.IsConnected() {
 		t.Fatalf("the stand-in's connection moved during a quiet window from %s to %s", from.Format(time.StampMilli), to.Format(time.StampMilli))
 	}
-	finished := time.After(2*serverChangeAttemptTimeout + serverChangeRetryDelay + 5*time.Second)
 	for _, message := range window {
-		select {
-		case <-message.done:
-		case <-finished:
-			t.Fatalf("the %s message %d of a quiet window was still unanswered past envoy-client's two attempts", serverChangeKinds[message.kind].name, message.number)
-		}
+		testwait.Receive(t, fmt.Sprintf("the %s message %d of a quiet window to be answered within envoy-client's two attempts", serverChangeKinds[message.kind].name, message.number), message.done)
 	}
 }
 
@@ -655,43 +668,26 @@ func (s *serverChangeSoak) disrupt(t *testing.T, lameDuck bool) {
 	for _, gate := range s.gates {
 		gate.Close()
 	}
-	// The disruption runs on its own goroutine, since the stand-in's drop is awaited meanwhile, and
-	// reports its outcome here: testing allows FailNow only on the test's goroutine.
-	disrupted := make(chan error, 1)
+	// The disruption runs on its own goroutine, since the stand-in's drop is awaited meanwhile,
+	// and reports its end here: testing allows FailNow only on the test's goroutine.
+	disrupted := make(chan struct{})
 	go func() {
+		defer close(disrupted)
 		if lameDuck {
-			disrupted <- server.LameDuck()
+			server.LameDuck()
 			return
 		}
 		server.Stop(t)
-		disrupted <- nil
 	}()
-	var dropped time.Time
-	select {
-	case dropped = <-s.dropped:
-	case <-time.After(serverChangeRecovery):
-		t.Fatalf("the stand-in's connection to %s did not drop within %s of its %s", target, serverChangeRecovery, kind)
-	}
+	dropped := testwait.Receive(t, fmt.Sprintf("the stand-in's connection to %s to drop on its %s", target, kind), s.dropped)
 	// The plan names this time: the stand-in is held off the hub for the window a plugin's reconnect
 	// wait leaves, counted from its drop.
 	time.Sleep(time.Until(dropped.Add(serverChangeGateWindow)))
 	for _, gate := range s.gates {
 		gate.Open()
 	}
-	var after string
-	select {
-	case after = <-s.reconnected:
-	case <-time.After(serverChangeRecovery):
-		t.Fatalf("the stand-in did not reconnect within %s of its gates opening after the %s of %s", serverChangeRecovery, kind, target)
-	}
-	select {
-	case err := <-disrupted:
-		if err != nil {
-			t.Fatalf("the %s of %s: %v", kind, target, err)
-		}
-	case <-time.After(serverChangeRecovery):
-		t.Fatalf("the %s of %s did not finish within %s", kind, target, serverChangeRecovery)
-	}
+	after := testwait.Receive(t, fmt.Sprintf("the stand-in to reconnect once its gates opened after the %s of %s", kind, target), s.reconnected)
+	testwait.Receive(t, fmt.Sprintf("the %s of %s to finish", kind, target), disrupted)
 	server.Start(t)
 	s.cluster.AwaitReady(t)
 	s.awaitReplicated(t)
@@ -715,15 +711,13 @@ func drain[T any](signal chan T) {
 
 // awaitReplicated waits until the notification stream and every KV bucket's stream, the three the
 // listener cannot run without among them, are at three replicas with a leader and both other
-// replicas current and online (testnats.AwaitStreamCopiesWithin).
+// replicas current and online (testnats.AwaitStreamCopies).
 //
-// Each wait is the run's own serverChangeRecovery, not testnats' connect bound: what it waits for
-// is a member that was killed or lame-ducked mid-write rejoining and catching its streams up
-// while the three senders keep publishing, which is the work serverChangeRecovery is the bound
-// for. The thirteen disruptions that passed in the merge-queue run that reported this (job
-// 127449806190) came 6.0 s to 9.1 s apart, the 3 s quiet window between them included, so this
-// wait over every stream took seconds there; on the fourteenth the notification stream was still
-// short of its third settled copy at testnats' 30 s, and the run was thrown out of the queue.
+// What it waits for is a member that was killed or lame-ducked mid-write rejoining and catching
+// its streams up while the three senders keep publishing, which took seconds in the merge-queue
+// run that reported it (job 127449806190: thirteen disruptions 6.0 s to 9.1 s apart, the 3 s
+// quiet window between them included) and stood past 30 s on the fourteenth. The wait holds no
+// bound of its own now, so a slow catch-up is waited out rather than thrown out of the queue.
 func (s *serverChangeSoak) awaitReplicated(t *testing.T) {
 	t.Helper()
 	names := []string{bus.Stream}
@@ -738,7 +732,7 @@ func (s *serverChangeSoak) awaitReplicated(t *testing.T) {
 		}
 	}
 	for _, name := range names {
-		testnats.AwaitStreamCopiesWithin(t, s.js, name, serverChangeReplicas, serverChangeRecovery)
+		testnats.AwaitStreamCopies(t, s.js, name, serverChangeReplicas)
 	}
 }
 

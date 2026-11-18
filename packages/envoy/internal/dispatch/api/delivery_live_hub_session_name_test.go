@@ -70,7 +70,7 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	held := conn.snapshot(t, 5*time.Second, "t").Body
+	held := conn.snapshot(t, "t").Body
 	rig.settle(t)
 	if got := hubSessionTitles(t, held); got[named] != named || got[nameless] != nameless {
 		t.Fatalf("the snapshot's session_titles = %v, want both sessions by their bare ids", got)
@@ -79,10 +79,11 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	start := rig.mark()
 	titled := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: named, Origin: &model.ActorOrigin{SessionTitle: "Release sender"}}, map[string]any{}))
-	rig.waitForEvent(t, start, "the titled write on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, "the titled write on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == titled.ID
 	})
-	delta := conn.delta(t, 5*time.Second, "t")
+
+	delta := conn.delta(t, "t")
 	if got := liveMapValues(t, delta, "session_titles"); got[named] != "Release sender" {
 		t.Fatalf("the delta's session_titles = %v, want %s under the title it stamped", got, named)
 	}
@@ -92,11 +93,10 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	// neither marks the view and the page is sent nothing.
 	start = rig.mark()
 	writeWithoutATitle(t, rig, named)
-	rig.waitNoRecompute(t, 2*viewQuiet)
+	rig.requireNothingSent(t, conn, "two session writes that carry no title")
 	if n := rig.count(start, recomputeBegin("")); n != 0 {
 		t.Fatalf("the writes carrying no title recomputed the view %d times, want none", n)
 	}
-	conn.none(t, time.Second, "two session writes that carry no title")
 
 	// The same two writes while the view's read is under way: the hub records nothing for the
 	// session, so the recheck that follows the read marks nothing either and the merge below is
@@ -111,7 +111,7 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	}
 	point.proceed()
 
-	again := conn.delta(t, 5*time.Second, "t")
+	again := conn.delta(t, "t")
 	if title, changed := liveMapValues(t, again, "session_titles")[named]; changed && title != "Release sender" {
 		t.Fatalf("the delta renames %s to %v, want the name it stamped kept", named, title)
 	}
@@ -133,9 +133,10 @@ func writeWithoutATitle(t *testing.T, rig *hubRig, session string) {
 	start := rig.mark()
 	written := appendHubEvent(t, rig, projectOwner("HUB").event("user_state.updated",
 		model.Actor{Kind: "session", ID: session}, map[string]any{}))
-	rig.waitForEvent(t, start, "the write carrying no origin on the hub's feed", func(note deliveryHubNote) bool {
+	rig.waitFor(t, start, "the write carrying no origin on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == written.ID
 	})
+
 	recordSessionTitles(t, rig.database, time.Now().UTC(), map[string]string{session: ""})
 	rig.waitForEventCursor(t, eventHead(t, rig.database), "the write carrying an empty title")
 }

@@ -90,19 +90,31 @@ const maxPercentDecodes = 3
 // copies, each scan doing constant work per byte and, at most once every three letters (a window
 // must start 'S', a type letter, then 'A' to 'D'), a checksum over the window's 58 letters. Every
 // scan reads the whole text, so a value whose seed-like windows each decoding rescans costs four
-// scans' worth of checksums.
+// scans' worth of checksums. seedWork counts that work, for the test that holds it linear.
 //
 // It is a pure function: no state, no logging, and no allocation but one decoded copy per decoding
 // of a text that percent-encodes something, and nkeys' own decode of a window that is a seed. It
 // answers only true or false and never returns or formats text, so a caller refuses naming where
 // the text came from, never the text.
-func HoldsSeed(text string) bool {
+func HoldsSeed(text string) bool { return holdsSeed(text, nil) }
+
+// seedWork is what one HoldsSeed spent, counted where its doc says the cost lies: the bytes its
+// scans and its decodings read, the letters its runs moved to the start of their buffer, and the
+// letters of every window it checksummed. TestHoldsSeedCostIsLinear reads it (export_test.go);
+// HoldsSeed itself counts nothing.
+type seedWork struct{ read, moved, checksummed int }
+
+// holdsSeed is HoldsSeed, counting its work into work when that is not nil.
+func holdsSeed(text string, work *seedWork) bool {
 	for decodes := 0; ; decodes++ {
-		if seedInRuns(text) {
+		if seedInRuns(text, work) {
 			return true
 		}
 		if decodes == maxPercentDecodes {
 			return false
+		}
+		if work != nil {
+			work.read += len(text)
 		}
 		decoded, changed := percentDecoded(text)
 		if !changed {
@@ -113,8 +125,11 @@ func HoldsSeed(text string) bool {
 }
 
 // seedInRuns reports whether a window of seedTextLength letters of a base32 run of text, read as
-// HoldsSeed says, is an nkey seed.
-func seedInRuns(text string) bool {
+// HoldsSeed says, is an nkey seed, counting its work into work when that is not nil.
+func seedInRuns(text string, work *seedWork) bool {
+	if work != nil {
+		work.read += len(text)
+	}
 	// The run's letters, uppercase, the last seedTextLength of them ending at n. When it fills,
 	// the last seedTextLength-1 move to its start, so each letter is copied at most once more.
 	var run [2 * seedTextLength]byte
@@ -129,11 +144,18 @@ func seedInRuns(text string) bool {
 		case 'A' <= c && c <= 'Z', '2' <= c && c <= '7':
 			if n == len(run) {
 				n = copy(run[:], run[n-seedTextLength+1:])
+				if work != nil {
+					work.moved += n
+				}
 			}
 			run[n] = c
 			n++
-			found = n >= seedTextLength && run[n-seedTextLength] == 'S' &&
-				windowIsSeed(run[n-seedTextLength:n])
+			if n >= seedTextLength && run[n-seedTextLength] == 'S' {
+				if work != nil {
+					work.checksummed += seedTextLength
+				}
+				found = windowIsSeed(run[n-seedTextLength : n])
+			}
 		case c == '.', c == '-', c == '_', c == ' ', c == '\t', c == '\r', c == '\n':
 			// The run continues across it, and it is not one of the run's letters.
 		default:

@@ -32,12 +32,14 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const (
@@ -449,8 +451,11 @@ func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
 	reached := &askPublisher{delivered: true}
 
 	h.m.mu.Lock()
+	// A wait that gives up still frees the lock, so the harness's cleanups and the ask itself end.
+	unlock := sync.OnceFunc(h.m.mu.Unlock)
+	defer unlock()
 	if h.m.Deciding() != nil {
-		h.m.mu.Unlock()
+		unlock()
 		t.Fatal("the machine decides something; want the lock held by no decision")
 	}
 	done := make(chan error, 1)
@@ -458,16 +463,11 @@ func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
 		_, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		h.m.mu.Unlock()
-		if !errors.Is(err, ErrMachineBusy) {
-			t.Fatalf("the ask over a held lock = %v, want ErrMachineBusy", err)
-		}
-	case <-time.After(10 * time.Second):
-		h.m.mu.Unlock()
-		<-done
-		t.Fatal("the ask over a held lock did not return: it waited for the lock")
+	// An ask that waited for the lock never returns while the test holds it, so this wait fails.
+	err := testwait.Receive(t, "the ask over a held lock to return without waiting for the lock", done)
+	unlock()
+	if !errors.Is(err, ErrMachineBusy) {
+		t.Fatalf("the ask over a held lock = %v, want ErrMachineBusy", err)
 	}
 	if reached.calls != 0 || h.claim().UpdateTaskedAt != nil {
 		t.Fatalf("the ask over a held lock published %d times and marked %v, want neither", reached.calls, h.claim().UpdateTaskedAt)

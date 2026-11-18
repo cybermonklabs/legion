@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // serveRealHelperWith serves a real helper.Server against the broker at brokerURL, sending its
@@ -61,10 +62,9 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 	served := make(chan struct{})
 	go func() { defer close(served); _ = srv.Serve(ctx, ln) }()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for len(srv.Registry.List()) > 0 && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Eventually(t, "every session the helper registered to be retired", func() bool {
+			return len(srv.Registry.List()) == 0
+		})
 		cancel()
 		<-served
 		srv.Registry.Close()
@@ -77,7 +77,8 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 // POST /v1/enrollments for hold before it hands it on: a broker that made the enrollment at once
 // and is slow to say so. It watches the request's context while it holds, as a transport waiting
 // on a slow answer does, so whatever ends the helper's call ends the hold: the answer's body is
-// closed and the context's error returned. held counts the answers it began to hold.
+// closed and the context's error returned. A hold of zero holds the answer until that end alone.
+// held counts the answers it began to hold.
 type slowEnrollments struct {
 	base  http.RoundTripper
 	hold  time.Duration
@@ -91,10 +92,14 @@ func (s *slowEnrollments) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 	s.held.Add(1)
-	timer := time.NewTimer(s.hold)
-	defer timer.Stop()
+	var done <-chan time.Time
+	if s.hold > 0 {
+		timer := time.NewTimer(s.hold)
+		defer timer.Stop()
+		done = timer.C
+	}
 	select {
-	case <-timer.C:
+	case <-done:
 		return resp, nil
 	case <-req.Context().Done():
 		resp.Body.Close()

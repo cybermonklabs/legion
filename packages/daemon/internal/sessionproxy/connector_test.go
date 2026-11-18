@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -26,6 +27,8 @@ import (
 	"cloud.google.com/go/cloudsqlconn"
 	"google.golang.org/api/option"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The tokens the rig's fakes mint. Each names the credential that minted it, so the token a
@@ -131,9 +134,10 @@ func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 // Credentials once the one it holds has expired: a source that keeps its first token (a static
 // one, or one given a fixed Lifetime, which the library never refreshes) hands the connector an
 // expired token at its first refresh after that hour, and every connection the generation opens
-// after it is refused. The fake's tokens expire within seconds, so each dial after the first one
-// finds both tokens expired; every Admin API call must still carry the impersonated tokens, never
-// the pod's own.
+// after it is refused. The fake's tokens expire within seconds, so the test dials until a dial
+// finds both tokens expired and its refresh mints them again; a source that keeps its first token
+// never does, and the shared wait gives up naming what the fake saw. Every Admin API call must
+// still carry the impersonated tokens, never the pod's own.
 func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 	usePodCredentials(t)
 	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
@@ -160,21 +164,20 @@ func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 		}
 		return n
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for mints(apiScopes) < 2 || mints(loginScopes) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("after 20 s of dials, the API source minted %d tokens and the login source %d, want two each: a source that keeps its first token signs in with it after it expires; the fake saw %+v",
-				mints(apiScopes), mints(loginScopes), iam.requests())
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Each dial is refused (the instance has only a public address), and the refused dial drops
+	// the instance's cached connection info, so the next dial refreshes it and asks each source
+	// for its token.
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the API source and the login source each to mint a second token once the first expired", func() (string, bool) {
 		if conn, err := dialer.Dial(ctx, testInstance); conn != nil {
 			_ = conn.Close()
 		} else if err == nil {
 			t.Fatal("Dial returned neither a connection nor an error")
 		}
-		cancel()
-		time.Sleep(time.Second)
-	}
+		api, login := mints(apiScopes), mints(loginScopes)
+		return fmt.Sprintf("the API source minted %d tokens and the login source %d, want two each: a source that keeps its first token signs in with it after it expires; the fake saw %+v",
+			api, login, iam.requests()), api >= 2 && login >= 2
+	})
 
 	checkAdminCalls(t, admin, impersonatedAPIToken, impersonatedLoginToken, " after its token expired")
 }
@@ -338,7 +341,7 @@ type adminCall struct {
 // so a request the connector abandons stays recorded. It fails the test on a call it does not
 // answer.
 type adminAPIFake struct {
-	t     *testing.T
+	t     testing.TB
 	url   string
 	ca    *x509.Certificate
 	caKey *ecdsa.PrivateKey
@@ -379,7 +382,18 @@ func newAdminAPIFake(t *testing.T) *adminAPIFake {
 	return f
 }
 
+// ServeHTTP answers the connector's calls. A request that carries none of the tokens this test's
+// credential fakes mint (podToken, impersonatedAPIToken, impersonatedLoginToken) as its bearer is
+// another process's: it is answered 404 and logged before it is recorded, and fails nothing. Each
+// of the three is admitted, so checkAdminCalls still tells a call signed with the wrong one.
 func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Header.Get("Authorization") {
+	case "Bearer " + podToken, "Bearer " + impersonatedAPIToken, "Bearer " + impersonatedLoginToken:
+	default:
+		f.t.Logf("a stand-in answered 404 to %.16q %.200q, which carries no credential of the connector's", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	call := adminCall{path: r.URL.Path, authorization: r.Header.Get("Authorization")}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == connectSettingsPath:
@@ -478,8 +492,8 @@ func (f *adminAPIFake) requests() []adminCall {
 }
 
 // dialThroughConnector builds a real connector with connectorOptions for account. Its IAM
-// Credentials client is served by iam, and its Admin API is at admin. It dials testInstance once
-// within 10 s, closes the connector and returns the dial's error.
+// Credentials client is served by iam, and its Admin API is at admin. It dials testInstance once,
+// under the test's context (testwait.Context), closes the connector and returns the dial's error.
 func dialThroughConnector(t *testing.T, account string, iam http.Handler, admin string) error {
 	t.Helper()
 	opts, err := connectorOptions(context.Background(), account, option.WithHTTPClient(&http.Client{Transport: handlerTransport{iam}}))
@@ -490,9 +504,7 @@ func dialThroughConnector(t *testing.T, account string, iam http.Handler, admin 
 	if err != nil {
 		t.Fatalf("NewDialer: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	conn, dialErr := dialer.Dial(ctx, testInstance)
+	conn, dialErr := dialer.Dial(testwait.Context(t), testInstance)
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -506,7 +518,7 @@ func certificatePEM(der []byte) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+func writeJSON(t testing.TB, w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Errorf("write the answer: %v", err)

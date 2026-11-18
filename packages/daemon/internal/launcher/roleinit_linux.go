@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
 )
@@ -567,28 +567,38 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 		if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 			roleLogf(cfg, "role-init: %v", err)
 		}
-		// Each pass reaps as it counts, so the zombies this init adopts as the role's processes
-		// end are not counted as processes that keep the wait running.
-		ticks := time.NewTicker(namespaceReapPoll)
-		drained := time.Now().Add(roleNamespaceDrain)
-		for draining := true; draining; {
-			remaining, err := reapNamespace()
-			switch {
-			case err != nil:
-				roleLogf(cfg, "role-init: %v", err)
-				draining = false
-			case !remaining, !time.Now().Before(drained):
-				draining = false
-			default:
-				<-ticks.C
-			}
+		reap := func() (bool, error) { return reapNamespace() }
+		if drainRoleNamespace(clock.Real(), reap, func(format string, args ...any) { roleLogf(cfg, format, args...) }) {
+			roleLogf(cfg, "role-init: the role's processes were still running %s after its SIGTERM; the namespace ends with them", roleNamespaceDrain)
 		}
-		ticks.Stop()
 	}
 	// Nothing of the role outlives its report. The kernel ends a PID namespace with its init, and
 	// this kill makes that certain before the launcher admits the role's next generation.
 	_ = syscall.Kill(-1, syscall.SIGKILL)
 	return nil
+}
+
+// drainRoleNamespace is role-init's wait for the role's processes to leave once it has sent them
+// its SIGTERM: reap reaps what has exited and says whether anything is left, asked again every
+// namespaceReapPoll on clk until nothing is or roleNamespaceDrain has passed. Each pass reaps as it
+// counts, so the zombies this init adopts as the role's processes end are not counted as processes
+// that keep the wait running. It answers whether processes were still left when the bound passed;
+// a pass that fails is logged and ends the wait, as an empty namespace does.
+func drainRoleNamespace(clk clock.Clock, reap func() (bool, error), logf func(format string, args ...any)) bool {
+	drained := clk.Now().Add(roleNamespaceDrain)
+	for {
+		remaining, err := reap()
+		switch {
+		case err != nil:
+			logf("role-init: %v", err)
+			return false
+		case !remaining:
+			return false
+		case !clk.Now().Before(drained):
+			return true
+		}
+		_ = clk.Sleep(context.Background(), namespaceReapPoll)
+	}
 }
 
 // reportStatus writes the shim's own wait status to the launcher's pipe, so the daemon is told

@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -41,6 +42,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // negotiated is the protocol an answer's TLS agreed, "" for an answer that came over none.
@@ -330,12 +333,25 @@ type readerConn struct {
 func (c *readerConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
 // withPlaceholder is a call's context carrying the placeholder in its authorization metadata, as
-// a gRPC client given the placeholder as its access token sends it, and bounded so a call the
-// proxy never answers fails the row rather than hanging it.
+// a gRPC client given the placeholder as its access token sends it, and bounded as every wait of
+// these tests is (testwait.Context), so a call the proxy never answers fails the row rather than
+// hanging it.
 func withPlaceholder(t *testing.T) context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	t.Cleanup(cancel)
-	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+workerPlaceholder)
+	return metadata.AppendToOutgoingContext(testwait.Context(t), "authorization", "Bearer "+workerPlaceholder)
+}
+
+// readDeadline is the read deadline of a connection a row speaks HTTP/2 on itself: the bound
+// every wait of these tests has (testwait.Context), and none under -timeout 0.
+func readDeadline(t *testing.T) time.Time {
+	deadline, _ := testwait.Context(t).Deadline()
+	return deadline
+}
+
+// cutClock is the proxy's clock in the rows about a call its grant stops carrying: the watch of a
+// carried call runs on it, and a row moves it one watch interval on once the grant has ended
+// (watchTick), rather than waiting for a short interval of its own to pass.
+func cutClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
 }
 
 // TestAGRPCClientIsCarriedWithItsMetadataStreamsAndTrailers: a real grpc-go client reaches a gRPC
@@ -423,13 +439,15 @@ func TestAGRPCClientIsCarriedWithItsMetadataStreamsAndTrailers(t *testing.T) {
 // TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt: a gRPC call whose answers stream holds its
 // stream open for as long as the service streams, and no request is read on that stream again, so
 // the proxy reads the grant for it every watch interval and ends the stream once the grant stops
-// carrying it, at the client and at the service both, as it closes a WebSocket. The named revert:
-// no watcher for a call that is not an upgrade, which leaves the stream running until the row's
-// deadline.
+// carrying it, at the client and at the service both, as it closes a WebSocket. The watch runs on
+// the proxy's clock, which the row moves one interval on once the grant has ended. The named
+// revert: no watcher for a call that is not an upgrade, which leaves the stream running until the
+// row's wait gives up.
 func TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
-	r := newRig(t, Options{Rules: grpcRules(), Watch: watchFast})
+	fake := cutClock()
+	r := newRig(t, Options{Rules: grpcRules(), Clock: fake})
 	stand, health := grpcThrough(t, r)
-	ctx, cancel := context.WithTimeout(withPlaceholder(t), 2*cutWait)
+	ctx, cancel := context.WithCancel(withPlaceholder(t))
 	defer cancel()
 	watch, err := health.Watch(ctx, &grpc_health_v1.HealthCheckRequest{Service: "long"})
 	if err != nil {
@@ -440,18 +458,17 @@ func TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
 	}
 
 	r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-	ended := time.Now()
-	_, err = watch.Recv()
-	if took := time.Since(ended); err == nil || status.Code(err) == codes.DeadlineExceeded || took > cutWait {
-		t.Fatalf("the Watch went on %v after its grant ended and then answered %v; want it ended within %v, the watch interval being %v", took, err, cutWait, watchFast)
+	watchTick(t, fake)
+	next := make(chan error, 1)
+	go func() {
+		_, err := watch.Recv()
+		next <- err
+	}()
+	if err := testwait.Receive(t, "the Watch to end once the watcher read its ended grant", next); err == nil || status.Code(err) == codes.DeadlineExceeded {
+		t.Fatalf("the Watch went on after the watcher read its ended grant and answered %v; want it ended by the proxy", err)
 	}
-	select {
-	case err := <-stand.ended:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("the service's call ended with %v, want it cancelled", err)
-		}
-	case <-time.After(cutWait):
-		t.Fatal("the service's call went on after the proxy ended the client's")
+	if err := testwait.Receive(t, "the service's call to end once the proxy ended the client's", stand.ended); !errors.Is(err, context.Canceled) {
+		t.Errorf("the service's call ended with %v, want it cancelled", err)
 	}
 	cuts := r.logs.cuts()
 	if len(cuts) != 1 {
@@ -484,19 +501,34 @@ func streamStandIn(r *rig) chan error {
 	return ended
 }
 
+// streamEnd reads reader to its end on a goroutine of its own and answers how it ended, waiting
+// for that end through the shared wait: a stream the proxy never cut would go on until the wait
+// gives up, naming what.
+func streamEnd(t *testing.T, what string, reader io.Reader) error {
+	t.Helper()
+	ended := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, reader)
+		ended <- err
+	}()
+	return testwait.Receive(t, what, ended)
+}
+
 // TestACarriedStreamEndsWhenItsGrantStopsCarryingIt: an answer that streams - a server-sent event
 // stream, a long download, a gRPC call - is carried for as long as the service sends it, so the
 // grant is read for it every watch interval, as for a WebSocket the proxy joined, and the call is
 // ended at both ends once the grant stops carrying it, with one line saying why. The row runs in
 // both of TestMain's runs, so the call is an HTTP/1.1 request in one and an HTTP/2 stream in the
-// other. The named revert: no watcher for a call that is not an upgrade, which leaves the answer
-// streaming until the row's deadline.
+// other. The watch runs on the proxy's clock, which the row moves one interval on once the grant
+// has ended. The named revert: no watcher for a call that is not an upgrade, which leaves the
+// answer streaming until the row's wait gives up.
 func TestACarriedStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
-	r := newRig(t, Options{Watch: watchFast})
+	fake := cutClock()
+	r := newRig(t, Options{Clock: fake})
 	ended := streamStandIn(r)
 	client := r.client(workerPlaceholder)
 	client.Timeout = 0
-	ctx, cancel := context.WithTimeout(context.Background(), 2*cutWait)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+boundHost+"/v1/stream", nil)
 	if err != nil {
@@ -514,18 +546,12 @@ func TestACarriedStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
 	}
 
 	r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-	cut := time.Now()
-	_, err = io.Copy(io.Discard, reader)
-	if took := time.Since(cut); err == nil || errors.Is(err, context.DeadlineExceeded) || took > cutWait {
-		t.Fatalf("the stream went on %v after its grant ended and then ended with %v; want it cut within %v, the watch interval being %v", took, err, cutWait, watchFast)
+	watchTick(t, fake)
+	if err := streamEnd(t, "the stream to end once the watcher read its ended grant", reader); err == nil {
+		t.Fatalf("the stream ended with %v after the watcher read its ended grant; want it cut by the proxy", err)
 	}
-	select {
-	case err := <-ended:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("the service's answer ended with %v, want it cancelled", err)
-		}
-	case <-time.After(cutWait):
-		t.Fatal("the service went on streaming after the proxy cut the command's side")
+	if err := testwait.Receive(t, "the service's answer to end once the proxy cut the command's side", ended); !errors.Is(err, context.Canceled) {
+		t.Errorf("the service's answer ended with %v, want it cancelled", err)
 	}
 	cuts := r.logs.cuts()
 	if len(cuts) != 1 {
@@ -543,10 +569,12 @@ func TestACarriedStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
 // - a long poll - is ended by the watcher as a streamed answer is, and since nothing of the
 // service's answer has reached the command, the command is answered the refusal every call of
 // that grant now gets, in its words, rather than a 502 that would read as a service out of reach.
-// The named revert: no watcher for a call that is not an upgrade, which leaves the command waiting
-// until its client gives up.
+// The watch runs on the proxy's clock, which the row moves one interval on once the grant has
+// ended. The named revert: no watcher for a call that is not an upgrade, which leaves the command
+// waiting until its client gives up.
 func TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds(t *testing.T) {
-	r := newRig(t, Options{Watch: watchFast})
+	fake := cutClock()
+	r := newRig(t, Options{Clock: fake})
 	ended := make(chan error, 1)
 	r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ airlocktest.Request) bool {
 		<-request.Context().Done()
@@ -576,19 +604,11 @@ func TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds(t *testing.T) {
 		body, err := io.ReadAll(response.Body)
 		done <- result{answer: response, body: string(body), err: err}
 	}()
-	for deadline := time.Now().Add(cutWait); len(r.requests()) == 0; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the call never reached the service")
-		}
-	}
+	testwait.Eventually(t, "the call to reach the service", func() bool { return len(r.requests()) > 0 })
 
 	r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-	var got result
-	select {
-	case got = <-done:
-	case <-time.After(cutWait):
-		t.Fatalf("the call was still waiting %v after its grant ended; want it refused within it, the watch interval being %v", cutWait, watchFast)
-	}
+	watchTick(t, fake)
+	got := testwait.Receive(t, "the call to be answered once the watcher read its ended grant", done)
 	if got.err != nil {
 		t.Fatalf("the call ended with %v, want the proxy's refusal", got.err)
 	}
@@ -598,13 +618,8 @@ func TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds(t *testing.T) {
 	if id := got.answer.Header.Get(answer.Header); id == "" || !strings.Contains(got.body, "(answer "+id+")") {
 		t.Errorf("the refusal carries answer id %q and the body %q, want the body to end with that id", id, got.body)
 	}
-	select {
-	case err := <-ended:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("the service's call ended with %v, want it cancelled", err)
-		}
-	case <-time.After(cutWait):
-		t.Fatal("the service's call went on after the proxy refused the command's")
+	if err := testwait.Receive(t, "the service's call to end once the proxy refused the command's", ended); !errors.Is(err, context.Canceled) {
+		t.Errorf("the service's call ended with %v, want it cancelled", err)
 	}
 	if cuts := r.logs.cuts(); len(cuts) != 1 {
 		t.Fatalf("the proxy logged %d lines for the cut, want 1", len(cuts))
@@ -646,11 +661,13 @@ func serveBoundHost(t *testing.T, r *rig, handler http.HandlerFunc) {
 // too: the service's read of the body ends in an error, not at the body's end, and the command is
 // answered the refusal every call of that grant now gets, since nothing of the service's answer
 // has reached it. The row runs in both of TestMain's runs, so the body is a chunked HTTP/1.1 body
-// in one and HTTP/2 DATA frames in the other. The named revert: the watcher ending only the
+// in one and HTTP/2 DATA frames in the other. The watch runs on the proxy's clock, which the row
+// moves one interval on once the grant has ended. The named revert: the watcher ending only the
 // command's side (proxy-cut-leaves-upload-open), which leaves the service reading the upload, and
-// the command waiting, until the row's deadline.
+// the command waiting, until the row's wait gives up.
 func TestACallStillUploadingIsCutWhenItsGrantEnds(t *testing.T) {
-	r := newRig(t, Options{Watch: watchFast})
+	fake := cutClock()
+	r := newRig(t, Options{Clock: fake})
 	uploading := make(chan struct{})
 	var firstBytes sync.Once
 	uploadEnded := make(chan error, 1)
@@ -693,27 +710,14 @@ func TestACallStillUploadingIsCutWhenItsGrantEnds(t *testing.T) {
 		done <- result{status: response.StatusCode, body: string(read), err: err}
 	}()
 	go func() { _, _ = feed.Write([]byte("the first part of an upload that goes on\n")) }()
-	select {
-	case <-uploading:
-	case <-time.After(cutWait):
-		t.Fatal("the upload's first bytes never reached the service")
-	}
+	testwait.Receive(t, "the upload's first bytes to reach the service", uploading)
 
 	r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-	select {
-	case err := <-uploadEnded:
-		if errors.Is(err, io.EOF) {
-			t.Fatalf("the service read the upload to its end; want it cut, with the command still sending")
-		}
-	case <-time.After(cutWait):
-		t.Fatalf("the service was still reading the upload %v after its grant ended; want it cut within that, the watch interval being %v", cutWait, watchFast)
+	watchTick(t, fake)
+	if err := testwait.Receive(t, "the service's read of the upload to end once the watcher read its ended grant", uploadEnded); errors.Is(err, io.EOF) {
+		t.Fatalf("the service read the upload to its end; want it cut, with the command still sending")
 	}
-	var got result
-	select {
-	case got = <-done:
-	case <-time.After(cutWait):
-		t.Fatalf("the command was still waiting %v after its grant ended", cutWait)
-	}
+	got := testwait.Receive(t, "the command to be answered once the watcher read its ended grant", done)
 	if got.err != nil || got.status != http.StatusProxyAuthRequired || !strings.Contains(got.body, requests.ErrGrantNotLive.Error()) {
 		t.Fatalf("the upload was answered %d %q (%v), want 407 in the grant read's own words", got.status, got.body, got.err)
 	}
@@ -727,16 +731,18 @@ func TestACallStillUploadingIsCutWhenItsGrantEnds(t *testing.T) {
 // the broker's read of the name no longer releases that slot - the installation on that owner has
 // gone - a new call for it is refused (serveBound), and a call already carried for it ends on the
 // same rule: the watcher reads the slot as well as the name. It ends at the service and at the
-// command, with one line in the words the new call is refused with. The named revert: the watcher
-// reading the name alone (proxy-carry-ignores-slot), which leaves the call streaming with the
-// gone installation's token.
+// command, with one line in the words the new call is refused with. The watch runs on the proxy's
+// clock, which the row moves one interval on once the slot is gone. The named revert: the watcher
+// reading the name alone (proxy-carry-ignores-slot), which leaves the call streaming with the gone
+// installation's token.
 func TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
-	r := newRig(t, Options{Watch: watchFast})
+	fake := cutClock()
+	r := newRig(t, Options{Clock: fake})
 	r.useGitHubAppGrant()
 	ended := streamStandIn(r)
 	client := r.client(workerPlaceholder)
 	client.Timeout = 0
-	ctx, cancel := context.WithTimeout(context.Background(), 2*cutWait)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+boundHost+"/v1/stream", nil)
 	if err != nil {
@@ -757,18 +763,12 @@ func TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
 	}
 
 	r.removeAcmeInstallation()
-	cut := time.Now()
-	_, err = io.Copy(io.Discard, reader)
-	if took := time.Since(cut); err == nil || errors.Is(err, context.DeadlineExceeded) || took > cutWait {
-		t.Fatalf("the stream went on %v after the broker stopped releasing its slot and then ended with %v; want it cut within %v, the watch interval being %v", took, err, cutWait, watchFast)
+	watchTick(t, fake)
+	if err := streamEnd(t, "the stream to end once the watcher read the slot's removal", reader); err == nil {
+		t.Fatalf("the stream ended with %v after the watcher read that the broker no longer releases its slot; want it cut by the proxy", err)
 	}
-	select {
-	case err := <-ended:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("the service's answer ended with %v, want it cancelled", err)
-		}
-	case <-time.After(cutWait):
-		t.Fatal("the service went on streaming after the proxy cut the command's side")
+	if err := testwait.Receive(t, "the service's answer to end once the proxy cut the command's side", ended); !errors.Is(err, context.Canceled) {
+		t.Errorf("the service's answer ended with %v, want it cancelled", err)
 	}
 	cuts := r.logs.cuts()
 	if len(cuts) != 1 {
@@ -881,7 +881,7 @@ func (c *h2Conn) stream(fields []hpack.HeaderField) h2Answer {
 	if err := c.framer.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: c.block.Bytes(), EndStream: true, EndHeaders: true}); err != nil {
 		c.t.Fatalf("write stream %d: %v", id, err)
 	}
-	if err := c.conn.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+	if err := c.conn.SetReadDeadline(readDeadline(c.t)); err != nil {
 		c.t.Fatalf("set the read deadline: %v", err)
 	}
 	var got h2Answer
@@ -1048,19 +1048,20 @@ func (c *h2Conn) send(fields []hpack.HeaderField) uint32 {
 }
 
 // readFrame reads the connection's next frame that is not one of the connection's own -
-// SETTINGS, PING and WINDOW_UPDATE, answered here where they ask for an answer - waiting until
-// deadline, and answers nil when the deadline passed first. A GOAWAY fails the row: no row here
-// expects the proxy to close the connection.
-func (c *h2Conn) readFrame(deadline time.Time) http2.Frame {
+// SETTINGS, PING and WINDOW_UPDATE, answered here where they ask for an answer - waiting for it as
+// every wait of these tests waits (readDeadline), and fails the row naming what it waited for
+// when that wait gives up. A GOAWAY fails the row: no row here expects the proxy to close the
+// connection.
+func (c *h2Conn) readFrame(what string) http2.Frame {
 	c.t.Helper()
 	for {
-		if err := c.conn.SetReadDeadline(deadline); err != nil {
+		if err := c.conn.SetReadDeadline(readDeadline(c.t)); err != nil {
 			c.t.Fatalf("set the read deadline: %v", err)
 		}
 		frame, err := c.framer.ReadFrame()
 		var timeout interface{ Timeout() bool }
 		if errors.As(err, &timeout) && timeout.Timeout() {
-			return nil
+			c.t.Fatalf("gave up waiting for %s at the test binary's deadline less testwait's margin", what)
 		}
 		if err != nil {
 			c.t.Fatalf("read the connection: %v", err)
@@ -1091,7 +1092,7 @@ func (c *h2Conn) readFrame(deadline time.Time) http2.Frame {
 // reading one call - an HTTP/2 stream whose receive window it keeps at zero - leaves the proxy's
 // write of that call's answer waiting for window, where cancelling the call's context at the
 // service ends nothing at the command. So when the grant stops carrying such a call, the proxy
-// resets that stream itself: the command reads RST_STREAM on it within the watch interval, and no
+// resets that stream itself: the command reads RST_STREAM on it at the watcher's next read, and no
 // byte of the service's answer once it opens its window again. The other stream of the same
 // connection, a call for another name of the grant that the grant still carries, goes on: once
 // its window opens it reads the service's answer, the connection is not closed, and its service
@@ -1106,7 +1107,8 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 		workerPath      = "/v1/stream-worker"
 		betaPath        = "/v1/stream-beta"
 	)
-	r := newRig(t, Options{Watch: watchFast, Rules: airlock.Rules{Secrets: []airlock.SecretRule{
+	fake := cutClock()
+	r := newRig(t, Options{Clock: fake, Rules: airlock.Rules{Secrets: []airlock.SecretRule{
 		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
 		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
 	}}})
@@ -1154,11 +1156,8 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 	beta := c.send(h2Fields(http.MethodGet, "https", boundHost, betaPath,
 		hpack.HeaderField{Name: "x-beta", Value: "Token " + betaPlaceholder}))
 	answered := map[uint32]bool{}
-	for deadline := time.Now().Add(cutWait); !answered[worker] || !answered[beta]; {
-		frame := c.readFrame(deadline)
-		switch f := frame.(type) {
-		case nil:
-			t.Fatalf("the two streams' answers had not begun within %v (%v)", cutWait, answered)
+	for !answered[worker] || !answered[beta] {
+		switch f := c.readFrame(fmt.Sprintf("the two streams' answers to begin (%v)", answered)).(type) {
 		case *http2.MetaHeadersFrame:
 			if f.PseudoValue("status") != "200" {
 				t.Fatalf("stream %d was answered %s, want the service's 200", f.StreamID, f.PseudoValue("status"))
@@ -1175,10 +1174,11 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 	withheld := testConnection()
 	withheld.Names = map[string]requests.AirlockGrantName{betaName: both.Names[betaName]}
 	r.grants.setConnection(workerPlaceholder, withheld)
-	cut := time.Now()
-	switch f := c.readFrame(cut.Add(cutWait)).(type) {
-	case nil:
-		t.Fatalf("the worker stream was still open %v after its grant stopped carrying it, the watch interval being %v", cutWait, watchFast)
+	// Both streams' watches are armed at the same moment of the proxy's clock, so one interval on
+	// reads the grant once for each.
+	fake.AwaitArmed(t, "the watches of both streams", 2)
+	fake.Advance(watchInterval)
+	switch f := c.readFrame("RST_STREAM on the worker stream, whose grant no longer carries it").(type) {
 	case *http2.RSTStreamFrame:
 		if f.StreamID != worker {
 			t.Fatalf("stream %d was reset (%v), want the worker stream %d, whose name the grant no longer carries", f.StreamID, f.ErrCode, worker)
@@ -1186,13 +1186,8 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 	default:
 		t.Fatalf("the first frame after the cut is %v, want RST_STREAM on the worker stream %d", f.Header(), worker)
 	}
-	select {
-	case err := <-ended[workerPath]:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("the service's worker call ended with %v, want it cancelled", err)
-		}
-	case <-time.After(cutWait):
-		t.Fatal("the service went on sending the worker stream after the proxy reset it")
+	if err := testwait.Receive(t, "the service's worker call to end once the proxy reset its stream", ended[workerPath]); !errors.Is(err, context.Canceled) {
+		t.Errorf("the service's worker call ended with %v, want it cancelled", err)
 	}
 
 	// Both windows open: the worker stream, reset, carries nothing, and beta reads the service's
@@ -1202,11 +1197,8 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 			t.Fatalf("open stream %d's window: %v", id, err)
 		}
 	}
-	for deadline := time.Now().Add(cutWait); ; {
-		frame := c.readFrame(deadline)
-		if frame == nil {
-			t.Fatalf("the beta stream read nothing within %v of opening its window", cutWait)
-		}
+	for {
+		frame := c.readFrame("the beta stream's answer once its window opened")
 		data, ok := frame.(*http2.DataFrame)
 		if !ok {
 			continue

@@ -3,7 +3,6 @@ package admit
 import (
 	"context"
 	"log/slog"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -417,7 +417,7 @@ func inTx(t *testing.T, pool *pgxpool.Pool, fn func(pgx.Tx)) {
 // Postgres admission tests, and a run that quietly skipped them would prove nothing.
 func migratedPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	if os.Getenv("LEGION_TEST_PG_DSN") == "" {
+	if !testdb.Available() {
 		t.Fatal("LEGION_TEST_PG_DSN is required for real Postgres admission tests")
 	}
 	return testpg.ClonePool(t, "legion_admit_test")

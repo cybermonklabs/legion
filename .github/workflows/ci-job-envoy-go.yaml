@@ -33,18 +33,18 @@ jobs:
   envoy-go:
     runs-on: ubuntu-24.04
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
-    # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
-    # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 43 (two packages, which go test starts at once
-    # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
-    # database skip count's own timeout-minutes of 25 is 64
-    # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
-    # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10
-    # and the bus matrix's own 5 are 60, and the integration step's 5 is less.
-    timeout-minutes: 70
+    # prints the dump that names it. The limit is at least the job's sum over its 20 newest green
+    # merge-group runs up to 2026-11-15: its other steps at their longest, 137 s, 10 s of its clock
+    # over them, and each go test step's longest plus the -timeout of every command in it - the
+    # race-impossible step 166 s + 20 minutes (its two calls; the API's call, which that reading
+    # includes, is the text-check job's now), the unit step 1086 s + 20, natslive 13 s + 15 and
+    # the integration step 9 s + 5 - which is 5021 s; then the three steps main added after that
+    # reading, which no merge-group run has measured yet, each at its own limit: the store-form
+    # count's 5 minutes (two packages, which go test starts at once with -p at least 2, so its
+    # -timeout bounds the step), the database skip count's step limit of 25 minutes (its comment
+    # below says why 25), and 2 minutes for the moto vet, which compiles one package - 6941 s, or
+    # 116 minutes.
+    timeout-minutes: 120
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -120,9 +120,10 @@ jobs:
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
       # delays. The two -run lists are derived in .github/scripts/ci_job_reads.py from the race
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. Measured over three
-      # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s, so 10 minutes each is ample.
+      # either and missing here fails the ci-filters job naming this step. Over this job's 20
+      # newest green merge-group runs up to 2026-11-15 the bus took at most 0.038 s and the
+      # documents package 49.044 s (run 43687633216), so 10 minutes each is twelve times the
+      # slowest.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
@@ -141,8 +142,10 @@ jobs:
       # left out too: the database-skips step below runs them with -json and fails on a failed
       # test as on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_TREE
       # in ci_job_reads.py). What is left is the rest of the module, the two longest packages of
-      # it (the API's and the documents service's) now among the ones the lane runs, so its 20
-      # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
+      # it (the API's and the documents service's) now among the ones the lane runs. Its 20
+      # minutes are 2.5 times its slowest package over this job's 20 newest green merge-group runs
+      # up to 2026-11-15: cmd/broker, 477.995 s (run 43687633216). The two tests of the web app's
+      # display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
@@ -209,15 +212,19 @@ jobs:
       # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
       # source at run time, and no test name is spelled here. Each assignment is a line of its
       # own: under bash -e it carries the script's exit status, so an empty or refused list fails
-      # the step instead of running -run "", which matches every test.
+      # the step instead of running -run "", which matches every test. Over this job's 20 newest
+      # green merge-group runs up to 2026-11-15 internal/testnats took at most 3.538 s here and
+      # internal/bus 5.029 s (run 43582507175), against 10 and 5 minutes.
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          go test -count=1 -timeout 10m -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
         working-directory: packages/envoy
 
+      # 300 s against at most 7.683 s over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 (run 43582507175).
       - name: Integration test envoy (a real NATS server, in the test process)
         run: go test ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy

@@ -17,9 +17,11 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sessionConsumerRig is a listener's /v1 routes and durable handler over the in-process server,
@@ -47,7 +49,14 @@ func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegist
 
 func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
-	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
+	return newSessionConsumerRigWatching(t, client, url, nil, sessionOptions...)
+}
+
+// newSessionConsumerRigWatching is newSessionConsumerRigOn with watch added to the options of the
+// bucket watchers its harness opens (newListenerDeliveryHarnessWatching).
+func newSessionConsumerRigWatching(t *testing.T, client *bus.Client, url string, watch []kvwatch.Option, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
+	t.Helper()
+	harness := newListenerDeliveryHarnessWatching(t, client, watch, sessionOptions...)
 	// The connection is opened with the threshold this listener's own windows derive, as main
 	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
 	// deployment with these windows would give it.
@@ -187,21 +196,13 @@ func (rig *sessionConsumerRig) startSeq(t *testing.T, sessionID string) uint64 {
 // when it does not within 2 s.
 func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want uint64) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the consumer of %s to have %d messages pending", sessionID, want), func() (string, bool) {
 		info, err := rig.consumers.Info(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}
-		if info.NumPending == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s has %d messages pending, want %d (start %d, delivered %d, filters %v)",
-				sessionID, info.NumPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d pending (start %d, delivered %d, filters %v)", info.NumPending, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects), info.NumPending == want
+	})
 }
 
 // store stores an envelope on subject and returns its stream sequence.
@@ -569,12 +570,12 @@ func TestSessionConsumerResumePointAtZeroOfTheCurrentStreamDeliversFromTheFirstS
 	if start := rig.entry(t, sessionID).ConsumerStart; start != 1 {
 		t.Fatalf("the session entry of %s records consumer start %d, want 1", sessionID, start)
 	}
-	frames := standIn.collect(t, len(stored), 5*time.Second)
+	frames := standIn.collect(t, len(stored))
 	requireFrames(t, frames, stored...)
 	if frames[0].seq != 1 {
 		t.Fatalf("the first frame carries stream sequence %d, want 1: %v", frames[0].seq, frameEvents(frames))
 	}
-	standIn.none(t, time.Second)
+	standIn.none(t)
 }
 
 // A registration with no resume point it can use creates the session's consumer at the first
@@ -647,9 +648,9 @@ func TestSessionConsumerABrandNewSessionReceivesAMessageStoredForItBeforeItRegis
 		t.Fatalf("answer %s, want delivery mode consumer", answer.raw)
 	}
 
-	frames := standIn.collect(t, 1, 5*time.Second)
+	frames := standIn.collect(t, 1)
 	requireFrames(t, frames, stored)
-	standIn.none(t, time.Second)
+	standIn.none(t)
 }
 
 func jsonUint(n uint64) string {
@@ -910,17 +911,10 @@ func lockUsers(locks *sessionLocks, sessionID string) int {
 // is done with it (0).
 func awaitLockUsers(t *testing.T, locks *sessionLocks, sessionID string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("%d callers to hold or wait for the consumer lock of %s", n, sessionID), func() (int, bool) {
 		users := lockUsers(locks, sessionID)
-		if users == n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d callers hold or wait for the consumer lock of %s after 10s, want %d", users, sessionID, n)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return users, users == n
+	})
 }
 
 // followWhileLocked stores topic as sessionID's interest and sets its consumer's filter to it, as a
@@ -1015,7 +1009,7 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing.T) {
 	// Unowned: this task relays nothing, so the restart below is the session's only one and the
 	// filter it leaves is the filter this case reads.
-	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	rig := newRelayRigUnowned(t)
 	const sessionID = "ses_register_row_lock"
 	const followed = "notifications.dispatch.issue.ROWLOCK.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
@@ -1038,19 +1032,14 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 		// The registration leaves this window only once the restart has reached it: waiting for
 		// the lock (two callers) with the fix, and done with it without one, which is the drop
 		// this case is about.
-		deadline := time.Now().Add(10 * time.Second)
-		for lockUsers(&rig.deps.consumers.locks, sessionID) != 2 {
+		testwait.Eventually(t, fmt.Sprintf("the restart of %s to wait for the consumer lock or be done with it", sessionID), func() bool {
 			select {
 			case <-restarted:
-				return
+				return true
 			default:
 			}
-			if time.Now().After(deadline) {
-				t.Errorf("after 10s the restart of %s neither waits for the consumer lock nor is done with it", sessionID)
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+			return lockUsers(&rig.deps.consumers.locks, sessionID) == 2
+		})
 	}
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 	rig.deps.consumers.afterRegisterFilter = nil
@@ -1197,7 +1186,7 @@ func cappedNotificationStream(t *testing.T, uri string, limit int) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream to create the capped stream: %v", err)
 	}
@@ -1296,10 +1285,10 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 	followed, _ := rig.storeEvent(t, topic)
 	rig.harness.handler(&natsgo.Msg{Subject: topic, Data: marshalListenerEnvelope(t, followed)})
 
-	requireFrames(t, standIn.collect(t, 2, 5*time.Second), agent, followed)
+	requireFrames(t, standIn.collect(t, 2), agent, followed)
 	awaitSkipped(t, rig.harness, 2)
 	requireNoException(t, exceptions, "a relayed session's stored message")
-	standIn.none(t, time.Second)
+	standIn.none(t)
 }
 
 // awaitSkipped waits until the durable path has acknowledged want stored messages with nothing
@@ -1307,17 +1296,10 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 func awaitSkipped(t *testing.T, harness listenerDeliveryHarness, want int) {
 	t.Helper()
 	line := fmt.Sprintf(`test_messages_delivered{delivery_status="skipped"} %d`, want)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, "the durable path to acknowledge "+line, func() (string, bool) {
 		body := deliveredMetrics(t, harness)
-		if strings.Contains(body, line) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("delivery metrics %s, want %s", body, line)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return body, strings.Contains(body, line)
+	})
 }
 
 // The threshold the server removes an idle session consumer after is the deployment's own, not

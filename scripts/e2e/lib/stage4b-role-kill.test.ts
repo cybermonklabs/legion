@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b's `kill` end of one role: role_kill_sh signals the worker-shim of one role-init, and
@@ -29,8 +31,9 @@ const alive = (pid: number) => {
   }
 };
 
-// The polls below wait on real processes (an exec, a SIGKILL's delivery) that no fake clock drives,
-// and role_kill_sh reads every process of the host's /proc, so a busy host takes seconds.
+// The waits below are on real processes (an exec, a SIGKILL's delivery) that no fake clock drives,
+// so they poll through the shared wait; role_kill_sh reads every process of the host's /proc, so a
+// busy host takes seconds.
 describe("role_kill_sh", () => {
   test("kills the shim's group and leaves a detached helper of the role-init alone", async () => {
     const init = Bun.spawn(
@@ -54,18 +57,15 @@ wait`,
     const shim = Number(/shim (\d+)/.exec(out)?.[1]);
     const helper = Number(/helper (\d+)/.exec(out)?.[1]);
     try {
-      // The shim's argv is in place once setsid and bash have exec'd.
-      for (let i = 0; i < 100; i++) {
-        const argv = readFileSync(`/proc/${shim}/cmdline`, "utf8").split("\0");
-        if (argv[1] === "worker-shim") break;
-        await Bun.sleep(20);
-      }
+      await until(
+        "the stand-in shim's argv to read `legion worker-shim`, once setsid and bash have exec'd",
+        () => readFileSync(`/proc/${shim}/cmdline`, "utf8").split("\0")[1] === "worker-shim"
+      );
       const lines = `. ${JSON.stringify(lib)}\nsh -c "$role_kill_sh" role-kill ${init.pid}`;
       const kill = Bun.spawnSync(["bash", "-c", lines]);
       expect(kill.stderr.toString()).toBe("");
       expect(kill.exitCode).toBe(0);
-      for (let i = 0; i < 100 && alive(shim); i++) await Bun.sleep(20);
-      expect(alive(shim)).toBe(false);
+      await until("the shim's end after role_kill_sh's signal", () => !alive(shim));
       expect(alive(helper)).toBe(true);
     } finally {
       // Only the processes this test started, by the pids it recorded.
@@ -74,7 +74,7 @@ wait`,
       }
       await init.exited;
     }
-  }, 120_000);
+  });
 
   test("a role-init with no worker-shim child is refused, nothing signalled", () => {
     const lines = `. ${JSON.stringify(lib)}\nsleep 300 & h=$!\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "helper alive"\nkill -KILL $h\nexit $rc`;
@@ -82,18 +82,21 @@ wait`,
     expect(kill.exitCode).toBe(1);
     expect(kill.stderr.toString()).toContain("runs no worker-shim");
     expect(kill.stdout.toString()).toBe("helper alive\n");
-  }, 120_000);
+  });
 
   test("a child naming worker-shim in a later argv word is not the shim", () => {
     // argv `bash -c <script> worker-shim`: worker-shim is argv[3], not argv[1]. The decoy waits in
-    // bash's builtin read on a FIFO it holds open itself, so it starts no process of its own.
+    // bash's builtin read on a FIFO it holds open itself, so it starts no process of its own. It
+    // runs from a process substitution, so it is still a child of the role-init, and prints a line
+    // once it has exec'd: the role-init reads that line before role_kill_sh looks, so the decoy's
+    // own argv is the one role_kill_sh reads, never the role-init's that a fork carries before it.
     const fifo = join(dir, "decoy.fifo");
-    const lines = `. ${JSON.stringify(lib)}\nmkfifo ${JSON.stringify(fifo)}\nbash -c 'exec 3<>"$1"; read -r -t 300 -u 3 _' worker-shim ${JSON.stringify(fifo)} & h=$!\nsleep 0.2\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "decoy alive"\nkill -KILL $h\nexit $rc`;
+    const lines = `. ${JSON.stringify(lib)}\nmkfifo ${JSON.stringify(fifo)}\nexec 5< <(exec bash -c 'exec 3<>"$1"; echo ready; read -r -t 300 -u 3 _' worker-shim ${JSON.stringify(fifo)})\nh=$!\nread -r -u 5 _\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "decoy alive"\nkill -KILL $h\nexit $rc`;
     const kill = Bun.spawnSync(["bash", "-c", lines]);
     expect(kill.exitCode).toBe(1);
     expect(kill.stderr.toString()).toContain("runs no worker-shim");
     expect(kill.stdout.toString()).toBe("decoy alive\n");
-  }, 120_000);
+  });
 });
 
 describe("role_generation_ended", () => {
@@ -120,7 +123,16 @@ role_inits() { printf '%s' "$AFTER"; }
 ${fn("role_generation_ended")}
 if role_generation_ended; then echo ended; else echo waiting; fi`,
       ],
-      { env: { PATH: process.env.PATH ?? "", HOME: home, BEFORE: before, AFTER: after, OP: op } }
+      {
+        env: {
+          ...bunCacheOff,
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          BEFORE: before,
+          AFTER: after,
+          OP: op,
+        },
+      }
     );
     expect(result.stderr.toString()).toBe("");
     const violation = join(evidence, "pane-endpoint-violation.txt");
@@ -242,7 +254,7 @@ function snippet(file: string, name: string) {
 }
 function runSnippet(definition: string, call: string, root: string) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
+    env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
   });
   return { out: r.stdout.toString().trim(), err: r.stderr.toString().trim(), code: r.exitCode };
 }
@@ -379,7 +391,7 @@ function fakeNsenter(name: string): { bin: string; log: string } {
 }
 function runEntered(definition: string, call: string, root: string, bin: string) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
-    env: { PATH: `${bin}:${process.env.PATH}`, HOME: home, proc_root: root },
+    env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH}`, HOME: home, proc_root: root },
   });
   return { out: r.stdout.toString().trim(), err: r.stderr.toString().trim(), code: r.exitCode };
 }

@@ -327,8 +327,8 @@ func MigrateStateFile(from, to string) error {
 // waited in every release that has them.
 const BrokerCallWait = 30 * time.Second
 
-// DefaultBrokerCallBound is how long the helper lets one broker-call op run before it answers
-// (Server.BrokerCallBound): 20 s, set from BrokerCallWait so that the answer reaches every client
+// BrokerCallBound is how long the helper lets one broker-call op run before it answers
+// (Server.brokerCall): 20 s, set from BrokerCallWait so that the answer reaches every client
 // inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
 // the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
 // for its read and its write: the op's requests end with its context at the bound, and the helper
@@ -338,19 +338,19 @@ const BrokerCallWait = 30 * time.Second
 // answer and not an empty reply. Its machine login waits 10 s, so a broker slower than about 8 s
 // can still outlast it. A healthy broker answers in a fraction of a second
 // (DefaultFirstConfirmBound); the slow answers that were measured took 5 s and 8 s.
-const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+const BrokerCallBound = BrokerCallWait - 10*time.Second
 
 // InstallRestartTimeout bounds the `systemctl --user restart` of the helper that
 // `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
 // SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
-// DefaultBrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
+// BrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
 // (Server.Serve): 21 s at the most. The start is done once systemd has forked the helper, since
 // the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to queue and fork on
 // a loaded machine. A restart still running at the bound is one install stops waiting for, and
 // systemd keeps its job: install reads the unit's main process, and sends undrain when the helper
 // it drained is still that process and no job for the unit is queued. While one is, the drain
 // ends with that restart or at DefaultDrainBound.
-const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
+const InstallRestartTimeout = BrokerCallBound + 10*time.Second
 
 // DefaultDrainBound is how long a drain holds before the helper ends it by itself
 // (Server.SetDrainBound): twice InstallRestartTimeout, a minute. Install sends SIGTERM through its

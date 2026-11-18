@@ -566,40 +566,33 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	type reading struct {
-		pid  int
-		held bool
-		err  error
-	}
-	read := make(chan reading, 1)
+	// The install runs on a goroutine of its own, as it waits for the check, and the check waits
+	// for the test: the test reads the check's pid and the guard while the check runs, then lets
+	// it go. It is let go on every path, so the install ends.
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
+	installed := make(chan shimwire.LauncherLeakCheckResult, 1)
 	go func() {
-		// The check is let go on every path, so the install the test waits on below ends.
-		defer func() { _ = os.WriteFile(release, nil, 0o600) }()
-		var pid int
-		if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
-			body, err := os.ReadFile(pidFile)
-			n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
-			pid = n
-			return err == nil && convErr == nil && pid > 0
-		}) {
-			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
-			return
+		var last shimwire.LauncherLeakCheckResult
+		for _, frame := range frames {
+			last = managers[0].check.receive(context.Background(), frame, func(string, ...any) {})
 		}
-		guard.mu.Lock()
-		held := guard.pids[pid]
-		guard.mu.Unlock()
-		read <- reading{pid: pid, held: held}
+		installed <- last
 	}()
-	var last shimwire.LauncherLeakCheckResult
-	for _, frame := range frames {
-		last = managers[0].check.receive(context.Background(), frame, func(string, ...any) {})
+	pid := testwait.Until(t, "the served check to write its pid to "+pidFile, func() (int, bool) {
+		body, err := os.ReadFile(pidFile)
+		n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+		return n, err == nil && convErr == nil && n > 0
+	})
+	guard.mu.Lock()
+	held := guard.pids[pid]
+	guard.mu.Unlock()
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	got := <-read
+	last := testwait.Receive(t, "the install to answer once its check was let go", installed)
 	switch {
-	case got.err != nil:
-		t.Fatal(got.err)
-	case !got.held:
-		t.Fatalf("the install's --help run, pid %d, was not held from the reaper while it ran (held: %v), so a reaper's pass could take its exit", got.pid, guard.held())
+	case !held:
+		t.Fatalf("the install's --help run, pid %d, was not held from the reaper while it ran (held: %v), so a reaper's pass could take its exit", pid, guard.held())
 	case !last.OK || !last.Installed:
 		t.Fatalf("the install answered %#v, want Installed", last)
 	}

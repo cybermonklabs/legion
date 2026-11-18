@@ -8,13 +8,13 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The script these tests run is the listener's seed script the golden cloud-config writes, byte for
@@ -139,10 +139,10 @@ while :; do sleep 1; done
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
-	require.Eventually(t, func() bool {
+	testwait.Eventually(t, "the fetch-secret the start runs to say it began", func() bool {
 		_, err := os.Stat(started)
 		return err == nil
-	}, time.Second, 10*time.Millisecond)
+	})
 	require.NoError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM))
 	require.Error(t, cmd.Wait())
 

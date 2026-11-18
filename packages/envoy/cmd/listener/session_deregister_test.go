@@ -14,9 +14,11 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deregister sends DELETE /v1/sessions/<sessionID><query> through the rig's routes and returns
@@ -48,18 +50,10 @@ func (rig *sessionConsumerRig) requireNoConsumer(t *testing.T, sessionID string)
 // comes reads it before the delete.
 func (rig *sessionConsumerRig) awaitNoConsumer(t *testing.T, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, "the stream to hold no consumer for "+sessionID+", deleted with the registration", func() (error, bool) {
 		_, err := rig.consumers.Info(context.Background(), sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return
-		}
-		if time.Now().After(deadline) {
-			name, _ := bus.SessionConsumerName(sessionID)
-			t.Fatalf("the stream holds %s still (%v); want it deleted with the registration", name, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return err, errors.Is(err, bus.ErrSessionConsumerNotFound)
+	})
 }
 
 // requireConsumer fails the test unless sessionID's consumer is on the stream.
@@ -146,10 +140,7 @@ func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
 // session is live again and must be delivered to. What must not happen is the listener's own
 // retry bringing back the consumer of a session that registered no more.
 func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) {
-	// The relay's windows are shortened to a tenth of production's, so the row spends its own
-	// wait over several of the relay's retries rather than seconds of the clock.
-	const window = 100 * time.Millisecond
-	rig := newRelayRigReceipt(t, window, 2*window, window)
+	rig := newRelayRigReceipt(t)
 	sessionID := "ses_deregister_retry_" + id.New()
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	// A message nothing answers: the relay sends its frame, pauses for want of a receipt, and
@@ -161,7 +152,14 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 	rig.deregister(t, sessionID, "")
 
 	rig.awaitNoConsumer(t, sessionID)
-	for deadline := time.Now().Add(10 * window); time.Now().Before(deadline); time.Sleep(window / 2) {
+	// The relay would restart the silent session's consumer at the ack floor on its receipt-and-
+	// pause cycle; driving the held clock past those waits makes any such restart run, and it must
+	// read the session gone and not recreate the consumer. Each advance frees the relay to reach
+	// its next wait, which the following advance fires; between them a span lets the relay's own
+	// goroutine act, and the consumer must stay gone throughout.
+	for range 3 {
+		rig.relayClock.Advance(relayReceiptWait + relayPauseMax + relayRetryMax)
+		testwait.Span(t, relayNoFrameWindow, "the relay's restart after an advance is async with no signal it has read the session gone; the consumer must stay gone")
 		rig.requireNoConsumer(t, sessionID)
 	}
 }
@@ -193,8 +191,7 @@ func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 			if body := recorder.Body.String(); !strings.Contains(body, lane) {
 				t.Fatalf("the refusal of %s is %q, want it to name the lane %s it lies under", subject, body, lane)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			if _, err := client.LastStoredMessage(ctx, subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
 				t.Fatalf("the stream holds a message on %s (%v); the refused publish stored nothing", subject, err)
 			}
@@ -218,24 +215,17 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 	// delete waits for it, and the answer must not.
 	unlock := rig.deps.consumers.locks.lock(sessionID)
 
+	// The route's budget runs on a fake clock this test never moves, so the answer must come with
+	// the clock held where it is: that proves it waits neither for the consumer delete (blocked on
+	// the held lock) nor for any timer of its own.
+	rig.deps.clock = clocktest.Held()
 	recorder := httptest.NewRecorder()
-	answered := make(chan time.Duration, 1)
+	answered := make(chan struct{})
 	go func() {
-		started := time.Now()
+		defer close(answered)
 		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID, nil))
-		answered <- time.Since(started)
 	}()
-
-	select {
-	case took := <-answered:
-		if took >= sendRequestBudget {
-			unlock()
-			t.Fatalf("the deregistration answered %s in, outside the %s of bus work this route gives itself", took, sendRequestBudget)
-		}
-	case <-time.After(sendRequestBudget):
-		unlock()
-		t.Fatalf("the deregistration had not answered %s in while its consumer's delete waited: it waits for that delete", sendRequestBudget)
-	}
+	testwait.Receive(t, "the deregistration's answer while its consumer delete waits on the session's lock", answered)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("DELETE /v1/sessions/%s: status %d: %s", sessionID, recorder.Code, recorder.Body.String())
 	}

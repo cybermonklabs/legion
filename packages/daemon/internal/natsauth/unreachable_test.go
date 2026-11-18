@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Unreachable's table: every shape the audit found, plus the boundary cases (an authorization or
@@ -70,11 +71,7 @@ func TestWithLastErrorNamesAPermissionViolationOnceTheConnectionIsClosed(t *test
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	select {
-	case <-refused:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the server's permission violation was never processed")
-	}
+	testwait.Receive(t, "the server's permission violation to be processed", refused)
 
 	// Exactly what intake.OpenConsumers returns when the blocked API call's own deadline fires:
 	// no sign of the permission violation in its own text, until the connection is closed and

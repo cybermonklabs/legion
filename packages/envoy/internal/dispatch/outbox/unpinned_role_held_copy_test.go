@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment mentions two roles this read can name no holder for: one attempt is past the lease
@@ -78,7 +78,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
+	claimant.settle(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the live unnamed mention, which its sender can pin to this very claimant, is still being sent: the mention would land beside the copy under %s",
 			holder, keysOf(got),
@@ -105,7 +105,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
+	testwait.Eventually(t, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
 	if got := keysOf(claimant.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once both unnamed mentions had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

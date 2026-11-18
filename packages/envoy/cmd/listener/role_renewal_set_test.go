@@ -7,7 +7,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -15,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 	"unsafe"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -24,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // bucketInterestRow is sessionID's interest row as the interest bucket holds it, read through a
@@ -142,12 +141,11 @@ func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T
 	}
 	t.Cleanup(other.StopWatch)
 	waitForRegistry(t, other)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := other.SetRoleWithPrevious(ctx, store.RoleClaimRequest{SessionID: holder, MachineID: "other-machine", ClientInstanceID: holdingProcess, Role: role}); err != nil {
 		t.Fatalf("grant %s to %s on the other listener: %v", role, holder, err)
 	}
-	waitFor(t, 10*time.Second, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
+	testwait.Eventually(t, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
 		held, err := registry.RolesHeldBy(holder)
 		return err == nil && slices.Contains(held, role)
 	})

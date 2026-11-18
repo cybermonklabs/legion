@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -102,16 +103,17 @@ func (o sendOutcome) deliveryStatus() string {
 }
 
 // forwardWindow is one forward's wait for the stream's acknowledgement that it stored it:
-// roleForwardTimeout, or what is left of the send when that is less.
-func forwardWindow(ctx context.Context) time.Duration {
-	deadline, _ := ctx.Deadline()
-	return min(roleForwardTimeout, time.Until(deadline))
+// roleForwardTimeout, or what is left of the send when that is less. The send's end is read from
+// clk rather than from a context's deadline, because a deadline context of a test's fake clock
+// reports its parent's moment and never the fake's.
+func forwardWindow(clk clock.Clock, ends time.Time) time.Duration {
+	return min(roleForwardTimeout, ends.Sub(clk.Now()))
 }
 
-// pauseBeforeRetry waits publishRetryPause, or until ctx ends, and reports whether the send has time
-// left for another attempt.
-func pauseBeforeRetry(ctx context.Context) bool {
-	return waitUnlessDone(ctx, publishRetryPause) == nil && ctx.Err() == nil
+// pauseBeforeRetry waits publishRetryPause on clk, or until ctx ends, and reports whether the send
+// has time left for another attempt.
+func pauseBeforeRetry(ctx context.Context, clk clock.Clock) bool {
+	return waitUnlessDone(ctx, clk, publishRetryPause) == nil && ctx.Err() == nil
 }
 
 // forwardAndWait forwards item to subject, under msgID as its Nats-Msg-Id when that is not empty,
@@ -203,7 +205,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 		slog.String("reason", string(outcome)),
 		slog.String("dedupe_key", s.item.DedupeKey),
 		slog.Int("attempts", s.attempts),
-		slog.String("elapsed", time.Since(s.arrived).String()))
+		slog.String("elapsed", s.d.clk().Now().Sub(s.arrived).String()))
 }
 
 // delivered answers 200 with the envelope, the holder it was stored for and the state that
@@ -410,9 +412,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
 	// reads the same stamp this send's own 202 names.
-	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
-	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
+	send.item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
+	firstCtx, cancelFirst := d.clk().WithDeadline(ctx, arrived.Add(sendRequestBudget))
+	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{SessionRegistry: d.sessions, clk: d.clk()}, role)
 	cancelFirst()
 	if err != nil {
 		send.unresolved(err)
@@ -433,7 +435,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	resolved := first
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) {
-			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
+			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{SessionRegistry: d.sessions, clk: d.clk()}, role)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.
 				break
@@ -456,7 +458,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 					return
 				}
 			}
-			window := forwardWindow(ctx)
+			window := forwardWindow(d.clk(), arrived.Add(publishDeliveryWindow))
 			if window <= 0 {
 				send.timedOut()
 				return
@@ -483,7 +485,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.
-		if !pauseBeforeRetry(ctx) {
+		if !pauseBeforeRetry(ctx, d.clk()) {
 			break
 		}
 	}

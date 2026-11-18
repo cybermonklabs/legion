@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The live tests apply Pulumi YAML programs with the pulumi CLI against this machine's Docker. Each
@@ -30,9 +31,8 @@ import (
 // TestMain removes the PULUMI_HOME the live tests share once they have run.
 func TestMain(m *testing.M) { os.Exit(pulumitest.Main(m)) }
 
-// healthWindow is how long a listener has to answer "healthy", and how long a negative control
-// watches one that must not.
-const healthWindow = 60 * time.Second
+// A listener answers "healthy" once it holds its durable, and one NATS refuses never does; both
+// are waited out rather than bounded here.
 
 // dockerProvider is the explicit docker provider each program passes its listener, at the version
 // the first consumer pins, the one the test binary installs (pulumitest.DockerPluginVersion).
@@ -76,33 +76,36 @@ func health(port int) (string, error) {
 	return body.Status, nil
 }
 
-// requireHealthy waits up to healthWindow for /healthz on port to answer "healthy".
+// requireHealthy waits for /healthz on port to answer "healthy".
 func requireHealthy(t *testing.T, port int) {
 	t.Helper()
-	deadline := time.Now().Add(healthWindow)
-	var status string
-	var err error
-	for time.Now().Before(deadline) {
-		if status, err = health(port); err == nil && status == "healthy" {
-			return
+	testwait.Until(t, fmt.Sprintf("the listener on port %d to answer \"healthy\"", port), func() (string, bool) {
+		status, err := health(port)
+		if err != nil {
+			return err.Error(), false
 		}
-		time.Sleep(time.Second)
-	}
-	t.Fatalf("listener on port %d did not answer \"healthy\" within %s: last status %q, error %v",
-		port, healthWindow, status, err)
+		return status, status == "healthy"
+	})
 }
 
-// requireNeverHealthy watches /healthz on port for healthWindow and fails the test if it ever
-// answers "healthy".
-func requireNeverHealthy(t *testing.T, port int) {
+// requireNotHealthy fails the test when /healthz on port answers "healthy" at this moment.
+func requireNotHealthy(t *testing.T, port int) {
 	t.Helper()
-	deadline := time.Now().Add(healthWindow)
-	for time.Now().Before(deadline) {
-		if status, err := health(port); err == nil && status == "healthy" {
-			t.Fatalf("listener on port %d answered \"healthy\"", port)
-		}
-		time.Sleep(time.Second)
+	if status, err := health(port); err == nil && status == "healthy" {
+		t.Fatalf("listener on port %d answered %q", port, status)
 	}
+}
+
+// awaitLog waits for the container's log to hold want, and returns the log it read then.
+func awaitLog(t *testing.T, container, want string) string {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("%q in the log of container %s", want, container), func() (string, bool) {
+		logs, err := dockerCLI("logs", container)
+		if err != nil {
+			return logs, false
+		}
+		return logs, strings.Contains(strings.ToLower(logs), want)
+	})
 }
 
 // dockerCLI runs the docker CLI and returns its combined output and error.
@@ -291,9 +294,11 @@ func TestLiveSeedReachesNATS(t *testing.T) {
 	s.Up()
 
 	requireHealthy(t, ports[0])
-	requireNeverHealthy(t, ports[1])
-	logs, err := dockerCLI("logs", unseeded)
-	require.NoError(t, err, "docker logs %s:\n%s", unseeded, logs)
+	// The unseeded listener cannot answer "healthy" while NATS refuses it, and its own log says
+	// when that refusal happened: it is the event this reads its health after, in place of
+	// watching a window.
+	logs := awaitLog(t, unseeded, "authorization violation")
+	requireNotHealthy(t, ports[1])
 	require.Contains(t, strings.ToLower(logs), "authorization violation",
 		"the unseeded listener's log shows NATS refusing it:\n%s", logs)
 }

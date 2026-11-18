@@ -12,10 +12,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -41,24 +44,29 @@ func (s fixedClaimStore) ClaimByBootTokenHash(context.Context, []byte) (supervis
 // bounded by its own resolve timeout, never held waiting for restoration: the worker-stream port
 // is plaintext and reachable from any pod, so holding an unresolved connection with no deadline
 // would let a garbage token pin a goroutine and a file descriptor for the whole boot wait, with no
-// cap on how many a client could open.
+// cap on how many a client could open. The row runs in a synctest bubble, whose clock moves only
+// once every goroutine in it waits: "at once" is the resolver returning before the clock has moved
+// at all, so neither restoration, which never closes here, nor the resolve timeout ended it.
 func TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait(t *testing.T) {
-	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
-	const resolveTimeout = 20 * time.Millisecond
-	resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), resolveTimeout)
+	synctest.Test(t, func(t *testing.T) {
+		sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
+		const resolveTimeout = 20 * time.Millisecond
+		resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), resolveTimeout, clock.Real())
 
-	done := make(chan struct{})
-	go func() {
-		resolve("garbage-token")
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			resolve("garbage-token")
+			close(done)
+		}()
 
-	select {
-	case <-done:
-		// Rejected without ever waiting on restoration, which never closes in this test.
-	case <-time.After(time.Second):
-		t.Fatal("an unknown token was held rather than rejected at once: a garbage token must not pin a goroutine and a file descriptor for the whole boot wait")
-	}
+		synctest.Wait()
+		select {
+		case <-done:
+			// Rejected without ever waiting on restoration, which never closes in this test.
+		default:
+			t.Fatal("an unknown token was held rather than rejected at once: a garbage token must not pin a goroutine and a file descriptor for the whole boot wait")
+		}
+	})
 }
 
 // A boot token a real claim minted — ClaimByBootTokenHash finds it — is held until restoration,
@@ -66,66 +74,78 @@ func TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait(t *testing.T)
 // unreachable NATS or Dispatch (daemon.go's run, LEGION-580) waits on s.restored alone, with no
 // deadline of its own, and is judged only once restoration closes it (supervision.start, once every
 // stored claim has its machine, the boot orphan reconciliation has run and the terminal replay has
-// applied what no daemon applied).
+// applied what no daemon applied). The row runs in a synctest bubble: its clock passes ten resolve
+// timeouts while the hello is held, and synctest.Wait says when every goroutine has gone as far as
+// it will, so the read after it is the resolver's whole answer.
 func TestHelloResolverHoldsAKnownTokenUntilRestoredRatherThanRejectingItAfterTheTimeout(t *testing.T) {
-	sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
-	const resolveTimeout = 20 * time.Millisecond
-	store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
-	resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout)
+	synctest.Test(t, func(t *testing.T) {
+		sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
+		const resolveTimeout = 20 * time.Millisecond
+		store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
+		resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout, clock.Real())
 
-	done := make(chan struct{})
-	go func() {
-		resolve("a-real-boot-token")
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			resolve("a-real-boot-token")
+			close(done)
+		}()
 
-	select {
-	case <-done:
-		t.Fatal("the resolver returned before restoration; a known token must be held, not rejected on the resolve timeout")
-	case <-time.After(10 * resolveTimeout):
-		// Comfortably longer than the resolve timeout: still blocked proves the wait is on
-		// restoration, not that bound.
-	}
+		// Comfortably longer than the resolve timeout, on the bubble's clock: still blocked proves
+		// the wait is on restoration, not that bound.
+		time.Sleep(10 * resolveTimeout)
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("the resolver returned before restoration; a known token must be held, not rejected on the resolve timeout")
+		default:
+		}
 
-	close(sup.restored)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the resolver never returned after restoration closed")
-	}
+		close(sup.restored)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("the resolver never returned after restoration closed")
+		}
+	})
 }
 
 // A hold on a known token is released, not left dangling, when the boot gives up rather than
 // becoming ready: supervision.stop cancels s.ctx before the worker stream closes
 // (daemon.go's run), so every held hello returns rather than leaking the goroutine and the
-// connection it would otherwise pin forever.
+// connection it would otherwise pin forever. The row runs in a synctest bubble, as the one above.
 func TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingReady(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	sup := newSupervisor(ctx, nil, "PROJECT", "", quietLogger())
-	const resolveTimeout = 20 * time.Millisecond
-	store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
-	resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		sup := newSupervisor(ctx, nil, "PROJECT", "", quietLogger())
+		const resolveTimeout = 20 * time.Millisecond
+		store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
+		resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout, clock.Real())
 
-	done := make(chan struct{})
-	go func() {
-		resolve("a-real-boot-token")
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			resolve("a-real-boot-token")
+			close(done)
+		}()
 
-	select {
-	case <-done:
-		t.Fatal("the resolver returned before the boot gave up; a known token must be held until then")
-	case <-time.After(10 * resolveTimeout):
-		// Comfortably longer than the resolve timeout: still blocked proves the wait is on s.ctx,
-		// not that bound.
-	}
+		// Comfortably longer than the resolve timeout, on the bubble's clock: still blocked proves
+		// the wait is on s.ctx, not that bound.
+		time.Sleep(10 * resolveTimeout)
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("the resolver returned before the boot gave up; a known token must be held until then")
+		default:
+		}
 
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the resolver never returned after the boot's context was cancelled; a held hello would pin a goroutine and a connection forever")
-	}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("the resolver never returned after the boot's context was cancelled; a held hello would pin a goroutine and a connection forever")
+		}
+	})
 }
 
 // flakyClaimStore fails its first read and answers every later read with its claim.
@@ -161,7 +181,9 @@ func TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	listener, err := stream.Listen(ctx, "unix://"+filepath.Join(shortTempDir(t), "worker-stream.sock"),
-		sup.helloResolver(api.NewBootTokens(store), time.Second),
+		// The resolve bound is on a fake the row never moves: the first read fails by the store's
+		// own error, and the bound ends no read however late a loaded machine answers it.
+		sup.helloResolver(api.NewBootTokens(store), time.Second, clocktest.New(time.Now())),
 		stream.Options{RPCTimeout: time.Second, Log: slog.New(slog.NewTextHandler(logs, nil))})
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -177,13 +199,8 @@ func TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal(t *test
 	first.closed()
 
 	dialShim(t, listener.Addr(), bootToken)
-	select {
-	case event := <-listener.Events():
-		if event != (stream.Hello{Claim: token, Generation: 1}) {
-			t.Fatalf("the listener reported %#v, want the redial's hello", event)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the redial's hello never reached the listener's events")
+	if event := testwait.Receive(t, "the redial's hello at the listener's events", listener.Events()); event != (stream.Hello{Claim: token, Generation: 1}) {
+		t.Fatalf("the listener reported %#v, want the redial's hello", event)
 	}
 
 	logged := logs.String()
@@ -291,70 +308,78 @@ func TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNot
 		{name: "generation 1 stored queued after a release: restore's rewrite records it", seeded: supervise.StateQueued, first: rewrite},
 		{name: "generation 1 stored launch_uncertain: its release records it", seeded: supervise.StateLaunchUncertain, first: release},
 	} {
+		// Each case runs in a synctest bubble, as the rows above: its clock passes ten resolve
+		// timeouts while the hello is held, and synctest.Wait says when the resolver has gone as far
+		// as it will.
 		t.Run(tc.name, func(t *testing.T) {
-			store := &relaunchingStore{}
-			tokens := api.NewBootTokens(store)
-			recording := tokens.Recording(store)
+			synctest.Test(t, func(t *testing.T) {
+				store := &relaunchingStore{}
+				tokens := api.NewBootTokens(store)
+				recording := tokens.Recording(store)
 
-			const boot1, boot2 = "generation-1-token", "generation-2-token"
-			ctx := context.Background()
-			// A previous daemon's own row: this process has done no write for it yet, so its
-			// BootTokens has recorded nothing. Seeded through the bare store, bypassing Recording,
-			// so the write below is the only one that can record the hash.
-			generation1 := supervise.Claim{
-				Token: claim.Token("a-claim"), Generation: 1, BootTokenHash: supervise.HashBootToken(boot1),
-				State: tc.seeded,
-			}
-			if err := store.PutClaim(ctx, generation1); err != nil {
-				t.Fatalf("write generation 1's claim: %v", err)
-			}
-
-			sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
-			sup.machines[claim.Token("a-claim")] = &member{}
-			const resolveTimeout = 20 * time.Millisecond
-			resolve := sup.helloResolver(tokens, resolveTimeout)
-
-			done := make(chan result, 1)
-			go func() {
-				_, _, stale, known, err := resolve(boot1)
-				done <- result{stale, known, err}
-			}()
-
-			select {
-			case <-done:
-				t.Fatal("the resolver returned before restoration; generation 1's hello must be held")
-			case <-time.After(10 * resolveTimeout):
-			}
-
-			// This process's first write of generation 1's claim runs through the Recording-wrapped
-			// store with generation 1's hash unchanged; then the relaunch writes generation 2's own
-			// fresh token, before the held hello is ever judged.
-			if err := tc.first(ctx, recording, generation1); err != nil {
-				t.Fatalf("write generation 1's claim: %v", err)
-			}
-			if err := recording.PutClaim(ctx, supervise.Claim{
-				Token: claim.Token("a-claim"), Generation: 2, BootTokenHash: supervise.HashBootToken(boot2),
-			}); err != nil {
-				t.Fatalf("write generation 2's claim: %v", err)
-			}
-			close(sup.restored)
-
-			select {
-			case got := <-done:
-				if got.err != nil || !got.known || !got.stale {
-					t.Fatalf("resolve(%q) = known %t, stale %t, err %v; want known and stale, no error",
-						boot1, got.known, got.stale, got.err)
+				const boot1, boot2 = "generation-1-token", "generation-2-token"
+				ctx := context.Background()
+				// A previous daemon's own row: this process has done no write for it yet, so its
+				// BootTokens has recorded nothing. Seeded through the bare store, bypassing Recording,
+				// so the write below is the only one that can record the hash.
+				generation1 := supervise.Claim{
+					Token: claim.Token("a-claim"), Generation: 1, BootTokenHash: supervise.HashBootToken(boot1),
+					State: tc.seeded,
 				}
-			case <-time.After(time.Second):
-				t.Fatal("the resolver never returned after restoration closed")
-			}
+				if err := store.PutClaim(ctx, generation1); err != nil {
+					t.Fatalf("write generation 1's claim: %v", err)
+				}
 
-			// Generation 2's own, freshly minted hello is accepted once restoration has already
-			// closed.
-			launched, generation, stale, known, err := resolve(boot2)
-			if err != nil || !known || stale || generation != 2 || launched != claim.Token("a-claim") {
-				t.Fatalf("resolve(%q) = (%q, %d, stale=%t, known=%t, %v), want (a-claim, 2, false, true, nil)", boot2, launched, generation, stale, known, err)
-			}
+				sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
+				sup.machines[claim.Token("a-claim")] = &member{}
+				const resolveTimeout = 20 * time.Millisecond
+				resolve := sup.helloResolver(tokens, resolveTimeout, clock.Real())
+
+				done := make(chan result, 1)
+				go func() {
+					_, _, stale, known, err := resolve(boot1)
+					done <- result{stale, known, err}
+				}()
+
+				time.Sleep(10 * resolveTimeout)
+				synctest.Wait()
+				select {
+				case <-done:
+					t.Fatal("the resolver returned before restoration; generation 1's hello must be held")
+				default:
+				}
+
+				// This process's first write of generation 1's claim runs through the Recording-wrapped
+				// store with generation 1's hash unchanged; then the relaunch writes generation 2's own
+				// fresh token, before the held hello is ever judged.
+				if err := tc.first(ctx, recording, generation1); err != nil {
+					t.Fatalf("write generation 1's claim: %v", err)
+				}
+				if err := recording.PutClaim(ctx, supervise.Claim{
+					Token: claim.Token("a-claim"), Generation: 2, BootTokenHash: supervise.HashBootToken(boot2),
+				}); err != nil {
+					t.Fatalf("write generation 2's claim: %v", err)
+				}
+				close(sup.restored)
+
+				synctest.Wait()
+				select {
+				case got := <-done:
+					if got.err != nil || !got.known || !got.stale {
+						t.Fatalf("resolve(%q) = known %t, stale %t, err %v; want known and stale, no error",
+							boot1, got.known, got.stale, got.err)
+					}
+				default:
+					t.Fatal("the resolver never returned after restoration closed")
+				}
+
+				// Generation 2's own, freshly minted hello is accepted once restoration has already
+				// closed.
+				launched, generation, stale, known, err := resolve(boot2)
+				if err != nil || !known || stale || generation != 2 || launched != claim.Token("a-claim") {
+					t.Fatalf("resolve(%q) = (%q, %d, stale=%t, known=%t, %v), want (a-claim, 2, false, true, nil)", boot2, launched, generation, stale, known, err)
+				}
+			})
 		})
 	}
 }
@@ -373,7 +398,7 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 	newBoot := func(rt *fake.Runtime, launches *stallingRuntime) *supervisor {
 		sup := newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 		sup.deps = supervise.Deps{
-			Runtime: rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+			Runtime: rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 			Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 			Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 			PluginContract: api.DaemonAPIVersion,
@@ -396,11 +421,7 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 	stopping, stop := context.WithCancel(context.Background())
 	launched := make(chan error, 1)
 	go func() { launched <- m.Handle(stopping, supervise.RequestSpawn{Claim: token}) }()
-	select {
-	case <-launches.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the launch never reached the runtime")
-	}
+	testwait.Receive(t, "the launch to reach the runtime", launches.entered)
 	registered := make(chan error, 1)
 	go func() {
 		registered <- m.Handle(context.Background(), supervise.RequestRegister{
@@ -456,7 +477,7 @@ func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunche
 			sup := newSupervisor(context.Background(), nil, "legion", t.TempDir(), slog.New(slog.NewTextHandler(logs, nil)))
 			rt := fake.NewRuntime()
 			sup.deps = supervise.Deps{
-				Runtime: rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+				Runtime: rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 				Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 				PluginContract: api.DaemonAPIVersion,
@@ -562,9 +583,11 @@ func newIssueRig(t *testing.T) *issueRig {
 	rt, conns := fake.NewRuntime(), fake.NewConns()
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
+		Limits: supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		// RPC, which bounds a prompt's send on the real clock, is an hour so that it stays away from
+		// a prompt a row holds at the door (gatedPrompt); the other timeouts run on the still clock.
+		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Hour, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion,
 		Identity: func(_ context.Context, role claim.Role, _ string) (runtime.GitIdentity, error) {
 			return runtime.GitIdentity{Name: "legion-" + string(role) + "[bot]", Email: string(role) + "@example.invalid"}, nil
@@ -706,11 +729,7 @@ func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
 	}
 	// The implementer's send is held inside its prompt: its adoption has run and its turn has not
 	// started, which is exactly the claim the old answer read as idle.
-	select {
-	case <-gated.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the implementer's send never reached its prompt")
-	}
+	testwait.Receive(t, "the implementer's send to reach its prompt", gated.entered)
 	adoptions := rig.adoptions()
 	if view := writing.View(); view.State != supervise.StateReady || !view.SendInFlight {
 		t.Fatalf("the implementer is %s with its send in flight = %v, want it ready with a send in flight", view.State, view.SendInFlight)

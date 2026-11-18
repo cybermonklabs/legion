@@ -125,14 +125,16 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (boundedByClock), ending with
+// errRelatedAllowanceEnded as its cause so that a check whose context is done can tell its own
+// deadline from the request that ran it going away (runRelatedCheck's callerGone). Every site
+// that bounds a check uses it, so a decision block's per-check context inherits the edit's
+// allowance with that same cause. The caller cancels, and names the allowance in what it answers.
+// An allowance already spent ends the context before this returns, which is boundedByClock's rule
+// and what a case setting suggestionTimeout relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.boundedByClock(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -356,9 +358,9 @@ type relatedPick struct {
 // request's header asked for decides it, on this path as on every read of the same answer, and
 // the caller resolves its own reader once this returns.
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
-	started := time.Now()
+	started := s.clock.Now()
 	suggestions, record := s.runRelatedCheck(ctx, input, started)
-	record.totalMS = int(time.Since(started).Milliseconds())
+	record.totalMS = int(s.clock.Now().Sub(started).Milliseconds())
 	if input.record {
 		s.recordRelatedChecks(ctx, relatedCheckRecord{source: input.source, suggestions: suggestions, record: record})
 	}
@@ -435,7 +437,7 @@ func (s *server) runRelatedCheck(
 	}
 	exclusion := relatedExclusion{issueKey: cmp.Or(input.source.issueKey, input.excludeIssue), artifactID: input.source.artifactID}
 	excluded := input.excluded()
-	stagesStarted := time.Now()
+	stagesStarted := s.clock.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
@@ -451,15 +453,15 @@ func (s *server) runRelatedCheck(
 		default:
 			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, relatedKeywordStatement, project, pick.terms, excluded)
 		}
-		stage.took = time.Since(stagesStarted)
+		stage.took = s.clock.Now().Sub(stagesStarted)
 		keyword <- stage
 	}()
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
-	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
-	// there and leave the rest of the allowance to stage 1. A question's cross-project leg runs
-	// on that context too, so the wait for it below never outlives it either.
-	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
+	// start, on the server's clock, so the embedding and the meaning query both stop there and
+	// leave the rest of the allowance to stage 1. A question's cross-project leg runs on that
+	// context too, so the wait for it below never outlives it either.
+	meaningAllowance := min(relatedMeaningAllowance, allowance)
 	var meaning chan relatedStage
 	var meaningCtx context.Context
 	endMeaning := context.CancelFunc(func() {})
@@ -470,7 +472,7 @@ func (s *server) runRelatedCheck(
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
 	default:
-		meaningCtx, endMeaning = context.WithDeadline(bounded, started.Add(meaningAllowance))
+		meaningCtx, endMeaning = s.clock.WithDeadline(bounded, started.Add(meaningAllowance))
 		defer endMeaning()
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
@@ -510,7 +512,7 @@ func (s *server) runRelatedCheck(
 		meaning = make(chan relatedStage, 1)
 		go func() {
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
-			stage.took = time.Since(stagesStarted)
+			stage.took = s.clock.Now().Sub(stagesStarted)
 			meaning <- stage
 		}()
 	}
@@ -550,7 +552,7 @@ func (s *server) runRelatedCheck(
 			case stage = <-meaning:
 				got = true
 			default:
-				record.meaningMS = milliseconds(time.Since(stagesStarted))
+				record.meaningMS = milliseconds(s.clock.Now().Sub(stagesStarted))
 				reason = relatedReasonMeaningTimeout
 			}
 		}
@@ -568,7 +570,7 @@ func (s *server) runRelatedCheck(
 	// meaning stage, that wait with it (D7).
 	if answered && answer.cross != nil {
 		answer.otherProjects = s.awaitCrossProject(meaningCtx, answer.cross)
-		record.meaningMS = milliseconds(time.Since(stagesStarted))
+		record.meaningMS = milliseconds(s.clock.Now().Sub(stagesStarted))
 	}
 	// The check needs nothing more of the meaning context: what still runs on it is a
 	// cross-project leg the grace left behind, or the leg of a stage that did not answer, which
@@ -700,16 +702,16 @@ func (s *server) relatedMeaningStage(
 
 // awaitCrossProject is the check's wait for its cross-project leg once the meaning stage has
 // answered: what the leg found when it answers within the grace, nothing otherwise. The grace
-// ends at the earlier of crossProjectGrace from now and the meaning deadline (meaningCtx's), so
-// it never holds the check past the meaning allowance (INFRA-2337 D1). The leg runs on the
-// meaning context too, so it ends by that deadline itself, but the wait does not depend on the
-// leg seeing that.
+// ends at the earlier of crossProjectGrace from now and the meaning deadline (meaningCtx's),
+// both on the server's clock, so it never holds the check past the meaning allowance
+// (INFRA-2337 D1). The leg runs on the meaning context too, so it ends by that deadline itself,
+// but the wait does not depend on the leg seeing that.
 //
 // The leg's answer and the end of the grace can be ready together, and Go then picks between
 // them at random; an answer that is already there when the grace ends is taken, as
 // runRelatedCheck takes the stage's own.
 func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []model.SearchResult) []model.SearchResult {
-	grace, endGrace := context.WithTimeout(meaningCtx, cmp.Or(s.crossProjectWait, crossProjectGrace))
+	grace, endGrace := s.clock.WithTimeout(meaningCtx, crossProjectGrace)
 	defer endGrace()
 	select {
 	case results := <-cross:

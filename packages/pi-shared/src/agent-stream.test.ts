@@ -8,7 +8,17 @@ import {
   PICTURE_PLACEHOLDER,
 } from "@legion/contracts";
 
-import { AgentStreamPublisher, type AgentStreamSettingsState } from "./agent-stream";
+import {
+  type AgentStreamContextTiming,
+  AgentStreamPublisher,
+  type AgentStreamSettingsState,
+} from "./agent-stream";
+
+/** The caller's record of a reading in its `interval`th interval: read a millisecond before it
+ *  went out, a second of the caller's clock to each interval. */
+function timed(interval: number): AgentStreamContextTiming {
+  return { interval, at: interval * 1_000, readAt: interval * 1_000 - 1 };
+}
 
 const SUBJECT = "agentstream.s1.frames";
 
@@ -568,26 +578,66 @@ describe("the session's context usage", () => {
 
   test("reaches a viewer as the newest reading, and an unwatched session sends none", () => {
     const { published, publisher } = harness();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 5, tokens: 10_000 });
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 5, tokens: 10_000 }, timed(1));
     expect(published).toEqual([]);
 
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 20, tokens: 40_000 });
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 31.5, tokens: 63_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 20, tokens: 40_000 },
+      timed(2)
+    );
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 31.5, tokens: 63_000 },
+      timed(3)
+    );
     expect(published).toEqual([
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 2, tokens: 40_000, v: 1 },
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 3, tokens: 63_000, v: 1 },
+      {
+        contextWindow: 200_000,
+        ...timed(2),
+        kind: "context",
+        seq: SEQ_START + 2,
+        tokens: 40_000,
+        v: 1,
+      },
+      {
+        contextWindow: 200_000,
+        ...timed(3),
+        kind: "context",
+        seq: SEQ_START + 3,
+        tokens: 63_000,
+        v: 1,
+      },
     ]);
     // The window moves with the model the session switched to, and the frame follows it.
-    publisher.setContext(SUBJECT, { contextWindow: 1_000_000, percent: 6.3, tokens: 63_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 1_000_000, percent: 6.3, tokens: 63_000 },
+      timed(5)
+    );
     expect(published.at(-1)).toEqual({
       contextWindow: 1_000_000,
+      ...timed(5),
       kind: "context",
       seq: SEQ_START + 4,
       tokens: 63_000,
       v: 1,
     });
     expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
+  });
+
+  // The interval number is when a reading went out, not what it says: the same figures in a later
+  // interval are no news, send nothing, and keep the number they went out with.
+  test("keeps the interval an unchanged reading went out in", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const usage = { contextWindow: 200_000, percent: 25, tokens: 50_000 };
+    publisher.setContext(SUBJECT, usage, timed(1));
+    publisher.setContext(SUBJECT, usage, timed(2));
+
+    expect(published.map((frame) => (frame.kind === "context" ? frame.interval : 0))).toEqual([1]);
+    expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
   });
 
   // The pinned binary wires `getContextUsage` more than once: the canonical reading comes from
@@ -597,18 +647,29 @@ describe("the session's context usage", () => {
   test("is not sent for a reading a viewer would draw a false ring from", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 12, tokens: 24_000 });
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 });
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 12, tokens: 24_000 }, timed(1));
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 }, timed(2));
+    publisher.setContext(SUBJECT, undefined, timed(3));
     expect(published).toEqual([]);
     expect(publisher.replay("s1").frames).toEqual([]);
 
     // A reading the session did send stands: a later refusal neither replaces nor erases it.
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 });
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(4)
+    );
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 }, timed(5));
+    publisher.setContext(SUBJECT, undefined, timed(6));
     expect(published).toEqual([
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 1, tokens: 50_000, v: 1 },
+      {
+        contextWindow: 200_000,
+        ...timed(4),
+        kind: "context",
+        seq: SEQ_START + 1,
+        tokens: 50_000,
+        v: 1,
+      },
     ]);
     expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
   });
@@ -618,10 +679,21 @@ describe("the session's context usage", () => {
   test("is sent for tokens the host reports without a percentage", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: null, tokens: 50_000 },
+      timed(1)
+    );
 
     expect(published).toEqual([
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 1, tokens: 50_000, v: 1 },
+      {
+        contextWindow: 200_000,
+        ...timed(1),
+        kind: "context",
+        seq: SEQ_START + 1,
+        tokens: 50_000,
+        v: 1,
+      },
     ]);
   });
 
@@ -633,7 +705,11 @@ describe("the session's context usage", () => {
     }
     publisher.setCommands(SUBJECT, [{ name: "compact", source: "builtin" }]);
     publisher.setSettings(SUBJECT, settings);
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
     publisher.noteViewer();
 
     const { frames } = publisher.replay("s1");
@@ -643,7 +719,7 @@ describe("the session's context usage", () => {
       "context",
       "commands",
     ]);
-    expect(frames.at(-2)).toMatchObject({ contextWindow: 200_000, tokens: 50_000 });
+    expect(frames.at(-2)).toMatchObject({ contextWindow: 200_000, tokens: 50_000, ...timed(1) });
     expect(new TextEncoder().encode(JSON.stringify(frames)).length).toBeLessThanOrEqual(
       AGENT_STREAM_LIMITS.historyBytes
     );
@@ -654,7 +730,11 @@ describe("the session's context usage", () => {
   test("as kept unwatched, goes to a viewer once it is attached", () => {
     const { published, publisher } = harness();
     publisher.setSettings(SUBJECT, settings);
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
     publisher.setCommands(SUBJECT, [{ name: "compact", source: "builtin" }]);
     publisher.publishState(SUBJECT);
     expect(published).toEqual([]);
@@ -691,7 +771,11 @@ describe("the session's context usage", () => {
     publisher.noteViewer();
     publisher.setSettings(SUBJECT, { ...settings, models });
     publisher.setCommands(SUBJECT, commands);
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
 
     const { frames } = publisher.replay("s1");
     expect(frames.map((frame) => frame.kind)).toEqual(["settings", "context", "commands"]);
@@ -708,13 +792,13 @@ describe("the session's context usage", () => {
     const { published, publisher } = harness();
     const usage = { contextWindow: 200_000, percent: 25, tokens: 50_000 };
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, usage);
+    publisher.setContext(SUBJECT, usage, timed(1));
     publisher.reset();
     publisher.noteViewer();
     expect(publisher.replay("s2").frames).toEqual([]);
 
     // The next session's first reading is news to its viewer, even when it reads the same.
-    publisher.setContext(SUBJECT, usage);
+    publisher.setContext(SUBJECT, usage, timed(2));
     expect(published.map((frame) => frame.kind)).toEqual(["context", "context"]);
     expect(publisher.replay("s2").frames).toEqual([published.at(-1) as AgentStreamFrame]);
   });

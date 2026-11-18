@@ -77,26 +77,6 @@ const cutoverOldContract = 68
 // after the repair.
 const cutoverStoredSeq = 5
 
-// cutoverWait bounds each wait of this test on the daemon's own work: a boot, a launch, a
-// registration, an outbox row's tries, an idle pass. The longest of those is a merger's start
-// that a closed design gate held: once the gate opens the test makes the row due at once, and the
-// outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
-// row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64 seconds
-// (retryBackoff), so the bound stays above that. It is the bound a fault is reported at, so a slow
-// machine is no failure, and a start that never comes fails here rather than at the package's
-// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's claims
-// over its API or of its database.
-const (
-	cutoverWait = 90 * time.Second
-	cutoverPoll = 100 * time.Millisecond
-)
-
-// cutoverIdleTick is how often this test's daemon decides every pod (overrides.idleTick, the
-// production minute): the idle release of the second half is read from the claim rows the test
-// back-dates (releaseAgain), so the tick buys nothing but the wait for it.
-const cutoverIdleTick = 250 * time.Millisecond
-
 // TestTheCutoverStartsTheMergersTheOldBuildLeftStopped holds that the first boot of this release on
 // a record legion-v19.57.3 left gives a merging task to each merger nothing else would start
 // again, once, and that no later boot does it again (dispatch://INFRA-3274/spec R2). Under
@@ -121,7 +101,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // each merger at entry 1, given and served, which is where a merger that took its merging task
 // stands after the upgrade. The fill records no task for that entry: it reads only a start that
 // still carries the slot mark, and S's (below), the one start the old record still holds, has
-// lost its mark by then. The whole daemon then boots on the store (startDaemonWithin).
+// lost its mark by then. The whole daemon then boots on the store (startDaemonLogging).
 //
 // The ten issues, each a tree root of its own, all but N and T in `awaiting_merge`, and all but N
 // with their merger's READY head and `completed_at` on its phase row. None holds a slot but T:
@@ -268,14 +248,14 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.await(t, "the boot's own fact (DaemonBooted), with its resume by rule and admission's pass, to be applied", func() bool {
 		return rig.bootsApplied(t) == 1
 	})
-	rig.settled(t, rig.a)
-	rig.settled(t, rig.g)
+	rig.settled(t, rig.a, false)
+	rig.settled(t, rig.g, true)
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
 	// S: the start the old record queued starts S's merger, and its task is the one task the
 	// merger gets: no start of the boot gives it a second.
 	rig.connect(t, rig.s)
-	rig.settled(t, rig.s)
+	rig.settled(t, rig.s, true)
 	rig.toldTheQueuedTask(t, rig.s)
 
 	// The repair's own record of what it did: G and E, each start with StartOrOwe's mark.
@@ -315,7 +295,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}
 	rig.connect(t, rig.e)
-	rig.settled(t, rig.e)
+	rig.settled(t, rig.e, true)
 	rig.toldOnce(t, rig.e)
 
 	// D's merger, every role of G and E but the merger, and T's tester: nothing starts them.
@@ -373,13 +353,16 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.staysReleased(t, rig.te.key, claim.RoleTester, "T's tester is released level with its entry, and no boot step starts such a claim")
 
 	// Dispatch: one cutover message on each issue whose merger the repair started, over both boots.
-	rig.await(t, "the outbox to hold no Dispatch message", func() bool {
-		var waiting int
-		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, string(record.OutboxKindDispatchMessage)).Scan(&waiting); err != nil {
-			t.Fatalf("count the Dispatch messages the outbox holds: %v", err)
-		}
-		return waiting == 0
-	})
+	// The outbox reports each message row's finish, and once G's and E's have, it holds none.
+	rig.messages.settled(t, rowOf{issue: rig.g.key, kind: record.OutboxKindDispatchMessage, outcome: settledFinished},
+		rowOf{issue: rig.e.key, kind: record.OutboxKindDispatchMessage, outcome: settledFinished})
+	var waiting int
+	if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, string(record.OutboxKindDispatchMessage)).Scan(&waiting); err != nil {
+		t.Fatalf("count the Dispatch messages the outbox holds: %v", err)
+	}
+	if waiting != 0 {
+		t.Fatalf("the outbox holds %d Dispatch messages once G's and E's finished, want none", waiting)
+	}
 	for _, want := range []struct {
 		issue cutoverIssue
 		told  int
@@ -402,6 +385,14 @@ type cutoverRig struct {
 	built   *built
 	board   *liveDispatch
 	o       overrides
+	// starts is an observer of both boots for each issue whose merger a start row of the outbox
+	// starts (G, E and S), and messages one for the Dispatch messages, each read on its own: the
+	// outbox runs every issue's rows beside the others, in no order the test sets.
+	starts   map[string]*observer
+	messages *observer
+	// passes runs the idle release's pass when this rig's test needs a pod taken again
+	// (releaseAgain), in place of waiting out the daemon's own minute.
+	passes *passer
 	// daemon is the running boot, and logs is its log alone, so each boot's records are read
 	// apart.
 	daemon *daemon
@@ -533,9 +524,14 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	rig.o = fakeRuntime(rig.rt, rig.built)
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github(t)
-	rig.o.idleTick = cutoverIdleTick
+	rig.passes = triggering(&rig.o)
 	relaunchable := true
 	rig.o.pluginRelaunchable = &relaunchable
+	rig.starts = map[string]*observer{}
+	for _, issue := range []cutoverIssue{rig.g, rig.e, rig.s} {
+		rig.starts[issue.key] = observing(&rig.o)
+	}
+	rig.messages = observing(&rig.o)
 	return rig
 }
 
@@ -771,8 +767,9 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 }
 
 // boot runs the daemon on the rig's store until it is stopped or the test ends, with a log of its
-// own, and returns once it answers /healthz. The repair is a boot step before the API serves, so
-// its records are in that log by then. A failed test prints the end of the log of each boot.
+// own, and returns once it reports itself ready to serve. The repair is a boot step before the API
+// serves, so its records are in that log by then. A failed test prints the end of the log of each
+// boot.
 func (r *cutoverRig) boot(t *testing.T) {
 	t.Helper()
 	logs := &syncBuffer{}
@@ -783,14 +780,14 @@ func (r *cutoverRig) boot(t *testing.T) {
 			t.Logf("the end of a boot's log:\n%s", log[max(0, len(log)-idleRigLogTailBytes):])
 		}
 	})
-	r.daemon = startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(logs, nil)), cutoverWait)
+	r.daemon = startDaemonLogging(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(logs, nil)))
 }
 
-// await waits for condition within cutoverWait, or what is left of the test binary's own deadline
-// less a second, asking it every cutoverPoll.
+// await waits for condition, failing with what it waited for. It has no bound of its own: the
+// one bound of this binary is the shared wait's (testwait).
 func (r *cutoverRig) await(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, testwait.Bounded(t, cutoverWait, time.Second), cutoverPoll, what, condition)
+	testwait.Eventually(t, what, condition)
 }
 
 // token is role's claim token on issue.
@@ -861,18 +858,26 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 }
 
 // settled waits until issue's merger has been told something and nothing more is coming for it:
-// no start of it left in the outbox, and its claim idle with no task pending. A start that would
-// give it a second task is one of those two until its prompt is sent, and the agent ends every
-// turn at once, so a task delivered after this shows as a second task or a pending task.
-func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
+// its start row finished, when a row of the outbox starts it (started: G, E and S, whose rows the
+// outbox reports), its claim idle with no task pending, and no start of it left in the outbox. A
+// start that would give it a second task is one of those until its prompt is sent, and the agent
+// ends every turn at once, so a task delivered after this shows as a second task or a pending
+// task.
+func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue, started bool) {
 	t.Helper()
+	if started {
+		r.starts[issue.key].settled(t, rowOf{issue: issue.key, kind: record.OutboxKindSupervise, outcome: settledFinished})
+	}
 	r.await(t, issue.key+"'s merger to be told its task and hold nothing more", func() bool {
-		if len(r.tasks(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
+		if len(r.tasks(issue.merger)) == 0 {
 			return false
 		}
 		held := r.daemon.claim(issue.merger)
 		return held.State == string(supervise.StateIdle) && held.Pending == nil
 	})
+	if queued := r.startsQueued(t, issue.key, claim.RoleMerger); queued != 0 {
+		t.Fatalf("%s's merger has %d starts left in the outbox once it was told its task, want none", issue.key, queued)
+	}
 }
 
 // toldOnce holds that issue's merger was given exactly one task over its whole life in this
@@ -961,7 +966,7 @@ func (r *cutoverRig) bootsApplied(t *testing.T) int {
 func (r *cutoverRig) releaseAgain(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	ctx := context.Background()
-	r.await(t, "the idle release to suspend "+issue.key+"'s merger and arm its backstop", func() bool {
+	r.passes.until(t, passIdle, "the idle release to suspend "+issue.key+"'s merger and arm its backstop", func() bool {
 		if _, err := r.pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes',
 			activity_at = now() - interval '25 minutes', activity_background = false, activity_kinds = '',
 			activity_next_reminder_at = null where issue = $1`, issue.key); err != nil {
@@ -1099,7 +1104,7 @@ func (r *cutoverRig) github(t *testing.T) string {
 		pulls[strconv.Itoa(issue.number)] = issue
 	}
 	repo := "/repos/" + startedAgainRepo
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, req *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
 		write := func(value any) {
 			_ = json.NewEncoder(w).Encode(value)
@@ -1207,9 +1212,7 @@ func dialCutoverAgent(t *testing.T, address, bootToken string) *cutoverAgent {
 	t.Cleanup(func() { conn.Close() })
 	a := &cutoverAgent{conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
 	a.send(shimwire.Hello2{BootToken: bootToken})
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatalf("set the read deadline: %v", err)
-	}
+	readBy(t, conn)
 	line, err := a.lines.ReadBytes('\n')
 	if err != nil {
 		t.Fatalf("read the daemon's answer to the hello: %v", err)

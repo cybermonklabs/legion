@@ -1,7 +1,6 @@
 package kvwatch_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // jsonLogger is a JSON logger over a buffer, the shape of the one the listener hands a watcher, and
@@ -88,9 +88,7 @@ func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
 	w := kvwatch.New("interest registry", kv, into, kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
@@ -135,15 +133,13 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the scan's one record", func() bool { return into.has("one") })
+	testwait.Eventually(t, "the scan's one record", func() bool { return into.has("one") })
 	if w.Ready() {
 		t.Fatal("ready while the scan was still under way")
 	}
-	now.advance(kvwatch.ScanIdleTimeout)
+	now.Advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
@@ -161,14 +157,14 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 	if _, err := kv.Put("after-the-timeout", []byte("1")); err != nil {
 		t.Fatalf("put after-the-timeout: %v", err)
 	}
-	eventually(t, "a key written after the timed-out scan", func() bool { return into.has("after-the-timeout") })
+	testwait.Eventually(t, "a key written after the timed-out scan", func() bool { return into.has("after-the-timeout") })
 
-	eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
+	testwait.Eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
 	if got := arm.asked(); got != 5*time.Second {
 		t.Fatalf("the re-read waits %v, want 5s", got)
 	}
 	arm.fireIt(t)
-	eventually(t, "the re-read's completion", w.Following)
+	testwait.Eventually(t, "the re-read's completion", w.Following)
 	if completed := matching(records(), "INFO", warmUp); len(completed) != 1 || completed[0]["outcome"] != "completed" || completed[0]["entries"] != float64(4) {
 		t.Fatalf("the re-read logged %v, want one INFO warm-up line with outcome completed and all 4 entries", completed)
 	}

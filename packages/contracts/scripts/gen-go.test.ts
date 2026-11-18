@@ -26,7 +26,6 @@ const repoRoot = resolve(import.meta.dir, "../../..");
 const skip = skipWithout("gofmt");
 
 describe.skipIf(skip)("gen-go", () => {
-  // The generator shells out to gofmt, so Bun's 5 s default cannot cover a cold CI runner.
   // `--check` compares a fresh render with the committed file and never writes it, so a constant
   // changed in TypeScript without regenerating fails here instead of being rewritten in place.
   test("the committed Go contract is what the generator emits, without a question schema", async () => {
@@ -50,7 +49,7 @@ describe.skipIf(skip)("gen-go", () => {
 \tRoles     []string \`json:"roles,omitempty"\`
 }`);
     expect(await Bun.file(questionSchema).exists()).toBe(false);
-  }, 120_000);
+  });
 
   // Each file the generator writes is checked, so a hand-edit of any of them fails CI naming the
   // file it found stale rather than passing because a sibling file still matches. The hand-edit
@@ -81,6 +80,6 @@ describe.skipIf(skip)("gen-go", () => {
       } finally {
         rmSync(root, { force: true, recursive: true });
       }
-    }, 120_000);
+    });
   }
 });

@@ -14,6 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -52,10 +54,15 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 	}
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
+	// The interval is the production default's hour on a clock that stands still unless this test
+	// moves it, so the loop's own timer never comes due: every tick is one this test runs through
+	// the loop's trigger.
+	fake := clocktest.New(time.Now().UTC())
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, controllerWake: 10 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, controllerWake: time.Hour, clock: fake,
 	}
+	passes := triggeringRuntime(w)
 	ticks := func() (rows int, issue string) {
 		t.Helper()
 		if err := pool.QueryRow(context.Background(), `select count(*), coalesce(min(issue), '') from outbox
@@ -75,7 +82,15 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { w.tickController(ctx); close(done) }()
-	testwait.Eventually(t, "three ticks applied", func() bool { return processed() >= 3 })
+	// Three ticks, each at a moment of its own on the runtime's clock, since a tick's event id is
+	// its moment, and each read only once its pass has ended.
+	for tick := 1; tick <= 3; tick++ {
+		fake.Advance(time.Second)
+		passes.pass(t, passControllerTick)
+		if n := processed(); n != tick {
+			t.Fatalf("%d ticks applied after this test's tick %d, want one for each tick it ran", n, tick)
+		}
+	}
 	cancel()
 	<-done
 	if rows, issue := ticks(); rows != 1 || issue != "CAPTURE" {
@@ -91,10 +106,11 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
+	fake := clocktest.New(time.Now().UTC())
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		controllerWake: time.Hour, controllerFirstWake: 10 * time.Millisecond,
+		controllerWake: time.Hour, clock: fake,
 	}
 	processed := func() bool {
 		var n int
@@ -103,9 +119,15 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 		}
 		return n == 1
 	}
+	started := fake.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { w.tickController(ctx); close(done) }()
+	armed := fake.AwaitArmed(t, "the runtime's first controller tick", 1)
+	if want := started.Add(firstControllerTick); !armed[0].Equal(want) {
+		t.Fatalf("the first tick is armed for %s, want %s: shortly after the runtime starts, an hour before the interval's own tick", armed[0], want)
+	}
+	fake.Advance(firstControllerTick)
 	testwait.Eventually(t, "the first tick, an hour before the interval's", processed)
 	cancel()
 	<-done
@@ -183,7 +205,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
-		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil)
+		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil, clock.Real())
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

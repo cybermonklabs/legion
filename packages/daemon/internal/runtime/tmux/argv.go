@@ -64,7 +64,7 @@ func hasSessionArgv(socket, session string) []string {
 // separator — so no attach can copy a client's environment into the session in between
 // (tmux.ts:262-300).
 func newSessionArgv(socket, session string) []string {
-	return tmuxArgv(socket, append(
+	return append([]string{"tmux", "-f", "/dev/null", "-L", socket}, append(
 		[]string{"new-session", "-d", "-s", session, "-n", bootstrapWindow, "sleep 3600", ";"},
 		disableEnvironmentUpdates(session)...,
 	)...)

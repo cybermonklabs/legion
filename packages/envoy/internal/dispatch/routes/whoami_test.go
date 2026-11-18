@@ -26,11 +26,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
 // own (storetest.Open); the rest of this package's tests hold none.
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // standInEventLog gives a router built with no Store an event log whose newest event is head, so
 // GET /auth/whoami answers it: the sign-in tests read whoami for the person it names, and their
@@ -45,7 +46,7 @@ func standInEventLog(ctx *AppContext, head int64) {
 // names its default from that same table (allowedLogin), so an in-memory store here would leave
 // the person the header names unknown to the create. Its event horizon warns of a stall at
 // horizontest.StallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
-// (waitEventsStart) hears that the horizon is held inside its own patience.
+// (waitEventsStart) reads the holder of a held horizon as it stands.
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
@@ -170,24 +171,6 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 	}); err != nil {
 		t.Fatalf("subscribe to the event feed: %v", err)
 	}
-	next := func(what string) (string, []byte) {
-		t.Helper()
-		for {
-			_, data, err := conn.ReadMessage()
-			if err != nil {
-				t.Fatalf("read %s: %v", what, err)
-			}
-			var frame struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(data, &frame); err != nil {
-				t.Fatalf("decode %s %s: %v", what, data, err)
-			}
-			if frame.Type != "heartbeat" {
-				return frame.Type, data
-			}
-		}
-	}
 
 	data := waitEventsStart(t, conn, database)
 	var start api.LiveEventsStart
@@ -195,12 +178,14 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
 	}
 	// The replay follows the events_start out of what the subscription read before sending it,
-	// with no wait on the horizon between them (feedEvents), so a deadline the test owns bounds it.
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	kind, data := next("the change committed while the page loaded")
+	// with no wait on the horizon between them (feedEvents).
+	replayed := testwait.Receive(t, "the change committed while the page loaded", horizontest.ReadFirstFrame(conn))
+	if replayed.Err != nil {
+		t.Fatalf("read the change committed while the page loaded: %v", replayed.Err)
+	}
 	var frame api.LiveEventFrame
-	if err := json.Unmarshal(data, &frame); err != nil || kind != "event" {
-		t.Fatalf("second frame = %s (%v), want an event", data, err)
+	if err := json.Unmarshal(replayed.Data, &frame); err != nil || replayed.Type != "event" {
+		t.Fatalf("second frame = %s (%v), want an event", replayed.Data, err)
 	}
 	var event struct {
 		Type    string `json:"type"`
@@ -415,21 +400,18 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 	}
 }
 
-// holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes a
-// transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// holdClusterTransactionID opens a transaction in a second database of the test binary's own on
+// the test cluster (storetest.OtherDatabase) and takes a transaction id, as a job in another
+// database or another package's test does. Snapshots are instance-wide, so until it ends no
+// horizon on the cluster proves an observation taken after it began. It commits when release
+// runs, and by the time the test ends; release returns once it has. Nothing else ends it, so a
+// whoami that waited on it would wait for ever, which is what the wait for whoami's answer
+// names.
+func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	conn, err := pgx.Connect(t.Context(), storetest.OtherDatabase(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
+		t.Fatalf("connect to the binary's other database: %v", err)
 	}
 	tx, err := conn.Begin(t.Context())
 	if err != nil {
@@ -441,23 +423,12 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 		_ = conn.Close(context.Background())
 		t.Fatalf("take a transaction id: %v", err)
 	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
-		_ = tx.Commit(context.Background())
-		_ = conn.Close(context.Background())
-	}()
 	var once sync.Once
 	release = func() {
-		once.Do(func() { close(released) })
-		<-done
+		once.Do(func() {
+			_ = tx.Commit(context.Background())
+			_ = conn.Close(context.Background())
+		})
 	}
 	t.Cleanup(release)
 	return release
@@ -504,15 +475,16 @@ func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	createProject(t, handler, "ONE")
 	newest := newestEventID(t, database)
 
-	holdClusterTransactionID(t, 30*time.Second)
-	began := time.Now()
-	answer := askWhoami(t, handler)
-	if waited := time.Since(began); waited > time.Second {
-		t.Fatalf("whoami answered %s after a transaction in another database took a transaction id, want no wait on it", waited)
-	}
+	// The transaction stands until release, so a whoami that waited on it would never answer:
+	// the wait for its answer is what says it waited on nothing.
+	release := holdClusterTransactionID(t)
+	answered := make(chan whoamiAnswer, 1)
+	go func() { answered <- askWhoami(t, handler) }()
+	answer := testwait.Receive(t, "whoami's answer while another database's transaction is open", answered)
 	if head := eventHeadID(t, answer); head != newest {
 		t.Fatalf("whoami answered event_head %d while another database's transaction was open, want the log's newest id %d", head, newest)
 	}
+	release()
 }
 
 // TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen: a page's load waits on whoami, and at load
@@ -527,12 +499,12 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 	createProject(t, handler, "TWO")
 	earlier := eventHeadID(t, askWhoami(t, handler))
 
+	// The write below stays open to the end of the test, so a whoami that waited on it would
+	// never answer: the wait for its answer is what says it answered from the mark it holds.
 	low, high, _ := appendOutOfOrder(t, database, "ONE", "TWO")
-	began := time.Now()
-	head := eventHeadID(t, askWhoami(t, handler))
-	if waited := time.Since(began); waited > 500*time.Millisecond {
-		t.Fatalf("whoami answered %s after a write of this database took its transaction id, want no wait on it", waited)
-	}
+	answered := make(chan whoamiAnswer, 1)
+	go func() { answered <- askWhoami(t, handler) }()
+	head := eventHeadID(t, testwait.Receive(t, "whoami's answer while a write of this database is open", answered))
 	if head >= low || head < earlier {
 		t.Fatalf("whoami answered event_head %d while event %d was open below the committed %d, want an id below it and at or above the earlier answer %d", head, low, high, earlier)
 	}
@@ -619,11 +591,11 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	}
 
 	handler := storeRouter(t, database)
-	began := time.Now()
-	head := eventHeadID(t, askWhoami(t, handler))
-	if waited := time.Since(began); waited > time.Second {
-		t.Fatalf("whoami answered %s after boot while an event insert from before boot was open, want at once from the persisted horizon", waited)
-	}
+	// The insert stays open to the end of the test, so a whoami that waited on it would never
+	// answer: the wait for its answer is what says it answered from the persisted horizon.
+	answered := make(chan whoamiAnswer, 1)
+	go func() { answered <- askWhoami(t, handler) }()
+	head := eventHeadID(t, testwait.Receive(t, "whoami's answer while an event insert from before boot is open", answered))
 	if head < newest || head >= open {
 		t.Fatalf("whoami answered event_head %d, want the persisted horizon %d or above, and below the open event %d", head, newest, open)
 	}

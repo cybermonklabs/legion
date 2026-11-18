@@ -20,6 +20,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 
 /** Each binary's one lookup in this process, since naming its cache reads the whole binary. */
 const caches = new Map<string, Promise<string>>();
@@ -88,7 +89,7 @@ export async function fillNativesCache(root: string, binary: string): Promise<st
       // Any command that loads the natives extracts them; this one reads a setting and calls nothing.
       const extract = Bun.spawn([binary, "config", "get", "compaction.remoteEndpoint", "--json"], {
         cwd: staging,
-        env: { HOME: home, PATH: "/usr/bin:/bin" },
+        env: { ...bunCacheOff, HOME: home, PATH: "/usr/bin:/bin" },
         stdout: "pipe",
         stderr: "pipe",
       });

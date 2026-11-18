@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -184,7 +185,7 @@ func (s *Sweeper) openDue(listed map[string][]githubapp.Delivery, floor, now tim
 	// value, and the keys are taken first: a Get for each inside the watch's loop would hold the
 	// watch open for as long as the records take to read.
 	var keys []string
-	scan, err := kvwatch.ScanFilteredKeys(s.state, pendingFilters(floor, now), "webhook redelivery index", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanFilteredKeys(clock.Real(), s.state, pendingFilters(floor, now), "webhook redelivery index", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
 		keys = append(keys, entry.Key)
 		return nil
 	}, jetstream.MetaOnly(), jetstream.IgnoreDeletes())

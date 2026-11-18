@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -263,7 +264,7 @@ func unpublishedCount(t *testing.T, database *store.Store) int {
 // of the stream the checks of what it holds share (streamOrder, assertKeptLaneInOrder).
 func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -340,11 +341,11 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
-	// role is every forward the role's holder received, in arrival order, and marks the markers
-	// it took (markers.await).
+	// role is every forward the role's holder received, in arrival order, and holder its
+	// subscription, which settle reads to its end (orderedSubscription.settle).
 	roleMu sync.Mutex
 	role   []int64
-	marks  markers
+	holder *orderedSubscription
 }
 
 // outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
@@ -445,20 +446,12 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
-	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
-		if rig.marks.took(message) {
-			return
-		}
+	rig.holder = subscribeInOrder(t, reader, client.Connection(), contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg, _ <-chan struct{}) {
 		id := envelopeEventID(t, message.Data)
 		rig.roleMu.Lock()
 		rig.role = append(rig.role, id)
 		rig.roleMu.Unlock()
-	}); err != nil {
-		t.Fatalf("subscribe the role's holder: %v", err)
-	}
-	if err := reader.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
+	})
 	registry, err := envoystore.Open(reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
@@ -526,7 +519,6 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
 		// 2026-11-09; every other reading of it was 50, 55 or 60.
 		minOutstanding = 20
-		waitTime       = 3 * time.Minute
 	)
 	for _, load := range []struct {
 		name string
@@ -588,21 +580,16 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					sends := &outstandingSends{Publisher: rig.client}
 					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
 					defer stop()
-					deadline := started.Add(waitTime)
-					for unpublishedCount(t, rig.database) > 0 && time.Now().Before(deadline) {
-						time.Sleep(10 * time.Millisecond)
-					}
+					testwait.Eventually(t, fmt.Sprintf("%s: every one of the %d events published", name, count), func() bool {
+						return unpublishedCount(t, rig.database) == 0
+					})
 					elapsed := time.Since(started)
-					left := unpublishedCount(t, rig.database)
-					rate := float64(count-left) / elapsed.Seconds()
+					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
-						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
+						t.Logf("%s: drained %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					} else {
-						t.Logf("%s: published %d of %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
-					}
-					if left > 0 {
-						t.Fatalf("%s: %d of %d events left unpublished after %s", name, left, count, waitTime)
+						t.Logf("%s: published %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					}
 					// One issue is one chain, so a burst holds a send or three at once whatever
 					// the drain does, and reads nothing here.
@@ -638,8 +625,8 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					// Each event is marked published once the stream acknowledged its sends, and the
 					// holder is handed its forward on a connection of its own, which can take the
 					// last of them just after that acknowledgement on a busy machine: the holder is
-					// read once it has taken every forward the outbox sent it (markers.await).
-					rig.marks.await(t, rig.client, contracts.LegacyAgentSubject(throughputHolder))
+					// read once it has taken every forward the outbox sent it (orderedSubscription.settle).
+					rig.holder.settle(t)
 					routed := load.routed(count)
 					roles := rig.roleArrivals()
 					arrivals := map[string][]int64{}
@@ -709,5 +696,5 @@ func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, p
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
 	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
-		RoleClaims: holders, Sessions: holders}, 10*time.Second)
+		RoleClaims: holders, Sessions: holders})
 }

@@ -266,16 +266,17 @@ func unnamedLine(count, total, anon, usage, shmem uint64) string {
 		count, total, anon, usage, shmem, podLimit)
 }
 
-// guestHarness runs one guest watch over a /proc and a cgroup directory with a fake clock, one
-// scan at a time.
+// guestHarness runs one guest watch over a /proc and a cgroup directory with the package's test
+// clock (testClock), one scan at a time.
 type guestHarness struct {
-	t       *testing.T
-	clock   *fakeClock
-	log     *lineLog
-	g       *Guest
-	mu      sync.Mutex
-	kills   []Kill
-	pending fakeWait
+	t     *testing.T
+	clock *testClock
+	log   *lineLog
+	g     *Guest
+	mu    sync.Mutex
+	kills []Kill
+	// pending is the deadline of the watch's next scan.
+	pending time.Time
 	cancel  context.CancelFunc
 	done    chan struct{}
 	stopped sync.Once
@@ -287,7 +288,7 @@ type guestHarness struct {
 // fires itself (firedWatch), or the kernel's (watchModified), before run.
 func newGuestHarness(t *testing.T, proc, cgroupDir string, classes map[int]Class) *guestHarness {
 	t.Helper()
-	h := &guestHarness{t: t, clock: newFakeClock(), log: &lineLog{}}
+	h := &guestHarness{t: t, clock: newTestClock(), log: &lineLog{}}
 	h.g = NewGuest(GuestConfig{
 		Proc: proc, Cgroup: cgroupDir, Logf: h.log.logf, Clock: h.clock,
 		Classify: func(*Table) map[int]Class { return classes },
@@ -308,13 +309,13 @@ func neverModified(string) (*fileWatch, error) {
 	return &fileWatch{modified: make(chan struct{}), stop: func() {}}, nil
 }
 
-// awaitKills waits in real time, 5 seconds at most, for the sink to have taken n kills, and
-// answers them: a wake names a kill on the watch's goroutine, at no scan the test lets it take.
+// awaitKills waits for the sink to have taken n kills, and answers them: a wake names a kill on the
+// watch's goroutine, at no scan the test lets it take.
 func (h *guestHarness) awaitKills(n int) []Kill {
 	h.t.Helper()
-	if !testwait.Holds(testwait.Bounded(h.t, 5*time.Second, time.Second), time.Millisecond, func() bool { return len(h.reported()) >= n }) {
-		h.t.Fatalf("the sink took %+v in 5 seconds, want %d kills; the log:\n%s", h.reported(), n, h.logged())
-	}
+	testwait.Until(h.t, fmt.Sprintf("the sink to take %d kills", n), func() (string, bool) {
+		return fmt.Sprintf("it took %+v; the log:\n%s", h.reported(), h.logged()), len(h.reported()) >= n
+	})
 	return h.reported()
 }
 
@@ -331,17 +332,24 @@ func (h *guestHarness) run() *guestHarness {
 	return h
 }
 
-func (h *guestHarness) nextWait() fakeWait {
+// nextWait is the deadline of the watch's next scan: the scan before it is done, since the watch
+// arms its timer again only once a scan is over, on the one goroutine both run on.
+func (h *guestHarness) nextWait() time.Time {
 	h.t.Helper()
-	select {
-	case w := <-h.clock.waits:
-		return w
-	case <-h.done:
-		h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
-		h.t.Fatalf("the watch never waited for its next scan; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	}
-	return fakeWait{}
+	var at time.Time
+	testwait.Until(h.t, "the watch's next wait for a scan (the reading is its log)", func() (string, bool) {
+		select {
+		case <-h.done:
+			h.t.Fatalf("Run returned before ctx ended; the log:\n%s", h.logged())
+		default:
+		}
+		if armed := h.clock.Armed(); len(armed) > 0 {
+			at = armed[0]
+			return "", true
+		}
+		return h.logged(), false
+	})
+	return at
 }
 
 // tick lets the watch take its next scan, and returns once that scan is done.
@@ -350,8 +358,7 @@ func (h *guestHarness) tick() { h.tickAfter(0) }
 // tickAfter lets the watch take its next scan extra after the interval it waits for.
 func (h *guestHarness) tickAfter(extra time.Duration) {
 	h.t.Helper()
-	w := h.pending
-	w.fire <- h.clock.advance(w.d + extra)
+	h.clock.set(h.pending.Add(extra))
 	h.pending = h.nextWait()
 }
 
@@ -364,14 +371,8 @@ func (h *guestHarness) tickReadingStatus(pod *fakePod, pid int, status string, b
 	h.t.Helper()
 	path := filepath.Join(pod.proc, strconv.Itoa(pid), "status")
 	open := pod.namedPipe(path, nil)
-	w := h.pending
-	w.fire <- h.clock.advance(w.d)
-	var o openedPipe
-	select {
-	case o = <-open:
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
-		h.t.Fatalf("no evidence pass read pid %d's status; the log:\n%s", pid, h.logged())
-	}
+	h.clock.set(h.pending)
+	o := testwait.Receive(h.t, fmt.Sprintf("an evidence pass to read pid %d's status", pid), open)
 	if o.err != nil {
 		h.t.Fatal(o.err)
 	}
@@ -392,11 +393,7 @@ func (h *guestHarness) stop() {
 			return
 		}
 		h.cancel()
-		select {
-		case <-h.done:
-		case <-time.After(10 * time.Second):
-			h.t.Errorf("Run did not return after ctx ended")
-		}
+		testwait.Receive(h.t, "Run's return after its context ended", h.done)
 	})
 }
 
@@ -2274,9 +2271,9 @@ func TestGuestWhoseWakeCannotStartOrEndsLogsWhyOnceAndNamesTheKillAtTheNextScan(
 				// The watch's reader sets why it ended before it closes the channel.
 				wakes.err = tc.end
 				close(modified)
-				if !testwait.Holds(testwait.Bounded(t, 5*time.Second, time.Second), time.Millisecond, func() bool { return len(h.lines("wake off")) > 0 }) {
-					t.Fatalf("the watch logged no wake off line in 5 seconds after its watch ended; the log:\n%s", h.logged())
-				}
+				testwait.Until(t, "the watch to log its wake off line once its watch ended", func() (string, bool) {
+					return h.logged(), len(h.lines("wake off")) > 0
+				})
 			}
 
 			reaped(pod, python, 9250, "python3")
@@ -2301,22 +2298,24 @@ func TestGuestWhoseWakeCannotStartOrEndsLogsWhyOnceAndNamesTheKillAtTheNextScan(
 // file's error. A file that is not there has no watch.
 func TestWatchModifiedTakesAWriteInPlaceAndEndsWhenTheFileGoesOrItIsStopped(t *testing.T) {
 	requireInotify(t)
-	bound := testwait.Bounded(t, 5*time.Second, time.Second)
+	// received is one non-blocking read of w's channel: whether a value was there to take, and
+	// whether the channel is open.
+	received := func(w *fileWatch) (took, open bool) {
+		select {
+		case _, open := <-w.modified:
+			return true, open
+		default:
+			return false, true
+		}
+	}
 	closed := func(w *fileWatch, after string, why error) {
 		t.Helper()
-		deadline := time.After(bound)
-		for {
-			select {
-			case _, open := <-w.modified:
-				if !open {
-					if !errors.Is(w.err, why) {
-						t.Fatalf("the watch ended after %s with %v, want %v", after, w.err, why)
-					}
-					return
-				}
-			case <-deadline:
-				t.Fatalf("the watch's channel is open 5 seconds after %s", after)
-			}
+		testwait.Until(t, "the watch's channel to close after "+after, func() (string, bool) {
+			_, open := received(w)
+			return "it is open", !open
+		})
+		if !errors.Is(w.err, why) {
+			t.Fatalf("the watch ended after %s with %v, want %v", after, w.err, why)
 		}
 	}
 	dir := t.TempDir()
@@ -2332,13 +2331,14 @@ func TestWatchModifiedTakesAWriteInPlaceAndEndsWhenTheFileGoesOrItIsStopped(t *t
 	if err := os.WriteFile(events, []byte("oom_kill 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case _, open := <-w.modified:
-		if !open {
-			t.Fatal("the watch ended at a write of its file")
-		}
-	case <-time.After(bound):
-		t.Fatal("the watch took no value in 5 seconds after a write of its file")
+	var open bool
+	testwait.Until(t, "the watch to take a value after a write of its file", func() (string, bool) {
+		var took bool
+		took, open = received(w)
+		return "it took none", took
+	})
+	if !open {
+		t.Fatal("the watch ended at a write of its file")
 	}
 	if err := os.Remove(events); err != nil {
 		t.Fatal(err)

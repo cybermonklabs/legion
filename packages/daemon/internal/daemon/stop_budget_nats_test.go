@@ -17,8 +17,8 @@ import (
 // boot's own reconciliation (grace zero) passes through, so the daemon still starts. The sweep
 // runs in one of the goroutines supervision.stop waits for (supervision.start), and that wait is
 // the one this test needs to outlast the stop's budget; the stall ends when the test does, so the
-// daemon this test leaves behind closes what it holds before the next test takes the shared NATS
-// server.
+// daemon this test leaves behind closes what it holds before its NATS server's leak check runs
+// (internal/testnats, leakcheck.go).
 //
 // The stop's other unbounded waits — a launch or a suspension in flight, which inflight_test's
 // stallingRuntime holds — are no use here: under a Stage 3 configuration a worker's launch first
@@ -49,23 +49,6 @@ func (r *sweepStall) ReconcileOrphans(ctx context.Context, known []runtime.Known
 	return nil
 }
 
-// sweepStallTick is how often the daemon sweeps for orphans here: the first tick is what the test
-// waits for, so it is short enough that the wait costs nothing and long enough not to sweep a
-// loaded machine's store in a tight loop.
-const sweepStallTick = 100 * time.Millisecond
-
-// natsConnectionCloseBound is how long the server is given, once run has returned, to report the
-// daemon's connection gone. Closing the connection is the last thing a stopping daemon does with
-// it, and the server drops a client the moment its socket closes, so this bounds the report rather
-// than any work of the daemon's.
-const natsConnectionCloseBound = 5 * time.Second
-
-// natsConnectionClosePoll is how often the server is asked within that bound. Each question is an
-// HTTP request to the NATS monitoring endpoint, and a question that costs something must not be
-// asked a hundred times a second (internal/testwait, Holds); internal/testnats reads the same
-// endpoint at 50 ms (leakcheck.go, leakPoll).
-const natsConnectionClosePoll = 50 * time.Millisecond
-
 // run closes the workflow's Envoy NATS connection when its stop runs out of budget, so the
 // server holds nothing of the daemon's once run has returned.
 //
@@ -76,49 +59,50 @@ const natsConnectionClosePoll = 50 * time.Millisecond
 // natsauth.ReconnectForever (internal/natsauth/natsauth.go), which never gives a connection up
 // by itself, so one run left open stays open for as long as the process does.
 //
-// The daemon's tests share one NATS server, and its fixture resets the server only once every
-// client connection to it has gone (internal/testnats, URL's drain), so a connection this stop
-// left open would be charged to whichever test runs next — a test that had no part in it
-// (INFRA-1964).
+// The test's NATS server fails the test at its end for a client still open there (internal/testnats,
+// leakcheck.go), but it names the client rather than the stop that left it open; this test's own
+// wait names the stop (INFRA-1964). The server drops a client the moment its socket closes, so the
+// wait is for the server's report of the close, which comes as soon as the daemon has closed it.
 func TestRunClosesTheWorkflowsNATSConnectionWhenItsStopBudgetRunsOut(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	rt := newSweepStall(t)
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = repositoriesGitHub(t)
-	o.orphanSweep = sweepStallTick
+	passes := triggering(&o)
 	o.stopBudget = time.Second
 	// Every connection the server holds before the daemon dials is the fixture's own, and those
 	// outlast the stop: what this test reads afterwards is what the daemon added.
 	before := testnats.Connections(t)
 
 	cancel, done, logs := runLogging(t, cfg, o)
-	select {
-	case <-rt.sweeping:
-	case err := <-done:
-		t.Fatalf("run returned %v before its orphan sweep reached the runtime; log:\n%s", err, logs)
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the daemon's orphan sweep never reached the runtime; log:\n%s", logs)
-	}
+	// The sweep this test stops the daemon inside is one it asks for: the pass never ends, so
+	// nothing waits for its report, and the runtime's own stall below is what says it began.
+	passes.ask(passOrphans)
+	testwait.Eventually(t, "the daemon's orphan sweep to reach the runtime", func() bool {
+		select {
+		case <-rt.sweeping:
+			return true
+		case err := <-done:
+			t.Fatalf("run returned %v before its orphan sweep reached the runtime; log:\n%s", err, logs)
+		default:
+		}
+		return false
+	})
 
-	took, stopLog := stopRun(t, cancel, done, logs, stopBound(o.stopBudget))
+	took, stopLog := stopRun(t, cancel, done, logs)
 
 	t.Logf("stopped in %s with its orphan sweep waiting in the runtime", took)
 	if logLine(stopLog, stoppedWaiting) == "" {
 		t.Fatalf("the stop did not reach its budget, so this test proved nothing about the connection run leaves open; it logged:\n%s", stopLog)
 	}
-	var left []testnats.Connection
-	closed := func() bool {
-		left = nil
+	testwait.Until(t, "the daemon's workflow NATS connection closed once run returned from a stop that ran out of budget (the reading is the client connections the daemon opened that the server still holds)", func() ([]testnats.Connection, bool) {
+		var left []testnats.Connection
 		for _, connection := range testnats.Connections(t) {
 			if !slices.ContainsFunc(before, func(c testnats.Connection) bool { return c.CID == connection.CID }) {
 				left = append(left, connection)
 			}
 		}
-		return len(left) == 0
-	}
-	if !testwait.Holds(natsConnectionCloseBound, natsConnectionClosePoll, closed) {
-		t.Fatalf("the daemon returned from run with its workflow connection open: %s later the NATS server still holds %d client connection(s) %v the daemon opened",
-			natsConnectionCloseBound, len(left), left)
-	}
+		return left, len(left) == 0
+	})
 }

@@ -88,7 +88,7 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 	// A deciding review the pull request's record had not seen when this read looked it up: its
 	// webhook was lost, or is still on its way, and whichever copy comes second records nothing. A
 	// review an earlier read applied is not applied again.
-	eventID := readEventID("review-read", w.dispatchProject, pr.Repo, pr.Number, strconv.FormatInt(review.ID, 10), clock(review.SubmittedAt))
+	eventID := readEventID("review-read", w.dispatchProject, pr.Repo, pr.Number, strconv.FormatInt(review.ID, 10), eventTime(review.SubmittedAt))
 	if !w.unapplied(ctx, eventID) {
 		return false
 	}

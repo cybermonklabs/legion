@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -67,7 +68,13 @@ func TestTheOrphanSweepKeepsASuspendedControllersSandboxAndDeletesARetiredOnes(t
 				},
 				"spec": map[string]any{"operatingMode": "Running"},
 			})
-			server := httptest.NewServer(api)
+			// A request without the runtime's bearer (kubeTestToken, sandboxRESTConfig's) is
+			// another process's: it is answered 404 and recorded as nothing (fromTheDaemon).
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if fromTheDaemon(t, w, r, kubeTestToken) {
+					api.ServeHTTP(w, r)
+				}
+			}))
 			t.Cleanup(func() { cancel(); server.Close() })
 			// The store holds the claim as knownClaims reads it: unretired while suspended.
 			trees := liveTrees{}
@@ -79,7 +86,7 @@ func TestTheOrphanSweepKeepsASuspendedControllersSandboxAndDeletesARetiredOnes(t
 				StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
 				SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 				Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-				BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+				BootTimeout:  rigBootTimeout, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: rigProbeInterval, AdoptTimeout: rigAdoptTimeout,
 				Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 				ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 				GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),

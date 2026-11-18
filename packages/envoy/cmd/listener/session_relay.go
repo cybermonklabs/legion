@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -92,8 +93,9 @@ const (
 	// rungs.
 	relayNakDelay = time.Second
 	// relayNakDelayMax is the ladder's ceiling, the delay of every nak from a message's sixth
-	// delivery on. It is the ladder's own rather than the pause backoff's relayPauseMax, whose
-	// value a relay carries as sessionRelays.pauseMax and a test shortens: 30 s each, two bounds.
+	// delivery on. It is the ladder's own rather than the pause backoff's relayPauseMax: 30 s
+	// each, two bounds. The ladder is the server's timer (a nak's delay), which no clock of this
+	// process reaches; the pause backoff is this process's and waits on sessionRelays.clock.
 	relayNakDelayMax = 30 * time.Second
 	// relayNakShiftMax is the most relayNakDelay is doubled: relayNakDelay << relayNakShiftMax
 	// (32 s) is the first rung at or above relayNakDelayMax, so a delivery count past the rung
@@ -187,14 +189,13 @@ type sessionRelays struct {
 	// replyPrefix is the listener's reply inbox and a dot: a frame's reply subject is
 	// replyPrefix<token>, and one subscription to the inbox's wildcard hears every reply.
 	replyPrefix string
-	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
-	// relayPauseMax; a test shortens them. receiptWait is relayReceiptWait, how long the oldest
-	// unanswered frame may wait before the relay pauses, and a test shortens it the same way, so
-	// a row about what an unreachable session leaves behind spends its own short wait rather
-	// than three seconds of the clock. Set before the first relay starts and read-only after.
-	pauseFirst  time.Duration
-	pauseMax    time.Duration
-	receiptWait time.Duration
+	// clock is what the relay's own waits are measured on: the pause backoff (relayPauseFirst to
+	// relayPauseMax), the retry backoff (relayRetryFirst to relayRetryMax), the receipt wait
+	// (relayReceiptWait) and the moment each frame was sent. It is the delivery config's
+	// (listenerDeliveryHandlerConfig.clk): clock.Real in production, and a clocktest.Fake a test
+	// hands the config and moves past each wait once the relay has armed it, rather than
+	// shortening the production intervals. Set before the first relay starts and read-only after.
+	clock clock.Clock
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -415,35 +416,35 @@ func (r *relayRun) restartedBefore(heard uint64) bool {
 	return at != 0 && at < heard
 }
 
-// waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
-// run, and reports whether the run goes on.
-func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
+// waitPause waits out a paused run's backoff, d on clk, the session's next registration, or the end
+// of the run, and reports whether the run goes on.
+func (r *relayRun) waitPause(ctx context.Context, clk clock.Clock, d time.Duration) bool {
 	select {
 	case <-r.resume:
 	default:
 	}
-	timer := time.NewTimer(d)
+	timer := clk.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
 	case <-r.resume:
-	case <-timer.C:
+	case <-timer.C():
 	}
 	return true
 }
 
-// waitRetry waits out a run's retry backoff after a failed call or pull, d, a wake, or the end of
-// the run, and reports whether the run goes on. Unlike a pause it takes a wake sent before it began:
-// a registration heard while the failed call or pull ran restarts the run at once.
-func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
+// waitRetry waits out a run's retry backoff after a failed call or pull, d on clk, a wake, or the
+// end of the run, and reports whether the run goes on. Unlike a pause it takes a wake sent before
+// it began: a registration heard while the failed call or pull ran restarts the run at once.
+func (r *relayRun) waitRetry(ctx context.Context, clk clock.Clock, d time.Duration) bool {
+	timer := clk.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
 	case <-r.resume:
-	case <-timer.C:
+	case <-timer.C():
 	}
 	return true
 }
@@ -484,9 +485,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		machineID:   cfg.machineID,
 		logger:      cfg.logger,
 		replyPrefix: inbox + ".",
-		pauseFirst:  relayPauseFirst,
-		pauseMax:    relayPauseMax,
-		receiptWait: relayReceiptWait,
+		clock:       cfg.clk(),
 		loopDone:    make(chan struct{}),
 		events:      map[string]relayNotice{},
 		wake:        make(chan struct{}, 1),
@@ -744,13 +743,14 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 
 // relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
 // call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax, and after a pause
-// (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
-// session's next registration. Both only while the session is still this listener's.
+// (relayPaused), with a wait that doubles from relayPauseFirst to relayPauseMax, both on m.clock
+// and both cut short by the session's next registration. Both only while the session is still
+// this listener's.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
 func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
-	retry, pause, paused := relayRetryFirst, m.pauseFirst, false
+	retry, pause, paused := relayRetryFirst, relayPauseFirst, false
 	for {
 		outcome := m.relayNATS(ctx, run)
 		switch outcome {
@@ -759,21 +759,21 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 		case relayPaused:
 			if run.answered.Swap(false) {
 				// The session answered a frame since the last pause: this one is a new episode.
-				pause, paused = m.pauseFirst, false
+				pause, paused = relayPauseFirst, false
 			}
 			if !paused {
 				paused = true
 				m.logger.Info("session relay paused: the session answered no frame within the receipt wait; it sends again after the pause backoff, or at the session's next registration",
 					slog.String("session_id", run.sessionID),
-					slog.String("receipt_wait", m.receiptWait.String()),
+					slog.String("receipt_wait", relayReceiptWait.String()),
 					slog.String("backoff", pause.String()))
 			}
-			if !run.waitPause(ctx, pause) {
+			if !run.waitPause(ctx, m.clock, pause) {
 				return
 			}
-			pause = min(pause*2, m.pauseMax)
+			pause = min(pause*2, relayPauseMax)
 		default:
-			if !run.waitRetry(ctx, retry) {
+			if !run.waitRetry(ctx, m.clock, retry) {
 				return
 			}
 			retry = min(retry*2, relayRetryMax)
@@ -1021,10 +1021,10 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
 		if deadline, waiting := m.receiptDeadline(run); waiting {
-			if !time.Now().Before(deadline) {
+			if !m.clock.Now().Before(deadline) {
 				return relayPaused
 			}
-			next, cancelNext = context.WithDeadline(ctx, deadline)
+			next, cancelNext = m.clock.WithDeadline(ctx, deadline)
 		}
 		msg, err := pull.Next(next)
 		cancelNext()
@@ -1053,7 +1053,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // of its own under the listener's reply inbox.
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
 	token := strconv.FormatUint(m.nextToken.Add(1), 36)
-	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
+	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: m.clock.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
 		run.outstanding = map[string]*relayFrame{}
@@ -1080,7 +1080,7 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 }
 
 // receiptDeadline is when the oldest frame of run the session has not answered reaches the
-// receipt wait (receiptWait), and whether there is one.
+// receipt wait (relayReceiptWait) on m.clock, and whether there is one.
 func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
@@ -1091,7 +1091,7 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 	if len(run.unanswered) == 0 {
 		return time.Time{}, false
 	}
-	return run.unanswered[0].sentAt.Add(m.receiptWait), true
+	return run.unanswered[0].sentAt.Add(relayReceiptWait), true
 }
 
 // forget drops every frame of run still awaiting an answer and returns them by their tokens: a

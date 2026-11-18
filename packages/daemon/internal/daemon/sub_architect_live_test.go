@@ -18,7 +18,7 @@
 // whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
+// whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration load,
 // the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has: the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream, the
@@ -150,7 +150,7 @@ func newSubArchitectLive(t *testing.T) *subArchitectLive {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = childAdoptionGitHub(t)
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(r.logged))
 	r.root = r.register(r.tree, claim.RoleArchitect, "ses_root_architect", 0)
 	r.note("registered and readied %s's architect as session %s", r.tree, r.root.session)
 	return r
@@ -337,12 +337,10 @@ func (r *subArchitectLive) blockerStep() {
 		return got.Phase == phase.Admitted && got.Why != nil && got.Why.State == api.WhyBlocked && strings.Contains(got.Why.Reason, b)
 	})
 	architect := r.token(e, claim.RoleArchitect)
-	deadline := time.Now().Add(liveSettle)
-	for time.Now().Before(deadline) {
-		if got := r.issue(e); got.Phase != phase.Admitted || got.Architect != nil || r.launched(architect) {
-			t.Fatalf("while %s works, %s is %s with architect %+v (launched %v); want it admitted with no architect", b, e, got.Phase, got.Architect, r.launched(architect))
-		}
-		time.Sleep(100 * time.Millisecond)
+	testwait.Span(t, liveSettle, "an architect's launch runs from an outbox start row after the admission pass that queued it commits, and nothing the proof reads says "+
+		"the outbox has run every row a pass could queue: no state marks it, no later action's effect is ordered after it, and the daemon's real NATS and Postgres keep it out of a synctest bubble")
+	if got := r.issue(e); got.Phase != phase.Admitted || got.Architect != nil || r.launched(architect) {
+		t.Fatalf("while %s works, %s is %s with architect %+v (launched %v); want it admitted with no architect", b, e, got.Phase, got.Architect, r.launched(architect))
 	}
 	r.note("read back over %s: %s stays %s with no architect entry and no launch of %s; why: %s — %s",
 		liveSettle, e, phase.Admitted, architect, held.Why.State, held.Why.Reason)

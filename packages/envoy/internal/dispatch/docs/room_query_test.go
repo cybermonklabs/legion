@@ -17,11 +17,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Room queries (room_query.go) are how one process asks every other one about a document room: a
@@ -33,15 +35,56 @@ import (
 
 // newQueryProcesses is the two-process pair (processPair, process_pair_test.go) the room
 // queries are asked over: the lost-edit document, both processes' room sync running, and task B's
-// room resident, while task A holds none.
-func newQueryProcesses(t *testing.T) processPair {
+// room resident, while task A holds none. Both processes run on the returned fake clock, set before
+// their room sync starts, so an asker's wait and a flush's timeout run out only where the test
+// moves it.
+func newQueryProcesses(t *testing.T) (processPair, *clocktest.Fake) {
 	t.Helper()
 	pair := newSeededProcessPair(t, lostEditDocument)
+	clock := clocktest.New(time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC))
+	pair.taskA.clock, pair.taskB.clock = clock, clock
 	pair.runRoomSync(t)
 	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task B's room: %v", err)
 	}
-	return pair
+	return pair, clock
+}
+
+// roomQueryResult is what one roomQueries.ask returned.
+type roomQueryResult struct {
+	answers []roomAnswer
+	asked   bool
+	err     error
+}
+
+// askOnTheSide runs service's kind query about the pair's document on a goroutine of its own, so
+// the test can move the clock or open the gate while it waits, and hands back its result.
+func (pair processPair) askOnTheSide(service *Service, kind string) <-chan roomQueryResult {
+	result := make(chan roomQueryResult, 1)
+	go func() {
+		answers, asked, err := service.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, kind)
+		result <- roomQueryResult{answers, asked, err}
+	}()
+	return result
+}
+
+// awaitingOnly waits until service's one query under way waits on the members want names and on
+// no other: every other member's answer has arrived whole.
+func awaitingOnly(t *testing.T, service *Service, want ...string) {
+	t.Helper()
+	slices.Sort(want)
+	testwait.Until(t, fmt.Sprintf("the query to wait on %v alone", want), func() ([]string, bool) {
+		service.roomQueries.mu.Lock()
+		defer service.roomQueries.mu.Unlock()
+		var waiting []string
+		for _, pending := range service.roomQueries.pending {
+			for member := range pending.waiting {
+				waiting = append(waiting, member)
+			}
+		}
+		slices.Sort(waiting)
+		return waiting, len(service.roomQueries.pending) == 1 && slices.Equal(waiting, want)
+	})
 }
 
 // captureWarnings sends every log line at WARN and above to the returned log until the test ends,
@@ -83,29 +126,33 @@ func storedDocumentWith(t *testing.T, database *store.Store, artifactID string, 
 // A flush is answered only once the other process's room has stored what it applied: task B's
 // room applied bob's edit and holds its append at the gate, and task A's flush returns once the
 // gate opens, with the edit stored and task B's answer saying it holds the room. It names no
-// actors: only a share's asker reads them.
+// actors: only a share's asker reads them. The clock never moves, so task A's wait cannot run out:
+// the answer it returns is task B's.
 func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, clock := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	pair.heldEditOnB(t, 1, bob, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."))
 	if stored := storedMarkdown(t, pair.database, pair.artifactID); strings.Contains(stored, "by bob") {
 		t.Fatalf("the store holds bob's edit %q while its append is held, so nothing here is tested", stored)
 	}
 
-	const held = 200 * time.Millisecond
-	released := time.AfterFunc(held, pair.gateB.release)
-	defer released.Stop()
-	started := time.Now()
-	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryFlush)
-	waited := time.Since(started)
+	result := pair.askOnTheSide(pair.taskA, roomQueryFlush)
+	// Task A waits for the answer, and task B's flush waits for its append, each with its deadline
+	// armed on the clock.
+	clock.AwaitArmed(t, "task A's wait for the answers and task B's flush timeout", 2)
+	select {
+	case early := <-result:
+		t.Fatalf("task A's flush returned %+v while task B's append was held: it did not wait for the append", early)
+	default:
+	}
+	pair.gateB.release()
+	flushed := testwait.Receive(t, "task A's flush to return once task B's append is stored", result)
+	answers, asked, err := flushed.answers, flushed.asked, flushed.err
 	if err != nil || !asked {
 		t.Fatalf("task A's flush = asked %t, %v; want task B asked", asked, err)
 	}
-	if waited < held-20*time.Millisecond {
-		t.Fatalf("task A's flush returned after %v, before task B's held append was let go at %v: it did not wait for the append", waited, held)
-	}
 	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || !answers[0].holds {
-		t.Fatalf("task A's flush answers = %+v after %v, want task B's one, holding the room", answers, waited)
+		t.Fatalf("task A's flush answers = %+v, want task B's one, holding the room", answers)
 	}
 	if len(answers[0].actors) != 0 {
 		t.Fatalf("task B's flush answer names actors %+v, which no asker of a flush reads", answers[0].actors)
@@ -117,21 +164,20 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 
 // A share is answered at once, appending nothing, with the updates the other process's room holds
 // and the store does not - here bob's paragraph, whose append is under way and held at the gate -
-// and an answer that large crosses in several notifications and is put back together whole.
+// and an answer that large crosses in several notifications and is put back together whole. The
+// clock never moves, so task A's wait cannot run out: the answer it returns came whole.
 func TestAShareReturnsTheOtherProcessesInFlightAppend(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, _ := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	paragraph := "Bob's long paragraph " + strings.Repeat("with many words ", 1200) + "ends."
 	pair.heldEditOnB(t, 1, bob, appendBlocks(t, paragraph+"\n"))
 
-	started := time.Now()
 	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
-	waited := time.Since(started)
 	if err != nil || !asked {
 		t.Fatalf("task A's share = asked %t, %v; want task B asked", asked, err)
 	}
 	if len(answers) != 1 || !answers[0].holds || answers[0].tooLarge {
-		t.Fatalf("task A's share answers = %+v after %v, want task B's one, holding the room", answers, waited)
+		t.Fatalf("task A's share answers = %+v, want task B's one, holding the room", answers)
 	}
 	if len(answers[0].updates) <= roomSyncPayloadLimit {
 		t.Fatalf("task B shared %d bytes, which fit one notification; the test wants an answer in parts", len(answers[0].updates))
@@ -171,7 +217,7 @@ func deliverRoomQuery(t *testing.T, service *Service, sender, room, kind string)
 // waiting is woken, no update the room recorded before the query lingers any more, and none
 // lingers while the answer waits (askRoomAppends).
 func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, _ := newQueryProcesses(t)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."))
 	defer pair.gateB.release()
 	state := pair.taskB.lockExistingState(pair.artifactID)
@@ -186,11 +232,7 @@ func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
 
 	deliverRoomQuery(t, pair.taskB, pair.taskA.ProcessID(), pair.artifactID, roomQueryFlush)
 
-	select {
-	case <-lingering:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the query woke none of task B's lingering appends: a batch of its keystrokes holds the answer up for a linger")
-	}
+	testwait.Receive(t, "the query to wake task B's lingering appends (a batch of its keystrokes would hold the answer up for a linger)", lingering)
 	state = pair.taskB.lockExistingState(pair.artifactID)
 	flushed, waiters := state.appendsFlushed, state.appendWaiters
 	pair.taskB.unlockState(pair.artifactID, state)
@@ -211,18 +253,17 @@ func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
 // whose call has not taken it yet. Once the gate opens, both are stored once and the instance
 // lists neither: a stored update is unlisted exactly once, by its own call.
 func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, _ := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	pair.heldEditOnB(t, 1, bob, appendBlocks(t, "Bob's first paragraph.\n"))
 	editAsPeer(t, pair.taskB, pair.artifactID, appendBlocks(t, "Bob's second paragraph.\n"))
 
-	started := time.Now()
 	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
 	if err != nil || !asked {
 		t.Fatalf("task A's share = asked %t, %v; want task B asked", asked, err)
 	}
 	if len(answers) != 1 || !answers[0].holds || answers[0].tooLarge {
-		t.Fatalf("task A's share answers = %+v after %v, want task B's one, holding the room", answers, time.Since(started))
+		t.Fatalf("task A's share answers = %+v, want task B's one, holding the room", answers)
 	}
 	shared := storedDocumentWith(t, pair.database, pair.artifactID, answers[0].updates)
 	for _, paragraph := range []string{"Bob's first paragraph.", "Bob's second paragraph."} {
@@ -251,7 +292,7 @@ func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
 // What a share holds past roomShareLimit is not sent: the answer says too_large, carries no
 // updates, and the asker logs a WARN and judges without them.
 func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, _ := newQueryProcesses(t)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, appendBlocks(t, strings.Repeat("Bob's huge paragraph. ", 4000)+"\n"))
 	logs := captureWarnings(t)
 
@@ -269,10 +310,13 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 
 // A member that never answers - an older build, or a process that has just died - costs a query
 // the wait and no more, and a WARN naming it. The silent member here holds the listener
-// connection's name, which is all membership reads, and listens to nothing.
+// connection's name, which is all membership reads, and listens to nothing. Each query stays open
+// with task B's answer in, waiting on the silent member alone, until the clock passes the wait
+// task A armed when it sent the query; then it returns task B's answer.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
-	pair := newQueryProcesses(t)
-	// Production's wait, which this test holds: the pair's own is roomWait (newSeededProcessPair).
+	pair, clock := newQueryProcesses(t)
+	// Production's wait, which this test holds: the pair's own is answerWaitPastEveryAnswer
+	// (newSeededProcessPair).
 	pair.taskA.roomQueries.wait = roomQueryWait
 	silent := uuid.NewString()
 	conn, err := pair.database.Pool.Dedicated(context.Background(), ListenerApplicationPrefix+silent)
@@ -283,17 +327,29 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	logs := captureWarnings(t)
 
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {
-		started := time.Now()
-		answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, kind)
-		waited := time.Since(started)
-		if err != nil || !asked {
-			t.Fatalf("%s: asked %t, %v; want the members asked", kind, asked, err)
+		asked := clock.Now()
+		result := pair.askOnTheSide(pair.taskA, kind)
+		awaitingOnly(t, pair.taskA, silent)
+		// Task A's wait, and for a flush task B's timeout until it lets it go, both armed at asked.
+		armed := clock.AwaitArmed(t, kind+": task A's wait for the silent member", 1)
+		want := asked.Add(roomQueryWait)
+		for _, deadline := range armed {
+			if !deadline.Equal(want) {
+				t.Fatalf("%s: with only the silent member left to answer, the clock holds %v, want task A's wait, armed for %v", kind, armed, want)
+			}
 		}
-		if waited < roomQueryWait || waited > roomQueryWait+300*time.Millisecond {
-			t.Fatalf("%s took %v with a member that never answers, want the %v wait and no more", kind, waited, roomQueryWait)
+		select {
+		case early := <-result:
+			t.Fatalf("%s returned %+v before its wait ran out, with a member yet to answer", kind, early)
+		default:
 		}
-		if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() {
-			t.Fatalf("%s answers = %+v, want task B's alone", kind, answers)
+		clock.Set(armed[0])
+		waited := testwait.Receive(t, kind+": task A's query to return once its wait ran out", result)
+		if waited.err != nil || !waited.asked {
+			t.Fatalf("%s: asked %t, %v; want the members asked", kind, waited.asked, waited.err)
+		}
+		if len(waited.answers) != 1 || waited.answers[0].process != pair.taskB.ProcessID() {
+			t.Fatalf("%s answers = %+v, want task B's alone", kind, waited.answers)
 		}
 	}
 	if warned := logs.Lines("did not answer a document room query"); strings.Count(warned, silent) != 3 {
@@ -305,7 +361,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 // process's append waits on: it would wait out every member. The query reads the lock from the
 // database, skips the flush at once and logs it at ERROR.
 func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, clock := newQueryProcesses(t)
 	logs := captureWarnings(t)
 	ctx := context.Background()
 	tx, err := pair.database.Pool.Begin(ctx)
@@ -326,13 +382,31 @@ func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
 		t.Fatalf("another document's lock read says locked %t, %v; want unlocked", locked, err)
 	}
 
-	started := time.Now()
-	answers, _, err := pair.taskA.roomQueries.ask(ctx, tx, pair.artifactID, roomQueryFlush)
-	if err != nil || len(answers) != 0 {
-		t.Fatalf("a flush under the lock = %+v, %v; want it skipped", answers, err)
+	// A flush sent under the lock would wait for its answers, its wait armed on a clock that never
+	// moves: the query either returns or arms that wait.
+	done := make(chan roomQueryResult, 1)
+	go func() {
+		answers, asked, err := pair.taskA.roomQueries.ask(ctx, tx, pair.artifactID, roomQueryFlush)
+		done <- roomQueryResult{answers, asked, err}
+	}()
+	type outcome struct {
+		result   *roomQueryResult
+		deadline []time.Time
 	}
-	if waited := time.Since(started); waited >= roomQueryWait/2 {
-		t.Fatalf("a flush under the lock took %v; want it skipped at once", waited)
+	ended := testwait.Until(t, "the flush under the lock to return, or to arm a wait for its answers", func() (outcome, bool) {
+		select {
+		case result := <-done:
+			return outcome{result: &result}, true
+		default:
+		}
+		armed := clock.Armed()
+		return outcome{deadline: armed}, len(armed) > 0
+	})
+	if ended.result == nil {
+		t.Fatalf("a flush under the lock armed a wait for its answers, until %v; want it skipped at once", ended.deadline)
+	}
+	if ended.result.err != nil || len(ended.result.answers) != 0 {
+		t.Fatalf("a flush under the lock = %+v, %v; want it skipped", ended.result.answers, ended.result.err)
 	}
 	if logged := logs.Lines("level=ERROR"); !strings.Contains(logged, "flush was asked for while holding") {
 		t.Fatalf("a flush under the lock logged no ERROR; logged:\n%s", logs.String())
@@ -346,7 +420,7 @@ func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
 // (in two tabs) on task B - once each, and not the writer, connected on task B too. The refused
 // write leaves bob's delete to be stored, once the gate opens.
 func TestALostWriteNamesTheParticipantsOfEveryProcess(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, _ := newQueryProcesses(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
@@ -389,11 +463,18 @@ func TestALostWriteNamesTheParticipantsOfEveryProcess(t *testing.T) {
 // through task A, which holds no room, waits for the append rather than forking a store without
 // the delete, and is refused as an edit whose target is gone.
 func TestALiveWriteForksOnlyOnceTheOtherProcessHasStoredItsRoom(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, clock := newQueryProcesses(t)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, withoutTopLevelBlock("Alpha paragraph."))
-	released := time.AfterFunc(150*time.Millisecond, pair.gateB.release)
-	defer released.Stop()
-	_, err := joinedApplyOps(pair.taskA, pair.artifactID, []model.EditOp{{Op: "replace", Find: "Alpha paragraph.", With: "Alpha edited."}}, lostEditAgent, nil)
+	written := make(chan error, 1)
+	go func() {
+		_, err := joinedApplyOps(pair.taskA, pair.artifactID, []model.EditOp{{Op: "replace", Find: "Alpha paragraph.", With: "Alpha edited."}}, lostEditAgent, nil)
+		written <- err
+	}()
+	// The write's flush is under way before the append goes: task A waits for the answer and task
+	// B's flush for its append.
+	clock.AwaitArmed(t, "the write's wait for task B's flush and task B's flush timeout", 2)
+	pair.gateB.release()
+	err := testwait.Receive(t, "the agent's write through task A to end", written)
 	var gone *ErrQuoteNotFound
 	if !errors.As(err, &gone) {
 		t.Fatalf("the agent's edit through task A of the paragraph bob deleted on task B = %v, want ErrQuoteNotFound: the write forked a store without the delete", err)
@@ -409,13 +490,25 @@ func TestALiveWriteForksOnlyOnceTheOtherProcessHasStoredItsRoom(t *testing.T) {
 // for that append, and the write's lost operations name the one bob removed. The write loads no
 // room on task A, publishing into none.
 func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(t *testing.T) {
-	pair := newQueryProcesses(t)
+	pair, clock := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	var once sync.Once
 	pair.taskA.afterLiveCommit = func(string) {
 		once.Do(func() {
 			pair.heldEditOnB(t, 1, bob, withoutFirstTopLevelBlock)
-			time.AfterFunc(150*time.Millisecond, pair.gateB.release)
+			// Task B's append opens once the publish's flush waits for it: an append that landed
+			// before that wait would be in the fork the write reads, not the loss this row reads.
+			// The release runs on a goroutine of its own, since this hook runs on the write's own
+			// goroutine, which arms that wait only once the hook returns; the test waits the
+			// goroutine out before it ends.
+			armed := len(clock.Armed())
+			released := make(chan struct{})
+			t.Cleanup(func() { <-released })
+			go func() {
+				defer close(released)
+				clock.AwaitArmed(t, "the publish's wait for task B's flush", armed+1)
+				pair.gateB.release()
+			}()
 		})
 	}
 	lost, verdict := committedEdit(t, pair.taskA, pair.artifactID, model.EditOp{Op: "replace", Find: "Alpha paragraph.", With: "Alpha paragraph, extended."})
@@ -482,7 +575,7 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 	if err := browserStyleWrite(taskB, artifactID, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."), make(chan struct{})); err != nil {
 		t.Fatalf("bob's edit on task B: %v", err)
 	}
-	waitFor(t, roomWait(t), "bob's append to queue on the document's advisory lock", func() bool {
+	waitFor(t, "bob's append to queue on the document's advisory lock", func() bool {
 		return waitingAdvisoryLocks(t, database) > 0
 	})
 	if stored := storedMarkdown(t, database, artifactID); strings.Contains(stored, "by bob") {
@@ -500,7 +593,7 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 		t.Fatalf("the cold write's version reads %q; want the agent's edit alone, bob's append being queued behind its lock", markdown)
 	}
 	waitForLandedAppends(t, taskB, artifactID)
-	waitFor(t, roomWait(t), "bob's edit to be stored once the write let go of the lock", func() bool {
+	waitFor(t, "bob's edit to be stored once the write let go of the lock", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "by bob")
 	})
 	if stored := storedMarkdown(t, database, artifactID); !strings.Contains(stored, "by the agent") {

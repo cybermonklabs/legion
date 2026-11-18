@@ -7,16 +7,21 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A forward counts once the stream stores it: no session subscribes to its agent subject any more
-// (INFRA-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement, well
-// inside the window, and stores the forward once however often it is sent (its Nats-Msg-Id). On a
-// subject no stream captures and nobody subscribes it returns ErrForwardNotStored.
+// (INFRA-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement, and
+// stores the forward once however often it is sent (its Nats-Msg-Id). The window is a deadline on
+// the client's clock, which stands still here, so a wait that ran out its window instead would
+// never return. On a subject no stream captures and nobody subscribes, the server's no-responders
+// answer ends the wait with ErrForwardNotStored, with that clock still standing (PendingForward.Wait).
 func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) {
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
+	clock := clocktest.New(fakeStart)
+	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithClock(clock))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -34,16 +39,14 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	const window = 2 * time.Second
 	subject := contracts.LegacyAgentSubject("ses_serving_port")
 	for range 2 {
-		started := time.Now()
 		forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
 		if err != nil {
 			t.Fatalf("StartRequestStoredTo: %v", err)
 		}
-		if err := forward.Wait(); err != nil {
+		waited := make(chan error, 1)
+		go func() { waited <- forward.Wait() }()
+		if err := testwait.Receive(t, "the stored forward's wait with its window's clock standing still", waited); err != nil {
 			t.Fatalf("the stored forward's wait = %v, want nil on the stream's acknowledgement", err)
-		}
-		if elapsed := time.Since(started); elapsed >= window {
-			t.Fatalf("the stored forward's wait took %s, the whole window; want it to end on the acknowledgement", elapsed)
 		}
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
@@ -55,12 +58,14 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	}
 
 	const uncaptured = "test.uncaptured.serving-port"
-	forward, err := client.StartRequestStoredTo(uncaptured, item, bus.ForwardMsgID(item.DedupeKey, uncaptured), 300*time.Millisecond)
+	forward, err := client.StartRequestStoredTo(uncaptured, item, bus.ForwardMsgID(item.DedupeKey, uncaptured), window)
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo on %s: %v", uncaptured, err)
 	}
-	if err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
-		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored", err)
+	unstored := make(chan error, 1)
+	go func() { unstored <- forward.Wait() }()
+	if err := testwait.Receive(t, "the wait of a forward no stream stores to end at the server's no-responders answer, with the clock standing still", unstored); !errors.Is(err, bus.ErrForwardNotStored) || !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored wrapping the server's no-responders answer", err)
 	}
 }
 
@@ -121,13 +126,9 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "a request with no Nats-Msg-Id",
 	}
-	select {
-	case err := <-client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second}):
-		if !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
-			t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("an unnamed request was never answered")
+	err = testwait.Receive(t, "the answer to the unnamed request", client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{}))
+	if !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
+		t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
@@ -143,7 +144,10 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 // still buffered on this side of a stalled connection and is not known to have reached anyone, so
 // the listener reports it delivery_failed at once rather than holding the role send open. Driven
 // for real: the server's traffic is frozen, so the client stays CONNECTED, buffers the publish,
-// and its flush waits for a PONG that cannot come until the window runs out.
+// and its flush waits for a PONG that cannot come until the window runs out. nats.go times that
+// flush itself, on a clock no test reaches, so which window bounds it is read off the order of two
+// forwards: a long-windowed one started first is still waiting when a short-windowed one started
+// after it has been refused, which a flush bounded by anything but its own window could not do.
 func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing.T) {
 	srv, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
@@ -177,17 +181,23 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	// Cleanups run last-in first-out, so this thaw precedes startNATS's shutdown.
 	t.Cleanup(thaw)
 
-	const window = 500 * time.Millisecond
-	started := time.Now()
-	_, err = client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
-	elapsed := time.Since(started)
+	const (
+		shortWindow = 500 * time.Millisecond
+		longWindow  = 30 * time.Second
+	)
+	longer := make(chan error, 1)
+	go func() {
+		_, err := client.StartRequestStoredTo(contracts.LegacyAgentSubject("ses_stalled_long"), item, bus.ForwardMsgID(item.DedupeKey, "long"), longWindow)
+		longer <- err
+	}()
+	_, err = client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), shortWindow)
 	if err == nil {
 		t.Fatal("StartRequestStoredTo against a frozen server returned no error; the forward cannot have been flushed")
 	}
 	if !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("StartRequestStoredTo error = %v, want a wrapped nats.ErrTimeout from the flush", err)
 	}
-	if elapsed < window || elapsed > 2*time.Second {
-		t.Fatalf("StartRequestStoredTo returned after %s; the flush must be bounded by the %s window, not the client's 10s default", elapsed, window)
+	if len(longer) != 0 {
+		t.Fatalf("the forward with the %s window was answered (%v) by the time the %s one was: the flush is not bounded by its own window", longWindow, <-longer, shortWindow)
 	}
 }

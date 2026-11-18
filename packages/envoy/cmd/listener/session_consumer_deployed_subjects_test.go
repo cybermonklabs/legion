@@ -174,7 +174,7 @@ func deployNewerBuildsStream(t *testing.T, url string, extra ...string) {
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream to create the newer build's stream: %v", err)
 	}

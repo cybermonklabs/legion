@@ -9,19 +9,11 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
-)
 
-// consumerStatePoll is how often AwaitConsumerStored reads the consumer's info and its state file,
-// and consumerStateWait how long it waits for the two to agree: the 20 ms and 5 s the bus tests'
-// waitUntil polls with, for the same reason, a state that follows a publish the server answers
-// nothing to arriving a moment after it, from a server in this process.
-const (
-	consumerStatePoll = 20 * time.Millisecond
-	consumerStateWait = 5 * time.Second
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // servers maps the relay address of every Server start made, the host and port its URL names, to
@@ -90,19 +82,19 @@ type storedConsumer struct {
 // write to wait for. It fails the test when conn reaches no server this package started and
 // registered, when the server holds no connection by conn's client id, when the file is missing
 // or does not read that way (a consumer in memory storage, another format), naming the path, and
-// when the file has not caught up with the info within consumerStateWait.
+// when the file has not caught up with the info by the time the shared wait gives up
+// (testwait.Until), whose failure prints the last position each held.
 func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer string) {
 	t.Helper()
 	path := consumerStatePath(t, conn, stream, consumer)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("testnats: open JetStream to read consumer %s on stream %s: %v", consumer, stream, err)
 	}
-	deadline := time.Now().Add(consumerStateWait)
-	for {
+	testwait.Until(t, fmt.Sprintf("%s to hold the position the server reports for consumer %s", path, consumer), func() (string, bool) {
 		info, err := js.ConsumerInfo(stream, consumer)
 		if errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, natsgo.ErrStreamNotFound) {
-			return
+			return "the server holds no such consumer", true
 		}
 		if err != nil {
 			t.Fatalf("testnats: read the info of consumer %s on stream %s: %v", consumer, stream, err)
@@ -118,14 +110,8 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 		if err != nil {
 			t.Fatalf("testnats: the state file of consumer %s on stream %s: %v", consumer, stream, err)
 		}
-		if stored == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("testnats: waited %s for %s to hold the position the server reports for consumer %s; it held %+v, the server reports %+v", consumerStateWait, path, consumer, stored, want)
-		}
-		time.Sleep(consumerStatePoll)
-	}
+		return fmt.Sprintf("the file held %+v, the server reports %+v", stored, want), stored == want
+	})
 }
 
 // consumerStatePath is the path of consumer's state file on the server conn is connected to, in

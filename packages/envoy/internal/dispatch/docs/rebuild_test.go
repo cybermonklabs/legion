@@ -580,9 +580,10 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
-	// Task A's holds query waits for task B's answer for roomWait, not production's roomQueryWait,
-	// as the process pair's do (newSeededProcessPair): the refusal is what this test reads.
-	taskA.roomQueries.wait = roomWait(t)
+	// Task A's holds query waits for task B's answer for answerWaitPastEveryAnswer, not
+	// production's roomQueryWait, as the process pair's do (newSeededProcessPair): the refusal is
+	// what this test reads.
+	taskA.roomQueries.wait = answerWaitPastEveryAnswer
 	seedServiceText(t, taskA, artifactID, "before\n")
 	runRoomSync(t, newRoomSync(taskA))
 	runRoomSync(t, newRoomSync(taskB))
@@ -640,9 +641,7 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 			})
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, roomWait(t)); waiting < 2 {
-		t.Fatalf("%d of the two rebuilds reached the issue's row", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's row: %v", err)
 	}

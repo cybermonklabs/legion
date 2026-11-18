@@ -81,7 +81,6 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 		Machine:       m,
 		MachineLogins: machineLogins,
 		OAuth:         oauthstore.New(m.Store.Pool),
-		Interval:      time.Hour,
 		Wake: func(_ context.Context, enrollmentID, requestID, state string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -150,7 +149,7 @@ func TestSweeperTickDeletesExpiredBrowserSessions(t *testing.T) {
 		t.Fatalf("create the live session: %v", err)
 	}
 
-	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour}
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool)}
 	sweeper.Tick(ctx)
 
 	rowOf := func(hash [sha256.Size]byte) bool {
@@ -282,7 +281,7 @@ func TestSweeperEndsLapsedEnrollments(t *testing.T) {
 	}
 
 	var woken []wakeCall
-	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour,
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool),
 		Wake: func(_ context.Context, enrollmentID, requestID, state string) {
 			woken = append(woken, wakeCall{enrollmentID, requestID, state})
 		}}
@@ -366,7 +365,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			ctx := context.Background()
-			sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour}
+			sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool)}
 			replay := m.Replay
 			// Create calls Replay after it reads the enrollment and before it writes.
 			m.Replay = func(ctx context.Context, jti string, expires time.Time) (bool, error) {

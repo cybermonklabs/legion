@@ -380,6 +380,9 @@ INSTALL_BOUND=600
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . "$root/.github/scripts/ci-tools.sh"
+# wait_for, the one wait of the scripts beside this file.
+# shellcheck source=.github/scripts/test-lib.sh
+. "$root/.github/scripts/test-lib.sh"
 
 die() {
   echo "::error::ci-tools-proof: $*" >&2
@@ -390,15 +393,23 @@ note() {
   printf 'ci-tools-proof: %s\n' "$*"
 }
 
-# wait_for_file <file> <what it is>: the port file a server writes by rename, waited for rather
-# than raced. Thirty seconds, in tenths, which is longer than either server takes to bind.
+# port_written_or_gone <file> <pid>: the server's port file is written, or the server that would
+# write it has exited; either ends wait_for_file's wait.
+port_written_or_gone() {
+  [ -s "$1" ] && return 0
+  kill -0 "$2" 2>/dev/null || return 0
+  echo "no port in $1 yet, and the server ($2) is still running"
+  return 1
+}
+
+# wait_for_file <file> <what it is> <pid> <log>: the port file a server writes by rename, waited
+# for rather than raced, through test-lib.sh's wait_for, which takes no bound: the limit of the
+# step that runs this verb is its guard. A server that exits first ends the wait at once, and
+# the step fails naming the server's log.
 wait_for_file() {
-  local file=$1 what=$2 waited=0
-  while [ ! -s "$file" ]; do
-    sleep 0.1
-    waited=$((waited + 1))
-    [ "$waited" -lt 300 ] || die "$what reported no port in 30 s"
-  done
+  local file=$1 what=$2 pid=$3 log=$4
+  wait_for "$what to write its port to $file" port_written_or_gone "$file" "$pid"
+  [ -s "$file" ] || die "$what exited before it reported a port; see $log"
 }
 
 # ---------------------------------------------------------------- origin-start
@@ -648,7 +659,7 @@ origin_start() {
   rm -f "$port_file"
   python3 "$work/origin.py" "$root/.github/ci-tools.yaml" "$payload" "$control" "$origin_log" "$port_file" \
     > "$work/origin.stderr" 2>&1 &
-  wait_for_file "$port_file" "the origin"
+  wait_for_file "$port_file" "the origin" "$!" "$work/origin.stderr"
   local base
   base="http://127.0.0.1:$(cat "$port_file")"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -1069,7 +1080,7 @@ start_fault() {
   : > "$fault_log"
   python3 "$root/.github/scripts/ci-fault-proxy.py" --mode fail --hosts "$FAULT_HOSTS" \
     --port 0 --port-file "$port_file" > "$fault_log" 2>&1 &
-  wait_for_file "$port_file" "the fault proxy"
+  wait_for_file "$port_file" "the fault proxy" "$!" "$fault_log"
   local proxy
   proxy="http://127.0.0.1:$(cat "$port_file")"
   echo "proxy=$proxy" > "$fault_state"

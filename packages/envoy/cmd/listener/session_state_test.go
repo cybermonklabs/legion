@@ -7,43 +7,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// stateClock is the registry's clock for the tests below: the real time moved on by what the test
-// advanced it, so the creation times the server stamps and the registry's own time agree until a
-// test moves a session past a window without waiting it out.
-type stateClock struct {
-	mu     sync.Mutex
-	offset time.Duration
-}
-
-func (c *stateClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Now().Add(c.offset)
-}
-
-func (c *stateClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.offset += d
-}
+// The registry's clock for the tests below is clocktest.Held: the real time moved on by what the
+// test advanced it, so the creation times the server stamps and the registry's own time agree
+// until a test moves a session past a window without waiting it out.
 
 // stalledSessionsRig opens the two registries and the clock these tests cross the session windows
 // with: a live window of a minute, a gone horizon of two, and a bucket whose maximum age is far
 // longer than either, which is the deployed shape (ENVOY_SESSION_MAX_AGE past the gone horizon)
 // where a stalled session's record still stands to be read as unresponsive.
-func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
+func stalledSessionsRig(t *testing.T) (*listenerDeps, *clocktest.Fake) {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
@@ -55,12 +40,12 @@ func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	now := &stateClock{}
+	now := clocktest.Held()
 	sessions, err := session.OpenSessionRegistry(
 		client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Hour),
-		session.WithSessionClock(now.Now),
+		session.WithSessionClock(now),
 		session.WithSessionLiveWindow(time.Minute),
 		session.WithSessionGoneHorizon(2*time.Minute),
 	)
@@ -94,7 +79,7 @@ func register(t *testing.T, d *listenerDeps, sessionID string, entry session.Ses
 func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *testing.T) {
 	d, now := stalledSessionsRig(t)
 	stalledAt := register(t, d, "ses_stalled", session.SessionEntry{MachineID: "test-machine", Dir: "/test/stalled", SelfSubscribed: true})
-	now.advance(90 * time.Second)
+	now.Advance(90 * time.Second)
 	register(t, d, "ses_live", session.SessionEntry{MachineID: "test-machine", Dir: "/test/live", SelfSubscribed: true})
 
 	listed := func(query string) []sessionInfo {
@@ -136,7 +121,7 @@ func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *t
 func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 	d, now := stalledSessionsRig(t)
 	stalledAt := register(t, d, "ses_stalled", session.SessionEntry{MachineID: "test-machine", Dir: "/test/stalled", SelfSubscribed: true})
-	now.advance(90 * time.Second)
+	now.Advance(90 * time.Second)
 
 	refused := httptest.NewRecorder()
 	sessionEntryHandler(d).ServeHTTP(refused, httptest.NewRequest(http.MethodGet, "/v1/registry/ses_stalled", nil))
@@ -189,7 +174,7 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 	if err != nil {
 		t.Fatalf("read the seeded claim: %v", err)
 	}
-	now.advance(90 * time.Second)
+	now.Advance(90 * time.Second)
 
 	for attempt := range 5 {
 		recorder := httptest.NewRecorder()
@@ -240,7 +225,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 	d, now := stalledSessionsRig(t)
 	const sessionID = "ses_stalled_recipient"
 	registeredAt := register(t, d, sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
-	now.advance(90 * time.Second)
+	now.Advance(90 * time.Second)
 
 	send := func() *httptest.ResponseRecorder {
 		t.Helper()
@@ -262,7 +247,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 		t.Fatalf("the send answer = %+v, want recipient_state unresponsive and last_seen %d", answer, registeredAt)
 	}
 
-	now.advance(2 * time.Minute)
+	now.Advance(2 * time.Minute)
 	refused := send()
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("send to a gone session: status %d, body %s; want 404", refused.Code, refused.Body.String())
@@ -333,15 +318,14 @@ func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *te
 		t.Fatalf("session_max_age = %s, want the %s the bucket was opened with", got, time.Hour)
 	}
 
-	js, err := d.client.Conn.JetStream()
+	js, err := d.client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
 	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, 90*time.Minute); err != nil {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	d.sessions.ReapSessions(ctx, session.SessionReaper{})
 	if got, want := maxAge(), (90 * time.Minute).String(); got != want {
 		t.Fatalf("session_max_age after one pass = %s, want the %s another process set", got, want)

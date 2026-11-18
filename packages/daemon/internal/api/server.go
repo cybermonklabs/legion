@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -39,7 +40,7 @@ const readHeaderTimeout = 10 * time.Second
 
 // stateReadBound is how long the state route gives its whole read — its repeatable-read
 // transaction and the statements inside it — before it answers a failure and ends that
-// transaction (stateRoute, Options.StateReadBound). Until INFRA-3169 the route's only bound was
+// transaction (stateRoute). Until INFRA-3169 the route's only bound was
 // whether its client was still waiting, so a read that never finished held its connection for as
 // long as the client held the socket, and 32 of those are the whole pool.
 //
@@ -62,10 +63,9 @@ type Options struct {
 	State StateSource
 	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
 	StateTransactions StateTransactions
-	// StateReadBound is how long the state route's read may take before it answers a failure and
-	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
-	// test sets a smaller one so it need not wait out a minute.
-	StateReadBound time.Duration
+	// Clock is the time the state route's read bound (stateReadBound) runs on; nil is the wall
+	// clock (clock.Real), and a test hands it a clocktest.Fake to move past that bound.
+	Clock clock.Clock
 	// ConsumerLag reads the lag of the daemon's durable consumers from NATS (the daemon's
 	// intake.Consumers.Lag), which the state route reads after its transaction commits and serves as
 	// `consumers`. Nil, a daemon with no workflow and so no consumers, serves none.
@@ -307,8 +307,8 @@ type ClaimActivityStore interface {
 type server struct {
 	state             StateSource
 	stateTransactions StateTransactions
-	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
-	stateBound  time.Duration
+	// clock is Options.Clock, resolved: the wall clock where the caller set none.
+	clock       clock.Clock
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
@@ -401,7 +401,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	s := &server{
 		state:              opts.State,
 		stateTransactions:  opts.StateTransactions,
-		stateBound:         opts.StateReadBound,
+		clock:              opts.Clock,
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
@@ -450,8 +450,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
 	}
-	if s.stateBound == 0 {
-		s.stateBound = stateReadBound
+	if s.clock == nil {
+		s.clock = clock.Real()
 	}
 	if s.source == nil {
 		s.source = experiment.CryptoSource
@@ -689,7 +689,7 @@ func (s *server) stopRefusal(request string) string {
 }
 
 // stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of
-// the daemon's own (stateReadBound, Options.StateReadBound). Before INFRA-3169 the only thing
+// the daemon's own (stateReadBound, on Options.Clock). Before INFRA-3169 the only thing
 // that ended this read was the client giving up, so a read that never finished held its
 // connection as long as the client held its socket, and 32 of those are the whole pool.
 //
@@ -714,7 +714,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
+	reading, cancel := s.clock.WithTimeout(r.Context(), stateReadBound)
 	defer cancel()
 	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
@@ -735,7 +735,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		_ = tx.Rollback(ending)
 	}()
 
-	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
+	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(stateReadBound.Milliseconds(), 10)); err != nil {
 		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
@@ -757,19 +757,6 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
 	}
 	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
-}
-
-// statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and
-// never the 0 a bound under a millisecond truncates to. In PostgreSQL 0 is no statement timeout
-// at all, which is the opposite of what a caller that set a bound asked for, so a non-zero bound
-// renders as the one millisecond that is still a bound. No caller sets a sub-millisecond bound
-// today (stateReadBound is 60 s); this is what keeps one that did from switching the bound off.
-func statementBound(bound time.Duration) int64 {
-	milliseconds := bound.Milliseconds()
-	if milliseconds == 0 && bound != 0 {
-		return 1
-	}
-	return milliseconds
 }
 
 // stateFor is state as the plugin that asked for it reads it, decided from claims, the project's

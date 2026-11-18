@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -38,6 +39,8 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -758,15 +761,12 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 
 	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
-	for !probe(first) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the only outbox publishing")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the only process publishing", func() bool { return probe(first) })
 	second := start(storetest.SecondProcess(t, database))
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, "the standby must not report itself publishing while the first holds the hold: "+
+		"a process that has not taken the hold writes nothing of its own to read, both run in this test process "+
+		"behind real HTTP so synctest does not reach them, and the later action this row takes - stopping the "+
+		"holder - is what hands the hold over")
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
 	}
@@ -775,13 +775,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for !probe(second) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the standby publishing once the holder stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the standby publishing once the holder stopped", func() bool { return probe(second) })
 }
 
 // /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client
@@ -920,15 +914,19 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		t.Fatalf("query through the proxy before the outage: %v", err)
 	}
 
-	// The load balancer's own timeout: a poll it has not heard back from in five seconds is a
-	// failure, and three consecutive failures replace the task.
-	client := &http.Client{Timeout: 5 * time.Second}
-
+	// The load balancer's own timeout is five seconds: a poll it has not heard back from in that
+	// long is a failure, and three consecutive failures replace the task. Whether this answer
+	// came inside it is a reading of this machine's clock against store.healthProbeTimeout's
+	// timer, so only benchtime's timing lane holds it to that figure; every run requires the
+	// answer, and the 503 below, through the shared wait's own bound.
 	blackholed.Store(true)
 	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
+	response, err := healthzWithin(t, server.URL)
 	if err != nil {
 		t.Fatalf("health probe with Postgres unreachable: %v (after %s)", err, time.Since(started))
+	}
+	if took := time.Since(started); os.Getenv(benchtime.TimingEnv) != "" && took >= 5*time.Second {
+		t.Fatalf("health probe with Postgres unreachable answered after %s, past the load balancer's five seconds", took)
 	}
 	defer response.Body.Close()
 	var health map[string]any
@@ -955,7 +953,9 @@ func (unansweringBucket) Healthy(ctx context.Context) error {
 // /healthz still answers inside the tightest prober's three seconds when Postgres and the
 // file store's bucket both stop answering. Each probe is bounded at two seconds on its own, so
 // run one after the other they took four, and the compose healthcheck and the deploy script
-// read that silence as a dead process; run side by side they take two.
+// read that silence as a dead process; run side by side they take two. That figure is a reading
+// of this machine's clock against the two probes' timers, so only benchtime's timing lane holds
+// it; every run requires the answer and its 503.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
@@ -976,12 +976,14 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}))
 	defer server.Close()
 
-	client := &http.Client{Timeout: 3 * time.Second}
 	blackholed.Store(true)
 	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
+	response, err := healthzWithin(t, server.URL)
 	if err != nil {
 		t.Fatalf("health probe with Postgres and the bucket unreachable: %v (after %s)", err, time.Since(started))
+	}
+	if took := time.Since(started); os.Getenv(benchtime.TimingEnv) != "" && took >= 3*time.Second {
+		t.Fatalf("health probe with Postgres and the bucket unreachable answered after %s, past the tightest prober's three seconds", took)
 	}
 	defer response.Body.Close()
 	var health map[string]any
@@ -992,6 +994,17 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
 			response.StatusCode, health)
 	}
+}
+
+// healthzWithin is one GET of /healthz at serverURL under the shared wait's context, which ends
+// only near the test binary's deadline: a probe that never answers fails there.
+func healthzWithin(t *testing.T, serverURL string) (*http.Response, error) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, serverURL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("build the health probe: %v", err)
+	}
+	return http.DefaultClient.Do(request)
 }
 
 // blackholePostgres puts a proxy in front of upstream and returns its address. While blackholed
@@ -1104,7 +1117,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.Main(m.Run))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
@@ -1211,7 +1224,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
-	if code := census(context.Background(), database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
+	if code := census(context.Background(), testdb.WithParameter(t, database.Pool.Config().ConnString(), "search_path", "nosuch"), &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errOut.String())
 	}
 	const want = "census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither schema_migrations nor any table, and the runner can create neither; name an existing schema in the search_path\n"

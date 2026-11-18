@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // owedStartRow is a worker start that waits for its issue's admission slot, as a transition
@@ -89,6 +90,9 @@ func TestEnqueueStartLeavesARowALaneTakesWhileItRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin the lane's transaction: %v", err)
 	}
+	// A row that fails before the lane commits rolls it back, so the start it holds ends and the
+	// pool closes; after the commit the rollback does nothing.
+	defer func() { _ = lane.Rollback(ctx) }()
 	if _, err := lane.Exec(ctx, `update outbox set lease_token = 'lane', lease_until = now() + interval '1 hour'
 		where issue = $1 and kind = 'supervise'`, issue); err != nil {
 		t.Fatalf("take the lease: %v", err)
@@ -110,7 +114,17 @@ func TestEnqueueStartLeavesARowALaneTakesWhileItRuns(t *testing.T) {
 		done <- tx.Commit(ctx)
 	}()
 	// The start reaches the lane's row lock and waits there; the lane then commits.
-	time.Sleep(500 * time.Millisecond)
+	testwait.Eventually(t, "the start to wait on the lane's row lock", func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("the start of %s ended (%v) before the lane committed, want it waiting on the lane's row lock", issue, err)
+		default:
+		}
+		var waiting int
+		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+		return err == nil && waiting > 0
+	})
 	if err := lane.Commit(ctx); err != nil {
 		t.Fatalf("commit the lane's claim: %v", err)
 	}

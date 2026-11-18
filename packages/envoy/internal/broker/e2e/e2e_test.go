@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -83,10 +84,10 @@ const (
 	otherPerson = "ben@example.com"
 
 	// reloadInterval is policy.NewCurrent's own ticker period for this test: short enough that
-	// step 8's bounded wait (reloadTimeout) sees the real reload path run several times without
-	// slowing the suite down.
+	// step 8's wait sees the real reload path run several times without slowing the suite down.
+	// It paces the broker's own goroutine, which this test reads through the route the reload
+	// changes, and the wait for that change takes no bound of its own.
 	reloadInterval = 40 * time.Millisecond
-	reloadTimeout  = 5 * time.Second
 )
 
 // --- harness ---
@@ -445,6 +446,8 @@ func TestEndToEnd(t *testing.T) {
 		launcherCredentialID := *approved.CredentialID
 
 		config, ctx := ts.deviceClient(machineKey)
+		// x/oauth2's own poll interval between token requests, which no clock of Envoy's
+		// reaches: the code is already approved, so the first poll is the only one.
 		da.Interval = 1
 		tok, err := config.DeviceAccessToken(ctx, da)
 		if err != nil {
@@ -724,23 +727,15 @@ func TestEndToEnd(t *testing.T) {
 }
 
 // awaitStatus asks for name from a fresh session until the create route answers status (and, for
-// an error, code), failing after reloadTimeout: the reload ticker applies a tag edit on its next
-// tick.
+// an error, code): the reload ticker applies a tag edit on its next tick.
 func (s *e2eServer) awaitStatus(t *testing.T, name string, status int, code string) {
 	t.Helper()
 	enrollmentID, key := s.loginAndEnroll(t, testApprover, "e2e-reload-"+uuid.NewString()[:8])
-	deadline := time.Now().Add(reloadTimeout)
-	for {
+	testwait.Eventually(t, fmt.Sprintf("POST /v1/requests (%s) to answer %d %s once the reload has run", name, status, code), func() bool {
 		got, body := s.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
 			map[string]any{"request": signAgentSecretRequest(t, key, s.URL, "reload", name), "session_id": nil})
-		if got == status && (code == "" || decode[wireError](t, body).Code == code) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("POST /v1/requests (%s) = %d %s; want %d %s within %s", name, got, body, status, code, reloadTimeout)
-		}
-		time.Sleep(reloadInterval)
-	}
+		return got == status && (code == "" || decode[wireError](t, body).Code == code)
+	})
 }
 
 // pendingListsFor answers whether GET /v1/pending?approver=<person> lists recordID, with the

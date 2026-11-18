@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/natsversion"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -107,16 +108,17 @@ type ConsumerSpec struct {
 	// bounds, ApplyFact's advisory-lock wait and its transaction, and never answers below
 	// defaultHandlerLimit. Production sets none, so the daemon's worker_rpc_timeout_seconds,
 	// which it passes as AckWait, decides it; tests set a short one. There is no legion.yaml key
-	// for it. The cut cancels the handling's context, and keepInProgress runs on that context,
-	// so intake stops reporting the message in progress at the limit. The handler returns once
-	// its running step honours the cancelled context, which every step today, a pgx call or a
-	// bounded HTTP read, does at once. Only then does consumeMessage write the cut warning and
-	// nak the message with NakDelay. Nothing reaches this consumer while the handler runs,
-	// because the fetch batch is one (the first bullet below), so JetStream sends the message
-	// again, and its delivered count rises, no sooner than that return: one NakDelay after the
-	// nak, or at the consumer's next pull where the step held the handler past about one AckWait
-	// after the limit, whichever the server takes first. A step that ignored its context would
-	// hold the message, and the warning, for the whole of its own run.
+	// for it. The limit runs on Clock, which a test moves past it. The cut cancels the handling's
+	// context, and keepInProgress runs on that context, so intake stops reporting the message in
+	// progress at the limit. The handler returns once its running step honours the cancelled
+	// context, which every step today, a pgx call or a bounded HTTP read, does at once. Only then
+	// does consumeMessage write the cut warning and nak the message with NakDelay. Nothing
+	// reaches this consumer while the handler runs, because the fetch batch is one (the first
+	// bullet below), so JetStream sends the message again, and its delivered count rises, no
+	// sooner than that return: one NakDelay after the nak, or at the consumer's next pull where
+	// the step held the handler past about one AckWait after the limit, whichever the server
+	// takes first. A step that ignored its context would hold the message, and the warning, for
+	// the whole of its own run.
 	//
 	// This comment is where the delivery mechanism is written whole, in the four parts
 	// measured for dispatch://INFRA-1113. Every other site in this package that states the
@@ -160,9 +162,11 @@ type ConsumerSpec struct {
 	//     server/consumer.go).
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
-	// Now is the clock Consumers reads when it records a consumer opened or a message handled,
-	// and when Lag measures a stall and the oldest waiting message's age; nil is time.Now.
-	Now func() time.Time
+	// Clock is the clock Consumers reads when it records a consumer opened or a message handled,
+	// when a message reaches its consumer (lagWatch), and when Lag measures a stall and the oldest
+	// waiting message's age, and the one Lag's reads are bounded on (consumerLagBound,
+	// consumerOldestBound) and one message's handling is cut on (HandlerLimit); nil is clock.Real.
+	Clock Clock
 	// ReviewPermission answers whether review's author has write access or higher to its
 	// repository, which is what lets a review decide a review round
 	// (PullRequestReview.AuthorCanWrite). The workflow decides inside a transaction and performs no
@@ -306,7 +310,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	consumers := &Consumers{spec: spec, pool: pool, stream: stream, dispatch: dispatch, github: github, wake: wake,
 		repos: slices.Clone(spec.Repositories)}
-	opened := spec.Now()
+	opened := spec.Clock.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
 	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: opened}
@@ -428,12 +432,35 @@ func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
 // raced on the shared handle (the race detector's find in the daemon's retained-event test), and a
 // fresh handle shares nothing with the one Run consumes. Nothing here may wait for Run instead:
 // the boot's reconcile reads the position before Run starts, and pollHoldRelease beside it.
+//
+// An info that reads idle is checked against the stream's own store before it is believed. The
+// server counts a consumer's pending messages from a signal it queues after it has stored a
+// message and answered its publish (nats-server's processJetStreamMsg, signalConsumersLoop), so
+// for a moment after a message lands DispatchTarget already counts it while the consumer's info
+// still reads nothing pending, and an idle believed then would call a consumer caught up that has
+// that message still to give — the boot's reconcile would hold nothing behind it, and a replayed
+// event that predates it would be admitted first (dispatch://INFRA-3149). The store has the
+// message from before the publish was answered, so a message of the consumer's filters stored
+// after the last one it delivered (firstStoredFrom) is one it has yet to give, whatever its count
+// says. The last delivered, and not the ack floor, is where that starts: with none awaiting an
+// ack, nothing at or below it waits, and it is the one both servers this repository runs set for
+// a consumer created over messages it will never be given, where 2.10's ack floor stays at 0
+// (TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages).
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
 	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
 	if err != nil {
 		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
 	}
-	return positionOf(consumer.CachedInfo()), nil
+	info := consumer.CachedInfo()
+	position := positionOf(info)
+	if position.Idle {
+		waiting, err := c.firstStoredFrom(ctx, info, max(info.AckFloor.Stream, info.Delivered.Stream)+1)
+		if err != nil {
+			return DispatchConsumerPosition{}, fmt.Errorf("read the Dispatch consumer's first undelivered message: %w", err)
+		}
+		position.Idle = waiting == nil
+	}
+	return position, nil
 }
 
 func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
@@ -441,6 +468,14 @@ func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
 		AckFloorStream: int64(info.AckFloor.Stream),
 		Idle:           info.NumPending == 0 && info.NumAckPending == 0,
 	}
+}
+
+// Clock is the time Consumers reads and the bounds Lag's reads and a handling run under
+// (ConsumerSpec.Clock): a narrowing of clock.Clock, clock.Real unless a test names a
+// clocktest.Fake.
+type Clock interface {
+	Now() time.Time
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 const (
@@ -534,7 +569,7 @@ func (c *Consumers) Lag(ctx context.Context) []ConsumerLag {
 // lagOf reads one consumer's lag (Lag) within consumerLagBound, its oldest waiting message within
 // consumerOldestBound of the info's answer.
 func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) ConsumerLag {
-	ctx, cancel := context.WithTimeout(ctx, consumerLagBound)
+	ctx, cancel := c.spec.Clock.WithTimeout(ctx, consumerLagBound)
 	defer cancel()
 	handled := progress.lastHandled()
 	lag := ConsumerLag{Name: progress.name, LastHandledAt: handled}
@@ -548,13 +583,13 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 	if lag.Waiting == 0 {
 		return lag
 	}
-	now := c.spec.Now()
+	now := c.spec.Clock.Now()
 	since := handled
 	if since.IsZero() {
 		since = progress.opened
 	}
 	lag.Stalled = now.Sub(since) >= consumerStallAfter
-	read, cancelRead := context.WithTimeout(ctx, consumerOldestBound)
+	read, cancelRead := c.spec.Clock.WithTimeout(ctx, consumerOldestBound)
 	defer cancelRead()
 	oldest, err := c.oldestWaiting(read, info)
 	if err != nil {
@@ -569,33 +604,41 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 
 // oldestWaiting is the stream time of the first message after info's ack floor on any of its
 // consumer's filter subjects, or zero when the stream holds none (the stream's MaxAge removed it
-// since the info was read). A message at the sequence right after the ack floor is the oldest any
-// filter can give, so the filters after it are not read.
+// since the info was read).
 func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerInfo) (time.Time, error) {
+	oldest, err := c.firstStoredFrom(ctx, info, info.AckFloor.Stream+1)
+	if err != nil || oldest == nil {
+		return time.Time{}, err
+	}
+	return oldest.Time, nil
+}
+
+// firstStoredFrom is the first message at or after seq on any of info's consumer's filter
+// subjects, read from the stream's store (STREAM.MSG.GET by next subject), or nil when the stream
+// holds none. A message at seq itself is the first any filter can give, so the filters after it
+// are not read. Its two readers are oldestWaiting and DispatchPosition's check of an idle reading.
+func (c *Consumers) firstStoredFrom(ctx context.Context, info *jetstream.ConsumerInfo, seq uint64) (*jetstream.RawStreamMsg, error) {
 	filters := slices.Clone(info.Config.FilterSubjects)
 	if info.Config.FilterSubject != "" {
 		filters = append(filters, info.Config.FilterSubject)
 	}
-	var oldest *jetstream.RawStreamMsg
+	var first *jetstream.RawStreamMsg
 	for _, filter := range filters {
-		message, err := c.stream.GetMsg(ctx, info.AckFloor.Stream+1, jetstream.WithGetMsgSubject(filter))
+		message, err := c.stream.GetMsg(ctx, seq, jetstream.WithGetMsgSubject(filter))
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			continue
 		}
 		if err != nil {
-			return time.Time{}, err
+			return nil, err
 		}
-		if oldest == nil || message.Sequence < oldest.Sequence {
-			oldest = message
+		if first == nil || message.Sequence < first.Sequence {
+			first = message
 		}
-		if oldest.Sequence == info.AckFloor.Stream+1 {
+		if first.Sequence == seq {
 			break
 		}
 	}
-	if oldest == nil {
-		return time.Time{}, nil
-	}
-	return oldest.Time, nil
+	return first, nil
 }
 
 // Run consumes the three durable consumers until ctx ends, and returns the error of the one that
@@ -625,14 +668,15 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 // consumeConsumer works through one durable consumer's messages, asking JetStream for
 // consumerFetchBatch of them at a time (jetstream.PullMaxMessages), which is what leaves each
 // message's acknowledgement window to that message's own work; the constant says why. Each
-// message handled is recorded in progress at spec.Now.
+// message handled is recorded in progress at spec.Clock's time, and lagWatch reads that clock
+// too.
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
-	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
+	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: c.spec.Clock.Now}
 	names := &issueNames{}
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
 		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers, names) {
-			progress.handle(c.spec.Now())
+			progress.handle(c.spec.Clock.Now())
 		}
 	}, jetstream.PullMaxMessages(consumerFetchBatch))
 	if err != nil {
@@ -727,11 +771,11 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 //
 // The order the work is done in is the point. A poison message is decoded and terminated before
 // anything else starts, so it pays for neither a goroutine nor a ticker. Everything after it runs
-// under work, a context of spec.HandlerLimit, with keepInProgress reporting the message in
-// progress every third of AckWait for as long as that work runs (the delivery mechanism:
-// ConsumerSpec.HandlerLimit's comment). The work ends the message in no way: it returns a
-// messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or nak that
-// outcome asks for follow.
+// under work, a context of spec.HandlerLimit on spec.Clock, with keepInProgress reporting the
+// message in progress every third of AckWait for as long as that work runs (the delivery
+// mechanism: ConsumerSpec.HandlerLimit's comment). The work ends the message in no way: it
+// returns a messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or
+// nak that outcome asks for follow.
 //
 // The keeper has to stop before that one call rather than in a defer after it. A progress signal
 // that reached the server after a nak would stretch the retry the nak asked for: nats-server's
@@ -767,7 +811,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 		logMessage(spec.Logger, slog.LevelWarn, "unreadable field taken as absent", message, "event_id", decoded.EventID, "field", field)
 	}
 	if decoded.LegacyName {
-		if count, due := names.legacyRead(spec.Now()); due {
+		if count, due := names.legacyRead(spec.Clock.Now()); due {
 			logMessage(spec.Logger, slog.LevelInfo, "an issue event named in the old form", message, "legacy_count", count)
 		}
 	}
@@ -788,7 +832,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	// two their first connection, while a mark per message refuses only the handling that already
 	// holds one (store.ErrNestedAcquire). A consumer delivers its messages one at a time, so this
 	// mark covers one handling and is gone with it.
-	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
+	work, cancel := spec.Clock.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
 	started := time.Now()
@@ -1140,8 +1184,8 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 	if spec.Logger == nil {
 		spec.Logger = slog.Default()
 	}
-	if spec.Now == nil {
-		spec.Now = time.Now
+	if spec.Clock == nil {
+		spec.Clock = clock.Real()
 	}
 	return spec, nil
 }

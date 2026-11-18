@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // syncBuffer is a buffer plus a mutex: slog's own handler serializes its Write calls, but a
@@ -60,7 +62,7 @@ func newContractRig(t *testing.T, options ...brokertest.Option) *contractRig {
 // and the socket under a short temporary directory of its own, never under $HOME — the caller is
 // expected to have set HOME to a separate, otherwise-untouched TempDir of its own so it can later
 // assert nothing wrote there.
-func startContractHelper(t *testing.T, broker *brokertest.Rig, machineFile string, client *http.Client) *contractRig {
+func startContractHelper(t *testing.T, broker *brokertest.Rig, machineFile string, client *http.Client, tune ...func(*Broker)) *contractRig {
 	t.Helper()
 	artifacts := t.TempDir()
 	logBuf := &syncBuffer{}
@@ -74,6 +76,11 @@ func startContractHelper(t *testing.T, broker *brokertest.Rig, machineFile strin
 		PeerOf:   PeerOf,
 		Log:      log,
 		MinRenew: 50 * time.Millisecond,
+	}
+	// Each tune runs on the Broker before it starts, so a field it sets — a clock of the row's
+	// own — is set before any goroutine of the broker reads it.
+	for _, apply := range tune {
+		apply(cr.srv.Broker)
 	}
 	cr.sock = filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: cr.sock, Net: "unix"})
@@ -114,9 +121,14 @@ func (cr *contractRig) login(t *testing.T) string {
 	return credentialID
 }
 
+// call sends one request to the helper under the shared wait's own deadline (rig.call).
 func (cr *contractRig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	resp, err := Call(cr.sock, req, 10*time.Second)
+	timeout := time.Duration(math.MaxInt64)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		timeout = time.Until(deadline)
+	}
+	resp, err := Call(cr.sock, req, timeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,18 +136,13 @@ func (cr *contractRig) call(t *testing.T, req Request) Response {
 }
 
 // waitForIssued blocks until the background login poller (pollLogin, at the broker's 5 s
-// interval) installs the machine credential, or fails the test — longer than the package's own
-// waitFor, since a real broker round trip plus that interval can outrun a 5 s deadline.
+// interval, which is x/oauth2's own) installs the machine credential.
 func waitForIssued(t *testing.T, b *Broker) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		if b.LoginStatus().State == "issued" {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("login never reached issued: %+v", b.LoginStatus())
+	testwait.Until(t, "the machine login to reach issued", func() (loginState, bool) {
+		ls := b.LoginStatus()
+		return ls, ls.State == "issued"
+	})
 }
 
 // --- wire-shape mirrors of the broker's HTTP API, for decoding the real broker's responses ---
@@ -344,13 +351,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 		t.Fatalf("register after the credential expired: %+v; want OK and not enrolled", reg)
 	}
 	const cannotEnroll = `level=ERROR msg="session cannot enroll: the helper holds no launcher credential; run: agent-secrets machine login, and have a human approve it"`
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(cr.logBuf.String(), cannotEnroll) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no ERROR says the session cannot enroll; log:\n%s", cr.logBuf.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool { return strings.Contains(cr.logBuf.String(), cannotEnroll) })
 	log := cr.logBuf.String()
 	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
 	why := `why="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"`
@@ -418,13 +419,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 	}
 
 	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
-	deadline := time.Now().Add(15 * time.Second)
-	for !strings.Contains(cr.logBuf.String(), refused) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the helper never logged its credential refused; log:\n%s", cr.logBuf.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool { return strings.Contains(cr.logBuf.String(), refused) })
 	log := cr.logBuf.String()
 	if !strings.Contains(log, `msg="renew refused; revoking the lapsed enrollment before enrolling again"`) ||
 		!strings.Contains(log, "code=ENROLLMENT_NOT_LIVE enrollment_id="+reg.EnrollmentID) {

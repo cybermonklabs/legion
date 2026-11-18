@@ -18,7 +18,10 @@ import (
 // before the stream redelivers it. It is short enough that a window's worth of them is a dozen
 // attempts rather than two - at the 30 s finalize(true) takes, a minute is one retry - and long
 // enough that a session whose record is still propagating, or whose process is restarting and
-// registering again, has time to finish between two of them.
+// registering again, has time to finish between two of them. The delay is the server's timer
+// (a nak's redelivery delay, deliveryMessage.finalizeAfter), which no clock of this process
+// reaches, so it keeps its setting; a test counts deferrals through unplaceableRetryWindow, a
+// number of them, and never shortens this delay.
 const unplaceableRetryDelay = 5 * time.Second
 
 // unplaceableMaxDeliveries is the hard stop on those retries beside the window's own count of

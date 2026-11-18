@@ -11,11 +11,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countMessages counts every message the test's database holds: a repeat that wrote a second
@@ -159,11 +159,7 @@ func TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast(t *testing.T) {
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- send() }()
-	select {
-	case <-reading:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first send never read the registry")
-	}
+	testwait.Receive(t, "the first send to read the registry", reading)
 	retry := send()
 	if code, _ := refusalOf(t, retry); retry.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight {
 		t.Fatalf("a retry while the first runs: status=%d body=%s, want 409 %s", retry.Code, retry.Body.String(), contracts.IdempotencyKeyInFlight)
@@ -294,15 +290,10 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 		return states
 	}
 	want := []string{"archivist 1 pending", "planner 1 sent", "reviewer 1 sent", "tester 1 sent"}
-	var settled []string
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if settled = settledStates(); equalStrings(settled, want) {
-			break
-		}
-	}
-	if !equalStrings(settled, want) {
-		t.Fatalf("the recipients settled as %v, want %v", settled, want)
-	}
+	testwait.Until(t, fmt.Sprintf("the recipients to settle as %v", want), func() ([]string, bool) {
+		settled := settledStates()
+		return settled, equalStrings(settled, want)
+	})
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "reviewer", "tester"}) {
 		t.Fatalf("listener sends = %v, want the planner's first frame and one each for the two owed", got)
 	}

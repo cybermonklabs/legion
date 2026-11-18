@@ -36,7 +36,7 @@
 // tool reads it back through Dispatch's `/handoffs/<word>/latest`, and the daemon reads the
 // record a completion names through `/handoffs/<id>` and holds it to that session.
 //
-// The daemon is the whole daemon (run, through startDaemonWithin). What the proof reads is the
+// The daemon is the whole daemon (run, through startDaemonLogging). What the proof reads is the
 // tool's answer, the daemon's own line for each completion it answers (api's handoffComplete,
 // `api: handoff completion answered`, which names the record and the commit the call carried and
 // the status and code it was answered with), and GET /legion/v1/state. GitHub is the harness's
@@ -96,6 +96,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -209,7 +210,6 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 			t.Fatalf("%s is not on PATH: %v", tool, err)
 		}
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/late-completion.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
@@ -286,7 +286,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.key, r.cfg.DispatchURL)
 	return r
@@ -459,7 +459,7 @@ func (r *lateCompletionLive) implementerCompletes() {
 	r.implementRecord = r.writeRecord(held.Session, "implement")
 	mark := time.Now()
 	r.implementerCall.release()
-	result := r.implementerCall.awaitResult(t, 2*time.Minute)
+	result := r.implementerCall.awaitResult(t)
 	r.note("the stand-in's turn called legion %s; the tool answered (error %t): %s", inputOf(r.implementerCall), result.isError, result.text)
 	line := r.settledAnswer("the implementer's completion", mark, implementer)
 	r.note("daemon: %s", answeredLine(line))
@@ -510,7 +510,7 @@ func (r *lateCompletionLive) testerCompletes() {
 	r.testRecord = r.writeRecord(held.Session, "test")
 	mark := time.Now()
 	r.testerCall.release()
-	result := r.testerCall.awaitResult(t, 2*time.Minute)
+	result := r.testerCall.awaitResult(t)
 	r.note("the stand-in's turn called legion %s; the tool answered (error %t): %s", inputOf(r.testerCall), result.isError, result.text)
 	line := r.settledAnswer("the tester's completion", mark, tester)
 	r.note("daemon: %s", answeredLine(line))
@@ -563,7 +563,7 @@ func (r *lateCompletionLive) reviewerCompletesLate() {
 		r.key, moved.Phase, heldRecord(moved, claim.RoleReviewer))
 	mark := time.Now()
 	r.reviewerCall.release()
-	result := r.reviewerCall.awaitResult(t, 2*time.Minute)
+	result := r.reviewerCall.awaitResult(t)
 	r.note("the stand-in's turn called legion %s; the tool answered (error %t): %s", inputOf(r.reviewerCall), result.isError, result.text)
 	line := r.settledAnswer("the reviewer's late completion", mark, reviewer)
 	r.note("daemon: %s", answeredLine(line))
@@ -684,7 +684,7 @@ func (r *lateCompletionLive) publishApproval(login, session string) string {
 func (r *lateCompletionLive) waitPhase(want phase.Phase) api.Issue {
 	r.t.Helper()
 	var got api.Issue
-	r.await(fmt.Sprintf("%s in %s", r.key, want), time.Minute, func() bool {
+	r.await(fmt.Sprintf("%s in %s", r.key, want), func() bool {
 		got = r.issue(r.key)
 		return got.Phase == want
 	})
@@ -700,10 +700,10 @@ func (r *lateCompletionLive) waitPhase(want phase.Phase) api.Issue {
 func (r *lateCompletionLive) heldTurn(role claim.Role, p phase.Phase, call *paneCall) api.OperatorClaim {
 	r.t.Helper()
 	token := r.token(role)
-	r.await("the daemon to start the "+string(role), 2*time.Minute, func() bool {
+	r.await("the daemon to start the "+string(role), func() bool {
 		return slices.ContainsFunc(r.d.claims(), func(c api.OperatorClaim) bool { return c.Token == token })
 	})
-	task := call.awaitReached(r.t, paneReady)
+	task := call.awaitReached(r.t)
 	held := r.claim(token)
 	r.note("%s is %s in session %s, plugin contract %d, process %s", token, held.State, held.Session, held.PluginContract, held.Locator.Label())
 	r.note("the %s's pane is in the turn its %s task began, held at the stand-in: %q", role, p, task)
@@ -718,7 +718,7 @@ func (r *lateCompletionLive) repeatCompletion(role claim.Role, marker string, in
 	t := r.t
 	t.Helper()
 	token := r.token(role)
-	r.await(fmt.Sprintf("the %s's last turn to end", role), time.Minute, func() bool {
+	r.await(fmt.Sprintf("the %s's last turn to end", role), func() bool {
 		state := r.claim(token).State
 		return state == string(supervise.StateIdle) || state == string(supervise.StateReady)
 	})
@@ -727,8 +727,8 @@ func (r *lateCompletionLive) repeatCompletion(role claim.Role, marker string, in
 	mark := time.Now()
 	r.note("legion claims deliver --claim %s --task %q:\n%s", token, task,
 		indentOutput(r.legionClaims("deliver", "--claim", string(token), "--task", task)))
-	r.note("the %s's pane is in the turn the operator's task began: %q", role, call.awaitReached(t, 2*time.Minute))
-	result := call.awaitResult(t, 2*time.Minute)
+	r.note("the %s's pane is in the turn the operator's task began: %q", role, call.awaitReached(t))
+	result := call.awaitResult(t)
 	r.note("the stand-in's turn called legion %s; the tool answered (error %t): %s", inputOf(call), result.isError, result.text)
 	return result, mark
 }
@@ -761,11 +761,12 @@ func (r *lateCompletionLive) answersSince(mark time.Time, token claim.Token) []l
 	})
 }
 
-// settledAnswers is every line the daemon wrote for token's claim after mark, read liveSettle
-// after the tool answered the call a step made, so the line of each request that call made has
-// been written: none when the tool refused the call itself.
+// settledAnswers is every line the daemon wrote for token's claim after mark, read a span of
+// liveSettle after the tool answered the call a step made, so the line of each request that call
+// made has been written: none when the tool refused the call itself.
 func (r *lateCompletionLive) settledAnswers(mark time.Time, token claim.Token) []loggedRecord {
-	time.Sleep(liveSettle)
+	testwait.Span(r.t, liveSettle, "the daemon writes a completion's line only after it has written the answer (handoffComplete), on that request's own goroutine, "+
+		"and how many requests the call made is nowhere a test can read, a retry's earlier request among them: no state, no later action's effect and no synctest bubble reaches the last line")
 	return r.answersSince(mark, token)
 }
 
@@ -774,7 +775,7 @@ func (r *lateCompletionLive) settledAnswers(mark time.Time, token claim.Token) [
 // exactly one such line was written, which is one request for the call.
 func (r *lateCompletionLive) settledAnswer(what string, mark time.Time, token claim.Token) loggedRecord {
 	r.t.Helper()
-	r.await("the daemon's line for "+what, time.Minute, func() bool { return len(r.answersSince(mark, token)) > 0 })
+	r.await("the daemon's line for "+what, func() bool { return len(r.answersSince(mark, token)) > 0 })
 	lines := r.settledAnswers(mark, token)
 	if len(lines) != 1 {
 		described := make([]string, 0, len(lines))
@@ -959,22 +960,24 @@ func (s *completionStandin) arm(marker string, input map[string]any, held bool) 
 
 // awaitReached waits for the turn that makes the call, and answers the line of that turn's text
 // that carries the marker: the task, among what the host and the plugins put beside it. A wait
-// that runs out names the last request the stand-in was asked, which is what says why no turn
+// that gives up names the last request the stand-in was asked, which is what says why no turn
 // matched.
-func (c *paneCall) awaitReached(t *testing.T, within time.Duration) string {
+func (c *paneCall) awaitReached(t *testing.T) string {
 	t.Helper()
-	select {
-	case <-c.reached:
-		for line := range strings.SplitSeq(c.task, "\n") {
-			if strings.Contains(line, c.marker) {
-				return line
-			}
+	testwait.Until(t, fmt.Sprintf("a turn whose task carries %q to reach the stand-in %s", c.marker, c.pane.name), func() (string, bool) {
+		select {
+		case <-c.reached:
+			return "", true
+		default:
+			return c.pane.lastRequest(), false
 		}
-		return c.task
-	case <-time.After(within):
-		t.Fatalf("no turn whose task carries %q reached the stand-in %s within %s; %s", c.marker, c.pane.name, within, c.pane.lastRequest())
-		return ""
+	})
+	for line := range strings.SplitSeq(c.task, "\n") {
+		if strings.Contains(line, c.marker) {
+			return line
+		}
 	}
+	return c.task
 }
 
 // lastRequest says what the stand-in was last asked: how many requests it has answered, and of
@@ -1003,15 +1006,9 @@ func (s *completionStandin) lastRequest() string {
 }
 
 // awaitResult waits for the tool's answer to the call.
-func (c *paneCall) awaitResult(t *testing.T, within time.Duration) toolResult {
+func (c *paneCall) awaitResult(t *testing.T) toolResult {
 	t.Helper()
-	select {
-	case result := <-c.result:
-		return result
-	case <-time.After(within):
-		t.Fatalf("the pane sent no result of its legion call %s within %s", c.id, within)
-		return toolResult{}
-	}
+	return testwait.Receive(t, fmt.Sprintf("the pane's result of its legion call %s", c.id), c.result)
 }
 
 func (s *completionStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {

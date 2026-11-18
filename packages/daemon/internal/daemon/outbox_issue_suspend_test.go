@@ -82,7 +82,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 			StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
 			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-			BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+			BootTimeout:  rigBootTimeout, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: rigProbeInterval, AdoptTimeout: rigAdoptTimeout,
 			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
@@ -421,13 +421,17 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
+	// boots is the runtime's clock, on which its bounded waits run: run runs a launch's wait for a
+	// pod out on it (outlastingTheBoot).
+	boots := newPodlessBoots(api)
 	t.Cleanup(stopRuntime)
 	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
 		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
 		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-		BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+		BootTimeout:  rigBootTimeout, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: rigProbeInterval, AdoptTimeout: rigAdoptTimeout,
+		Clock:  boots.clock,
 		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
@@ -442,7 +446,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	}
 	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
+		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: newStillClock(), Log: logger,
 		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
@@ -496,7 +500,9 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		if now := time.Now(); clock.Before(now) {
 			clock = now
 		}
-		if err := runner.RunOnce(ctx); err != nil {
+		// The rig runs no controller, so a launch the drain makes waits for a pod that never comes:
+		// its wait runs out on the runtime's fake clock (outlastingTheBoot), never on the machine's.
+		if err := boots.outlastingTheBoot(t, what, func() error { return runner.RunOnce(ctx) }); err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
 	}

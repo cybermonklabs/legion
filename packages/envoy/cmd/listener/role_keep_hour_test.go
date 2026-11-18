@@ -16,13 +16,25 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// offsetClock is the real clock with its Now moved by offset, in nanoseconds, which a test sets to
+// date a registration in the past and back to zero; its timers are the real clock's, as the session
+// registry's were before its clock was injectable.
+type offsetClock struct {
+	clock.Clock
+	offset *atomic.Int64
+}
+
+func (c offsetClock) Now() time.Time { return c.Clock.Now().Add(time.Duration(c.offset.Load())) }
 
 // The lines and the counters the tests of a kept copy's hour read, by the text and the series name
 // a listener writes, so a test reads what an operator reads. The counters are the harness's own
@@ -226,7 +238,7 @@ func (r *hourRig) deregister(l *hourListener, sessionID string) {
 	if recorder.Code != http.StatusOK {
 		r.t.Fatalf("DELETE /v1/sessions/%s: status %d, body %s", sessionID, recorder.Code, recorder.Body.String())
 	}
-	waitFor(r.t, 10*time.Second, "both listeners read "+sessionID+" as not live", func() bool {
+	testwait.Eventually(r.t, "both listeners read "+sessionID+" as not live", func() bool {
 		for _, l := range r.listeners {
 			if _, state := l.harness.sessions.Lookup(sessionID); state == session.Live {
 				return false
@@ -234,6 +246,7 @@ func (r *hourRig) deregister(l *hourListener, sessionID string) {
 		}
 		return true
 	})
+
 }
 
 // goneHolder makes holder claim role through the first listener's claim route and then delete its
@@ -255,8 +268,7 @@ func (r *hourRig) reapClaim(role string) {
 	isAlive := func(sessionID string) bool {
 		return roleHolderMayBeLive(logging.New("test"), first.harness.sessions, sessionID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	if sweep, err := first.harness.registry.ReapRoleClaims(ctx, isAlive, first.harness.sessions.TTL(), session.LiveWindow); err != nil || sweep.Reaped != 1 {
 		r.t.Fatalf("reap the role claims = %+v, %v; want role %s's claim freed", sweep, err, role)
 	}
@@ -293,8 +305,7 @@ func outboxCopy(role, sender, summary string) contracts.Envelope {
 // bus.KeptMsgID, and returns the copy the stream holds for it.
 func (r *hourRig) keep(role string, item contracts.Envelope) laneCopy {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	if err := r.client().PublishStoredAs(ctx, bus.KeptRoleSubject(role), item, bus.KeptMsgID(item.DedupeKey, role)); err != nil {
 		r.t.Fatalf("write event %s to role %s's kept lane: %v", item.EventID, role, err)
 	}
@@ -328,8 +339,7 @@ func readStored(ctx context.Context, client *bus.Client, subject string) ([]bus.
 // stored is readStored for the test's own goroutine.
 func (r *hourRig) stored(subject string) []bus.StoredMessage {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	found, err := readStored(ctx, r.client(), subject)
 	if err != nil {
 		r.t.Fatal(err)
@@ -405,8 +415,7 @@ func (r *hourRig) envoyLetters() []contracts.Envelope {
 // cursor is role's drain cursor.
 func (r *hourRig) cursor(role string) bus.KeptRoleCursor {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	stored, err := r.client().ReadKeptRoleCursor(ctx, role)
 	if err != nil {
 		r.t.Fatalf("read role %s's drain cursor: %v", role, err)
@@ -418,18 +427,20 @@ func (r *hourRig) cursor(role string) bus.KeptRoleCursor {
 // for a copy it ended or forwarded, after the dead letter or the forward a test may already read.
 func (r *hourRig) waitPassed(role string, seq uint64) {
 	r.t.Helper()
-	waitFor(r.t, 20*time.Second, fmt.Sprintf("role %s's cursor passing its copy at %d", role, seq), func() bool {
+	testwait.Eventually(r.t, fmt.Sprintf("role %s's cursor passing its copy at %d", role, seq), func() bool {
 		return r.cursor(role).Kept >= seq
 	})
+
 }
 
 // waitDeadLetter waits until the stream holds the dead letter of held on its sender's agent
 // subject.
 func (r *hourRig) waitDeadLetter(held laneCopy) {
 	r.t.Helper()
-	waitFor(r.t, 20*time.Second, "the dead letter of event "+held.item.EventID, func() bool {
+	testwait.Eventually(r.t, "the dead letter of event "+held.item.EventID, func() bool {
 		return len(r.deadLetters(held.item.SourceSession, held.item.EventID)) > 0
 	})
+
 }
 
 // count is the sum of series over both listeners' metrics, 0 where neither has counted it.
@@ -486,14 +497,15 @@ func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envel
 	if err := r.listeners[1].harness.sessions.Put(holder, liveRoleActEntry); err != nil {
 		r.t.Fatalf("register %s again: %v", holder, err)
 	}
-	waitFor(r.t, 20*time.Second, "the kept copy reaching "+holder, func() bool {
+	testwait.Eventually(r.t, "the kept copy reaching "+holder, func() bool {
 		return len(r.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 	})
+
 	letSweepsRun()
 	if held := r.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != eventID {
 		r.t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, eventID)
 	}
-	if got := expectFrames(r.t, frames, 1, 100*time.Millisecond); got[0].EventID != eventID {
+	if got := expectFrames(r.t, frames, 1); got[0].EventID != eventID {
 		r.t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, eventID)
 	}
 }
@@ -662,7 +674,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.moveClock(50 * time.Minute)
 		frames := startStandIn(t, rig.uri, holder)
 		rig.claim(rig.listeners[1], holder, role, liveRoleActEntry)
-		got := expectFrames(t, frames, 1, 2500*time.Millisecond)[0]
+		got := expectFrames(t, frames, 1)[0]
 		if got.EventID != answer.EventID {
 			t.Fatalf("the claimant received event %s, want the kept %s", got.EventID, answer.EventID)
 		}
@@ -927,7 +939,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.startSweeps()
 
-		got := expectFrames(t, frames, 1, 2500*time.Millisecond)
+		got := expectFrames(t, frames, 1)
 		if got[0].EventID != later.item.EventID {
 			t.Fatalf("the live holder received event %s, want the later copy %s", got[0].EventID, later.item.EventID)
 		}
@@ -1117,7 +1129,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 		rig.moveClock(time.Hour + time.Minute)
 		rig.startSweeps()
-		waitFor(t, 60*time.Second, "every copy ended", func() bool { return rig.count(hourExpired) >= copies })
+		testwait.Eventually(t, "every copy ended", func() bool { return rig.count(hourExpired) >= copies })
 		rig.waitPassed(role, last.sequence)
 		letSweepsRun()
 
@@ -1156,7 +1168,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		rig.startSweeps()
 
 		received := map[string]int{}
-		for _, frame := range expectFrames(t, frames, copies, 2500*time.Millisecond) {
+		for _, frame := range expectFrames(t, frames, copies) {
 			received[frame.EventID]++
 		}
 		rig.waitPassed(role, held[copies-1].sequence)
@@ -1234,8 +1246,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		held := rig.keep(role, listenerCopy(role, sender, "a copy whose forward was never confirmed"))
 		// The walk that claimed the copy to forward it ended there: its claim stands on a
 		// cursor that has passed nothing yet.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		body, err := json.Marshal(bus.KeptRoleCursor{Claiming: held.sequence})
 		if err != nil {
 			t.Fatalf("encode the forward's claim: %v", err)
@@ -1287,8 +1298,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		held := rig.keep(role, item)
 		// The walk that claimed the copy to forward it ended there: its claim stands on a
 		// cursor that has passed nothing yet.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		body, err := json.Marshal(bus.KeptRoleCursor{Claiming: held.sequence})
 		if err != nil {
 			t.Fatalf("encode the forward's claim: %v", err)
@@ -1517,7 +1527,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 		firstCopy := publishKey(first, forwarded, forwardedKey, "the first copy, which a holder takes")
 		firstFrames := startStandIn(t, rig.uri, firstHolder)
 		rig.claim(first, firstHolder, forwarded, liveRoleActEntry)
-		if got := expectFrames(t, firstFrames, 1, 500*time.Millisecond); got[0].EventID != firstCopy.EventID {
+		if got := expectFrames(t, firstFrames, 1); got[0].EventID != firstCopy.EventID {
 			t.Fatalf("the first holder received event %s, want the first copy %s", got[0].EventID, firstCopy.EventID)
 		}
 		rig.waitPassed(forwarded, rig.copyOf(forwarded, firstCopy.EventID).sequence)
@@ -1532,7 +1542,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 		}
 		nextFrames := startStandIn(t, rig.uri, nextHolder)
 		rig.claim(second, nextHolder, forwarded, liveRoleActEntry)
-		if got := expectFrames(t, nextFrames, 1, 2500*time.Millisecond); got[0].EventID != secondCopy.EventID {
+		if got := expectFrames(t, nextFrames, 1); got[0].EventID != secondCopy.EventID {
 			t.Fatalf("the next holder received event %s, want the second copy %s", got[0].EventID, secondCopy.EventID)
 		}
 		select {
@@ -1569,7 +1579,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 		}
 		endedFrames := startStandIn(t, rig.uri, endedHolder)
 		rig.claim(second, endedHolder, ended, liveRoleActEntry)
-		if got := expectFrames(t, endedFrames, 1, 2500*time.Millisecond); got[0].EventID != answers[2].EventID {
+		if got := expectFrames(t, endedFrames, 1); got[0].EventID != answers[2].EventID {
 			t.Fatalf("the holder of the second lane received event %s, want the third copy %s", got[0].EventID, answers[2].EventID)
 		}
 		letters := rig.envelopesOn(contracts.LegacyAgentSubject(sender))
@@ -1625,14 +1635,15 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		rig.reapClaim(role)
 		frames := startStandIn(t, rig.uri, successor)
 		rig.claim(rig.listeners[1], successor, role, liveRoleActEntry)
-		waitFor(t, 20*time.Second, "the kept copy reaching "+successor, func() bool {
+		testwait.Eventually(t, "the kept copy reaching "+successor, func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(successor))) > 0
 		})
+
 		letSweepsRun()
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(successor)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", successor, held, answer.EventID)
 		}
-		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+		if got := expectFrames(t, frames, 1); got[0].EventID != answer.EventID {
 			t.Fatalf("%s received event %s, want the kept %s", successor, got[0].EventID, answer.EventID)
 		}
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 0 {
@@ -1674,7 +1685,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 
 	t.Run("e a publish to an unresponsive holder is kept and reaches that session once it registers again", func(t *testing.T) {
 		var registered atomic.Int64
-		rig := newHourRig(t, session.WithSessionClock(func() time.Time { return time.Now().Add(time.Duration(registered.Load())) }))
+		rig := newHourRig(t, session.WithSessionClock(offsetClock{Clock: clock.Real(), offset: &registered}))
 		const (
 			role   = "hour-lapsed-unresponsive"
 			holder = "ses_hour_unresponsive_holder"
@@ -1695,7 +1706,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 
 	t.Run("g a holder that answers again gets its kept copy at its registration with no sweep", func(t *testing.T) {
 		var registered atomic.Int64
-		rig := newHourRig(t, session.WithSessionClock(func() time.Time { return time.Now().Add(time.Duration(registered.Load())) }))
+		rig := newHourRig(t, session.WithSessionClock(offsetClock{Clock: clock.Real(), offset: &registered}))
 		const (
 			role   = "hour-lapsed-returning"
 			holder = "ses_hour_returning_holder"
@@ -1722,13 +1733,14 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		}
 
 		rig.register(rig.listeners[0], holder, "")
-		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its registration", func() bool {
+		testwait.Eventually(t, "the kept copy reaching "+holder+" at its registration", func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
+
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
 		}
-		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+		if got := expectFrames(t, frames, 1); got[0].EventID != answer.EventID {
 			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
 		}
 	})
@@ -1750,8 +1762,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		if err := first.harness.sessions.Put(holder, entry); err != nil {
 			t.Fatalf("register %s under process %s: %v", holder, stopped, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if _, err := first.harness.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
 			SessionID: holder, MachineID: "test-machine", ClientInstanceID: stopped, Role: role,
 		}); err != nil {
@@ -1772,13 +1783,14 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 
 		// A new process resumes the session under the same id and registers, stating itself.
 		rig.register(first, holder, resumed)
-		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" at its resumed process's registration", func() bool {
+		testwait.Eventually(t, "the kept copy reaching "+holder+" at its resumed process's registration", func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
+
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
 		}
-		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+		if got := expectFrames(t, frames, 1); got[0].EventID != answer.EventID {
 			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
 		}
 		// The registration renewed nothing: the claim still names the process that stopped, so
@@ -1805,14 +1817,13 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		// process's claim of the role is refused while the session is not live.
 		storeSessionHeartbeat(t, rig.client(), holder, time.Now().Add(-(session.LiveWindow + 2*time.Minute)))
 		first := rig.listeners[0]
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if _, err := first.harness.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
 			SessionID: holder, MachineID: "test-machine", ClientInstanceID: stalled, Role: role,
 		}); err != nil {
 			t.Fatalf("claim %s for %s under process %s: %v", role, holder, stalled, err)
 		}
-		waitFor(t, 10*time.Second, "both listeners to read "+holder+" as unresponsive and the first to read its claim of "+role, func() bool {
+		testwait.Eventually(t, "both listeners to read "+holder+" as unresponsive and the first to read its claim of "+role, func() bool {
 			for _, l := range rig.listeners {
 				if _, state := l.harness.sessions.Lookup(holder); state != session.Unresponsive {
 					return false
@@ -1821,6 +1832,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 			held, err := first.harness.registry.RolesHeldBy(holder)
 			return err == nil && slices.Contains(held, role)
 		})
+
 		// The keep's own handover waits on its guard for the whole row, as in row (g).
 		keeper := rig.listeners[1]
 		release, taken := keeper.cfg.roleKeepDrains.hold(context.Background(), role)
@@ -1845,13 +1857,14 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 		if refused := linesIn(logs.String(), refusal, map[string]any{"role": role, "holder_client_instance_id": stalled, "client_instance_id": resumed}); len(refused) != 1 {
 			t.Fatalf("the claim route's lines are %s, want one refusal of process %s naming process %s as the holder", logs.String(), resumed, stalled)
 		}
-		waitFor(t, 20*time.Second, "the kept copy reaching "+holder+" after its resumed process's refused claim", func() bool {
+		testwait.Eventually(t, "the kept copy reaching "+holder+" after its resumed process's refused claim", func() bool {
 			return len(rig.envelopesOn(contracts.LegacyAgentSubject(holder))) > 0
 		})
+
 		if held := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(held) != 1 || held[0].EventID != answer.EventID {
 			t.Fatalf("%s's agent subject holds %+v, want the kept copy of event %s once", holder, held, answer.EventID)
 		}
-		if got := expectFrames(t, frames, 1, 100*time.Millisecond); got[0].EventID != answer.EventID {
+		if got := expectFrames(t, frames, 1); got[0].EventID != answer.EventID {
 			t.Fatalf("%s received event %s, want the kept %s", holder, got[0].EventID, answer.EventID)
 		}
 		if claim := storedRoleClaim(t, first.harness.registry, role); claim.HolderSessionID != holder || claim.ClientInstanceID != stalled {
@@ -1966,7 +1979,7 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 		waitForKeptRoleMessage(t, rig.client(), laned, item.EventID)
 		stored[laned] = rig.copyOf(laned, item.EventID)
 		stored[outbox] = rig.keep(outbox, outboxCopy(outbox, sender, "a Dispatch event routed to the role"))
-		waitFor(t, 20*time.Second, "the wake reports of the route's two keeps", func() bool {
+		testwait.Eventually(t, "the wake reports of the route's two keeps", func() bool {
 			return len(rig.keepWakes(routed)) == 1 && len(rig.keepWakes(taken)) == 1
 		})
 
@@ -1991,12 +2004,14 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 					continue
 				}
 				key := wakeKey(role, at)
-				waitFor(t, 20*time.Second, fmt.Sprintf("step %d's wake report of role %s", step, role), func() bool {
+				testwait.Eventually(t, fmt.Sprintf("step %d's wake report of role %s", step, role), func() bool {
 					return slices.Contains(rig.sweptWakes(role), key)
 				})
-				waitFor(t, 20*time.Second, fmt.Sprintf("a listener logging step %d's report of role %s as already stored", step, role), func() bool {
+
+				testwait.Eventually(t, fmt.Sprintf("a listener logging step %d's report of role %s as already stored", step, role), func() bool {
 					return len(rig.lines(hourWakeStoredLine, map[string]any{"role": role, "dedupe_key": key})) > 0
 				})
+
 				expected[role] = append(expected[role], key)
 				woken++
 			}
@@ -2007,9 +2022,10 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 				// A live session takes the copy, then leaves the role with no live holder: the
 				// lane holds nothing more that waits for one.
 				claimRoleWith(t, first.harness, taker, taken, liveRoleActEntry)
-				waitFor(t, 20*time.Second, "the copy reaching "+taker, func() bool {
+				testwait.Eventually(t, "the copy reaching "+taker, func() bool {
 					return len(rig.envelopesOn(contracts.LegacyAgentSubject(taker))) == 1
 				})
+
 				rig.waitPassed(taken, stored[taken].sequence)
 				if err := first.harness.sessions.Delete(context.Background(), taker); err != nil {
 					t.Fatalf("delete %s's record: %v", taker, err)

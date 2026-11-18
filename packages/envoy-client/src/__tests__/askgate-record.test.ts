@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import {
   askgateState,
   pidNamespace,
@@ -20,8 +21,8 @@ const WRITERS = 4;
 // writer that drops the others, and more writes only make its cost track the machine's speed.
 const WRITES = 200;
 
-/** The children the writers row below spawns, ended here when its own cleanup was lost to the
- * timeout. Bun runs `afterEach` hooks in the order they are registered and skips the rest once one
+/** The children the writers row below spawns, ended here when its own cleanup was lost to a
+ * failure. Bun runs `afterEach` hooks in the order they are registered and skips the rest once one
  * throws, so this hook is registered before the one that removes the temporary tree: it runs first,
  * and a throw while removing the tree cannot leave a child running. */
 const spawned: Bun.Subprocess[] = [];
@@ -91,14 +92,16 @@ while (!(await stdin.read()).done);
   spawned.push(...children);
   try {
     const lines = children.map((child) => lineReader(child.stdout));
-    expect(await Promise.all(lines.map((next) => next()))).toEqual(Array(WRITERS).fill("ready"));
+    expect(
+      await settled("each writer's ready line", Promise.all(lines.map((next) => next())))
+    ).toEqual(Array(WRITERS).fill("ready"));
     for (const child of children) {
       child.stdin.write("go\n");
       child.stdin.flush();
     }
-    const reports = (await Promise.all(lines.map((next) => next()))).map(
-      (line) => JSON.parse(line) as { store: string; dropped: number; lost: number }
-    );
+    const reports = (
+      await settled("each writer's report", Promise.all(lines.map((next) => next())))
+    ).map((line) => JSON.parse(line) as { store: string; dropped: number; lost: number });
     expect(reports.map((report) => report.dropped)).toEqual(Array(WRITERS).fill(0));
     expect(reports.map((report) => report.lost)).toEqual(Array(WRITERS).fill(0));
     const state = askgateState(dir);
@@ -107,13 +110,15 @@ while (!(await stdin.read()).done);
     );
   } finally {
     for (const child of children) child.stdin.end();
-    await Promise.all(children.map((child) => child.exited));
+    await settled(
+      "the writers' exits once their stdin closed",
+      Promise.all(children.map((child) => child.exited))
+    );
   }
-  // The limit is a hang guard, not a margin for a slow machine: a child that never prints its
-  // line, or a renameSync or readdirSync that never returns. It is three and a half times the
-  // row's worst measured cost: in a 2-CPU pod the row costs 1.47 s idle and, under 16 busy loops
-  // (8 x nproc), 25.67 s at most in a whole-suite run.
-}, 90_000);
+  // A child that never prints its line, or a renameSync or readdirSync that never returns, fails
+  // the wait for that line by name. In a 2-CPU pod the row costs 1.47 s idle and, under 16 busy
+  // loops (8 x nproc), 25.67 s at most in a whole-suite run.
+});
 
 // A pid and a start time name a process only in the pid namespace they were read in, and an agent
 // box is a namespace of its own over the host's state directory. The owner carries its namespace in

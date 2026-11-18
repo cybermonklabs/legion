@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -101,10 +102,10 @@ type outbox struct {
 	// mergeStateWait is how long a merge-queue read waits after a failed read before it reads
 	// again (mergeQueueRead, whose every read is bounded by issueRead). Both are the workflow
 	// runtime's own (workflowRuntime.readPullRequest, workflowRuntime.mergeStateWait), set by
-	// attach after newOutbox, so the outbox reads GitHub as the per-issue read does and a
-	// whole-daemon test cuts the wait through the runtime's own field (mergeStateRetry). A test
-	// that builds the outbox by hand leaves both nil, and a merge-queue read then fails with an
-	// error that names the missing read.
+	// attach after newOutbox, so the outbox reads GitHub as the per-issue read does and waits as
+	// the merge-state ladder waits between its own reads. A test that builds the outbox by hand
+	// leaves both nil, and a merge-queue read then fails with an error that names the missing
+	// read.
 	readPullRequest func(context.Context, record.PullRequest) (githubPullRequest, error)
 	mergeStateWait  func() time.Duration
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
@@ -144,6 +145,15 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// observe is the daemon's observer (overrides.observe), told what each row's run came to
+	// (observedOutboxSettled) once that is recorded; nil, in production, is nobody. It is the
+	// outbox's own field, which attach copies from the plan, because a test builds the outbox by
+	// hand.
+	observe func(observation)
+	// passes is a test's trigger for the merge-queue reads' retry (passMergeQueueRetry), which
+	// attach copies from the runtime; nil, in production, leaves each read to wait out its half
+	// minute on the outbox's own timers.
+	passes *passTriggers
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -187,7 +197,7 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
-		log: log, now: time.Now, clock: supervise.RealClock{},
+		log: log, now: time.Now, clock: clock.Real(),
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
 		// test injects its own `provision`, so only this production closure starts codegraph.
 		provision: func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
@@ -236,8 +246,11 @@ func (r *outbox) RunOnce(ctx context.Context) error {
 // retried on the row's backoff (or after the wait GitHub asks for), a failure no retry repairs is
 // finished refused with its follow-up (permanentRefusal, finishRefused), and anything else is
 // finished. A row whose finish or retry fails is logged and left leased: its lease expires and the
-// row is due again, so one row's failed transaction never stops the rows after it.
+// row is due again, so one row's failed transaction never stops the rows after it. What it came to
+// is reported once the finish or retry has returned (settled).
 func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
+	outcome := settledFinished
+	defer func() { r.settled(row, outcome) }()
 	if err != nil {
 		r.noteLimit(row, err)
 		// A failure no retry repairs is not logged as the row failing: once its finish commits,
@@ -264,19 +277,30 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", err)
 		}
 		if permanent {
+			outcome = settledRefused
 			if finishErr := r.finishRefused(ctx, row, err); finishErr != nil {
+				outcome = settledNotRecorded
 				r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", finishErr, "cause", err)
 			}
 			return
 		}
+		outcome = settledRetried
 		if err := r.retry(ctx, row, err); err != nil {
+			outcome = settledNotRecorded
 			r.log.Error("outbox row retry not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 		}
 		return
 	}
 	if err := r.finish(ctx, row); err != nil {
+		outcome = settledNotRecorded
 		r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 	}
+}
+
+// settled reports what row's run came to (observedOutboxSettled) to the daemon's observer. The
+// lanes hold no lock while a row runs and settles (outbox_lanes.go), so neither does this.
+func (r *outbox) settled(row record.OutboxRow, outcome settlement) {
+	reportTo(r.observe, observedOutboxSettled{row: row.ID, issue: row.Issue, kind: row.Kind, outcome: outcome})
 }
 
 // deferral is the GitHub rate limit a row of kind would meet at now, if one stands (standingLimit),

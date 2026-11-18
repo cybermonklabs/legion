@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests in this file run the rendered callout block on the hub's image (testnats.HubImage, the
@@ -99,11 +100,12 @@ func (r *calloutRig) render(t *testing.T, callout bool) string {
 }
 
 // hubContainer is the part of the container testnats.StartImageConfig returns that a restart uses.
+// Its Start restarts the server on new ports, which URL reads from the server's log.
 type hubContainer interface {
 	Stop(ctx context.Context, timeout *time.Duration) error
 	CopyToContainer(ctx context.Context, fileContent []byte, containerFilePath string, fileMode int64) error
 	Start(ctx context.Context) error
-	ConnectionString(ctx context.Context) (string, error)
+	URL(t testing.TB) string
 }
 
 // startHub runs the hub's image on the rig's authorization without its callout, which a client with
@@ -117,7 +119,8 @@ func (r *calloutRig) startHub(t *testing.T) (hubContainer, string) {
 
 // reconfigure stops the container, makes config its whole configuration and starts it again on the
 // same JetStream store, as an operator applies a changed configuration to the hub, and returns its
-// client URL. Every test of the rendered block on the hub's image starts its server this way.
+// client URL, on the port the restarted server bound. Every test of the rendered block on the hub's
+// image starts its server this way.
 func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -125,31 +128,29 @@ func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) 
 	require.NoError(t, ctr.Stop(ctx, &stop))
 	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
 	require.NoError(t, ctr.Start(ctx))
-	uri, err := ctr.ConnectionString(ctx)
-	require.NoError(t, err)
-	return uri
+	return ctr.URL(t)
 }
 
-// connectWhenUp connects to server as the nkey user whose seed is seed, with options, retrying for
-// 30 s while a server reconfigure restarted comes up, and closes the connection when the test ends.
-// testnats.ConnectSeed sets NoReconnect, so a connection the server closes stays closed.
+// connectWhenUp connects to server as the nkey user whose seed is seed, with options, waiting
+// through the shared wait while a server reconfigure restarted comes up, and closes the
+// connection when the test ends. testnats.ConnectSeed sets NoReconnect, so a connection the
+// server closes stays closed.
 func connectWhenUp(t *testing.T, server, seed string, options ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
-	var conn *natsgo.Conn
-	var err error
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		if conn, err = testnats.ConnectSeed(t, server, seed, options...); err == nil {
-			break
-		}
-		require.True(t, time.Now().Before(deadline), "could not connect to %s, restarted: %v", server, err)
-	}
+	conn := testwait.Until(t, "a connection to the restarted hub at "+server, func() (*natsgo.Conn, bool) {
+		conn, err := testnats.ConnectSeed(t, server, seed, options...)
+		return conn, err == nil
+	})
 	t.Cleanup(conn.Close)
 	return conn
 }
 
 // restart reconfigures the container on config, then starts the auth service, which holds each
 // answer for answerDelay before it gives it, and returns the client URL once the service's user is
-// connected. The service's user is in auth_users, so it connects without a callout.
+// connected. The service's user is in auth_users, so it connects without a callout. answerDelay is
+// the stand-in's model of a production auth service's answer time, which
+// TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient sets against the rendered callout
+// timeout and nats-server's first client PING (calloutAnswerBudget); the other rows answer at once.
 func (r *calloutRig) restart(t *testing.T, ctr hubContainer, config string, answerDelay time.Duration) string {
 	t.Helper()
 	uri := r.reconfigure(t, ctr, config)
@@ -222,7 +223,7 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 		ctr, uri := rig.startHub(t)
 		conn, err := testnats.ConnectSeed(t, uri, rig.staticSeed)
 		require.NoError(t, err)
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(testnats.MaxWait(t))
 		require.NoError(t, err)
 		_, err = js.AddStream(&natsgo.StreamConfig{Name: exampleStream, Subjects: []string{"example.>"}})
 		require.NoError(t, err)
@@ -236,7 +237,7 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 		conn, err = testnats.ConnectSeed(t, uri, rig.staticSeed)
 		require.NoError(t, err)
 		t.Cleanup(conn.Close)
-		js, err = conn.JetStream()
+		js, err = conn.JetStream(testnats.MaxWait(t))
 		require.NoError(t, err)
 		info, err := js.StreamInfo(exampleStream)
 		require.NoError(t, err)

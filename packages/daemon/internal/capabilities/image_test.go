@@ -524,27 +524,42 @@ func TestCheckImageStopsWithItsContext(t *testing.T) {
 
 // A command that exits on its own inside its budget did not time out, however long
 // procgroup.WaitDelay then holds the run open for a child still holding its output pipe. The
-// budget here is 100 ms short of WaitDelay, so every such run returns past its deadline, while the
-// command still has 900 ms to exit under load: a run that read a timeout from the deadline having
-// passed would report "timed out" for a check whose command answered inside the last WaitDelay of
-// commandTimeout, in place of what it answered.
+// budget here is 100 ms short of WaitDelay, so a run such a child holds open until WaitDelay
+// closes its pipe returns past its deadline, while the command still has 900 ms to exit under
+// load: a run that read a timeout from the deadline having passed would report "timed out" for a
+// check whose command answered inside the last WaitDelay of commandTimeout, in place of what it
+// answered.
 func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastTheBudget(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "lingering.pid")
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 	budget := procgroup.WaitDelay - 100*time.Millisecond
 
-	started := time.Now()
 	r := img.runWithin(context.Background(), budget, "sh", "-c", `echo 1.2.3; sleep 30 & echo $! >"$1"; exit 0`, "sh", pidFile)
-	elapsed := time.Since(started)
 
-	if elapsed < budget {
-		t.Fatalf("the run returned after %s, inside its %s budget: nothing held the pipe past the deadline, so this run proves nothing", elapsed, budget)
+	// A child alive once the run returned held the pipe for the whole run, so Run returned only
+	// when WaitDelay closed the pipe, WaitDelay after the command's own exit: past the budget.
+	if pid := pidIn(t, pidFile); syscall.Kill(pid, 0) != nil {
+		t.Fatalf("the child %d that holds the run's output pipe is gone once the run returned: nothing held the pipe until WaitDelay closed it past the %s budget, so this run proves nothing", pid, budget)
 	}
 	if r.err != nil || r.exit != 0 || strings.TrimSpace(r.stdout) != "1.2.3" {
-		t.Errorf("run = exit %d, error %v, stdout %q after %s; want exit 0, no error, and the answer: the command exited on its own inside its %s budget",
-			r.exit, r.err, r.stdout, elapsed, budget)
+		t.Errorf("run = exit %d, error %v, stdout %q; want exit 0, no error, and the answer: the command exited on its own inside its %s budget",
+			r.exit, r.err, r.stdout, budget)
 	}
+}
+
+// pidIn is the process id pidFile holds.
+func pidIn(t *testing.T, pidFile string) int {
+	t.Helper()
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read the pid file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("the pid file holds %q, not a process id", raw)
+	}
+	return pid
 }
 
 // A command its budget cuts off is a run that timed out, named with that budget, never an exit of

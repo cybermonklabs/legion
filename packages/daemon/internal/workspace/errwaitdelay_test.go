@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,14 +11,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // procgroup.Err is execRunner's one classification of a command's error: nil for an ordinary exit
 // or for exec.ErrWaitDelay (a clean exit whose I/O draining outlived WaitDelay), either way read
 // from cmd.ProcessState.ExitCode(). A fake git that exits 0 while a backgrounded child keeps its
 // stdout pipe open proves that wiring end to end: RunChecked must succeed with ExitCode 0, not
-// report the command's own clean exit as a failure.
+// report the command's own clean exit as a failure. The runner's Timeout is on a fake clock that
+// never moves, so the command's own exit is the only end this run has.
 func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputOpen(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "sleep.pid")
@@ -28,7 +32,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	}
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 
-	run := NewRunner(5*time.Second, map[string]string{"git": fakeGit})
+	run := execRunner{timeout: 5 * time.Second, tools: map[string]string{"git": fakeGit}, clock: clocktest.New(stopMoment)}
 
 	result, err := RunChecked(context.Background(), run, []string{"git"}, nil, dir)
 	if err != nil {
@@ -41,41 +45,46 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 
 // A command that exits on its own inside its Timeout did not time out, however long
 // procgroup.WaitDelay then holds Run open for a child still holding its output pipe. The Timeout
-// here is 100 ms short of WaitDelay, so every such run returns past its deadline, while git still
-// has 900 ms to exit under load: a Run that read TimedOut from the deadline having passed would
-// report this git's own exit 128 as a timeout, and a clone that failed transiently inside the
-// last WaitDelay of its budget, git-remote-https still holding the pipe, would read as timed out,
-// which transientCloneFailure never retries.
+// is on a fake clock, which the row moves past it once the git has exited and while that child
+// still holds Run open: a Run that read TimedOut from the deadline having passed would report this
+// git's own exit 128 as a timeout, and a clone that failed transiently inside the last WaitDelay of
+// its budget, git-remote-https still holding the pipe, would read as timed out, which
+// transientCloneFailure never retries.
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline(t *testing.T) {
 	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "sleep.pid")
+	pidFile, leaderFile := filepath.Join(dir, "sleep.pid"), filepath.Join(dir, "git.pid")
 	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\nexit 128\n"
+	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\n" +
+		"echo $$ >" + leaderFile + ".part && mv " + leaderFile + ".part " + leaderFile + "\nexit 128\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
-	timeout := procgroup.WaitDelay - 100*time.Millisecond
-	run := NewRunner(timeout, map[string]string{"git": fakeGit})
+	timeout := time.Second
+	clock := clocktest.New(stopMoment)
+	run := execRunner{timeout: timeout, tools: map[string]string{"git": fakeGit}, clock: clock}
 
-	started := time.Now()
-	result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
-	elapsed := time.Since(started)
+	ran := inFlight(func() runAnswer {
+		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
+		return runAnswer{result, err}
+	})
+	reaped(t, "the git", leaderFile)
+	heldOpen(t, ran)
+	clock.Advance(timeout)
+	got := testwait.Receive(t, "the run to end once WaitDelay gave up on the pipe the git's child holds", ran)
 
-	if err != nil {
-		t.Fatalf("Run = %v, want the command's own exit", err)
+	if got.err != nil {
+		t.Fatalf("Run = %v, want the command's own exit", got.err)
 	}
-	if elapsed < timeout {
-		t.Fatalf("Run returned after %s, inside its %s Timeout: nothing held the pipe past the deadline, so this run proves nothing", elapsed, timeout)
-	}
-	if result.TimedOut || result.ExitCode != 128 {
-		t.Errorf("Run = exit %d, TimedOut %t after %s; want exit 128, not timed out: git failed on its own inside its %s Timeout", result.ExitCode, result.TimedOut, elapsed, timeout)
+	if got.result.TimedOut || got.result.ExitCode != 128 {
+		t.Errorf("Run = exit %d, TimedOut %t; want exit 128, not timed out: git failed on its own inside its %s Timeout, which ran out only after", got.result.ExitCode, got.result.TimedOut, timeout)
 	}
 }
 
 // A command its caller's context ended was not cut off by its own Timeout: TimedOut is the
 // Timeout's kill alone. A Run that read a timeout from the kill alone would call a clone its
-// caller stopped a timeout, which transientCloneFailure never retries.
+// caller stopped a timeout, which transientCloneFailure never retries. The Timeout is on a fake
+// clock that never moves, so the caller's cancel is the only stop this run has.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -84,62 +93,83 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
-	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+	run := execRunner{timeout: time.Minute, tools: map[string]string{"git": fakeGit}, clock: clocktest.New(stopMoment)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go cancelOnceExists(ctx, cancel, started)
 
-	result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute})
+	ran := inFlight(func() runAnswer {
+		result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute})
+		return runAnswer{result, err}
+	})
+	// The cancel lands once the command runs, never on one not yet started.
+	exists(t, "the git to report that it is running", started)
+	cancel()
+	got := testwait.Receive(t, "the run to end once its caller's context ended", ran)
 
-	if err != nil {
-		t.Fatalf("Run = %v, want the killed command's own exit", err)
+	if got.err != nil {
+		t.Fatalf("Run = %v, want the killed command's own exit", got.err)
 	}
-	if result.TimedOut {
-		t.Errorf("Run = exit %d, TimedOut true; want not timed out: the caller's context ended the command inside its minute", result.ExitCode)
+	if got.result.TimedOut {
+		t.Errorf("Run = exit %d, TimedOut true; want not timed out: the caller's context ended the command inside its minute", got.result.ExitCode)
 	}
+}
+
+// commandAnswer is what RunCommand answered.
+type commandAnswer struct {
+	out string
+	err error
 }
 
 // A RunCommand command that exits on its own did not time out, however long procgroup.WaitDelay
 // then holds the run open for a child still holding its output pipes: its exit is its answer. In
-// the first case the budget is 100 ms short of procgroup.WaitDelay, so the run always returns past
-// it, while the command still has 900 ms to exit under load; a run that read a timeout from the
-// deadline having passed would report jj's own exit 3 as a timeout. In the second the command
-// exits 0 well inside its budget; a run that took exec.ErrWaitDelay for a failure would report
-// that success as an error. (Ported with RunCommand's own semantics from the shim's
-// runAdoptionCommand, which the adoption now reaches through RunCommand.)
+// the first case the budget, on a fake clock, runs out once the command has exited and while that
+// child holds the run open; a run that read a timeout from the deadline having passed would report
+// jj's own exit 3 as a timeout. In the second the budget never runs out; a run that took
+// exec.ErrWaitDelay for a failure would report that success as an error. In both the child is
+// still running once the run returned, so WaitDelay, not the child's end, let the run return.
+// (Ported with RunCommand's own semantics from the shim's runAdoptionCommand, which the adoption
+// now reaches through RunCommand.)
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *testing.T) {
 	for name, testCase := range map[string]struct {
-		exit    int
-		budget  time.Duration
-		wantErr string
+		exit       int
+		pastBudget bool
+		wantErr    string
 	}{
-		"an exit 3, the pipes held past the budget": {3, procgroup.WaitDelay - 100*time.Millisecond, "Command failed (exit 3)"},
-		"an exit 0 inside the budget":               {0, time.Minute, ""},
+		"an exit 3, the pipes held past the budget": {3, true, "Command failed (exit 3)"},
+		"an exit 0 inside the budget":               {0, false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			pidFile := filepath.Join(dir, "lingering.pid")
+			pidFile, leaderFile := filepath.Join(dir, "lingering.pid"), filepath.Join(dir, "leader.pid")
 			t.Cleanup(func() { killPIDFile(t, pidFile) })
-			ctx, cancel := context.WithTimeout(context.Background(), testCase.budget)
+			budget := time.Second
+			clock := clocktest.New(stopMoment)
+			ctx, cancel := clock.WithTimeout(context.Background(), budget)
 			defer cancel()
-			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; exit ` + strconv.Itoa(testCase.exit)
+			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; echo $$ >"$2.part" && mv "$2.part" "$2"; exit ` + strconv.Itoa(testCase.exit)
 
-			started := time.Now()
-			out, err := RunCommand(ctx, procgroup.NoReaper, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
-			elapsed := time.Since(started)
-
-			if elapsed < procgroup.WaitDelay {
-				t.Fatalf("the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
+			ran := inFlight(func() commandAnswer {
+				out, err := runCommandOn(ctx, clock, procgroup.NoReaper, budget, clock.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile, leaderFile})
+				return commandAnswer{out, err}
+			})
+			reaped(t, "the command", leaderFile)
+			if testCase.pastBudget {
+				heldOpen(t, ran)
+				clock.Advance(budget)
+			}
+			got := testwait.Receive(t, "the run to end once WaitDelay gave up on the pipes the command's child holds", ran)
+			if lingering, ok := readPID(pidFile); !ok || syscall.Kill(lingering, 0) != nil {
+				t.Fatalf("the command's child had exited by the time the run returned (%q, %v): nothing held the pipe, so this run proves nothing", got.out, got.err)
 			}
 			if testCase.wantErr == "" {
-				if err != nil || out != "answered" {
-					t.Errorf("RunCommand = %q, %v after %s; want \"answered\" and no error: the command exited 0 on its own", out, err, elapsed)
+				if got.err != nil || got.out != "answered" {
+					t.Errorf("RunCommand = %q, %v; want \"answered\" and no error: the command exited 0 on its own", got.out, got.err)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) || strings.Contains(err.Error(), "timed out") {
-				t.Errorf("RunCommand = %q, %v after %s; want an error naming %q and no timeout: the command exited on its own inside its %s budget",
-					out, err, elapsed, testCase.wantErr, testCase.budget)
+			if got.err == nil || !strings.Contains(got.err.Error(), testCase.wantErr) || strings.Contains(got.err.Error(), "timed out") {
+				t.Errorf("RunCommand = %q, %v; want an error naming %q and no timeout: the command exited on its own inside its %s budget",
+					got.out, got.err, testCase.wantErr, budget)
 			}
 		})
 	}
@@ -149,10 +179,11 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 // find it already spent before it starts: that is the budget running out, reported as a timeout,
 // never a failure to run.
 func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	clock := clocktest.New(stopMoment)
+	ctx, cancel := clock.WithDeadline(context.Background(), stopMoment.Add(-time.Second))
 	defer cancel()
 
-	_, err := RunCommand(ctx, procgroup.NoReaper, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
+	_, err := runCommandOn(ctx, clock, procgroup.NoReaper, time.Second, clock.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
 
 	if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 		t.Errorf("RunCommand under a spent budget = %v, want \"Command timed out after 1 s …\"", err)
@@ -168,38 +199,57 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 	marker := filepath.Join(dir, "started")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go cancelOnceExists(ctx, cancel, marker)
 
-	_, err := RunCommand(ctx, procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
+	ran := inFlight(func() error {
+		_, err := RunCommand(ctx, procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
+		return err
+	})
+	exists(t, "the command to report that it is running", marker)
+	cancel()
+	err := testwait.Receive(t, "the run to end once its caller's context ended", ran)
 
 	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "Command failed (exit -1)") {
 		t.Errorf("RunCommand = %v, want \"Command failed (exit -1)\": the caller's context ended the command inside its minute", err)
 	}
 }
 
-// cancelOnceExists calls cancel once path exists, which the command under test creates once it
-// runs, so the cancel lands on a running command and never on one not yet started.
-func cancelOnceExists(ctx context.Context, cancel context.CancelFunc, path string) {
-	for ctx.Err() == nil {
-		if _, err := os.Stat(path); err == nil {
-			cancel()
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+// reaped waits until the command whose pid the script wrote to pidFile has exited and its run's
+// own wait has reaped it, after which kill answers ESRCH for that pid.
+func reaped(t *testing.T, what, pidFile string) {
+	t.Helper()
+	pid := testwait.Until(t, what+" to write its pid", func() (int, bool) { return readPID(pidFile) })
+	testwait.Eventually(t, what+" to exit and be reaped", func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	})
+}
+
+// heldOpen fails the row when the run has already returned: once its command exited, only the
+// child still holding the command's pipes keeps the run open (procgroup.WaitDelay), and a run that
+// nothing held there leaves no moment for the row's deadline to pass in, so it proves nothing.
+func heldOpen[T any](t *testing.T, ran <-chan T) {
+	t.Helper()
+	select {
+	case got := <-ran:
+		t.Fatalf("the run returned %+v as its command exited: nothing held the pipe past that exit, so this run proves nothing", got)
+	default:
 	}
+}
+
+// readPID is the pid pidFile holds, and whether it holds one.
+func readPID(pidFile string) (int, bool) {
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return pid, err == nil
 }
 
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
 // assertions by design (a backgrounded sleep standing in for a command's own lingering child).
 func killPIDFile(t *testing.T, pidFile string) {
 	t.Helper()
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		return
+	if pid, ok := readPID(pidFile); ok {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
 }

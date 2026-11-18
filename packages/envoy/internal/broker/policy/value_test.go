@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -586,79 +587,88 @@ func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.List
 // with the reread's own context, as the reread's first wait for it does. So a reread whose
 // deadline passes while a reload stuck on its listing holds the lock returns by that deadline and
 // records nothing: the secret's state stays as the reread left it, and the reload, once its
-// listing answers, reads that version again and records it itself.
+// listing answers, reads that version again and records it itself. It runs in a synctest bubble,
+// whose clock moves only once every goroutine of it is blocked, so the deadline passes while the
+// reread waits for the lock and at no other step.
 //
 // The named revert: take the lock in readValues with a bare send on the writer lock, deaf to ctx
 // (fbaa5626); the reread then waits for the reload to let go, past its deadline, and this test
 // fails.
 func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
-	local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-	store := &lockedOutRead{Local: local}
-	cur, registry, logged := bootThrough(t, local, store)
-	gained := logChecker(logged)
-	if got := gained(); got != "" {
-		t.Fatalf("the first load logged:\n%s", got)
-	}
-	id := policytest.ID("APP_KEY")
-
-	// A new version no decoder reads, which this pod has not decoded: the reread lists it and
-	// reads its value.
-	local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
-	readEntered, readRelease := store.armRead()
-	const deadline = 300 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
-	defer cancel()
-	rereadDone := make(chan struct{})
-	started := time.Now()
-	go func() {
-		defer close(rereadDone)
-		_, _ = cur.RefreshOne(ctx, "APP_KEY")
-	}()
-	<-readEntered
-
-	// A reload whose listing hangs takes the writer lock while the reread's value read is out.
-	listEntered, listRelease := store.holdList()
-	reloadDone := make(chan struct{})
-	var reloadErr error
-	go func() {
-		defer close(reloadDone)
-		reloadErr = cur.Refresh(context.Background())
-	}()
-	<-listEntered
-	released := false
-	letGo := func() {
-		if !released {
-			released = true
-			close(listRelease)
+	synctest.Test(t, func(t *testing.T) {
+		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+		store := &lockedOutRead{Local: local}
+		cur, registry, logged := bootThrough(t, local, store)
+		gained := logChecker(logged)
+		if got := gained(); got != "" {
+			t.Fatalf("the first load logged:\n%s", got)
 		}
-	}
-	t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+		id := policytest.ID("APP_KEY")
 
-	close(readRelease)
-	select {
-	case <-rereadDone:
-	case <-time.After(deadline + 1500*time.Millisecond):
-		t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits %s later on the writer lock a reload holds", deadline, time.Since(started).Round(time.Millisecond))
-	}
-	if got := gained(); got != "" {
-		t.Fatalf("a reread whose deadline passed before it could record its value read logged:\n%s", got)
-	}
-	if _, served := cur.Get().Secrets["APP_KEY"]; !served {
-		t.Fatal("a reread that recorded nothing refused APP_KEY")
-	}
+		// A new version no decoder reads, which this pod has not decoded: the reread lists it and
+		// reads its value.
+		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
+		readEntered, readRelease := store.armRead()
+		const deadline = 300 * time.Millisecond
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		rereadDone := make(chan struct{})
+		go func() {
+			defer close(rereadDone)
+			_, _ = cur.RefreshOne(ctx, "APP_KEY")
+		}()
+		<-readEntered
 
-	letGo()
-	<-reloadDone
-	if reloadErr != nil {
-		t.Fatalf("Refresh: %v", reloadErr)
-	}
-	if n := valueReads(t, registry); n != 3 {
-		t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the reload's read of the same version again", n)
-	}
-	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
-		t.Fatalf("the reload that read the version again logged:\n%s\nwant:\n%s", got, want)
-	}
+		// A reload whose listing hangs takes the writer lock while the reread's value read is out.
+		listEntered, listRelease := store.holdList()
+		reloadDone := make(chan struct{})
+		var reloadErr error
+		go func() {
+			defer close(reloadDone)
+			reloadErr = cur.Refresh(context.Background())
+		}()
+		<-listEntered
+		released := false
+		letGo := func() {
+			if !released {
+				released = true
+				close(listRelease)
+			}
+		}
+		t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+
+		// The reread's value read answers and it waits for the writer lock the reload holds:
+		// synctest.Wait returns once every other goroutine of the bubble is durably blocked, so
+		// the deadline passes while it waits there, and the second Wait lets it answer.
+		close(readRelease)
+		synctest.Wait()
+		time.Sleep(deadline)
+		synctest.Wait()
+		select {
+		case <-rereadDone:
+		default:
+			t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits on the writer lock a reload holds once that deadline has passed", deadline)
+		}
+		if got := gained(); got != "" {
+			t.Fatalf("a reread whose deadline passed before it could record its value read logged:\n%s", got)
+		}
+		if _, served := cur.Get().Secrets["APP_KEY"]; !served {
+			t.Fatal("a reread that recorded nothing refused APP_KEY")
+		}
+
+		letGo()
+		<-reloadDone
+		if reloadErr != nil {
+			t.Fatalf("Refresh: %v", reloadErr)
+		}
+		if n := valueReads(t, registry); n != 3 {
+			t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the reload's read of the same version again", n)
+		}
+		refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
+		if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+			t.Fatalf("the reload that read the version again logged:\n%s\nwant:\n%s", got, want)
+		}
+	})
 }
 
 // TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing: a mint refuses the value under the

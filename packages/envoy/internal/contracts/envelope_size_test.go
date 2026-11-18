@@ -12,17 +12,17 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m.Run)) }
 
 type object = map[string]any
 
@@ -127,9 +127,7 @@ func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
 					t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 				}
 
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				stored, err := client.NextStoredMessage(ctx, contracts.GithubSubject(owner, repo, ">"), 0)
+				stored, err := client.NextStoredMessage(testwait.Context(t), contracts.GithubSubject(owner, repo, ">"), 0)
 				if err != nil {
 					t.Fatalf("read the stored %s: %v", tc.event, err)
 				}

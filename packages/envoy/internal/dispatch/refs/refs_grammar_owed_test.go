@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const refsGrammarServer = "https://dispatch.example"
@@ -213,9 +214,9 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 		t.Fatalf("hold the comment's row as an edit does: %v", err)
 	}
 
-	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	indexed, err := ReindexScopeSource(bounded, database.Pool, "comment", quiet, refsGrammarServer)
+	// A drain that waited for the edit's lock would wait until the shared wait's bound ended
+	// it, and fail with that context's error.
+	indexed, err := ReindexScopeSource(testwait.Context(t), database.Pool, "comment", quiet, refsGrammarServer)
 
 	if err != nil || indexed {
 		t.Fatalf("the scope drain of a comment an edit holds = %v (%v), want it passed over without waiting", indexed, err)

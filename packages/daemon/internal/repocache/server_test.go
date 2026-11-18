@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -27,7 +29,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const testTimeout = 30 * time.Second
+// commandTimeout is the bound the runner gives each command, the production runner's
+// (workspace.CommandTimeout, cmd/legion's workspace_cache.go).
+const commandTimeout = workspace.CommandTimeout
 
 // gitHub is how the tests' git reaches https://github.com/acme/widgets: the URL in a command's argv
 // is replaced with the local bare remote, over git's file transport, which the tools' wrappers add
@@ -75,7 +79,7 @@ func newTestRunner(t *testing.T, remote string) *testRunner {
 		t.Fatal(err)
 	}
 	tools["git"] = wrapper
-	return &testRunner{remote: remote, others: map[string]string{}, runner: workspace.NewRunner(testTimeout, tools)}
+	return &testRunner{remote: remote, others: map[string]string{}, runner: workspace.NewRunner(commandTimeout, tools)}
 }
 
 // serves has the runner's git reach repo's GitHub URL at the local bare remote too.
@@ -85,7 +89,7 @@ func (r *testRunner) serves(repo, remote string) {
 	r.others[workspace.GitHubURL(ghrepo.MustParse(repo))] = remote
 }
 
-func (r *testRunner) Timeout() time.Duration { return testTimeout }
+func (r *testRunner) Timeout() time.Duration { return commandTimeout }
 
 func (r *testRunner) Run(ctx context.Context, command workspace.Command) (workspace.Result, error) {
 	transfer := false
@@ -226,9 +230,11 @@ func (l *syncLog) all() []string {
 	return append([]string(nil), l.lines...)
 }
 
-// running is one running Serve: its options, its address, its log, and Serve's answer once it ends.
+// running is one running Serve: its options, the fake clock its refresh waits on, its address, its
+// log, and Serve's answer once it ends.
 type running struct {
 	opts   Options
+	clock  *clocktest.Fake
 	run    *testRunner
 	url    string
 	log    *syncLog
@@ -246,7 +252,12 @@ func testOptions(t *testing.T, run *testRunner) Options {
 	return repoOptions(t, run, "acme/widgets", testCacheToken)
 }
 
-// repoOptions are the options of a cache of repo on a fresh volume, taking bearer.
+// cacheStart is where each test cache's fake clock stands until the test moves it: a whole second,
+// so the last-repack record, which keeps seconds alone, reads back as the moment it was written.
+var cacheStart = time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+
+// repoOptions are the options of a cache of repo on a fresh volume, taking bearer, on a fake clock
+// of its own at cacheStart, which fires no refresh past the first until the test moves it (tick).
 func repoOptions(t *testing.T, run *testRunner, repo, bearer string) Options {
 	t.Helper()
 	dir := t.TempDir()
@@ -259,7 +270,7 @@ func repoOptions(t *testing.T, run *testRunner, repo, bearer string) Options {
 	}
 	return Options{
 		Repo: ghrepo.MustParse(repo), Root: t.TempDir(), TokenFile: tokenFile, CacheTokenFile: bearerFile, CredentialDir: t.TempDir(),
-		Refresh: time.Hour, Listen: "127.0.0.1:0", Run: run,
+		Refresh: time.Hour, Listen: "127.0.0.1:0", Run: run, Clock: clocktest.New(cacheStart),
 	}
 }
 
@@ -296,31 +307,32 @@ func start(t *testing.T, opts Options) *running {
 	log := &syncLog{}
 	opts.Log = log.log
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &running{opts: opts, run: opts.Run.(*testRunner), log: log, cancel: cancel, done: make(chan error, 1)}
+	c := &running{opts: opts, clock: opts.Clock.(*clocktest.Fake), run: opts.Run.(*testRunner), log: log, cancel: cancel, done: make(chan error, 1)}
 	go func() { c.done <- Serve(ctx, opts) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-c.done:
-			if err != nil {
-				t.Errorf("Serve ended with %v", err)
-			}
-		case <-time.After(testTimeout):
-			t.Error("Serve did not end with its context")
+		if err := testwait.Receive(t, "Serve to end with its context", c.done); err != nil {
+			t.Errorf("Serve ended with %v", err)
 		}
 	})
-	if !testwait.Holds(testTimeout, testwait.Poll, func() bool {
-		for _, line := range log.all() {
+	testwait.Until(t, "Serve to say where it serves", func() (string, bool) {
+		lines := log.all()
+		for _, line := range lines {
 			if address, ok := strings.CutPrefix(line, "serving "+opts.Repo.String()+" on "); ok {
 				c.url = "http://" + address
-				return true
+				return "", true
 			}
 		}
-		return false
-	}) {
-		t.Fatalf("Serve never said where it serves: %q", log.all())
-	}
+		return fmt.Sprintf("log %q", lines), false
+	})
 	return c
+}
+
+// tick moves the cache's clock to its next refresh once Serve has armed it, so that refresh runs.
+func (c *running) tick(t *testing.T) {
+	t.Helper()
+	c.clock.AwaitArmed(t, "the cache's next refresh", 1)
+	c.clock.Advance(c.opts.Refresh)
 }
 
 // health is GET /healthz, with the cache's bearer: its status and its body.
@@ -344,14 +356,12 @@ func (c *running) ready(t *testing.T) Health {
 // waitFor polls /healthz until done holds and returns what it said then.
 func (c *running) waitFor(t *testing.T, what string, done func(int, Health) bool) Health {
 	t.Helper()
-	var status int
 	var health Health
-	if !testwait.Holds(testTimeout, 20*time.Millisecond, func() bool {
+	testwait.Until(t, "the cache to become "+what, func() (string, bool) {
+		var status int
 		status, health = c.health(t)
-		return done(status, health)
-	}) {
-		t.Fatalf("the cache never became %s: /healthz answers %d %+v; log %q", what, status, health, c.log.all())
-	}
+		return fmt.Sprintf("/healthz answers %d %+v; log %q", status, health, c.log.all()), done(status, health)
+	})
 	return health
 }
 
@@ -418,9 +428,8 @@ func TestHealthzIsUnavailableUntilTheFirstCloneFinishes(t *testing.T) {
 	run := newTestRunner(t, remote)
 	started, release := run.hold()
 	defer release()
-	before := time.Now()
 	c := start(t, testOptions(t, run))
-	<-started
+	testwait.Receive(t, "the first clone to start", started)
 
 	status, health := c.health(t)
 	if status != http.StatusServiceUnavailable || health.Ready || health.Repo != "acme/widgets" {
@@ -434,8 +443,8 @@ func TestHealthzIsUnavailableUntilTheFirstCloneFinishes(t *testing.T) {
 	if want := git(t, remote, "--git-dir="+remote, "rev-parse", "main"); health.Head != want {
 		t.Errorf("/healthz head = %s, want the remote's main %s", health.Head, want)
 	}
-	if health.Bytes <= 0 || health.LastFetchAt.Before(before) || health.LastFetchAt.After(time.Now()) {
-		t.Errorf("/healthz = %+v, want the clone's bytes and the time it finished", health)
+	if health.Bytes <= 0 || !health.LastFetchAt.Equal(c.clock.Now()) {
+		t.Errorf("/healthz = %+v, want the clone's bytes and the time it finished, %s", health, c.clock.Now())
 	}
 	if transfers := run.transfers(); len(transfers) != 1 || transfers[0] != "clone --bare" {
 		t.Errorf("the cache ran %q, want one clone", transfers)
@@ -511,10 +520,10 @@ func indexed(t *testing.T, dir string) {
 func TestTheCachesClonesHistoryStaysPacked(t *testing.T) {
 	remote := newRemote(t)
 	opts := testOptions(t, newTestRunner(t, remote))
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	c.ready(t)
 	moved := advance(t, remote, "moved")
+	c.tick(t)
 	c.waitFor(t, "at the moved head", func(_ int, h Health) bool { return h.Head == moved })
 	if loose := git(t, c.dir(), "--git-dir="+c.dir(), "count-objects"); !strings.HasPrefix(loose, "0 objects") {
 		t.Errorf("the cache's clone holds %s after a fetch", loose)
@@ -527,13 +536,13 @@ func TestATarAskedForDuringAFetchWaitsForIt(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	opts := testOptions(t, run)
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	c.ready(t)
 	moved := advance(t, remote, "moved")
 	started, release := run.hold()
 	defer release()
-	<-started
+	c.tick(t)
+	testwait.Receive(t, "the next tick's fetch to start", started)
 
 	streamed := make(chan []byte, 1)
 	request, err := http.NewRequest(http.MethodGet, c.url+"/tar", nil)
@@ -552,21 +561,18 @@ func TestATarAskedForDuringAFetchWaitsForIt(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		streamed <- body
 	}()
-	select {
-	case <-streamed:
-		t.Fatal("the tar streamed while a fetch ran")
-	case <-time.After(300 * time.Millisecond):
-	}
+	// The tar is in the cache's hands once /healthz counts it, and it then waits for the fetch,
+	// which the test holds.
+	c.waitFor(t, "holding the tar asked for during the fetch", func(_ int, h Health) bool { return h.Streams != nil && *h.Streams == 1 })
+	testwait.Quiet(t, "the tar asked for during the fetch", streamed, 300*time.Millisecond,
+		"between taking its turn and its first byte the tar records nothing the test can read; the cache "+
+			"serves real HTTP and runs a real git, which no synctest bubble holds; and the one later action "+
+			"it orders after, the fetch's release, is what it must wait for")
 	if status, health := c.health(t); status != http.StatusOK || !health.Ready {
 		t.Fatalf("/healthz during the fetch answers %d %+v, want ready", status, health)
 	}
 	release()
-	var body []byte
-	select {
-	case body = <-streamed:
-	case <-time.After(testTimeout):
-		t.Fatal("the tar never streamed once the fetch ended")
-	}
+	body := testwait.Receive(t, "the tar to stream once the fetch ended", streamed)
 	unpacked, _ := unpack(t, bytes.NewReader(body))
 	indexed(t, unpacked)
 	if got := git(t, unpacked, "--git-dir="+unpacked, "rev-parse", "refs/heads/main"); got != moved {
@@ -595,7 +601,6 @@ func TestAStalledTarReaderDoesNotHoldTheNextFetch(t *testing.T) {
 	git(t, work, "push", "--quiet", "origin", "HEAD:main")
 	began := git(t, work, "rev-parse", "HEAD")
 	opts := testOptions(t, newTestRunner(t, remote))
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	c.waitFor(t, "at the large commit", func(_ int, h Health) bool { return h.Head == began })
 
@@ -606,6 +611,7 @@ func TestAStalledTarReaderDoesNotHoldTheNextFetch(t *testing.T) {
 		t.Fatalf("read the tar's first bytes: %v", err)
 	}
 	moved := advance(t, remote, "moved")
+	c.tick(t)
 	c.waitFor(t, "at the moved head while a tar's reader stalls", func(_ int, h Health) bool { return h.Head == moved })
 
 	unpacked, _ := unpack(t, io.MultiReader(bytes.NewReader(first), stalled.Body))
@@ -653,11 +659,24 @@ func TestATarPastTheStreamBoundWaitsForAStreamToEnd(t *testing.T) {
 		request.Header.Set("Authorization", "Bearer "+c.bearer(t))
 		return http.DefaultClient.Do(request)
 	}
-	impatient, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	if response, err := ask(impatient); err == nil {
-		response.Body.Close()
-		t.Fatalf("a tar past the bound was answered %s while the stream ahead of it was sent", response.Status)
+	type asked struct {
+		response *http.Response
+		err      error
+	}
+	// A tar past the bound waits in the cache's queue, which /healthz counts, while the stream
+	// ahead of it is sent; its request ends first, at the moment the test chooses.
+	impatientContext, giveUp := context.WithCancel(context.Background())
+	defer giveUp()
+	impatient := make(chan asked, 1)
+	go func() {
+		response, err := ask(impatientContext)
+		impatient <- asked{response, err}
+	}()
+	c.waitFor(t, "holding a tar past the bound", func(_ int, h Health) bool { return h.Streams != nil && *h.Streams == 2 })
+	giveUp()
+	if got := testwait.Receive(t, "the impatient tar's end once its request ended", impatient); got.err == nil {
+		got.response.Body.Close()
+		t.Fatalf("a tar past the bound was answered %s while the stream ahead of it was sent", got.response.Status)
 	}
 
 	answered := make(chan *http.Response, 1)
@@ -670,35 +689,26 @@ func TestATarPastTheStreamBoundWaitsForAStreamToEnd(t *testing.T) {
 		}
 		answered <- response
 	}()
-	select {
-	case response := <-answered:
-		if response != nil {
-			response.Body.Close()
-		}
-		t.Fatal("a tar past the bound was answered while the stream ahead of it was sent")
-	case <-time.After(300 * time.Millisecond):
-	}
-	if _, health := c.health(t); health.Streams == nil || *health.Streams != 2 {
-		t.Errorf("/healthz counts streams %v, want 2: one sent and one waiting", health.Streams)
-	}
+	// The impatient tar gave up holding no turn, so the next one is the second of two again.
+	c.waitFor(t, "holding the next tar past the bound", func(_ int, h Health) bool { return h.Streams != nil && *h.Streams == 2 })
+	testwait.Quiet(t, "the tar past the bound", answered, 300*time.Millisecond,
+		"/healthz counts a stream it sends and one it holds alike, so no state tells them apart; the cache "+
+			"serves real HTTP no synctest bubble holds; and the one later action the answer orders after, the "+
+			"end of the stream ahead, is what it must wait for")
 	unpacked, _ := unpack(t, io.MultiReader(bytes.NewReader(first), ahead.Body))
 	indexed(t, unpacked)
 	ahead.Body.Close()
-	select {
-	case response := <-answered:
-		if response == nil {
-			t.FailNow()
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("the waiting tar was answered %s, want 200 once the stream ahead ended", response.Status)
-		}
-		next, _ := unpack(t, response.Body)
-		if got := git(t, next, "--git-dir="+next, "rev-parse", "refs/heads/main"); got != head {
-			t.Errorf("the waiting tar's main is %s, want %s", got, head)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the waiting tar was not answered within 30s of the stream ahead ending")
+	response := testwait.Receive(t, "the waiting tar's answer once the stream ahead ended", answered)
+	if response == nil {
+		t.FailNow()
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the waiting tar was answered %s, want 200 once the stream ahead ended", response.Status)
+	}
+	next, _ := unpack(t, response.Body)
+	if got := git(t, next, "--git-dir="+next, "rev-parse", "refs/heads/main"); got != head {
+		t.Errorf("the waiting tar's main is %s, want %s", got, head)
 	}
 }
 
@@ -708,13 +718,13 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	opts := testOptions(t, run)
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	first := c.ready(t)
 	if err := os.WriteFile(opts.TokenFile, []byte("ghs_rotated"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	moved := advance(t, remote, "moved")
+	c.tick(t)
 
 	health := c.waitFor(t, "at the moved head", func(_ int, h Health) bool { return h.Head == moved })
 	if !health.LastFetchAt.After(first.LastFetchAt) {
@@ -739,20 +749,17 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 func TestAFailedFetchKeepsTheCacheReady(t *testing.T) {
 	remote := newRemote(t)
 	opts := testOptions(t, newTestRunner(t, remote))
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	before := c.ready(t)
 	if err := os.RemoveAll(remote); err != nil {
 		t.Fatal(err)
 	}
+	c.tick(t)
 
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "fetch failed; serving the clone as it was: ") {
-		if time.Now().After(deadline) {
-			t.Fatalf("no failed fetch was logged: %q", c.log.all())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "a failed fetch to be logged", func() (string, bool) {
+		lines := c.log.all()
+		return fmt.Sprintf("log %q", lines), logged(lines, "fetch failed; serving the clone as it was: ")
+	})
 	if status, health := c.health(t); status != http.StatusOK || !health.Ready || health.Head != before.Head || health.LastFetchAt != before.LastFetchAt {
 		t.Fatalf("/healthz after a failed fetch answers %d %+v, want ready on %+v", status, health, before)
 	}
@@ -881,9 +888,7 @@ func TestServeEndsWhenTheFirstCloneFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts.Log = func(string) {}
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	defer cancel()
-	if err := Serve(ctx, opts); err == nil || !strings.Contains(err.Error(), "git -c gc.auto=0") {
+	if err := Serve(testwait.Context(t), opts); err == nil || !strings.Contains(err.Error(), "git -c gc.auto=0") {
 		t.Fatalf("Serve = %v, want the clone's failure", err)
 	}
 }
@@ -905,10 +910,10 @@ func TestAFetchRepacksTheCloneOnceARepackIsDue(t *testing.T) {
 			t.Cleanup(func() { repackEvery = saved })
 			remote := newRemote(t)
 			opts := testOptions(t, newTestRunner(t, remote))
-			opts.Refresh = 50 * time.Millisecond
 			c := start(t, opts)
 			c.ready(t)
 			moved := advance(t, remote, "moved")
+			c.tick(t)
 			c.waitFor(t, "at the moved head", func(_ int, h Health) bool { return h.Head == moved })
 			packed := func() (bool, string) {
 				counts := map[string]string{}
@@ -920,14 +925,13 @@ func TestAFetchRepacksTheCloneOnceARepackIsDue(t *testing.T) {
 				return counts["count"] == "0" && counts["packs"] == "1", "count=" + counts["count"] + " packs=" + counts["packs"]
 			}
 			// The repack follows the fetch that brought the moved head, so a due one is waited for.
-			deadline := time.Now().Add(testTimeout)
-			got, held := packed()
-			for tc.repack && !got && time.Now().Before(deadline) {
-				time.Sleep(20 * time.Millisecond)
-				got, held = packed()
-			}
-			if got != tc.repack {
-				t.Errorf("the clone holds %s, want repacked %t", held, tc.repack)
+			if tc.repack {
+				testwait.Until(t, "the due repack to leave the clone in one pack with no loose object", func() (string, bool) {
+					got, held := packed()
+					return held, got
+				})
+			} else if got, held := packed(); got {
+				t.Errorf("the clone holds %s, want it not repacked", held)
 			}
 		})
 	}
@@ -985,7 +989,7 @@ func TestAnIssuePodsFetchFillsItsFeedFromTheCache(t *testing.T) {
 	var logged []string
 	report, err := workspace.Fetch(context.Background(), run, workspace.FetchRequest{
 		Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { logged = append(logged, line) }, Clock: workspace.WallClock{}, CacheURL: c.url, CacheToken: testCacheToken,
+		Log: func(line string) { logged = append(logged, line) }, Clock: clock.Real(), CacheURL: c.url, CacheToken: testCacheToken,
 	})
 	if err != nil {
 		t.Fatalf("Fetch from the cache: %v", err)
@@ -1020,7 +1024,7 @@ func TestOnlyTheTarNeedsTheCachesToken(t *testing.T) {
 	started, release := run.hold()
 	defer release()
 	c := start(t, testOptions(t, run))
-	<-started
+	testwait.Receive(t, "the first clone to start", started)
 	if response := c.get(t, "/readyz", ""); response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("/readyz during the first clone answers %d, want 503", response.StatusCode)
 	}
@@ -1074,7 +1078,7 @@ func TestAnIssuePodTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	fetch := func(cache *running, bearer string) (workspace.FetchReport, string, error) {
 		request := workspace.FetchRequest{
 			Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-			Log: func(string) {}, Clock: workspace.WallClock{}, CacheURL: cache.url, CacheToken: bearer,
+			Log: func(string) {}, Clock: clock.Real(), CacheURL: cache.url, CacheToken: bearer,
 		}
 		report, err := workspace.Fetch(context.Background(), run, request)
 		return report, request.Feed, err
@@ -1120,7 +1124,6 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	opts := testOptions(t, run)
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	c.ready(t)
 	started, release := make(chan struct{}), make(chan struct{})
@@ -1137,11 +1140,8 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 		return run.runner.Run(ctx, command)
 	})
 	advance(t, remote, "moved")
-	select {
-	case <-started:
-	case <-time.After(testTimeout):
-		t.Fatal("no repack started")
-	}
+	c.tick(t)
+	testwait.Receive(t, "the repack to start", started)
 	request, err := http.NewRequest(http.MethodGet, c.url+"/tar", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1158,13 +1158,10 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 		_ = response.Body.Close()
 		served <- response.StatusCode
 	}()
-	select {
-	case status := <-served:
-		if status != http.StatusOK {
-			t.Errorf("the tar asked for during the repack answered %d, want 200", status)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("the tar waited on the repack")
+	// The repack stays held until the release below, so a tar that waited on it is never served
+	// and this wait fails.
+	if status := testwait.Receive(t, "the tar asked for during the repack to be served", served); status != http.StatusOK {
+		t.Errorf("the tar asked for during the repack answered %d, want 200", status)
 	}
 	if bound != repackTimeout {
 		t.Errorf("the repack ran within %s, want repackTimeout %s, not the runner's own budget", bound, repackTimeout)
@@ -1175,13 +1172,10 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 		}
 	}
 	close(release)
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "repacked ") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the repack never completed: %q", c.log.all())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "the repack to complete", func() (string, bool) {
+		lines := c.log.all()
+		return fmt.Sprintf("log %q", lines), logged(lines, "repacked ")
+	})
 }
 
 // A repack that fails is logged, and the partial packs it left are removed at once, each logged,
@@ -1193,7 +1187,6 @@ func TestAFailedRepackLeavesNoPartialPack(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	opts := testOptions(t, run)
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	c.ready(t)
 	pack := filepath.Join(c.dir(), "objects", "pack")
@@ -1217,13 +1210,11 @@ func TestAFailedRepackLeavesNoPartialPack(t *testing.T) {
 		return workspace.Result{ExitCode: 128, Stderr: "fatal: killed\n"}, nil
 	})
 	advance(t, remote, "moved")
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "removed the partial pack tmp_pack_Ab12Cd, which a killed git left") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the partial pack's removal was never logged: %q", c.log.all())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	c.tick(t)
+	testwait.Until(t, "the partial pack's removal to be logged", func() (string, bool) {
+		lines := c.log.all()
+		return fmt.Sprintf("log %q", lines), logged(lines, "removed the partial pack tmp_pack_Ab12Cd, which a killed git left")
+	})
 	if !logged(c.log.all(), "repack failed; tried again in ") {
 		t.Errorf("the failed repack was not logged: %q", c.log.all())
 	}
@@ -1277,7 +1268,6 @@ func TestTheCachesCloneTakesTheRepositorysBound(t *testing.T) {
 		return run.runner.Run(ctx, command)
 	})
 	opts := testOptions(t, run)
-	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
 	c.ready(t)
 	select {
@@ -1294,13 +1284,9 @@ func TestTheCachesCloneTakesTheRepositorysBound(t *testing.T) {
 		return run.runner.Run(ctx, command)
 	})
 	advance(t, remote, "moved")
-	select {
-	case got := <-refreshed:
-		if got > workspace.FetchTimeout {
-			t.Errorf("a fetch into the clone ran within %s, want FetchTimeout %s at most: it holds the lock every tar waits on", got, workspace.FetchTimeout)
-		}
-	case <-time.After(testTimeout):
-		t.Fatal("the cache never fetched into its clone")
+	c.tick(t)
+	if got := testwait.Receive(t, "the cache to fetch into its clone", refreshed); got > workspace.FetchTimeout {
+		t.Errorf("a fetch into the clone ran within %s, want FetchTimeout %s at most: it holds the lock every tar waits on", got, workspace.FetchTimeout)
 	}
 }
 
@@ -1401,7 +1387,7 @@ func TestAFailedRepackIsTriedAgainOnlyARepackEveryLater(t *testing.T) {
 	if err := c.refresh(ctx); err != nil {
 		t.Fatalf("the first refresh: %v", err)
 	}
-	c.lastRepack = time.Now().Add(-repackEvery - time.Hour)
+	c.lastRepack = opts.Clock.Now().Add(-repackEvery - time.Hour)
 	old := c.lastRepack.UTC().Format(time.RFC3339)
 	if err := os.WriteFile(filepath.Join(opts.Root, lastRepackFile), []byte(old+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1420,8 +1406,8 @@ func TestAFailedRepackIsTriedAgainOnlyARepackEveryLater(t *testing.T) {
 	if got := run.repacks(); got != 1 {
 		t.Errorf("the runner was asked for %d repacks, want the one that failed and none at the next fetch", got)
 	}
-	if held.Before(time.Now().Add(-time.Hour)) {
-		t.Errorf("the record held %s while the repack ran, want the attempt's own time written before it: a repack that kills its pod must not run again at the next start", held)
+	if !held.Equal(opts.Clock.Now()) {
+		t.Errorf("the record held %s while the repack ran, want the attempt's own time %s written before it: a repack that kills its pod must not run again at the next start", held, opts.Clock.Now())
 	}
 	if err := cacheOn(t, opts).refresh(ctx); err != nil {
 		t.Fatalf("a new process's refresh: %v", err)
@@ -1473,12 +1459,11 @@ func TestTheLastRepackOutlivesTheProcess(t *testing.T) {
 	opts := testOptions(t, run)
 	opts.Log = func(string) {}
 	ctx := context.Background()
-	before := time.Now().Add(-time.Second)
 	if err := cacheOn(t, opts).refresh(ctx); err != nil {
 		t.Fatalf("the first process's refresh: %v", err)
 	}
-	if at := recorded(t, opts.Root); at.Before(before.Truncate(time.Second)) || at.After(time.Now()) {
-		t.Fatalf("the first process recorded %s, want its first fetch's time, after %s", at, before)
+	if at := recorded(t, opts.Root); !at.Equal(opts.Clock.Now()) {
+		t.Fatalf("the first process recorded %s, want its first fetch's time, %s", at, opts.Clock.Now())
 	}
 	if err := cacheOn(t, opts).refresh(ctx); err != nil {
 		t.Fatalf("the second process's refresh: %v", err)
@@ -1486,7 +1471,7 @@ func TestTheLastRepackOutlivesTheProcess(t *testing.T) {
 	if got := run.repacks(); got != 0 {
 		t.Fatalf("a process restarted inside repackEvery repacked %d times", got)
 	}
-	old := time.Now().Add(-repackEvery - time.Hour).UTC().Format(time.RFC3339)
+	old := opts.Clock.Now().Add(-repackEvery - time.Hour).UTC().Format(time.RFC3339)
 	if err := os.WriteFile(filepath.Join(opts.Root, lastRepackFile), []byte(old+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

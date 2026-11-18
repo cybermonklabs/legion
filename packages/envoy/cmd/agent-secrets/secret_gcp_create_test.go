@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // newTestID is the store's whole name of NEW_TEST, the secret these tests create.
@@ -624,13 +625,8 @@ func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 			code   int
 		}{stderr, code}
 	}()
-	select {
-	case got := <-done:
-		if got.code != 1 || !strings.Contains(got.stderr, "300ms") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
-			t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the create was still reading its value 10s on, past its 300ms window")
+	if got := testwait.Receive(t, "the create to stop reading its value at its 300ms window", done); got.code != 1 || !strings.Contains(got.stderr, "300ms") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
+		t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
 	}
 	requireNothingLeft(t, fake, broker, "NEW_TEST")
 }

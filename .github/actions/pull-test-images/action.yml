@@ -6,8 +6,8 @@ description: >-
   shared that container. The pull itself does not retry either. Every image comes from
   ghcr.io/cybermonklabs/legion/ci, a registry this repository publishes, so a failed pull is a fault of
   this repository and must be seen. The action reads each image from the Go string constant that
-  declares it (testnats.Image and testnats.HubImage, tests3.Image), so the tests and the pull
-  never name two images.
+  declares it (Envoy's testnats.Image and testnats.HubImage, tests3.Image), so the tests and the
+  pull never name two images.
 inputs:
   consts:
     description: >-

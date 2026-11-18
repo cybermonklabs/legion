@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -48,7 +47,7 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 		acked = append(acked, item)
 		wrote = seq
 	}
-	requireFrames(t, standIn.collect(t, len(acked), 5*time.Second), acked...)
+	requireFrames(t, standIn.collect(t, len(acked)), acked...)
 	awaitAcked(t, rig.consumers, sessionID, wrote)
 
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
@@ -62,8 +61,8 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 
 	rig.subscribe(t, consumerResumeRegistration(sessionID, "epoch-2", rig.streamID(t), wrote))
 
-	requireFrames(t, standIn.collect(t, len(away), 5*time.Second), away...)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, len(away)), away...)
+	standIn.none(t)
 }
 
 // A registration whose resume point is below the stream's first sequence is answered gap: true:
@@ -118,7 +117,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 		t.Fatalf("the answer carries consumer_start %d, want %d, the sequence its consumer was created at", first.Delivery.ConsumerStart, start)
 	}
 	// It is handed nothing: the floor below is all it has.
-	standIn.none(t, 200*time.Millisecond)
+	standIn.none(t)
 
 	rig.deregister(t, sessionID, "")
 	// The delete runs after the answer, and this row is about what the registration below finds
@@ -130,7 +129,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 	if start := rig.startSeq(t, sessionID); start != first.Delivery.ConsumerStart {
 		t.Fatalf("the consumer of %s starts again at %d, want %d, the start its first answer carried", sessionID, start, first.Delivery.ConsumerStart)
 	}
-	frames := standIn.collect(t, 1, 5*time.Second)
+	frames := standIn.collect(t, 1)
 	requireFrames(t, frames, away)
 	if frames[0].seq != awaySeq {
 		t.Fatalf("the frame carries stream sequence %d, want %d, the message stored while the session was away", frames[0].seq, awaySeq)
@@ -156,7 +155,7 @@ func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 	// It is handed nothing at all, which is the population this guard is for.
-	standIn.none(t, 200*time.Millisecond)
+	standIn.none(t)
 
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
@@ -166,11 +165,11 @@ func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing
 	// The old plugin's registration: a consumer, and no resume point of any kind.
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2", followed))
 
-	frames := standIn.collect(t, 2, 5*time.Second)
+	frames := standIn.collect(t, 2)
 	requireFrames(t, frames, onTopic, toSession)
 	if frames[0].seq != topicSeq || frames[1].seq != sessionSeq {
 		t.Fatalf("the frames carry stream sequences %d and %d, want %d and %d, the two messages stored while the session was away",
 			frames[0].seq, frames[1].seq, topicSeq, sessionSeq)
 	}
-	standIn.none(t, time.Second)
+	standIn.none(t)
 }

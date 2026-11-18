@@ -6,11 +6,12 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // rigLauncherHello is the hello role's launcher on the pod of sandbox name sends, with the token
@@ -159,13 +160,7 @@ func sendFrame(t *testing.T, w *shimwire.Writer, frame shimwire.Frame) {
 // nextMemoryKillCall is the receiver's next call, failing the test if none comes.
 func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCall {
 	t.Helper()
-	select {
-	case call := <-calls:
-		return call
-	case <-time.After(5 * time.Second):
-		t.Fatal("the receiver was never called with the report")
-		return memoryKillCall{}
-	}
+	return testwait.Receive(t, "the receiver's call with the report", calls)
 }
 
 // A valid kill report reaches the daemon's receiver with the session's own issue, role and pod,
@@ -174,7 +169,7 @@ func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCal
 func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueRoleAndPod(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
+	launchers := newLaunchers(nil, nil, nil, killed, clock.Real(), slogTo(&logs))
 	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
@@ -217,7 +212,7 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
+	launchers := newLaunchers(nil, nil, nil, killed, clock.Real(), slogTo(&logs))
 	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
@@ -264,7 +259,7 @@ func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing
 			if tc.receiver {
 				killed, calls = recordedMemoryKills()
 			}
-			launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
+			launchers := newLaunchers(nil, nil, nil, killed, clock.Real(), slogTo(&logs))
 			session := launchers.accept(tc.token, tc.issue, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 			w, done := serveLauncherPipe(t, session)
 

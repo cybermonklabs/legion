@@ -185,7 +185,7 @@ const (
 // the next one's, whatever woke it (duty.WokenLoop.MinGap), and also how long a pass waits when
 // another process holds the lease; retryBase is how long a document whose read or record failed
 // waits before its first retry, doubling with each failure after (refs.DeferExcerpts), and how
-// long a pass whose own read failed waits before the next. A test runs the loop faster.
+// long a pass whose own read failed waits before the next.
 type excerptSchedule struct {
 	minGap    time.Duration
 	retryBase time.Duration
@@ -224,10 +224,6 @@ const referenceExcerptLease = "reference-excerpts"
 // excerpts in each version write, so one marking per process is enough. A mention owed an excerpt
 // is answered with the document's name until this stores one.
 func (s *Service) RunReferenceExcerptReconciliation(ctx context.Context, leases duty.Leases, wake <-chan struct{}) {
-	s.runReferenceExcerptReconciliation(ctx, leases, wake, referenceExcerptSchedule)
-}
-
-func (s *Service) runReferenceExcerptReconciliation(ctx context.Context, leases duty.Leases, wake <-chan struct{}, schedule excerptSchedule) {
 	ctx = store.WithTransactionTracking(ctx)
 	// marked is whether a pass of this process has marked the stale excerpts; a marking that
 	// failed is tried again by the next pass that runs.
@@ -236,12 +232,12 @@ func (s *Service) runReferenceExcerptReconciliation(ctx context.Context, leases 
 		Lease:  referenceExcerptLease,
 		Leases: leases,
 		Wake:   wake,
-		MinGap: schedule.minGap,
+		MinGap: referenceExcerptSchedule.minGap,
 		Pass: func(ctx context.Context) time.Time {
 			if !marked {
 				marked = s.markStaleExcerpts(ctx)
 			}
-			return s.reconcileExcerptPass(ctx, schedule)
+			return s.reconcileExcerptPass(ctx, referenceExcerptSchedule)
 		},
 	})
 }
@@ -311,13 +307,17 @@ func (s *Service) ReconcileReferenceExcerpts(ctx context.Context) (documents int
 // of whose documents left the drift a batch reads - recorded or deferred - so the next batch reads
 // documents this one did not.
 func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time.Duration) (documents int, full bool, err error) {
-	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch)
+	// One moment for the pass, read from the service's clock: what this pass leaves out as not yet
+	// due (DriftedExcerpts) and what it defers to (DeferExcerpts) are the same clock's readings, so
+	// a test drives both with a fake.
+	at := s.clock.Now()
+	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch, at)
 	if err != nil {
 		return 0, false, err
 	}
 	moved := 0
 	deferDocument := func(document refs.ExcerptDrift) {
-		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling); err != nil {
+		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling, at); err != nil {
 			if ctx.Err() == nil {
 				slog.Error("dispatch: reference excerpt reconciliation could not defer a document; the next batch reads it again",
 					"artifact", document.FromID, "error", err)

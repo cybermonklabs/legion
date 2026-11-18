@@ -4,13 +4,13 @@ import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
 import { call } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { span } from "@legion/test-fixtures/wait";
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
   childOf,
   cleanup,
   conversation,
-  DEADLINE_MS,
   exitsFile,
   gone,
   ISSUE,
@@ -88,21 +88,16 @@ import {
 //     thing — the real worker exits, the real counter file is written and read back by the
 //     relaunch, and the real notice reaches the listener.
 
-/**
- * What one case's cleanup has to do, and why it gets a bound of its own: each pane's steps kill a
- * real Oh My Pi and wait for it to be reaped, close the stand-in server and the socket that
- * refuses NATS, and remove a scratch root holding that pane's home, its sessions and its `eval`
- * kernel's temporary files. On a loaded pod that is seconds of real work, and Bun's default hook
- * bound is 5 s: one run of three at `c9f2ddf3c71f` came back 6 pass, 2 fail with 68 `expect()`
- * calls against a clean run's 83, two cases cut short at the hook rather than at an assertion.
- * The bound here is proportionate to what the hook does, in a suite whose own cases are allowed
- * three minutes each; a cleanup that really hangs still fails, two minutes later.
- */
-const CLEANUP_MS = 120_000;
-
+// What one case's cleanup does: each pane's steps kill a real Oh My Pi and wait for it to be
+// reaped, close the stand-in server and the socket that refuses NATS, and remove a scratch root
+// holding that pane's home, its sessions and its `eval` kernel's temporary files. On a loaded pod
+// that is seconds of real work, which the command's one guard covers as it covers every case: one
+// run of three at `c9f2ddf3c71f`, under Bun's 5 s default for a hook, came back 6 pass, 2 fail
+// with 68 `expect()` calls against a clean run's 83, two cases cut short at the hook rather than
+// at an assertion.
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-}, CLEANUP_MS);
+});
 
 /** A directory of one case's own: the claim's state directory, or where a cell writes the pid of
  * the child it started. The maker is made here rather than in `stall-watchdog-pane.ts`, because
@@ -185,8 +180,7 @@ test.skipIf(skip)(
     expect(ofKind(records, "stopped")).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
     expect(pane.running()).toBe(true);
-  },
-  DEADLINE_MS + 60_000
+  }
 );
 
 test.skipIf(skip)(
@@ -252,8 +246,7 @@ test.skipIf(skip)(
     ]);
     expect(ofKind(records, "stopped")).toEqual([]);
     await expect(readFile(exitsFile(state), "utf8")).rejects.toThrow();
-  },
-  DEADLINE_MS + 60_000
+  }
 );
 
 test.skipIf(skip)(
@@ -322,15 +315,17 @@ test.skipIf(skip)(
     expect(told.topic).toBe(ARCHITECT_TOPIC);
     expect(String(told.message)).toContain("it cannot recover from on its own");
     expect(String(told.message)).toContain(`cap of ${STALL_EXIT_CAP}`);
-    // The process is what the cap protects. A real clock is the only thing that shows it is still
-    // there: an exit the ladder did not take emits no signal to await.
-    await Bun.sleep(2 * STEP_MS);
+    // The process is what the cap protects, and an exit the ladder did not take emits no signal:
+    // no record, no request, and the stopped ladder's later sweeps write nothing either.
+    await span(
+      2 * STEP_MS,
+      "an exit the ladder did not take writes no record and makes no request, so neither a read of the pane's state nor a later action's effect shows it was spared: two step gaps pass the moment the next step would have run"
+    );
     expect(third.running()).toBe(true);
     expect(JSON.parse(await readFile(exitsFile(state), "utf8"))).toMatchObject({
       exits: STALL_EXIT_CAP,
     });
-  },
-  3 * DEADLINE_MS
+  }
 );
 
 test.skipIf(skip)(
@@ -365,10 +360,12 @@ test.skipIf(skip)(
     );
     expect(String(told.message)).toContain("could not be read");
     // As above: the proposition is a process that is still there.
-    await Bun.sleep(2 * STEP_MS);
+    await span(
+      2 * STEP_MS,
+      "an exit the ladder did not take writes no record and makes no request, so neither a read of the pane's state nor a later action's effect shows it was spared: two step gaps pass the moment the next step would have run"
+    );
     expect(pane.running()).toBe(true);
-  },
-  DEADLINE_MS + 60_000
+  }
 );
 
 test.skipIf(skip)(
@@ -403,9 +400,11 @@ test.skipIf(skip)(
     );
     expect(conversation(after)).toContain("the control started");
 
-    // Past the bound and two sweeps. A real clock, deliberately: the proposition is that the watch
-    // did nothing at all, and a watch that does nothing emits no signal to await.
-    await Bun.sleep(QUIET_MS);
+    // Past the bound and two sweeps: the proposition is that the watch did nothing at all.
+    await span(
+      QUIET_MS,
+      "a watch that judges nothing writes no record, sends no notice and ends no process, so neither a read of the pane's state nor a later action's effect shows it held: the span is the bound and two of the plugin's sweeps"
+    );
     await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
@@ -415,8 +414,7 @@ test.skipIf(skip)(
     expect(await runs(child)).toBe(true);
     expect(pane.running()).toBe(true);
     await expect(readFile(exitsFile(state), "utf8")).rejects.toThrow();
-  },
-  DEADLINE_MS + 60_000
+  }
 );
 
 test.skipIf(skip)(
@@ -472,8 +470,7 @@ test.skipIf(skip)(
       "end-processes",
     ]);
     expect(pane.running()).toBe(true);
-  },
-  DEADLINE_MS + 60_000
+  }
 );
 
 test.skipIf(skip)(
@@ -534,8 +531,7 @@ test.skipIf(skip)(
     });
     expect(ends.map((end) => end.pendingMessages)).toEqual([true, false]);
     expect(pane.running()).toBe(true);
-  },
-  DEADLINE_MS + 60_000
+  }
 );
 
 test.skipIf(skip)(
@@ -606,11 +602,13 @@ test.skipIf(skip)(
     // alone leaves it green, and that is the system rather than the case: the host ends the
     // turn immediately after it backgrounds the call, so the turn's own close takes the record
     // either way. No live case can hold one of these four alone.
-    await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
+    await span(
+      SHELL_DEADLINE_MS + QUIET_MS,
+      "a closed record is judged by no sweep and so writes nothing, which neither a read of the pane's state nor a later action's effect can show: the span is the call's own deadline, the grace and two sweeps"
+    );
     await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
     expect(pane.running()).toBe(true);
-  },
-  DEADLINE_MS + 60_000
+  }
 );

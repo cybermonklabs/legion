@@ -32,15 +32,15 @@ env:
 jobs:
   envoy-infra-go:
     runs-on: ubuntu-24.04
-    # With a go-envoy-infra entry filled for the run's module files, both vets take a second and the
-    # job took 537 s (run 44016277498, from an entry a dispatched fill saved on its branch), the live
-    # tests 423 s of it. A run whose module files main has not filled, such as a pull request that
-    # changes them, restores an entry built from older module versions and rebuilds what moved. At
-    # worst that is both vets nearly from nothing, and the whole job then took 959 and 1059 s in
-    # runs 44013632169 and 43996496498, whose entry was eleven days old and held no darwin objects.
-    # With no entry at all, as after an eviction, the job took 921 s (run 44026580304). This limit
-    # is for those cases.
-    timeout-minutes: 20
+    # At least the time a run takes when each of its test steps runs out its own -timeout: every
+    # step as long as the slowest whole run main measured, 1059 s (run 43996496498, whose
+    # go-envoy-infra entry was eleven days old, so both vets, the darwin one among them, built
+    # nearly from nothing; 959 s in run 44013632169, 921 s with no entry in run 44026580304, 537 s
+    # with a filled entry in run 44016277498), 6 s of its clock over them, the unit step's 10
+    # minutes and the natslive step's three calls' 30 minutes each: 7065 s, or 118 minutes. Before
+    # the darwin vet the branch's sum over its 20 newest green merge-group runs up to 2026-11-15
+    # was 6635 s.
+    timeout-minutes: 120
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
@@ -103,15 +103,18 @@ jobs:
       # package, fail the step rather than pass it with nothing tested. The pattern is built in
       # .github/scripts/ci_job_reads.py from the package name the text-check job's own steps are
       # built from. The vet step above still compiles the text checks, which keeps them
-      # compiling as the module changes.
+      # compiling as the module changes. -timeout 10m against a slowest package of 28.059 s, gcp,
+      # over this job's 20 newest green merge-group runs up to 2026-11-15 (run 43278643090).
       - name: Unit test envoy-infra
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
+          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -timeout 10m
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
         # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
+        # Over this job's 20 newest green merge-group runs up to 2026-11-15, on a restored cache,
+        # core took at most 124.22 s and gcp 102.654 s (runs 43675808276 and 43338810495).
         # One call per package, never one union -run over the three: a name an untagged test of
         # one package shares with a natslive test of another would then run a second time with
         # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or

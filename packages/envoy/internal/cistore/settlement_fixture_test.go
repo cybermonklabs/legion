@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -97,9 +98,7 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 	const (
@@ -147,10 +146,10 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 	}
 
 	var last cistore.Summary
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-		msg, err := sub.NextMsg(time.Until(deadline))
+	testwait.Eventually(t, "the published settlement carries all runs", func() bool {
+		msg, err := sub.NextMsg(10 * time.Millisecond)
 		if err != nil {
-			break
+			return false
 		}
 		var env contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &env); err != nil {
@@ -159,10 +158,8 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 		if err := json.Unmarshal([]byte(env.Payload), &last); err != nil {
 			t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
 		}
-		if len(last.CheckRuns) == len(wantRuns) {
-			break
-		}
-	}
+		return len(last.CheckRuns) == len(wantRuns)
+	})
 	if !slices.Equal(last.CheckRuns, wantRuns) || !slices.Equal(last.Failed.Checks, wantFailed) || !slices.Equal(last.Cancelled.Checks, wantCancelled) {
 		t.Fatalf("the listener's settlement\nruns %v\nfailed %v\ncancelled %v\nwant the fixture's\nruns %v\nfailed %v\ncancelled %v",
 			last.CheckRuns, last.Failed.Checks, last.Cancelled.Checks, wantRuns, wantFailed, wantCancelled)

@@ -1,18 +1,17 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener whose ENVOY_OIDC_ACCOUNTS names no account — a list emptied by mistake — refuses to
@@ -23,14 +22,12 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	for _, value := range []string{"   ", ", ,"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cmd := exec.CommandContext(ctx, binary)
+		cmd := exec.CommandContext(testwait.Context(t), binary)
 		cmd.Env = []string{
 			"PORT=0", "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_MACHINE_ID=oidc-accounts-blank", "NATS_URLS=" + uri,
 			"ENVOY_OIDC_ISSUER=" + issuer.URL(), "ENVOY_OIDC_AUDIENCE=" + listenerTestAudience, "ENVOY_OIDC_ACCOUNTS=" + value,
 		}
 		output, err := cmd.CombinedOutput()
-		cancel()
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), "ENVOY_OIDC_ACCOUNTS is set but names no account") {
 			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start ended with %v, want exit 1 naming the setting:\n%s", value, err, output)

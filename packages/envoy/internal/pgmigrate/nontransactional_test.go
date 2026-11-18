@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestLoadNonTransactionalMigration(t *testing.T) {
@@ -450,6 +451,11 @@ func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T
 	var timedOut *LockTimeoutError
 	if !errors.As(err, &timedOut) {
 		t.Fatalf("ExecNonTransactional = %v, want a *LockTimeoutError from the DROP of the leftover", err)
+	}
+	// The diagnosis's connection is rolled back and closed after the error is made; the test does
+	// not end with it open.
+	if timedOut.cleaned != nil {
+		testwait.Receive(t, "the rollback and close of the diagnosis's connection", timedOut.cleaned)
 	}
 	if !strings.HasPrefix(err.Error(), "drop the INVALID index") {
 		t.Fatalf("error %q is not the one the DROP of the leftover wraps; it came from elsewhere", err)

@@ -30,9 +30,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The places the proxy port refuses a call, each one no other row drives: the seven of the
@@ -108,22 +110,15 @@ func answersCounted(t *testing.T, registry *metrics.Registry, labels string) int
 
 // answersCountedReach waits for registry's sample naming labels to reach want: an answer is
 // counted once its handler returns, which for a streamed answer is after the client has read
-// it. It fails the row rather than hanging when the count never comes.
+// it. A count past want fails the row.
 func answersCountedReach(t *testing.T, registry *metrics.Registry, labels string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	got := testwait.Until(t, fmt.Sprintf("broker_answers_total{%s} to reach %d", labels, want), func() (int, bool) {
 		got := answersCounted(t, registry, labels)
-		if got >= want {
-			if got != want {
-				t.Errorf("broker_answers_total{%s} = %d; want %d", labels, got, want)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("broker_answers_total{%s} = %d; want %d", labels, got, want)
-		}
-		time.Sleep(time.Millisecond)
+		return got, got >= want
+	})
+	if got != want {
+		t.Errorf("broker_answers_total{%s} = %d; want %d", labels, got, want)
 	}
 }
 
@@ -152,6 +147,9 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	registry := metrics.New()
 	answers := answer.NewAnswers(registry)
 	plain := func(t *testing.T) *rig { return newRig(t, Options{Answers: answers}) }
+	// longPoll is the proxy's clock in the long-poll row, which the row moves one watch interval
+	// on once the grant has ended (watchTick).
+	longPoll := cutClock()
 	refused := fmt.Errorf("%w: AUTO_TOKEN", requests.ErrSecretNotInStore)
 	chain := fmt.Errorf("%w: record 9f2c: stored body does not reproduce its id", requests.ErrGrantChainInvalid)
 
@@ -316,22 +314,44 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 		},
 		{
 			site: siteBoundCut, name: "a long poll whose grant ended while its service had not answered",
-			rig: func(t *testing.T) *rig { return newRig(t, Options{Answers: answers, Watch: watchFast}) },
+			rig: func(t *testing.T) *rig { return newRig(t, Options{Answers: answers, Clock: longPoll}) },
 			drive: func(t *testing.T, r *rig) proxyAnswer {
 				r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ airlocktest.Request) bool {
 					<-request.Context().Done()
 					return true
 				})
-				// The grant ends once the call has reached the service, which is when the
-				// call is waiting on its answer.
+				type polled struct {
+					answer proxyAnswer
+					err    error
+				}
+				done := make(chan polled, 1)
+				client := r.client(workerPlaceholder)
 				go func() {
-					deadline := time.Now().Add(cutWait)
-					for len(r.requests()) == 0 && time.Now().Before(deadline) {
-						time.Sleep(time.Millisecond)
+					request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+"/v1/poll", nil)
+					if err != nil {
+						done <- polled{err: err}
+						return
 					}
-					r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+					request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
+					response, err := client.Do(request)
+					if err != nil {
+						done <- polled{err: err}
+						return
+					}
+					defer response.Body.Close()
+					body, err := io.ReadAll(response.Body)
+					done <- polled{answer: answeredBy(response, string(body)), err: err}
 				}()
-				return answeredBy(r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/poll", "Authorization", "Bearer "+workerPlaceholder))
+				// The grant ends once the call has reached the service, which is when the
+				// call is waiting on its answer, and the watcher reads it at its next interval.
+				testwait.Eventually(t, "the long poll to reach the service", func() bool { return len(r.requests()) > 0 })
+				r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+				watchTick(t, longPoll)
+				got := testwait.Receive(t, "the long poll to be answered once the watcher read its ended grant", done)
+				if got.err != nil {
+					t.Fatalf("the long poll through the proxy: %v", got.err)
+				}
+				return got.answer
 			},
 			status: http.StatusProxyAuthRequired, code: codeGrantNotLive, reason: requests.ErrGrantNotLive.Error(),
 			caller: boundCaller, secrets: []string{workerName}, host: boundHost, path: "/v1/poll",
@@ -545,19 +565,20 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //     proxy does not speak, which crypto/tls's error quotes whole.
 //
 // The cut is for the caller's text, never for the server's own. One row more panics a handler of
-// the inner server (serveBound, through the clock the rig hands the proxy), which net/http
-// recovers and logs with the stack of the goroutine that panicked. That line is the one record of
-// where the panic happened, so it holds the first line of net/http's text as its error, cut as
-// every other error is, and the stack after it whole in its stack field, which must name the
-// handler that panicked; net/http bounds the stack it writes, so the line still fits the entry.
-// No other row's line holds a stack.
+// the inner server (serveBound, through the policy version the rig's grant reads answer), which
+// net/http recovers and logs with the stack of the goroutine that panicked. That line is the one
+// record of where the panic happened, so it holds the first line of net/http's text as its error,
+// cut as every other error is, and the stack after it whole in its stack field, which must name
+// the handler that panicked; net/http bounds the stack it writes, so the line still fits the
+// entry. No other row's line holds a stack.
 //
 // Each row writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads
 // its length, and reads the field back as the first 256 bytes of the text it held, which for a
 // reason or an error is the proxy's words around the host, for net/http's error its words around
 // the client's address and the protocols it offered, and for the panic's error, which is shorter,
-// its whole first line: the client's address and the value the clock panicked with. The table
-// records which field of which line it drove, and fails when it drove fewer than all of them.
+// its whole first line: the client's address and the value the version read panicked with. The
+// table records which field of which line it drove, and fails when it drove fewer than all of
+// them.
 //
 // The named reverts: let one field pass answer.ClipFields uncut; that field's row writes a line
 // of about 300 KB and fails. Or pass net/http's whole text through answer.ClipFields as its error
@@ -598,20 +619,28 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		}
 	}
 	// join upgrades to the service at that method and path, joins the two connections, and then
-	// ends the grant behind them, which is what makes the watcher write the join's own line
+	// ends the grant behind them and moves fake, the rig's clock, one watch on, which is what
+	// makes the watcher write the join's own line
 	// (TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt drives the same close).
-	join := func(method, path string) func(t *testing.T, r *rig) *http.Response {
+	join := func(fake *clocktest.Fake, method, path string) func(t *testing.T, r *rig) *http.Response {
 		return func(t *testing.T, r *rig) *http.Response {
 			_, conn, reader, upgraded := joinedThroughPath(t, r, method, path)
 			r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+			watchTick(t, fake)
 			waitClosed(t, conn, reader)
 			return upgraded
 		}
 	}
+	// methodJoin and pathJoin are the clocks of the two join rows, and methodCut and pathCut those
+	// of the two cut rows.
+	methodJoin := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	pathJoin := clocktest.New(time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC))
+	methodCut, pathCut := cutClock(), cutClock()
 	// cut streams the service's answer to a call at that method and path, and then ends the grant
-	// behind it, which is what makes the watcher write the cut's own line
-	// (TestACarriedStreamEndsWhenItsGrantStopsCarryingIt drives the same cut).
-	cut := func(method, path string) func(t *testing.T, r *rig) *http.Response {
+	// behind it and moves fake, the rig's clock, one watch on, which is what makes the watcher
+	// write the cut's own line (TestACarriedStreamEndsWhenItsGrantStopsCarryingIt drives the same
+	// cut).
+	cut := func(fake *clocktest.Fake, method, path string) func(t *testing.T, r *rig) *http.Response {
 		return func(t *testing.T, r *rig) *http.Response {
 			streamStandIn(r)
 			request, err := http.NewRequest(method, "https://"+boundHost+path, nil)
@@ -629,7 +658,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				t.Fatalf("the stream's first line: %v", err)
 			}
 			r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-			_, _ = io.Copy(io.Discard, reader)
+			watchTick(t, fake)
+			_ = streamEnd(t, "the stream to end once the watcher read its ended grant", reader)
 			return response
 		}
 	}
@@ -651,9 +681,9 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	// handshakeError is what net/http's line holds before the cut. It names the client's own
 	// address, which only the row's dial picks, so the row's send writes it.
 	var handshakeError string
-	// panicked is what the panic row's clock panics with, and panicError the first line of
-	// net/http's text for it, which names the client's address as handshakeError does.
-	const panicked = "the clock the panic row hands the proxy panicked"
+	// panicked is what the panic row's read of the policy version panics with, and panicError the
+	// first line of net/http's text for it, which names the client's address as handshakeError does.
+	const panicked = "the policy version the panic row's grant reads answer panicked"
 	var panicError string
 	// fields is every field of each line that holds the caller's text, each of which a row drives.
 	fields := map[string][]string{
@@ -718,13 +748,13 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				return bound(r, http.MethodGet, "/v1/"+sent)
 			}},
 		{name: "a joined connection's method", message: joinMessage, field: "method", held: sent, status: http.StatusSwitchingProtocols,
-			options: Options{Watch: watchFast, Rules: anyMethod}, send: join(sent, upgradePath)},
+			options: Options{Clock: methodJoin, Rules: anyMethod}, send: join(methodJoin, sent, upgradePath)},
 		{name: "a joined connection's path", message: joinMessage, field: "path", held: "/v1/" + sent, status: http.StatusSwitchingProtocols,
-			options: Options{Watch: watchFast}, send: join(http.MethodGet, "/v1/"+sent)},
+			options: Options{Clock: pathJoin}, send: join(pathJoin, http.MethodGet, "/v1/"+sent)},
 		{name: "a cut call's method", message: cutMessage, field: "method", held: sent, status: http.StatusOK,
-			options: Options{Watch: watchFast, Rules: anyMethod}, send: cut(sent, "/v1/stream")},
+			options: Options{Clock: methodCut, Rules: anyMethod}, send: cut(methodCut, sent, "/v1/stream")},
 		{name: "a cut call's path", message: cutMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
-			options: Options{Watch: watchFast}, send: cut(http.MethodGet, "/v1/"+sent)},
+			options: Options{Clock: pathCut}, send: cut(pathCut, http.MethodGet, "/v1/"+sent)},
 		{name: "an upstream failure's path: a plain proxy request whose service cannot be reached", message: upstreamMessage, field: "path",
 			held: "/" + sent, status: http.StatusBadGateway,
 			send: func(_ *testing.T, r *rig) *http.Response {
@@ -765,15 +795,17 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}},
 		{name: "Go's HTTP server's error: a handler of the inner server that panics, whose stack the line keeps whole", message: netHTTPMessage, field: "error",
 			heldBy: func() string { return panicError }, frame: "github.com/sjawhar/envoy/internal/broker/airlockproxy.(*Server).serveBound(",
-			status: http.StatusOK, options: Options{Now: func() time.Time { panic(panicked) }},
+			status: http.StatusOK,
 			send: func(t *testing.T, r *rig) *http.Response {
+				r.grants.panicReadingVersion(panicked)
 				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
 				// net/http names the client as the handshake row's line does, and the value the
 				// handler panicked with beside it.
 				panicError = fmt.Sprintf("http: panic serving %s: %s", conn.LocalAddr(), panicked)
 				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust})
 				// A call to the bound host: serveBound reads the grant, chooses the name the call is
-				// for (choosePair) and asks for the grant's values, whose first read of the clock panics.
+				// for (choosePair) and asks for the grant's values, whose first read, the live
+				// policy version, panics.
 				call := "GET /v1/things HTTP/1.1\r\nHost: " + boundHost + "\r\nAuthorization: Bearer " + workerPlaceholder + "\r\n\r\n"
 				if _, err := client.Write([]byte(call)); err != nil {
 					t.Fatalf("write the call on the bound connection: %v", err)
@@ -798,8 +830,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			// handshake has failed or the handler has panicked. The upstream failure's line and
 			// net/http's name no answer id, so each is read by its message alone: each row has a
 			// rig of its own.
-			var lines []string
-			for deadline := time.Now().Add(10 * time.Second); len(lines) == 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			lines := testwait.Until(t, fmt.Sprintf("the answer's %q line naming its answer id", row.message), func() ([]string, bool) {
+				var lines []string
 				for _, record := range r.logs.Records() {
 					named, carries := false, false
 					record.Attrs(func(a slog.Attr) bool {
@@ -816,7 +848,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 					}
 					lines = append(lines, out.String())
 				}
-			}
+				return lines, len(lines) != 0
+			})
 			if len(lines) != 1 {
 				t.Fatalf("the answer wrote %d lines under %q naming its answer id, or none, want 1", len(lines), row.message)
 			}

@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `POST /v1/interests/subscribe` answers `200` only once the session's known-session record is
+  written. The record is what a send to the session is stored on once its entry is gone, as a
+  released Legion pod's session's is. On a loaded listener the registration's earlier store work
+  could spend its whole 3.5 s budget, and the record's write, the registration's last, was then
+  never sent: the registration was answered `200`, and a send to that session once it stopped was
+  refused `404 no live session` rather than stored. The write now has a bound of its own, one
+  second, and a write that does not land within it is answered as the bus-unavailable `503` with
+  `Retry-After: 1`, which both plugins retry. A listener whose NATS user may not open the
+  `envoy_known_sessions` bucket writes no record and answers the registration `200`, as before.

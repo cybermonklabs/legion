@@ -321,7 +321,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the token endpoint's answer to this exchange "+err.Error())
 		return
 	}
-	token, expires := accessTokenOf(fields, s.now())
+	token, expires := accessTokenOf(fields, s.clock.Now())
 	slot := azureAccessSlot(x)
 	// A read of this grant like any other, so it answers by the one rule (grantRefusal): a
 	// grant that ended while the exchange ran is the read's own answer, and a read that did
@@ -355,7 +355,7 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 	held := s.accessFor(accessKey{grant: info.grant.GrantID, name: chosen.name, slot: chosen.slot})
 	held.exchange.Lock()
 	defer held.exchange.Unlock()
-	if token, ok := held.held(s.now()); ok {
+	if token, ok := held.held(s.clock.Now()); ok {
 		return token, nil
 	}
 	x, ok := azureExchangeOf(chosen.slot)
@@ -393,7 +393,7 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 	if err != nil {
 		return "", errors.New("the token endpoint's answer to this exchange " + err.Error())
 	}
-	token, expires := accessTokenOf(fields, s.now())
+	token, expires := accessTokenOf(fields, s.clock.Now())
 	held.keep(token, expires)
 	return token, nil
 }

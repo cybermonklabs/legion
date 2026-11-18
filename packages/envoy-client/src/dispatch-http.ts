@@ -381,7 +381,9 @@ function requestSignal(signal: AbortSignal | undefined): AbortSignal {
  * more than `inFlightWithinMs` after the client was made, since the client's deadline counts from
  * there. `pause` and `now` are the timer and the monotonic clock, which a test replaces; `now`
  * also dates what the process learns about which Dispatch runs the keyed layer
- * (`KEYED_LAYER_MEMORY_MS`).
+ * (`KEYED_LAYER_MEMORY_MS`). `armSilence` is an attempt's silence cut, which a test replaces to
+ * see each time an attempt's progress disarms its cut and arms another, and to say itself when the
+ * silence has lasted.
  */
 export interface DispatchWriteRetry {
   readonly pausesMs: readonly number[];
@@ -392,6 +394,8 @@ export interface DispatchWriteRetry {
   /** Waits `ms`, or rejects with the signal's reason once it aborts. */
   readonly pause?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly now?: () => number;
+  /** Runs `cut` once `ms` pass, unless the disarm it returns runs first: a timer by default. */
+  readonly armSilence?: (ms: number, cut: () => void) => () => void;
 }
 
 /**
@@ -434,6 +438,12 @@ function pauseFor(ms: number, signal: AbortSignal): Promise<void> {
   }, ms);
   signal.addEventListener("abort", stop, { once: true });
   return promise;
+}
+
+/** `DispatchWriteRetry.armSilence` where a write sets none: a timer of the process's own. */
+function armTimer(ms: number, cut: () => void): () => void {
+  const timer = setTimeout(cut, ms);
+  return () => clearTimeout(timer);
 }
 
 /** The wait an answer's `Retry-After` asks for, in delta-seconds or as an HTTP date; 0 for none. */
@@ -783,6 +793,27 @@ const EXCERPT_SCAN_LIMIT = 64 * 1024;
 const BEARER_PIECE = 8;
 
 /**
+ * The work excerpts have done in this process, counted where it is spent, so a test holds it to
+ * the size of what an excerpt reads rather than to the time it took: each match the bearer
+ * redaction's scans visit (`redactBearer`), and each character a pattern pass of `excerpt` is
+ * handed. A step a regular expression takes inside one pass is not counted, because
+ * JavaScriptCore counts none: recheck's reading of each pattern (`EXCERPT_PATTERNS`) is what holds
+ * a pass linear.
+ */
+let bearerMatchesVisited = 0;
+let patternCharactersHanded = 0;
+
+/** How many matches the bearer redaction's scans have visited in this process. */
+export function bearerRedactionMatches(): number {
+  return bearerMatchesVisited;
+}
+
+/** How many characters the pattern passes of excerpts have been handed in this process. */
+export function excerptPatternCharacters(): number {
+  return patternCharactersHanded;
+}
+
+/**
  * The first `EXCERPT_SCAN_LIMIT` characters of `text`, each run of `bearer`'s characters at least
  * `BEARER_PIECE` long replaced with one `REDACTED`. Every piece of that length starting inside the
  * limit is found (one that runs past it reads up to `BEARER_PIECE - 1` characters beyond), so a
@@ -804,6 +835,7 @@ function redactBearer(text: string, bearer: string): string {
   for (const piece of pieces) {
     let found = scanned.indexOf(piece);
     while (found !== -1) {
+      bearerMatchesVisited++;
       covered.fill(1, found, found + length);
       found = scanned.indexOf(piece, found + 1);
     }
@@ -819,27 +851,48 @@ function redactBearer(text: string, bearer: string): string {
 }
 
 /**
+ * The patterns of `excerpt`'s passes, in the order it runs them: scripts and styles, tags, the
+ * value after `Authorization:` and the value after `Bearer`. A tag holds no `<`, and a script or
+ * style block left open runs to the end. The block pattern spells its two names out, where a
+ * back-reference to one name would close a block with the name that opened it the same way:
+ * recheck's automaton checker cannot read a back-reference, and reads each of these linear
+ * (`excerpt-patterns.test.ts`).
+ */
+const SCRIPT_OR_STYLE_BLOCK =
+  /<script\b[^<>]*>(?:[\s\S]*?<\/script\s*>|[\s\S]*)|<style\b[^<>]*>(?:[\s\S]*?<\/style\s*>|[\s\S]*)/gi;
+const TAG = /<[^<>]*>/g;
+const AUTHORIZATION_VALUE =
+  /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi;
+const BEARER_VALUE = /(\bbearer\s+)[^\s"'<>,;]+/gi;
+
+/** `excerpt`'s patterns by name, for the analyzer rows of `excerpt-patterns.test.ts`. */
+export const EXCERPT_PATTERNS: Readonly<Record<string, RegExp>> = {
+  "script-or-style-block": SCRIPT_OR_STYLE_BLOCK,
+  tag: TAG,
+  "authorization-value": AUTHORIZATION_VALUE,
+  "bearer-value": BEARER_VALUE,
+};
+
+/**
  * Text a gateway chose (a body, or the reason phrase) as one line of plain text safe to quote. A
  * misconfigured gateway echoes the request back, so two kinds of credential are redacted: first
  * every piece of the client's own bearer, trimmed as fetch sends it (`redactBearer`); then, after
  * scripts, styles and tags are dropped, the value after `Authorization:` (its scheme kept) or
  * `Bearer`. All of it runs before the cut to one line, so a cut never leaves a credential's first
  * characters behind. The text is the answerer's, and the excerpt is built on the host's event loop,
- * so only the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time:
- * a tag holds no `<`, and a script or style block left open runs to the end.
+ * so only the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time.
  */
 function excerpt(text: string, token: string): string {
-  const plain = redactBearer(text, token.trim())
-    .replace(/<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi, " ")
-    .replace(/<[^<>]*>/g, " ");
-  return textHead(
-    plain
-      .replace(
-        /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi,
-        `$1${REDACTED}`
-      )
-      .replace(/(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
-  );
+  const withoutBlocks = patternPass(redactBearer(text, token.trim()), SCRIPT_OR_STYLE_BLOCK, " ");
+  const withoutTags = patternPass(withoutBlocks, TAG, " ");
+  const withoutAuthorization = patternPass(withoutTags, AUTHORIZATION_VALUE, `$1${REDACTED}`);
+  return textHead(patternPass(withoutAuthorization, BEARER_VALUE, `$1${REDACTED}`));
+}
+
+/** `text` with `pattern` replaced, counting the characters the pass is handed. */
+function patternPass(text: string, pattern: RegExp, replacement: string): string {
+  patternCharactersHanded += text.length;
+  return text.replace(pattern, replacement);
 }
 
 /**
@@ -2139,13 +2192,14 @@ export class DispatchClient {
   ): Promise<Response> {
     const cut = new AbortController();
     const silent = (): void => cut.abort(new WriteAttemptSilent(silenceMs));
-    let timer = setTimeout(silent, silenceMs);
+    const armSilence = this.writeRetry.armSilence ?? armTimer;
+    let disarm = armSilence(silenceMs, silent);
     let answered = false;
     // A stream body read after the answer came (an early refusal) starts no timer of its own.
     const progress = (): void => {
       if (answered) return;
-      clearTimeout(timer);
-      timer = setTimeout(silent, silenceMs);
+      disarm();
+      disarm = armSilence(silenceMs, silent);
     };
     try {
       return await this.fetchImpl(url, {
@@ -2158,7 +2212,7 @@ export class DispatchClient {
       throw error;
     } finally {
       answered = true;
-      clearTimeout(timer);
+      disarm();
     }
   }
 

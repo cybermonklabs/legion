@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A finished root's hand-over of a child it leaves mid-run is one write to Dispatch, so the one
@@ -25,18 +26,20 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := createScratchDispatchIssue(t, baseURL)
-	client := &http.Client{Timeout: 10 * time.Second}
+	// The test's own requests carry its bound (testwait.Context), not a span of their own: a
+	// Dispatch the machine's load slows answers late, which fails nothing.
+	bound := testwait.Context(t)
 	patch, err := json.Marshal(map[string]any{"status": "in_progress", "labels": []string{"repo:x"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPatch, baseURL+"/api/v1/issues/"+issue, bytes.NewReader(patch))
+	request, err := http.NewRequestWithContext(bound, http.MethodPatch, baseURL+"/api/v1/issues/"+issue, bytes.NewReader(patch))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "smoke")
-	response, err := client.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("set the child mid-run: %v", err)
 	}
@@ -83,12 +86,12 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	if after.Status != "todo" || !after.HandedOver || !slices.Contains(after.Labels, "repo:x") || after.LastSeq != before.LastSeq+1 {
 		t.Fatalf("the handed-over child = %#v (it was at sequence %d), want todo with repo:x and legion, one event later", after, before.LastSeq)
 	}
-	eventsRequest, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+issue+"/events?order=desc&limit=1", nil)
+	eventsRequest, err := http.NewRequestWithContext(bound, http.MethodGet, baseURL+"/api/v1/issues/"+issue+"/events?order=desc&limit=1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	eventsRequest.Header.Set("Authorization", "Bearer "+token)
-	eventsResponse, err := client.Do(eventsRequest)
+	eventsResponse, err := http.DefaultClient.Do(eventsRequest)
 	if err != nil {
 		t.Fatalf("read the hand-over's event: %v", err)
 	}

@@ -185,7 +185,7 @@ func (r *Registry) RoleClaimRepair() RoleClaimRepairReport {
 		Completed:   repair.completed,
 	}
 	if report.Completed > 0 {
-		report.Age = r.now().Sub(report.CompletedAt)
+		report.Age = r.clock.Now().Sub(report.CompletedAt)
 	}
 	return report
 }

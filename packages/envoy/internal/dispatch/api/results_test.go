@@ -17,11 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // twoChecks is a Verification document with one pre-merge check and one after-merge check.
@@ -641,6 +643,20 @@ func resultsGitHubServed(
 	checkRuns http.HandlerFunc,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
+	return resultsGitHubServedWith(t, testServerOptions{}, repos, held, defaultBranch, answer, checkRuns)
+}
+
+// resultsGitHubServedWith is resultsGitHubServed on a server built with options, its GitHub App
+// and API base set to the fixture's.
+func resultsGitHubServedWith(
+	t *testing.T,
+	options testServerOptions,
+	repos, held map[string]bool,
+	defaultBranch string,
+	answer func(base, head string) (int, string),
+	checkRuns http.HandlerFunc,
+) (http.Handler, *store.Store, *server) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -697,10 +713,9 @@ func resultsGitHubServed(
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream,
-	})
+	options.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
+	options.githubAPIBase = upstream
+	handler, database, _, served := newRegisteredTestServer(t, options)
 	return handler, database, served
 }
 
@@ -2800,10 +2815,8 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
 	f.mu.Unlock()
 	if hold {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
+		// Held until the caller gives up, which ends the request's context.
+		<-r.Context().Done()
 		return
 	}
 	if fault != 0 {
@@ -2827,8 +2840,14 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 // resultsGitHubCheckRuns is resultsGitHub over acme/widgets whose check runs fake lists.
 func resultsGitHubCheckRuns(t *testing.T) (http.Handler, *store.Store, *checkRunsFake) {
 	t.Helper()
+	return resultsGitHubCheckRunsWith(t, testServerOptions{})
+}
+
+// resultsGitHubCheckRunsWith is resultsGitHubCheckRuns on a server built with options.
+func resultsGitHubCheckRunsWith(t *testing.T, options testServerOptions) (http.Handler, *store.Store, *checkRunsFake) {
+	t.Helper()
 	fake := newCheckRunsFake()
-	handler, database, _ := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
+	handler, database, _ := resultsGitHubServedWith(t, options, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, fake.serve)
 	return handler, database, fake
 }
@@ -2870,14 +2889,6 @@ func issueOfProject(t *testing.T, handler http.Handler, project, title, verifica
 	key := decodeBody[model.Issue](t, response).Key
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", verification)
 	return key
-}
-
-// shortenCIReadDeadline sets the bound of one head's check-runs read for the test.
-func shortenCIReadDeadline(t *testing.T, deadline time.Duration) {
-	t.Helper()
-	before := ciReadDeadline
-	ciReadDeadline = deadline
-	t.Cleanup(func() { ciReadDeadline = before })
 }
 
 // ciVerdictLineOf is the pull-request body line of a check written by ciCheckBlock whose run
@@ -3020,7 +3031,8 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 // a deployment holding no App key each leave the check with no result and a detail saying what
 // GitHub answered, never a pass and never a fail.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
-	handler, database, fake := resultsGitHubCheckRuns(t)
+	clock := clocktest.New(time.Now())
+	handler, database, fake := resultsGitHubCheckRunsWith(t, testServerOptions{clock: clock})
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
@@ -3030,14 +3042,25 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"),
 		"status 500", "Server Error at the check runs of "+headCommit)
 
+	// A read GitHub holds is cut at ciReadDeadline on the server's clock, which the test moves
+	// there once GitHub holds the read: the deadline is armed before the read's request leaves, so
+	// moved as soon as it is armed it would end a read GitHub was never asked.
 	fake.failWith(0)
 	fake.holdEveryRead()
-	shortenCIReadDeadline(t, 300*time.Millisecond)
-	started := time.Now()
-	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
+	asked := fake.reads(headCommit)
+	held := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		held <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+	}()
+	deadline := clock.Now().Add(ciReadDeadline)
+	awaitArmedAt(t, clock, "the check-runs read's deadline", deadline)
+	testwait.Eventually(t, "GitHub to hold the check-runs read", func() bool { return fake.reads(headCommit) > asked })
+	clock.Set(deadline)
+	response := testwait.Receive(t, "the held read's answer once its deadline passed", held)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, response.Code, response.Body.String())
 	}
+	assertUnread(t, checkOf(t, decodeBody[issueResults](t, response), "c1"), "no answer within "+ciReadDeadline.String())
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {

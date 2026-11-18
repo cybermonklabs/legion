@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -13,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -398,11 +398,9 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		quiet(t, "release is off", func() {
 			done := make(chan struct{})
 			go func() { defer close(done); rig.w.tickIdle(ctx) }()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatal("tickIdle kept running with release off")
-			}
+			// With release off tickIdle runs no ticker and returns at once; one that kept running
+			// never would.
+			testwait.Receive(t, "tickIdle to return with release off", done)
 		})
 	})
 

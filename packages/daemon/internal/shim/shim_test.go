@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -39,7 +40,6 @@ const fakeOMPEnv = "LEGION_SHIM_FAKE_OMP"
 const (
 	bootToken = "boot-token-for-the-pane"
 	grace     = 3 * time.Second
-	waitLimit = 10 * time.Second
 )
 
 func TestMain(m *testing.M) {
@@ -158,9 +158,7 @@ func (o *omp) started() bool {
 // since a test that reads it is asking what the spawn did.
 func (o *omp) environment(t *testing.T) map[string]string {
 	t.Helper()
-	if !testwait.Holds(waitLimit, 5*time.Millisecond, o.started) {
-		t.Fatal("the fake OMP never started, so it recorded no environment")
-	}
+	testwait.Eventually(t, "the fake OMP to start and record its environment", o.started)
 	body, err := os.ReadFile(o.marker)
 	if err != nil {
 		t.Fatalf("read the fake OMP's environment: %v", err)
@@ -195,31 +193,40 @@ func (o *omp) received(t *testing.T) []shimwire.Frame {
 	return frames
 }
 
-// fakeClock hands every wait the shim asks for to the test, which fires it — the backoff between
-// dials and the grace before a kill are then steps of the test rather than time it spends.
+// fakeClock is the shim's time: a clocktest.Fake that only the test moves, beside every wait the
+// shim asked of it in the order it asked, so the test takes the shim's waits one by one, checks
+// each one's span and fires it — the backoff between dials and the grace before a kill are then
+// steps of the test rather than time it spends. Firing a wait moves the fake to its deadline, as
+// time reaching that moment would, so any wait due by then fires with it.
 type fakeClock struct {
-	waits    chan clockWait
-	mu       sync.Mutex
+	*clocktest.Fake
+	mu sync.Mutex
+	// waits is every wait the shim asked for, and taken how many of them the test has taken.
+	waits    []clockWait
+	taken    int
 	released bool
 }
 
 type clockWait struct {
-	d    time.Duration
-	fire chan time.Time
+	clock *fakeClock
+	d     time.Duration
+	at    time.Time
 }
 
-func newClock() *fakeClock { return &fakeClock{waits: make(chan clockWait, 64)} }
+func newClock() *fakeClock {
+	return &fakeClock{Fake: clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))}
+}
 
 func (c *fakeClock) After(d time.Duration) <-chan time.Time {
-	w := clockWait{d: d, fire: make(chan time.Time, 1)}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.released {
-		w.fire <- time.Time{}
-		return w.fire
+		fired := make(chan time.Time, 1)
+		fired <- c.Now()
+		return fired
 	}
-	c.waits <- w
-	return w.fire
+	c.waits = append(c.waits, clockWait{clock: c, d: d, at: c.Now().Add(d)})
+	return c.Fake.After(d)
 }
 
 // nextAny is the shim's next wait whatever its span, named by what the caller expected to be
@@ -227,13 +234,20 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 // already knows (drainCommands' bound, which is what is left of a span).
 func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
-	select {
-	case w := <-c.waits:
-		return w
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %s", what)
-		return clockWait{}
-	}
+	testwait.Until(t, "the shim to wait "+what, func() ([]time.Duration, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		asked := make([]time.Duration, len(c.waits))
+		for i, w := range c.waits {
+			asked[i] = w.d
+		}
+		return asked, len(c.waits) > c.taken
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := c.waits[c.taken]
+	c.taken++
+	return w
 }
 
 // next is the shim's next wait, which must be of d.
@@ -246,49 +260,54 @@ func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
 	return w
 }
 
-func (w clockWait) elapse() { w.fire <- time.Time{} }
+// elapse moves the fake to the wait's deadline, which fires it and every wait due before it. A
+// wait of nothing is due where the fake stands, and fires there.
+func (w clockWait) elapse() {
+	c := w.clock
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Advance(max(w.at.Sub(c.Now()), 0))
+}
 
 // release fires every wait, pending and future, so a test's cleanup is never stuck behind one.
 func (c *fakeClock) release() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.released = true
-	for {
-		select {
-		case w := <-c.waits:
-			w.fire <- time.Time{}
-		default:
-			return
-		}
+	if armed := c.Armed(); len(armed) > 0 {
+		c.Advance(max(armed[len(armed)-1].Sub(c.Now()), 0))
 	}
 }
 
+// idle fails the test if the shim asked for a wait the test has not taken.
 func (c *fakeClock) idle(t *testing.T) {
 	t.Helper()
-	select {
-	case w := <-c.waits:
-		t.Fatalf("the shim waited %v; it should not have waited at all", w.d)
-	default:
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.waits) > c.taken {
+		t.Fatalf("the shim waited %v; it should not have waited at all", c.waits[c.taken].d)
 	}
 }
 
-// syncBuffer is the shim's log: what the pane shows. changed signals each write so tests wait on
-// a real event rather than polling the log on a wall clock.
+// spendBudget waits for the budget of the command the shim is running — a deadline context on the
+// fake, which is no wait of After's and so not among the waits above — requires it to end d from
+// where the fake stands, and moves the fake to that end, which ends the command's context.
+func (c *fakeClock) spendBudget(t *testing.T, d time.Duration) {
+	t.Helper()
+	if armed := c.AwaitArmed(t, "the command's budget", 1); len(armed) != 1 || !armed[0].Equal(c.Now().Add(d)) {
+		t.Fatalf("the shim armed %v, want the one command budget of %v from %v", armed, d, c.Now())
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Advance(d)
+}
+
+// syncBuffer is the shim's log: what the pane shows.
 type syncBuffer struct {
 	testlog.Buffer
-	changed chan struct{}
 }
 
-func newSyncBuffer() *syncBuffer { return &syncBuffer{changed: make(chan struct{}, 1)} }
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	n, err := b.Buffer.Write(p)
-	select {
-	case b.changed <- struct{}{}:
-	default:
-	}
-	return n, err
-}
+func newSyncBuffer() *syncBuffer { return &syncBuffer{} }
 
 // count is how many log lines contain substr.
 func (b *syncBuffer) count(substr string) int {
@@ -301,31 +320,26 @@ func (b *syncBuffer) count(substr string) int {
 	return n
 }
 
+// await waits for n log lines that contain substr; a failure prints the log.
 func (b *syncBuffer) await(t *testing.T, substr string, n int) {
 	t.Helper()
-	for b.count(substr) < n {
-		select {
-		case <-b.changed:
-		case <-time.After(waitLimit):
-			t.Fatalf("the shim never logged %q %d time(s); log:\n%s", substr, n, b)
-		}
-	}
+	testwait.Until(t, fmt.Sprintf("the shim to log %q %d time(s)", substr, n), func() (string, bool) {
+		return "log: " + b.String(), b.count(substr) >= n
+	})
 }
 
 // awaitLine waits for n log lines that are exactly line: the pane's one-line frame summaries.
 func (b *syncBuffer) awaitLine(t *testing.T, line string, n int) {
 	t.Helper()
-	if !testwait.Holds(waitLimit, 5*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the shim to log the line %q %d time(s)", line, n), func() (string, bool) {
 		got := 0
 		for l := range strings.Lines(b.String()) {
 			if strings.TrimSpace(l) == line {
 				got++
 			}
 		}
-		return got >= n
-	}) {
-		t.Fatalf("the shim never logged the line %q %d time(s); log:\n%s", line, n, b)
-	}
+		return "log: " + b.String(), got >= n
+	})
 }
 
 // running is one shim.Run in a goroutine.
@@ -351,13 +365,17 @@ func run(t *testing.T, cfg shim.Config, clock *fakeClock) *running {
 	t.Cleanup(func() {
 		clock.release()
 		r.cancel()
-		select {
-		case <-r.done:
-		case <-time.After(waitLimit):
-			t.Errorf("the shim never exited; log:\n%s", r.log)
-		}
+		r.awaitExit(t)
 	})
 	return r
+}
+
+// awaitExit waits for the shim to exit; a failure prints its log.
+func (r *running) awaitExit(t *testing.T) {
+	t.Helper()
+	testwait.Until(t, "the shim to exit", func() (string, bool) {
+		return "log: " + r.log.String(), r.exited()
+	})
 }
 
 // stop ends the shim's own context and waits for it to exit, without wait's refusal of a
@@ -366,11 +384,7 @@ func run(t *testing.T, cfg shim.Config, clock *fakeClock) *running {
 func (r *running) stop(t *testing.T) {
 	t.Helper()
 	r.cancel()
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 }
 
 // err is r.failure's text once the shim has ended (r.done is closed by then), or "" when it
@@ -384,11 +398,7 @@ func (r *running) err() string {
 
 func (r *running) wait(t *testing.T) int {
 	t.Helper()
-	select {
-	case <-r.done:
-	case <-time.After(waitLimit):
-		t.Fatalf("the shim never exited; log:\n%s", r.log)
-	}
+	r.awaitExit(t)
 	if r.failure != nil {
 		t.Fatalf("shim.Run: %v; log:\n%s", r.failure, r.log)
 	}
@@ -444,14 +454,9 @@ func (s *stub) accept(t *testing.T) *peer {
 			accepted <- conn
 		}
 	}()
-	select {
-	case conn := <-accepted:
-		t.Cleanup(func() { _ = conn.Close() })
-		return &peer{conn: conn, r: shimwire.NewReader(conn), w: shimwire.NewWriter(conn)}
-	case <-time.After(waitLimit):
-		t.Fatal("the shim never dialled the listener")
-		return nil
-	}
+	conn := testwait.Receive(t, "the shim to dial the listener", accepted)
+	t.Cleanup(func() { _ = conn.Close() })
+	return &peer{conn: conn, r: shimwire.NewReader(conn), w: shimwire.NewWriter(conn)}
 }
 
 type peer struct {
@@ -462,7 +467,9 @@ type peer struct {
 
 func (p *peer) next(t *testing.T) shimwire.Frame {
 	t.Helper()
-	if err := p.conn.SetReadDeadline(time.Now().Add(waitLimit)); err != nil {
+	// The read's deadline is the one every wait has: the moment the shared wait gives up.
+	deadline, _ := testwait.Context(t).Deadline()
+	if err := p.conn.SetReadDeadline(deadline); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	line, err := p.r.ReadLine()
@@ -601,8 +608,7 @@ func installedCheck(t *testing.T, tag string) string {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatal(err)
 	}
@@ -674,9 +680,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 			p := daemon.accept(t)
 			p.expectHello(t)
 			p.send(t, shimwire.HelloAck{})
-			if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
-				t.Fatalf("the shim kept running with no install of its pin; log:\n%s", sh.log)
-			}
+			sh.awaitExit(t)
 			if sh.code != 1 {
 				t.Errorf("the shim ended %d, want 1", sh.code)
 			}
@@ -741,9 +745,7 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 	p.expectHello(t)
 	p.send(t, shimwire.HelloAck{})
 	sh.log.await(t, "[worker-shim] spawned ", 1)
-	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline) && !child.started(); {
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the fake OMP to start, held before its first line", child.started)
 	if got := calls(); len(got) != 0 {
 		t.Fatalf("the warm-up started at the spawn, before the child wrote anything: %v", got)
 	}
@@ -751,12 +753,9 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.expectRaw(t, "fake_ready")
-	for deadline := time.Now().Add(waitLimit); len(calls()) == 0; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the warm-up never started after the child's first frame; log:\n%s", sh.log)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the warm-up to start after the child's first frame", func() (string, bool) {
+		return "log: " + sh.log.String(), len(calls()) > 0
+	})
 	if got := calls(); !slices.Equal(got, []string{workspace}) {
 		t.Fatalf("the warm-up was started with %v, want once with %q", got, workspace)
 	}
@@ -807,17 +806,20 @@ func TestTheShimEndsOnlyOnceAnInFlightWarmUpHasReturned(t *testing.T) {
 	daemon := listen(t, path)
 	child := newOMP(t, "LEGION_WORKSPACE=/legion/workspaces/acme/widgets/widgets-7", "FAKE_OMP_IGNORE_SIGTERM=1")
 	var mu sync.Mutex
-	var returned time.Time
-	ended := make(chan struct{})
+	returned := false
+	ended, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
 	cfg := config(t, path, child)
 	cfg.WarmCodegraph = func(ctx context.Context, _ string, _ time.Time) {
 		<-ctx.Done()
 		close(ended)
-		// What a real warm-up does here: its codegraph child ends on the same context, it logs the
-		// end and releases the lease. That takes time the shim must wait out.
-		time.Sleep(300 * time.Millisecond)
+		// What a real warm-up does here — its codegraph child ends on the same context, it logs the
+		// end and releases the lease — takes time the shim must wait out: the test holds it until
+		// it has seen the shim waiting for it.
+		<-release
 		mu.Lock()
-		returned = time.Now()
+		returned = true
 		mu.Unlock()
 	}
 	clock := newClock()
@@ -829,20 +831,22 @@ func TestTheShimEndsOnlyOnceAnInFlightWarmUpHasReturned(t *testing.T) {
 	p.expectRaw(t, "fake_sigterm")
 	expired := clock.next(t, grace)
 	// The child is ignoring its SIGTERM and still running; the warm-up has already been ended.
-	select {
-	case <-ended:
-	case <-time.After(waitLimit):
-		t.Fatalf("the warm-up's context did not end when the child was told to stop; log:\n%s", sh.log)
-	}
+	testwait.Receive(t, "the warm-up's context to end when the child was told to stop", ended)
 	expired.elapse()
+	// The child is killed and reaped, and the shim's next wait is its wait for the warm-up, which
+	// the test holds: Run has not returned while that wait runs.
+	clock.nextAny(t, "for the in-flight warm-up to return")
+	if sh.exited() {
+		t.Fatalf("Run returned with the warm-up still running; log:\n%s", sh.log)
+	}
+	free()
 	if code := sh.wait(t); code != 128+int(syscall.SIGKILL) {
 		t.Fatalf("the shim exited %d, want the child's %d", code, 128+int(syscall.SIGKILL))
 	}
-	exited := time.Now()
 	mu.Lock()
 	defer mu.Unlock()
-	if returned.IsZero() || returned.After(exited) {
-		t.Fatalf("Run returned at %s with the warm-up still running (it returned at %s); log:\n%s", exited.Format(time.StampMilli), returned.Format(time.StampMilli), sh.log)
+	if !returned {
+		t.Fatalf("Run returned before the warm-up did; log:\n%s", sh.log)
 	}
 }
 
@@ -1126,11 +1130,22 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 			if !tc.noWorkspace {
 				cfg.Env = append(cfg.Env, "LEGION_WORKSPACE="+workspace)
 			}
-			run(t, cfg, newClock())
+			clock := newClock()
+			run(t, cfg, clock)
 			p := daemon.accept(t)
 			p.open(t)
 
 			p.send(t, tc.request)
+			if tc.mode == "hang" {
+				// The budget runs on the shim's clock: the jj hangs until the test spends it. The
+				// test spends it once the jj has recorded how it was run, its last act before it
+				// hangs, so the budget ends a jj that is running rather than one still starting.
+				testwait.Until(t, "the hanging jj to record how it was run", func() (string, bool) {
+					invocation, err := os.ReadFile(record)
+					return string(invocation), err == nil && strings.Contains(string(invocation), "JJ_EMAIL="+tc.request.JJEmail+"\n")
+				})
+				clock.spendBudget(t, time.Duration(tc.request.TimeoutMs)*time.Millisecond)
+			}
 			got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
 			if !ok || got.ID != tc.request.ID || got.OK != tc.ok {
 				t.Fatalf("the shim answered %#v, want a result for %s with ok=%v", got, tc.request.ID, tc.ok)

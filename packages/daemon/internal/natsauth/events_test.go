@@ -2,12 +2,15 @@ package natsauth_test
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // signalled is the option, after natsauth.LogEvents, that sends on each channel once the handler
@@ -58,14 +62,17 @@ func notify(ch chan<- struct{}) {
 // lockedBuffer is a log destination the connection's callback goroutine writes while the test reads.
 type lockedBuffer = testlog.Buffer
 
-// wait fails t unless ch receives within 10s.
+// wait waits until ch receives, the report of what; a wait that gives up prints the log.
 func wait(t *testing.T, ch <-chan struct{}, what string, out *lockedBuffer) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s was not reported within 10s; log: %s", what, out.String())
-	}
+	testwait.Until(t, what+" reported", func() (string, bool) {
+		select {
+		case <-ch:
+			return "", true
+		default:
+			return out.String(), false
+		}
+	})
 }
 
 // A subscription and a publish the server refuses the connection are each logged at error naming
@@ -74,7 +81,7 @@ func wait(t *testing.T, ch <-chan struct{}, what string, out *lockedBuffer) {
 func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 	seed, public := testnkeys.User(t)
 	const denied, deniedPublish = "notifications.envoy.exceptions.notifications.role.>", "notifications.role.denied"
-	_, url := testnats.StartNkeyAuthorizedUsers(t, testnats.Image, testnats.NkeyUser{
+	url := testnats.StartNkeyAuthorizedUsers(t, testnats.NkeyUser{
 		Public:      public,
 		Permissions: `{ subscribe: { deny: ["` + denied + `"] }, publish: { deny: ["` + deniedPublish + `"] } }`,
 	})
@@ -114,7 +121,12 @@ func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 }
 
 // fakeServer starts a NATS server that admits one client, answers its first PING, and then writes
-// the raw protocol lines in then to it; it returns the server's URL.
+// the raw protocol lines in then to it; it returns the server's URL. The client is the one whose
+// CONNECT names it t.Name(), the connection name each test's client is given, which is the one
+// thing of its own the client sends a server that asks no credential. Every other connection is
+// another process's (a loopback port the kernel gives a listener may be one a process of the
+// machine still dials): it is closed, takes nothing from the client and fails nothing.
+// Each connection is read on a goroutine of its own, so one that sends nothing holds up no other.
 func fakeServer(t *testing.T, then string) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -122,25 +134,41 @@ func fakeServer(t *testing.T, then string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	name, err := json.Marshal(t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var served atomic.Bool
 	go func() {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer c.Close()
-		_, _ = io.WriteString(c, `INFO {"server_id":"fake","version":"2.10.0","proto":1,"max_payload":1048576}`+"\r\n")
-		lines := bufio.NewReader(c)
 		for {
-			line, err := lines.ReadString('\n')
+			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			if strings.HasPrefix(line, "PING") {
-				break
-			}
+			go func() {
+				defer c.Close()
+				_, _ = io.WriteString(c, `INFO {"server_id":"fake","version":"2.10.0","proto":1,"max_payload":1048576}`+"\r\n")
+				lines := bufio.NewReader(c)
+				client := false
+				for {
+					line, err := lines.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if strings.HasPrefix(line, "CONNECT ") {
+						client = strings.Contains(line, `"name":`+string(name)) && served.CompareAndSwap(false, true)
+						if !client {
+							return
+						}
+					}
+					if client && strings.HasPrefix(line, "PING") {
+						break
+					}
+				}
+				_, _ = io.WriteString(c, "PONG\r\n"+then)
+				_, _ = io.Copy(io.Discard, c)
+			}()
 		}
-		_, _ = io.WriteString(c, "PONG\r\n"+then)
-		_, _ = io.Copy(io.Discard, c)
 	}()
 	return "nats://" + ln.Addr().String()
 }
@@ -175,10 +203,10 @@ func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 // Close afterwards logs no close.
 func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 	var out lockedBuffer
-	refused, closed := make(chan struct{}, 1), make(chan struct{}, 1)
+	refused := make(chan struct{}, 1)
 	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Permissions Violation for Subscription to \"legion.denied\"'\r\n")}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
-		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), closed))
+		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -190,12 +218,14 @@ func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 	if got := natsauth.WithLastError(stopped, conn); got != stopped {
 		t.Errorf("WithLastError on the live connection = %q, want %q alone", got, stopped)
 	}
-	conn.Close()
-	// A close callback, when there is one, is dispatched at once; a second is ample.
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
+	// The close is logged only from the close handler, and the connection runs none after the
+	// daemon's own Close: nats.go queues no close handler for a Close under
+	// NoCallbacksAfterClientClose, which LogEvents sets. So once that holds, the Close below has
+	// nothing left that could log it.
+	if !conn.Opts.NoCallbacksAfterClientClose {
+		t.Fatal("the connection runs its handlers after the daemon's own Close, so that close would be logged as the connection's end")
 	}
+	conn.Close()
 	if logged := out.String(); strings.Contains(logged, "NATS connection closed") {
 		t.Errorf("the daemon's own close was logged:\n%s", logged)
 	}
@@ -204,10 +234,11 @@ func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 // A connection lost with no reconnect to follow is a terminal close, logged once at error with the
 // connection's cause.
 func TestAConnectionLostWithoutReconnectLogsOneClose(t *testing.T) {
-	proxy := dropProxy(t, strings.TrimPrefix(testnats.URL(t), "nats://"))
+	upstream, token := upstreamOf(t)
+	proxy := dropProxy(t, upstream)
 	var out lockedBuffer
 	closed := make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect(),
+	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), token, nats.Timeout(5*time.Second), nats.NoReconnect(),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
 	if err != nil {
@@ -260,11 +291,11 @@ func TestAnAsynchronousErrorIsLoggedWithItsSubscriptionSubject(t *testing.T) {
 // A connection the network drops is logged at warn with its cause, and its reconnect at info naming
 // the server.
 func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
-	upstream := strings.TrimPrefix(testnats.URL(t), "nats://")
+	upstream, token := upstreamOf(t)
 	proxy := dropProxy(t, upstream)
 	var out lockedBuffer
 	disconnected, reconnected := make(chan struct{}, 1), make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), token, nats.Timeout(5*time.Second),
 		nats.ReconnectWait(10*time.Millisecond), nats.ReconnectJitter(0, 0),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), disconnected, reconnected, make(chan struct{}, 1)))
@@ -284,6 +315,19 @@ func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
 			t.Errorf("log = %s\nwant exactly one line containing %s", logged, want)
 		}
 	}
+}
+
+// upstreamOf is the address of t's own NATS server and the option that carries the server's
+// token, which testnats.URL carries as the URL's user. A proxy in front of the server copies bytes,
+// so the client's URL names the proxy and carries no userinfo, which keeps it the URL the log lines
+// name, and the token comes as an option instead.
+func upstreamOf(t *testing.T) (string, nats.Option) {
+	t.Helper()
+	server, err := url.Parse(testnats.URL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server.Host, nats.Token(server.User.Username())
 }
 
 // proxy forwards every connection to its address on to upstream until drop closes them.

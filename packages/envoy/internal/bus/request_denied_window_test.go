@@ -11,6 +11,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deniedRequests is how many Requests the test below has in flight on one window at once, each to
@@ -31,16 +33,20 @@ const deniedRequests = 8
 // to confirm the publish, and once more before the timeout is answered, since the connection
 // records the violation on nats.go's error callback, which often runs after the flush returns.
 // So a denial found at the first read answers at once, and one found at the second answers when
-// the request's timeout runs out, each naming the subject it sent.
+// the request's timeout runs out.
+//
+// Each request's timeout is a timer on the client's clock, which the test moves to the deadline
+// they armed once every request either has answered or is waiting on it: so a request answered
+// before the move is one the first read named, and one answered after it is the timeout's, each
+// naming its own subject.
 func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
-	const timeout = 3 * time.Second
-	client, _ := grantedClient(t)
+	clock := clocktest.New(time.Now())
+	client, _ := grantedClient(t, bus.WithClock(clock))
 	window := client.WindowUntil(nil)
 
 	type answered struct {
 		subject string
 		err     error
-		elapsed time.Duration
 	}
 	answers := make(chan answered, deniedRequests)
 	var wg sync.WaitGroup
@@ -49,21 +55,25 @@ func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			subject := fmt.Sprintf("%s-%d", deniedRole, index)
-			started := time.Now()
-			err := <-window.Request(subject, roleEnvelope(subject), bus.RequestOptions{MsgID: bus.ForwardMsgID(subject, subject), Timeout: timeout})
-			answers <- answered{subject: subject, err: err, elapsed: time.Since(started)}
+			err := <-window.Request(subject, roleEnvelope(subject), bus.RequestOptions{MsgID: bus.ForwardMsgID(subject, subject)})
+			answers <- answered{subject: subject, err: err}
 		}()
+	}
+	// Every request has answered or armed its timeout: the clock then moves to the latest of those
+	// deadlines, which is what the requests still waiting are waiting for.
+	armed := testwait.Until(t, fmt.Sprintf("the %d requests to answer or arm their timeouts", deniedRequests), func() ([]time.Time, bool) {
+		armed := clock.Armed()
+		return armed, len(armed)+len(answers) >= deniedRequests
+	})
+	if len(armed) > 0 {
+		clock.Set(armed[len(armed)-1])
 	}
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("only %d of %d denied Requests were answered", len(answers), deniedRequests)
-	}
+	testwait.Receive(t, fmt.Sprintf("all %d denied Requests to be answered", deniedRequests), done)
 	close(answers)
 
 	for got := range answers {
@@ -76,9 +86,6 @@ func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
 		}
 		if !strings.Contains(got.err.Error(), fmt.Sprintf("Publish to %q", got.subject)) {
 			t.Errorf("the Request to %s answered %v, which carries another subject's violation", got.subject, got.err)
-		}
-		if got.elapsed > timeout+2*time.Second {
-			t.Errorf("the Request to %s was answered after %s, past its %s timeout", got.subject, got.elapsed, timeout)
 		}
 	}
 }

@@ -59,8 +59,8 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// separates them - the consumer's own log, and for each durable its delivery count, its
 	// delivery sequence, its acknowledgement floor and its counts of pending and redelivered
 	// messages. It is registered after testJetStream, so it runs before that fixture's own
-	// cleanup closes the connection its consumer reads go through and before the shared server is
-	// released to the next test, which empties it: cleanups run last in, first out.
+	// cleanup closes the connection its consumer reads go through and before the test's server
+	// shuts down: cleanups run last in, first out.
 	t.Cleanup(func() {
 		if !t.Failed() {
 			return

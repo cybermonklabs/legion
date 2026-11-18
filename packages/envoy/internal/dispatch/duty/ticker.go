@@ -15,6 +15,8 @@ import (
 	"context"
 	"math/rand/v2"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // jitterN draws a duration in [0, n), and zero for an n of zero or less. Every jittered wait in this
@@ -82,36 +84,52 @@ const (
 // served the tick's period, which is always interval. first says whether the first tick is at
 // start or one interval after.
 //
-// The ticks are a ticker's, time.NewTicker(interval): TickAfterInterval starts at the ticker's
-// first tick, and TickAtStart makes one tick at the moment the loop starts before it. A tick's due
-// time, the moment it hands Exclusive, is the value the ticker delivered, the clock read at that
-// tick and not a moment worked out from a reading taken at start, so a step of the wall clock
-// while the loop runs moves the due times after it with it. The ticker's ticks are one interval
-// apart while each pass takes less than the interval, so a lone loop's due times fall in
-// consecutive periods on this process's clock (periodBoundary) and no period is lost. A tick armed
-// only once the pass before it returned would be due one interval plus that pass's time after it,
-// and as those delays add up its due times would drift across the period boundaries and jump over
-// a period no pass serves. A pass that overruns the interval gets what a ticker gives a slow
-// receiver (Go's runtime, time.go): the first tick it overran comes at once, with the moment it
-// was due, and only the ticks after it are dropped, so due times stay whole intervals apart and
-// overrun ticks are not run late one after another.
+// The ticks are a ticker's: TickAfterInterval starts at the first tick, one interval after the
+// loop starts, and TickAtStart makes one tick at the moment the loop starts before it. Each tick
+// is due on a grid one interval apart from the start, and the moment it hands Exclusive is that
+// grid moment, so a lone loop's due times fall in consecutive periods on this process's clock
+// (periodBoundary) and no period is lost. A tick armed only once the pass before it returned
+// would be due one interval plus that pass's time after it, and as those delays add up its due
+// times would drift across the period boundaries and jump over a period no pass serves. A pass
+// that overruns the interval gets what a ticker gives a slow receiver (Go's runtime, time.go): the
+// first tick it overran comes at once, with the moment it was due, and only the ticks after it
+// are dropped, so due times stay whole intervals apart and overrun ticks are not run late one
+// after another.
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	RunLeasedOn(ctx, clock.Real(), leases, name, interval, first, pass)
+}
+
+// RunLeasedOn is RunLeased with its ticks on c: clock.Real from RunLeased, and a test's
+// clocktest.Fake, which brings each tick only when the test moves it there.
+func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
+	start := c.Now()
+	due := start.Add(interval)
+	timer := c.NewTimer(interval)
+	defer timer.Stop()
 	if first == TickAtStart {
-		// Read after the ticker started, so the ticker's first tick is no more than one interval
-		// after this one: in the next period, or in this one and refused, but never one beyond.
-		Exclusive(ctx, leases, name, time.Now(), interval, pass)
+		// The grid starts before this tick, so the next is no more than one interval after it: in
+		// the next period, or in this one and refused, but never one beyond.
+		Exclusive(ctx, leases, name, start, interval, pass)
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case due := <-ticker.C:
-			Exclusive(ctx, leases, name, due, interval, pass)
+		case <-timer.C():
 		}
+		// The tick after this one is the first grid moment past the moment this one is received:
+		// a tick received late drops the grid moments it was received after, as a ticker's
+		// channel, full while its receiver is busy, drops them.
+		received := c.Now()
+		next := due.Add(interval)
+		for !next.After(received) {
+			next = next.Add(interval)
+		}
+		Exclusive(ctx, leases, name, due, interval, pass)
+		due = next
+		timer.Reset(due.Sub(c.Now()))
 	}
 }
 

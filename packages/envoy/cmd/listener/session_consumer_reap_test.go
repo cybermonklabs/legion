@@ -14,10 +14,12 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sessionConsumerReapRig is the listener's /v1 routes over the in-process server, with the
@@ -32,7 +34,7 @@ type sessionConsumerReapRig struct {
 	deps      *listenerDeps
 	consumers *bus.SessionConsumers
 	mux       *http.ServeMux
-	now       *stateClock
+	now       *clocktest.Fake
 }
 
 func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
@@ -48,12 +50,12 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	now := &stateClock{}
+	now := clocktest.Held()
 	sessions, err := session.OpenSessionRegistry(
 		client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Hour),
-		session.WithSessionClock(now.Now),
+		session.WithSessionClock(now),
 		session.WithSessionLiveWindow(time.Minute),
 		session.WithSessionGoneHorizon(2*time.Minute),
 	)
@@ -102,32 +104,23 @@ func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) subs
 // waitForRecordDeleted waits, reading the bucket rather than the cache, until sessionID has no
 // record there (session.SessionRegistry.Refresh). It is how a test holding a registration open
 // waits for the reaper pass it started to have deleted the record that registration is replacing,
-// so the pass's consumer delete is one the registration really raced. A deadline reached is
-// reported and not fatal: the caller holds the session's lock, which a fatal would never release,
-// and the pass that deleted nothing fails the test on its own count.
+// so the pass's consumer delete is one the registration really raced. The wait has no bound of
+// its own: a record that is never deleted ends the test naming it, and the pass that deleted
+// nothing fails the test on its own count too.
 func (rig *sessionConsumerReapRig) waitForRecordDeleted(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for {
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the pass to have deleted the bucket's record of "+sessionID, func() (error, bool) {
 		_, err := rig.sessions.Refresh(ctx, sessionID)
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return
-		}
-		if ctx.Err() != nil {
-			t.Errorf("the record of %s is still in the bucket (%v); want the pass to have deleted it", sessionID, err)
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return err, errors.Is(err, nats.ErrKeyNotFound)
+	})
 }
 
 // requireConsumer fails the test unless the stream holds sessionID's consumer, when saying when it
 // was read.
 func (rig *sessionConsumerReapRig) requireConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := rig.consumers.Info(ctx, sessionID); err != nil {
 		t.Fatalf("the consumer of %s %s: %v; want the stream holding it", sessionID, when, err)
 	}
@@ -138,8 +131,7 @@ func (rig *sessionConsumerReapRig) requireConsumer(t *testing.T, sessionID, when
 // deleted.
 func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	return rig.sessions.ReapSessions(ctx, session.SessionReaper{
 		DeleteConsumer: func(ctx context.Context, sessionID string) {
 			rig.delivery.deleteConsumer(ctx, rig.deps, sessionID, nil)
@@ -156,9 +148,9 @@ func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 func TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers(t *testing.T) {
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_reaped")
-	rig.now.advance(90 * time.Second)
+	rig.now.Advance(90 * time.Second)
 	rig.register(t, "ses_stalled")
-	rig.now.advance(60 * time.Second)
+	rig.now.Advance(60 * time.Second)
 	rig.register(t, "ses_live")
 	// ses_reaped is 2m30s old (past the 2m horizon), ses_stalled 1m (past the 1m live window,
 	// inside the horizon) and ses_live has just registered.
@@ -173,8 +165,7 @@ func TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers(t *testing
 		t.Fatalf("the pass reaped %d records, want the one past the gone horizon", reaped)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if info, err := rig.consumers.Info(ctx, "ses_reaped"); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
 		t.Fatalf("the consumer of ses_reaped after the pass: %+v, %v; want it deleted with the session's record", info, err)
 	}
@@ -199,7 +190,7 @@ func TestARegistrationThatRacesTheReapOfItsRecordKeepsItsConsumer(t *testing.T) 
 	rig.register(t, "ses_back")
 	// Past the two-minute gone horizon, so the pass below judges the record this session's next
 	// registration replaces.
-	rig.now.advance(3 * time.Minute)
+	rig.now.Advance(3 * time.Minute)
 	rig.requireConsumer(t, "ses_back", "after its first registration")
 
 	reaped := make(chan int, 1)

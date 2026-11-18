@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // natsContextWaits counts the goroutines nats.go parks on a subscription's context for its life
@@ -65,15 +66,10 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			// The switch waits for the held apply (applyMu), so the release comes once the watch is
 			// parked on it, and the watch stops the replaced watcher while its scan is under way.
 			go func() { done <- kvwatch.WatchOn(w, other) }()
-			eventually(t, "the replacing watch waiting for the held apply", waitingForTheApplyLock)
+			testwait.Eventually(t, "the replacing watch waiting for the held apply", waitingForTheApplyLock)
 			release()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("the replacing watch: %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the replacing watch never returned")
+			if err := testwait.Receive(t, "the replacing watch to return", done); err != nil {
+				t.Fatalf("the replacing watch: %v", err)
 			}
 		}},
 		{name: "its connection closes", stopped: "test cache watcher stopped", end: func(t *testing.T, _ *kvwatch.Watcher, conn *natsgo.Conn, _ string, release func()) {
@@ -113,9 +109,9 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 				kvwatch.WithStreamProbeInterval(0), kvwatch.WithLogger(logger))
 			t.Cleanup(w.Stop)
 			w.Start()
-			wait(t, held, "the scan's first record")
+			testwait.Receive(t, "the scan's first record", held)
 			idle := timers.last(t, kvwatch.ScanIdleTimeout)
-			eventually(t, "nats.go's delivery to park on the full updates buffer", deliveryBlocked)
+			testwait.Eventually(t, "nats.go's delivery to park on the full updates buffer", deliveryBlocked)
 			if natsContextWaits() <= baseline {
 				t.Fatal("no goroutine of nats.go's waits on the running watch's context: the release checked below would prove nothing")
 			}
@@ -126,21 +122,22 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			if test.replaced {
 				live = 1
 			}
-			eventuallyWithin(t, 10*time.Second, "nats.go's goroutine on the ended watch's context to be released",
+			testwait.Eventually(t, "nats.go's goroutine on the ended watch's context to be released",
 				func() bool { return natsContextWaits() <= baseline+live })
 			if test.stopped != "" {
-				eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
+				testwait.Eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
 			}
 			if !idle.stopped.Load() {
 				t.Fatal("the ended scan's idle wait was left armed")
 			}
 
 			// The idle wait's callback runs late, past the timeout, as a time.AfterFunc callback
-			// already started when its Stop came would.
+			// already started when its Stop came would. The ended generation's consume has
+			// returned (the context-release wait above fires only once it has, through closed), so
+			// the signal this fires has no reader and whether it did nothing is final at once.
 			rereads := len(timers.armed(5 * time.Second))
-			now.advance(2 * kvwatch.ScanIdleTimeout)
+			now.Advance(2 * kvwatch.ScanIdleTimeout)
 			idle.fire()
-			time.Sleep(200 * time.Millisecond)
 			if timedOut := matching(logged(), "WARN", "test cache cache warm-up"); len(timedOut) != 0 {
 				t.Fatalf("the late idle callback timed the ended scan out: %v", timedOut)
 			}

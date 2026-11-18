@@ -11,20 +11,17 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// writeRoutesWithin is how long a write route may take to answer a bus that stopped answering: its
-// sendRequestBudget (3.5 s) and a margin, inside the HTTP client's 5 s attempt.
-const writeRoutesWithin = 4 * time.Second
 
 // writeRouteRig is a listener's stores and /v1 routes on a bus reached through the relay
 // TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget freezes.
@@ -33,6 +30,9 @@ type writeRouteRig struct {
 	registry *store.Registry
 	sessions *session.SessionRegistry
 	mux      *http.ServeMux
+	// clock is what the routes' own bounds are armed on, so a request the silent bus leaves
+	// unanswered ends when this test moves the clock past the budget and at no other moment.
+	clock *clocktest.Fake
 }
 
 func newWriteRouteRig(t *testing.T) *writeRouteRig {
@@ -55,8 +55,9 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 	// The session consumers connect to the server directly, not through the relay: the freeze
 	// under test is the store's, and a registration reaches the store only once it has its
 	// consumer.
-	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}), "test-machine", logging.New("test"))
-	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux}
+	now := clocktest.Held()
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), clock: now}), "test-machine", logging.New("test"))
+	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux, clock: now}
 }
 
 func (rig *writeRouteRig) register(t *testing.T, ids ...string) {
@@ -71,20 +72,41 @@ func (rig *writeRouteRig) register(t *testing.T, ids ...string) {
 	}
 }
 
-func (rig *writeRouteRig) serve(method, path, body string) (*httptest.ResponseRecorder, time.Duration) {
+// serve answers the request on the test's own goroutine. It is the control path, where the bus
+// answers and the route spends none of its budget.
+func (rig *writeRouteRig) serve(method, path, body string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
-	started := time.Now()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
-	return recorder, time.Since(started)
+	return recorder
 }
 
-// wantWriteBusUnanswered asserts the named 503 with Retry-After: 1, inside writeRoutesWithin.
-func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.ResponseRecorder, elapsed time.Duration) {
+// serveFrozen runs the request against the silent bus and gives its answer. The route must bound
+// its bus work with a budget of its own, armed on rig.clock: a route that left the call to
+// nats.go's own 10 s MaxWait arms nothing here, and the wait for its bound fails naming the bound,
+// or the answer the route gave without arming it. The answer must not come before the move, and
+// must come once the fake has passed sendRequestBudget, so what ends the request is the route's
+// budget and not the machine's clock.
+func (rig *writeRouteRig) serveFrozen(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	if elapsed >= writeRoutesWithin {
-		t.Fatalf("%s answered after %s (status %d, body %s), want inside %s - a bus that stopped answering must be refused inside the caller's 5 s attempt, not left to its timeout",
-			route, elapsed, recorder.Code, recorder.Body.String(), writeRoutesWithin)
+	answers := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
+		answers <- recorder
+	}()
+	awaitArmedBeforeReturn(t, rig.clock, method+" "+path+"'s own bound on its work against the silent bus", timersArmed(1), answerReturned(answers))
+	select {
+	case recorder := <-answers:
+		t.Fatalf("%s %s answered %d before its budget was spent: %s", method, path, recorder.Code, recorder.Body.String())
+	default:
 	}
+	rig.clock.Advance(sendRequestBudget)
+	return testwait.Receive(t, method+" "+path+"'s answer once its budget was spent", answers)
+}
+
+// wantWriteBusUnanswered asserts the named 503 with Retry-After: 1.
+func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.ResponseRecorder) {
+	t.Helper()
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route, recorder.Code, recorder.Body.String())
 	}
@@ -98,7 +120,7 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)
 	}
-	t.Logf("%s with the bus silent: 503 in %s: %s", route, elapsed, refusal.Error)
+	t.Logf("%s with the bus silent: 503 once its budget was spent: %s", route, refusal.Error)
 }
 
 // Every /v1 route that writes - subscribe, unsubscribe, DELETE /v1/interests/<session_id>, POST
@@ -106,7 +128,9 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 // sendRequestBudget of the request's own context. nats.go's KV reads and writes take no context
 // and wait out the JetStream MaxWait (10 s), as long as this listener's HTTP write timeout, so on a
 // bus that went silent without closing the connection each route must still answer the named 503
-// with Retry-After: 1 inside the caller's 5 s attempt.
+// with Retry-After: 1 on its own budget, inside the caller's 5 s attempt: serveFrozen proves the
+// answer comes once the route's budget is spent on the rig's fake clock, and not from nats.go's
+// own timeout.
 //
 // The record each frozen request needs is not in the interest cache, so the read it makes first
 // goes to the bucket; for subscribe and unsubscribe a second request names a session whose record
@@ -157,7 +181,7 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 		{http.MethodPost, "/v1/roles/set", `{"session_id":"` + control + `","role":"write-routes-control"}`, http.StatusOK},
 		{http.MethodDelete, "/v1/sessions/" + controlLeaver, "", http.StatusOK},
 	} {
-		if recorder, _ := rig.serve(request.method, request.path, request.body); recorder.Code != request.want {
+		if recorder := rig.serve(request.method, request.path, request.body); recorder.Code != request.want {
 			t.Fatalf("%s %s with the bus answering: status %d, body %s; want %d", request.method, request.path, recorder.Code, recorder.Body.String(), request.want)
 		}
 	}
@@ -196,10 +220,10 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 			{"claim a role", http.MethodPost, "/v1/roles/set", `{"session_id":"` + claimant + `","role":"write-routes"}`},
 			{"delete a session", http.MethodDelete, "/v1/sessions/" + leaver, ""},
 		} {
+			// The frozen requests share one rig, and so one fake clock, which each of them
+			// moves past its own budget: they run one at a time.
 			t.Run(request.name, func(t *testing.T) {
-				t.Parallel()
-				recorder, elapsed := rig.serve(request.method, request.path, request.body)
-				wantWriteBusUnanswered(t, request.method+" "+request.path, recorder, elapsed)
+				wantWriteBusUnanswered(t, request.method+" "+request.path, rig.serveFrozen(t, request.method, request.path, request.body))
 			})
 		}
 	})
@@ -228,12 +252,11 @@ func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.
 			t.Parallel()
 			rig := newWriteRouteRig(t)
 			rig.register(t, claimant)
-			if recorder, _ := rig.serve(http.MethodPost, "/v1/roles/set", `{"session_id":"`+claimant+`","role":"role-store-control"}`); recorder.Code != http.StatusOK {
+			if recorder := rig.serve(http.MethodPost, "/v1/roles/set", `{"session_id":"`+claimant+`","role":"role-store-control"}`); recorder.Code != http.StatusOK {
 				t.Fatalf("POST /v1/roles/set with the bus answering: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 			}
 			rig.relay.arm(freeze.trigger, 1)
-			recorder, elapsed := rig.serve(http.MethodPost, "/v1/roles/set", freeze.body)
-			wantWriteBusUnanswered(t, "POST /v1/roles/set", recorder, elapsed)
+			wantWriteBusUnanswered(t, "POST /v1/roles/set", rig.serveFrozen(t, http.MethodPost, "/v1/roles/set", freeze.body))
 		})
 	}
 }

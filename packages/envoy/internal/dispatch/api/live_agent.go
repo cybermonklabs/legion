@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
-	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -98,7 +98,7 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		queue.push(frame)
 	})
 	if err != nil {
-		endAgentAfterFailure(ctx, stream, sub, "subscribe to the session's frames", err)
+		endAgentAfterFailure(ctx, s.clock, stream, sub, "subscribe to the session's frames", err)
 		return
 	}
 	var stopRelayOnce sync.Once
@@ -108,7 +108,7 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 	// before the first turn, not after it.
 	if err := source.Watch(sessionID); err != nil {
 		stopRelay()
-		endAgentAfterFailure(ctx, stream, sub, "tell the session a viewer is attached", err)
+		endAgentAfterFailure(ctx, s.clock, stream, sub, "tell the session a viewer is attached", err)
 		return
 	}
 
@@ -159,7 +159,9 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 			return ""
 		}
 	}
-	rearm := time.NewTicker(s.agentWatchInterval)
+	// The re-arm runs on the server's clock, armed again as each re-arm begins, as a ticker that
+	// drops a tick it was late for re-arms no faster than agentStreamWatchInterval.
+	rearm := s.clock.NewTimer(agentStreamWatchInterval)
 	defer rearm.Stop()
 	for {
 		var frames []agentstream.Frame
@@ -171,10 +173,11 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		case <-dropped:
 		case <-queue.wake:
 			frames, size = queue.take()
-		case <-rearm.C:
+		case <-rearm.C():
+			rearm.Reset(agentStreamWatchInterval)
 			if err := source.Watch(sessionID); err != nil {
 				stopRelay()
-				endAgentAfterFailure(ctx, stream, sub, "re-arm the session", err)
+				endAgentAfterFailure(ctx, s.clock, stream, sub, "re-arm the session", err)
 				return
 			}
 			if responding {
@@ -211,15 +214,16 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 
 // endAgentAfterFailure ends a view whose relay call failed with an ended frame (dropped), so its
 // page subscribes again rather than watching a session that never hears of it. It waits
-// agentStreamRetry first: a page answers an ended frame by subscribing again at once, and a relay
-// that keeps failing would otherwise have the page and the subscription take turns as fast as the
-// failure comes back. A view whose own context ended (stopped, or its socket closed) sends nothing.
-func endAgentAfterFailure(ctx context.Context, stream liveStreamer, sub, what string, err error) {
+// agentStreamRetry on clock first: a page answers an ended frame by subscribing again at once, and
+// a relay that keeps failing would otherwise have the page and the subscription take turns as fast
+// as the failure comes back. A view whose own context ended (stopped, or its socket closed) sends
+// nothing.
+func endAgentAfterFailure(ctx context.Context, clock clock.Clock, stream liveStreamer, sub, what string, err error) {
 	if ctx.Err() != nil {
 		return
 	}
 	slog.Warn("dispatch: an agent view could not "+what+"; it ends, and its page subscribes again", "error", err)
-	if !waitFor(ctx, agentStreamRetry) {
+	if clock.Sleep(ctx, agentStreamRetry) != nil {
 		return
 	}
 	_ = stream.SendWait(ctx, liveEnded(sub, liveEndedDropped))

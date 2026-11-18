@@ -58,6 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
@@ -65,6 +66,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
@@ -212,6 +214,7 @@ const environmentKeys = [
   "LEGION_STALL_CALL_BOUND_MS",
   "LEGION_STALL_STEP_MS",
   "HOME",
+  "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
   "DISPATCH_URL",
   "DISPATCH_TOKEN",
   "LEGION_BOOT_TOKEN_FILE",
@@ -373,6 +376,11 @@ const originalFetch = globalThis.fetch;
 const temporaryPaths: string[] = [];
 const paneStateDirectory = temporaryDirectories("legion-pane-state");
 const controllerStateDirectory = temporaryDirectories("legion-controller");
+/** The working directory of every pane and context a test makes, and its `LEGION_WORKSPACE`: one
+ * of the test's own, removed after it, since the capability report's disk row reads a pane's
+ * repository and the jj overlay resolves its workspace, and a fixed path is one another row or
+ * another run can write. */
+const paneWorkspaceDirectory = temporaryDirectories("legion-pane-workspace");
 
 /** The home the suite's one `jj git init` runs under, so no configuration of the developer's
  * decides what the template holds. */
@@ -563,9 +571,10 @@ function createPi(
   });
   const optional = property;
   process.env.ENVOY_NATS_URL = "nats://nats-under-test:4222";
-  process.env.LEGION_STATE_DIR ??= "/tmp/legion-state";
+  process.env.LEGION_STATE_DIR ??= paneStateDirectory();
   // Nothing under the caller's own home reaches the fixture.
   process.env.HOME = "/nonexistent-home-for-legion-tests";
+  Object.assign(process.env, bunCacheOff);
   const pi: TestPi = {
     zod: {
       object: (shape) => shape,
@@ -696,10 +705,11 @@ function sessionContext(
   sessionID: string,
   sessionFile = "/tmp/session.jsonl",
   ensureOnDisk: () => Promise<void> = async () => undefined,
-  title?: HostTitle
+  title?: HostTitle,
+  cwd: string = paneWorkspaceDirectory()
 ): SessionContext {
   return {
-    cwd: "/tmp/legion-workspace",
+    cwd,
     hasUI: true,
     taskDepth: 0,
     sessionManager: {
@@ -937,7 +947,7 @@ async function claimPane(options: {
   const tree = options.tree ?? "REPO-42";
   const issue = options.issue ?? "REPO-43";
   const sessionId = options.sessionId ?? `ses_${options.role}`;
-  const workspace = options.workspace ?? "/tmp/legion-workspace";
+  const workspace = options.workspace ?? paneWorkspaceDirectory();
   const claimToken = roleToken("omp", issue, options.role);
   const registration = {
     claimToken,
@@ -1038,7 +1048,8 @@ async function claimPane(options: {
     sessionId,
     options.sessionFile ?? `/tmp/${sessionId}.jsonl`,
     options.ensureOnDisk,
-    fixture.title
+    fixture.title,
+    workspace
   );
   const context: SessionContext = {
     ...base,
@@ -1060,7 +1071,6 @@ async function claimPane(options: {
       hasProvider: () => true,
       isSelectorSuppressed: (selector) => fixture.models.suppressed.has(selector),
     },
-    cwd: workspace,
     setInterval: (callback) => {
       intervals.push(callback);
     },
@@ -1133,11 +1143,19 @@ async function firstTurn(pane: ClaimPane): Promise<void> {
         "role" in request.body &&
         request.body.role === pane.claimToken
     );
-  const deadline = Date.now() + 2_000;
-  while (!claimed()) {
-    if (Date.now() > deadline) throw new Error("the session's first turn claimed no Envoy role");
-    await Bun.sleep(5);
-  }
+  await until("the session's first turn to claim its Envoy role", claimed);
+}
+
+/**
+ * Resolves once every microtask queued before it has run: Bun's fake timers leave `setImmediate`
+ * real (measured on Bun 1.4.4), and the event loop runs an immediate only once the microtask
+ * queue is empty. Under fake timers, work the stand-in answered in memory has run on by then, up
+ * to the next timer it arms.
+ */
+function everyMicrotask(): Promise<void> {
+  const ran = Promise.withResolvers<void>();
+  setImmediate(ran.resolve);
+  return ran.promise;
 }
 
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
@@ -1243,7 +1261,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     await expect(
       claimCommand.handler("", {
-        cwd: "/tmp/legion-workspace",
+        cwd: paneWorkspaceDirectory(),
         sessionManager: {
           getSessionId: () => "ses_interactive",
           getSessionFile: () => "/tmp/session.jsonl",
@@ -2109,14 +2127,21 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         activity: { backgroundWork: { running: false, kinds: [] } },
       });
 
-      // The second settle arms the ordinary reminder, and reports the wake it armed.
-      await worker.settles("Still pushing.");
+      // The second settle arms the ordinary reminder, and reports the wake it armed: the moment
+      // the settle read from the clock, which the row holds still, plus the reminder's delay.
+      const settledAt = Date.UTC(2026, 10, 14, 9, 30);
+      setSystemTime(new Date(settledAt));
+      try {
+        await worker.settles("Still pushing.");
+      } finally {
+        setSystemTime();
+      }
       expect(activityReports(worker)).toHaveLength(3);
       const wake = activityReports(worker).at(-1) as {
         activity: { phase: { nextReminderAt: string | null } };
       };
-      expect(Date.parse(String(wake.activity.phase.nextReminderAt))).toBeGreaterThanOrEqual(
-        Date.now() + DEFAULT_STALL_LIMITS.reminderMs - 1_000
+      expect(wake.activity.phase.nextReminderAt).toBe(
+        new Date(settledAt + DEFAULT_STALL_LIMITS.reminderMs).toISOString()
       );
     });
 
@@ -3194,21 +3219,40 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   });
 
   test("claims/ready is retried on a 5xx and on a transport failure, three attempts a second apart", async () => {
+    const posted = [1, 2, 3].map(() => Promise.withResolvers<void>());
     const recovered = await claimPane({
       role: "implementer",
       sessionId: "ses_ready_recovers",
       ready: (attempt) => {
+        posted[attempt - 1]?.resolve();
         if (attempt === 1) return Response.json({ error: "daemon unavailable" }, { status: 503 });
         if (attempt === 2) throw new TypeError("fetch failed");
         return new Response(null, { status: 204 });
       },
     });
-    const started = Date.now();
-    await recovered.start();
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
-    expect(
-      daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready")
-    ).toHaveLength(3);
+    const readyPosts = () =>
+      daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready").length;
+    // The pause between attempts is a `setTimeout` of this process, so the row holds the clock it
+    // runs on (Bun's fake timers) and moves it: each next attempt comes once a whole second has
+    // passed since the failure before it, and not a millisecond sooner.
+    jest.useFakeTimers();
+    try {
+      const booting = recovered.start();
+      for (const failed of [1, 2]) {
+        await posted[failed - 1]?.promise;
+        // The stand-in answers in memory, so the failure is read and its pause armed in microtasks.
+        await everyMicrotask();
+        jest.advanceTimersByTime(999);
+        await everyMicrotask();
+        expect(readyPosts()).toBe(failed);
+        jest.advanceTimersByTime(1);
+        await posted[failed]?.promise;
+      }
+      await booting;
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(readyPosts()).toBe(3);
     expect(recovered.exits).toEqual([]);
   });
 
@@ -3365,7 +3409,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
      * host exposes no `pi.agents`, or whose registration names agents the task tool does not
      * resolve. `capabilityHost` replaces the recording host the pane measures through, called
      * once per measurement and handed the session's own `calls`: a host that throws on its first
-     * call is how a measurement that fails outright is made.
+     * call is how a measurement that fails outright is made. `workspace` is the session's working
+     * directory, the repository its disk row reads.
      */
     const capabilitySession = async (
       options: {
@@ -3377,6 +3422,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         readonly promptAgents?: readonly string[];
         readonly agentsExposed?: boolean;
         readonly capabilityHost?: (calls: string[]) => CapabilityHost;
+        readonly workspace?: string;
       } = {}
     ): Promise<CapabilitySession> => {
       const calls: string[] = [];
@@ -3392,6 +3438,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           options.capabilityHost?.(calls) ?? recordingCapabilityHost(calls, options.host),
         idle: options.idle,
         ready: options.ready,
+        workspace: options.workspace,
         extraRoutes: (url, body, init) => {
           if (url.pathname === "/legion/v1/claims/activity") {
             return new Response(null, { status: 204 });
@@ -3539,11 +3586,27 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
+    // Both budgets are timers of this process (`withinBudget` in `src/capability-report.ts`), so
+    // the row holds the clock they run on (Bun's fake timers), and which row fails its budget is
+    // the row's own choice, not the machine's speed: the first measurement's clock moves past the
+    // check budget once every row but the search has answered, and the second's never moves.
+    // Every row but the disk row answers from memory. The session's repository carries one
+    // skill, so the disk row reads the disk and then asks the host for the skills it loaded:
+    // that call is the moment its reading is done. The waits for what happens on the real
+    // clock begin before the fake one starts, on the real clock, whose deadlines they keep.
     test("a row that failed on its budget is measured again, and the second report is a measurement of its own", async () => {
-      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      const budgets = { checkMs: 20, reportMs: 500 };
+      setLegionCapabilityBudgetsForTests(budgets);
+      const measuredFrom = Date.UTC(2026, 10, 14, 9, 30);
+      const workspace = paneWorkspaceDirectory();
+      const skill = path.join(workspace, ".omp", "skills", "probe", "SKILL.md");
+      await mkdir(path.dirname(skill), { recursive: true });
+      await writeFile(skill, "---\nname: probe\ndescription: a skill the disk row finds\n---\n");
+      const skillsAsked = Promise.withResolvers<void>();
       let searches = 0;
       const session = await capabilitySession({
         sessionId: "ses_capability_afresh",
+        workspace,
         host: {
           // The first measurement's search never answers, so that row fails on its budget; the
           // second's answers.
@@ -3553,11 +3616,32 @@ describe.skipIf(skip)("Legion OMP extension", () => {
               ? Promise.withResolvers<SearchQueryResult>().promise
               : Promise.resolve(searchAnswer);
           },
+          loadSkills: async () => {
+            skillsAsked.resolve();
+            return { skills: [{ filePath: skill }] };
+          },
         },
       });
 
-      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
-      await session.reported(1);
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK - 1);
+      const diskRead = settled(
+        "the first measurement's disk row to ask for the skills",
+        skillsAsked.promise
+      );
+      jest.useFakeTimers({ now: measuredFrom });
+      try {
+        await ticks(session.pane, 1);
+        await diskRead;
+        // The host answers from memory, so every row but the search has answered once the
+        // microtasks queued so far have run; then the check budget runs out, and the measurement
+        // ends and its report is sent on the clock it started on.
+        await everyMicrotask();
+        jest.advanceTimersByTime(budgets.checkMs);
+        await everyMicrotask();
+      } finally {
+        jest.useRealTimers();
+      }
+      await settled("the first report", session.reported(1));
       await drain();
       const first = session.reports[0];
       expect(first?.rows.find((row) => row.name === "web-search")).toEqual({
@@ -3566,28 +3650,37 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         detail: "did not finish within 20 ms",
       });
       expect(first?.rows.filter((row) => row.ok)).toHaveLength(5);
+      expect(first?.measuredAt).toBe(new Date(measuredFrom).toISOString());
+      expect(first?.elapsedMs).toBe(budgets.checkMs);
 
       // The next attempt is due `CAPABILITY_RETRY_TICKS` after the last one ended.
       await ticks(session.pane, CAPABILITY_RETRY_TICKS - 1);
       await drain();
       expect(measurements(session.calls)).toBe(1);
 
-      await ticks(session.pane, 1);
-      await session.reported(2);
+      // No budget of the second measurement can run out: its clock never moves.
+      const secondReported = settled("the second report", session.reported(2));
+      jest.useFakeTimers({ now: measuredFrom + budgets.checkMs });
+      try {
+        await ticks(session.pane, 1);
+        await secondReported;
+      } finally {
+        jest.useRealTimers();
+      }
       await drain();
 
       const second = session.reports[1];
       expect(second?.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
       expect(second?.rows.every((row) => row.ok)).toBe(true);
-      // A measurement of its own, not the first with one row patched: its own `measuredAt`, and
-      // every row measured afresh — each check asked the host a second time.
-      expect(Date.parse(String(second?.measuredAt))).toBeGreaterThan(
-        Date.parse(String(first?.measuredAt))
-      );
+      // A measurement of its own, not the first with one row patched: its own `measuredAt`, the
+      // moment the first one's search budget ran out, and every row measured afresh — each check
+      // asked the host a second time.
+      expect(second?.measuredAt).toBe(new Date(measuredFrom + budgets.checkMs).toISOString());
       expect(measurements(session.calls)).toBe(2);
       expect(session.calls.filter((name) => name === "discoverAgents")).toHaveLength(2);
       expect(session.calls.filter((name) => name === "disabledAgents")).toHaveLength(2);
       expect(session.calls.filter((name) => name === "runSearchQuery")).toHaveLength(2);
+      expect(session.calls.filter((name) => name === "loadSkills")).toHaveLength(2);
       // `dispatch` and `gh`, once each per measurement.
       expect(session.calls.filter((name) => name === "run")).toHaveLength(4);
     });
@@ -3843,7 +3936,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a send the daemon takes and never answers is bounded: the request is aborted, the tick ends, the failure costs one log line, and the session measures again at its next due tick", async () => {
-      // The real bound is 10 s, past Bun's limit for one test; the machine is the same at 50 ms.
+      // The real bound is 10 s; the machine is the same at 50 ms, which keeps the row short.
       setLegionCapabilitySendTimeoutForTests(50);
       const session = await capabilitySession({
         sessionId: "ses_capability_hung",
@@ -3858,6 +3951,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
        * is a real timer inside the schedule, and no duration is guessed at. */
       const bounded = Promise.withResolvers<void>();
 
+      // The second send's bound is a `setTimeout` of this process: every timer armed from here on
+      // is recorded, and so is every one cleared, while each still runs as it would. Each record
+      // is read before the spies are restored, which empties them.
+      const armedTimers = spyOn(globalThis, "setTimeout");
+      const clearedTimers = spyOn(globalThis, "clearTimeout");
+      /** The timers armed for the second send's 50 ms bound, and every timer cleared since. */
+      let secondBounds: NodeJS.Timeout[] = [];
+      let cleared: unknown[] = [];
       const { warnings } = await loggedWarnings(async () => {
         const stopSink = logger.registerLogSink((entry) => {
           if (entry.message.includes("capability report did not reach the daemon")) {
@@ -3871,11 +3972,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           // leaving the schedule's in-flight guard set for the session's life.
           await bounded.promise;
           await drain();
+          armedTimers.mockClear();
+          clearedTimers.mockClear();
           await ticks(session.pane, CAPABILITY_RETRY_TICKS);
           await session.reported(2);
           await drain();
+          secondBounds = armedTimers.mock.calls.flatMap((call, index) =>
+            call[1] === 50 ? [armedTimers.mock.results[index]?.value as NodeJS.Timeout] : []
+          );
+          cleared = clearedTimers.mock.calls.map(([handle]) => handle);
         } finally {
           stopSink();
+          armedTimers.mockRestore();
+          clearedTimers.mockRestore();
         }
       });
 
@@ -3898,13 +4007,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(String((hung?.reason as Error | undefined)?.message)).toContain(
         "claims/ready did not answer within 50 ms"
       );
-      // The send the daemon took ends its own bound: its request is never aborted. The wait is
-      // what makes that an assertion — the second send answered at once, well before its own
-      // 50 ms bound, so only a wait past that bound tells a cleared timer from one still armed.
-      // It is a real wait on purpose: the bound is a real `setTimeout` inside the schedule, and
-      // a timer that was cleared fires nothing there is to await.
-      await Bun.sleep(150);
+      // The send the daemon took ends its own bound: its request is not aborted when it ends, and
+      // the bound's timer is cleared, so it never fires to abort it later — read from the timer
+      // itself, since a timer that was cleared fires nothing there is to await.
       expect(session.readySignals[1]?.aborted).toBe(false);
+      expect(secondBounds).toHaveLength(1);
+      expect(cleared).toContain(secondBounds[0]);
     });
   });
 });
@@ -4393,9 +4501,14 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.sentUserMessages).toEqual([]);
     expect(atTopicRegistration).toEqual([]);
 
-    const before = Date.now();
-    expect(await runStartCommand(controller, context)).toEqual([]);
-    const after = Date.now();
+    // The mark reads this process's clock, which the row holds still for the command's run.
+    const sentAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(sentAt));
+    try {
+      expect(await runStartCommand(controller, context)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
 
     expect(sentAtRegister).toEqual([[]]);
     expect(sentAtRoleClaim).toEqual([[message]]);
@@ -4410,11 +4523,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.sentUserMessageOptions).toEqual([undefined]);
     expect(envoyPluginInterface().startupTurn).toEqual({
       session: "ses_controller_start",
-      sentAt: expect.any(Number),
+      sentAt,
     });
-    const sentAt = envoyPluginInterface().startupTurn?.sentAt ?? 0;
-    expect(sentAt).toBeGreaterThanOrEqual(before);
-    expect(sentAt).toBeLessThanOrEqual(after);
 
     // A second run finds the claim done: it says so, and neither claims nor sends again.
     const registrations = controller.requests.filter(
@@ -5255,17 +5365,23 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(daemonRequests(controller.requests)).toEqual([]);
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
 
-    const before = Date.now();
-    expect(await runStartCommand(controller, context)).toEqual([]);
+    // The mark reads this process's clock, which the row holds still for the command's run.
+    const sentAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(sentAt));
+    try {
+      expect(await runStartCommand(controller, context)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
 
     expect(marksAtRegister).toEqual([{ session: "ses_controller_pending", sentAt: undefined }]);
     expect(controller.sentUserMessages).toEqual([
       "Legion controller start: follow skill://legion-controller",
     ]);
-    const sent = envoyPluginInterface().startupTurn;
-    expect(sent?.session).toBe("ses_controller_pending");
-    expect(sent?.sentAt).toBeGreaterThanOrEqual(before);
-    expect(sent?.sentAt).toBeLessThanOrEqual(Date.now());
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_pending",
+      sentAt,
+    });
   });
 
   // Only a controller with a start message of its own to send has a start turn to keep first: the
@@ -5394,7 +5510,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     // The daemon always names its controller's Slack channels; this project has none.
     process.env.LEGION_SLACK_CHANNELS = "";
-    const before = Date.now();
+    // The mark reads this process's clock, which the row holds still from the session's start.
+    const readyAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(readyAt));
     let commandNotices: CommandNotice[];
     try {
       await controller.handlers.get("session_start")?.(
@@ -5404,6 +5522,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // Its start command, run while the process is still the daemon's controller.
       commandNotices = await runStartCommand(controller, controller.context("ses_controller_pod"));
     } finally {
+      setSystemTime();
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
     expect(daemonRequests(controller.requests)).toEqual([
@@ -5431,10 +5550,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const paths = controller.requests.map((request) => request.path);
     expect(paths.indexOf("/v1/roles/set")).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
     expect(controller.sentUserMessages).toEqual([]);
-    expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: expect.any(Number) }]);
-    const sentAt = markAtReady[0]?.sentAt ?? 0;
-    expect(sentAt).toBeGreaterThanOrEqual(before);
-    expect(sentAt).toBeLessThanOrEqual(Date.now());
+    expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: readyAt }]);
     // Its start command had nothing to do: it claimed at session_start, and the daemon delivers
     // the start message.
     expect(commandNotices).toEqual([NOTHING_TO_DO]);
@@ -6853,6 +6969,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "other",
         },
@@ -6927,6 +7044,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -6961,6 +7079,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -7088,6 +7207,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -7120,6 +7240,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -7142,7 +7263,7 @@ describe("the model fallback", () => {
     );
     if (claimCommand === undefined) throw new Error("controller claim command was not registered");
     const context: CommandContext = {
-      cwd: "/tmp/legion-workspace",
+      cwd: paneWorkspaceDirectory(),
       sessionManager: {
         getSessionId: () => "ses_controller_command",
         getSessionFile: () => "/tmp/ses_controller_command.jsonl",
@@ -7169,6 +7290,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -7241,8 +7363,8 @@ describe("the stall watch the plugin's entry arms", () => {
    * and waits for the sweep it started to have written `wanted` records in all. The host arms the
    * sweep with `void` and never awaits it — a step of the ladder can outlast the tick that armed
    * it — so there is no promise or event here to await, and each step crosses the teller's
-   * publish before its record is written. The loop ends at the record rather than at a duration,
-   * and the deadline is the failure message. */
+   * publish before its record is written. The shared wait ends at the record, and its failure
+   * names the records written by then. */
   const sweeps = async (
     intervals: readonly (() => void)[],
     entries: readonly AppendedEntry[],
@@ -7250,16 +7372,14 @@ describe("the stall watch the plugin's entry arms", () => {
   ): Promise<StallWatchRecord[]> => {
     if (intervals.length === 0) throw new Error("this session armed no interval to sweep on");
     for (const tick of intervals) tick();
-    const deadline = Date.now() + 2_000;
-    while (records(entries).length < wanted) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          `the stall watch wrote ${records(entries).length} records, not ${wanted}: ${JSON.stringify(records(entries))}`
-        );
-      }
-      await Bun.sleep(5);
-    }
-    return records(entries);
+    return until(`the stall watch to have written ${wanted} records`, () => {
+      const written = records(entries);
+      return written.length >= wanted && written;
+    }).catch((error: unknown) => {
+      throw new Error(`${(error as Error).message}: it wrote ${JSON.stringify(records(entries))}`, {
+        cause: error,
+      });
+    });
   };
 
   /** The clock the watch judges a call by is the machine's own (`Date.now` in the entry), so a

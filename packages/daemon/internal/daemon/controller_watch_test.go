@@ -74,11 +74,17 @@ func recordControllerSession(t *testing.T, cfg config.Config, project, session s
 
 // envoyRoleRegistry answers the controller role lookup: session holds the role, seen now, when
 // alive is true, and nobody does otherwise. It counts the lookups, one per sweep that reads a
-// registered controller.
+// registered controller. It counts only a request of the shape the sweep sends, a role lookup,
+// which carries a token only where the daemon has one; any other is another process's, answered
+// 404 and counted as nothing.
 func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var lookups atomic.Int64
 	envoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/v1/roles/") {
+			http.NotFound(w, r)
+			return
+		}
 		code, body := http.StatusNotFound, any(map[string]any{})
 		if alive {
 			code, body = http.StatusOK, map[string]any{"holder": session, "last_seen": time.Now().UnixMilli()}
@@ -120,20 +126,23 @@ func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 			}
 			logs := &syncBuffer{}
 			o := fakeRuntime(fake.NewRuntime(), &built{})
-			o.orphanSweep = 20 * time.Millisecond
+			passes := triggering(&o)
 			d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
 			// The first sweep runs as the daemon starts serving, and a due line comes from it. The
-			// count then waits out further sweeps, where a second line would show: a registered
-			// controller is looked up in the role registry on every sweep, so three more lookups are
-			// three more sweeps; with none registered nothing is looked up, and ten intervals pass.
+			// count then runs further sweeps, where a second line would show: a registered
+			// controller is looked up in the role registry on every sweep, so three more passes
+			// are three more lookups; with none registered nothing is looked up, and ten run.
 			if tc.want > 0 {
 				testwait.Eventually(t, "the not-registered line", func() bool { return strings.Contains(logs.String(), notRegisteredLine) })
 			}
 			if tc.register {
 				seen := lookups.Load()
-				testwait.Eventually(t, "three more sweeps", func() bool { return lookups.Load() >= seen+3 })
+				passes.passes(t, passControllerWatch, 3)
+				if got := lookups.Load() - seen; got < 3 {
+					t.Fatalf("three sweeps looked the registered session up %d times, want one lookup each", got)
+				}
 			} else {
-				time.Sleep(10 * o.orphanSweep)
+				passes.passes(t, passControllerWatch, 10)
 			}
 			d.stop()
 			lines := loggedLines(t, logs.String(), notRegisteredLine)
@@ -207,23 +216,22 @@ func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 			rt := fake.NewRuntime()
 			var record built
 			o := fakeRuntime(rt, &record)
-			o.orphanSweep = 20 * time.Millisecond
+			passes := triggering(&o)
 			d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
 			launch := controllerLaunched(t, rt, claim.ControllerToken(project))
 			if tc.register {
 				// Before the launch registers, sweeps read the recorded session alive and say nothing.
-				testwait.Eventually(t, "three sweeps before the launch registers", func() bool { return lookups.Load() >= 3 })
+				passes.passes(t, passControllerWatch, 3)
 				if got := strings.Count(logs.String(), notRegisteredLine); got != 0 {
 					t.Fatalf("%q was logged %d times while the recorded session held the role, want 0\n%s", notRegisteredLine, got, logs.String())
 				}
 				registeredLaunch(t, d, &record, launch, session)
 				// The registration writes the record in two statements, a fresh capability and then
 				// the session, so a sweep that reads it between them says once that none is
-				// registered. Two more lookups put a whole sweep after the registration; the count
-				// starts there, and a sweep reading the registered session alive has cleared the
-				// once-per-boot-timeout wait, so a wrong verdict after it would show at once.
-				seen := lookups.Load()
-				testwait.Eventually(t, "a whole sweep after the registration", func() bool { return lookups.Load() >= seen+2 })
+				// registered. Two sweeps put a whole one after the registration, and a sweep
+				// reading the registered session alive has cleared the once-per-boot-timeout
+				// wait, so a wrong verdict after it would show at once.
+				passes.passes(t, passControllerWatch, 2)
 				logs.Reset()
 			}
 			// As above: a due line comes from the first sweep, and the count waits out further
@@ -233,9 +241,12 @@ func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 			}
 			if tc.recorded {
 				seen := lookups.Load()
-				testwait.Eventually(t, "three more sweeps", func() bool { return lookups.Load() >= seen+3 })
+				passes.passes(t, passControllerWatch, 3)
+				if got := lookups.Load() - seen; got < 3 {
+					t.Fatalf("three sweeps looked the recorded session up %d times, want one lookup each", got)
+				}
 			} else {
-				time.Sleep(10 * o.orphanSweep)
+				passes.passes(t, passControllerWatch, 10)
 			}
 			d.stop()
 			warns := loggedLines(t, logs.String(), notRegisteredLine)
@@ -281,17 +292,19 @@ func (r stalledLaunches) Spawn(ctx context.Context, spec runtime.SpawnSpec) (run
 
 // The sweep never waits on the controller's launch: while a launch of the daemon's own controller
 // hangs, holding its machine, the daemon still says on its cadence that no controller is registered.
-// The machines' timers never fire here (stillClock), so a short worker boot timeout spaces the line
-// a few sweeps apart and nothing else; one line after the launch began shows the sweep did not wait.
+// The daemon's clock is held still (stillClock) and moved only by the test, past the worker boot
+// timeout (its production two minutes) that spaces the line; one line after the launch began, from
+// a sweep the test ran, shows the sweep did not wait.
 func TestTheDaemonSaysItsControllerIsNotRegisteredWhileItsLaunchHangs(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
-	cfg.WorkerBootTimeout = 100 * time.Millisecond
 	envoy, _ := envoyRoleRegistry(t, "ses_controller", false)
 	cfg.EnvoyURL = envoy.URL
 	stalled := stalledLaunches{Runtime: fake.NewRuntime(), started: &atomic.Bool{}, release: make(chan struct{})}
 	o := fakeRuntime(stalled, &built{})
-	o.orphanSweep = 20 * time.Millisecond
+	clock := newStillClock()
+	o.clock = clock
+	passes := triggering(&o)
 	logs := &syncBuffer{}
 	startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
 	// Registered after the daemon's own cleanup, so it runs first and the launch returns before the
@@ -299,9 +312,13 @@ func TestTheDaemonSaysItsControllerIsNotRegisteredWhileItsLaunchHangs(t *testing
 	t.Cleanup(func() { close(stalled.release) })
 	testwait.Eventually(t, "the controller's launch to begin", stalled.started.Load)
 	mark := len(logs.String())
-	testwait.Eventually(t, "a not-registered line after the launch began", func() bool {
-		return strings.Contains(logs.String()[mark:], notRegisteredLine)
-	})
+	// The sweep says a controller is not registered at most once per worker boot timeout, so the
+	// clock reaches that moment and the sweep after it is this test's.
+	clock.Advance(cfg.WorkerBootTimeout)
+	passes.pass(t, passControllerWatch)
+	if !strings.Contains(logs.String()[mark:], notRegisteredLine) {
+		t.Fatalf("no %q after the launch began, want the sweep to have said so without waiting on the launch:\n%s", notRegisteredLine, logs.String()[mark:])
+	}
 	for _, line := range loggedLines(t, logs.String(), notRegisteredLine) {
 		checkDaemonModeLine(t, line)
 	}

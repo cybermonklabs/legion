@@ -10,7 +10,7 @@
 // owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes — the
 // phase-ended lane (record.LaneRoleMessage) among them. Facts enter only as production's do:
@@ -46,11 +46,11 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -108,6 +108,11 @@ type conflictNoTakeoverLive struct {
 	// with no live holder in step 5.
 	imp, test *liveClaimant
 	reviewer  claim.Token
+	// testerFirst is the delivery of the task the tester took in step 1, the first assignment's.
+	testerFirst string
+	// phaseEnded is the daemon's observer for the phase-ended rows' settlements: step 3's row,
+	// then step 5's.
+	phaseEnded *observer
 }
 
 // TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive drives the five steps of the proof
@@ -138,7 +143,7 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	r.listener = newConflictListener(t, &r.liveProof)
 	r.reviewer = r.token(claim.RoleReviewer)
 	r.seed()
-	r.boot(nil)
+	r.boot(func(o *overrides) { r.phaseEnded = observing(o) })
 	return r
 }
 
@@ -154,25 +159,11 @@ func (r *conflictNoTakeoverLive) seed() {
 		r.key, r.number, conflictFirstHead, conflictBase, ciRedCheck)
 }
 
-// silent holds that the daemon sends this role's connection nothing at all for within: the RPC
-// carries no abort frame, and nothing else it could send would end that role's turn either.
-func (c *liveClaimant) silent(within time.Duration) {
-	t := c.p.t
-	t.Helper()
-	if err := c.sh.conn.SetReadDeadline(time.Now().Add(within)); err != nil {
-		t.Fatalf("set the read deadline on the %s's connection: %v", c.role, err)
-	}
-	line, err := c.sh.lines.ReadBytes('\n')
-	var timeout net.Error
-	switch {
-	case errors.As(err, &timeout) && timeout.Timeout():
-		return
-	case err != nil:
-		t.Fatalf("read the %s's connection: %v", c.role, err)
-	default:
-		t.Fatalf("the daemon sent the %s %q while its turn ran, want nothing at all", c.role, strings.TrimSpace(string(line)))
-	}
-}
+// roleTopicKinds are the outbox kinds whose rows publish to a role's own Envoy topic (outbox's
+// roleMessage, phaseEnded, hookPrompt and updateAsk, and the merge queue's removal notice): a
+// row of one of them still in the outbox could yet reach the tester's topic.
+var roleTopicKinds = []string{string(record.OutboxKindRoleMessage), string(record.OutboxKindPhaseEnded),
+	string(record.OutboxKindHookPrompt), string(record.OutboxKindUpdateAsk), string(record.OutboxKindMergeQueueRemoval)}
 
 // Step 1. The seeded implementer completes implementing, which hands the testing phase to the
 // tester with an assignment of its own and starts it. The tester registers, takes that task and
@@ -194,6 +185,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
 	prompt := r.test.takeTask("Phase: testing")
 	r.note("read back: the tester was launched, registered and prompted its testing task (%s)", firstLine(prompt.Message))
+	r.testerFirst = prompt.DeliveryID
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
 		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
@@ -236,8 +228,10 @@ func (r *conflictNoTakeoverLive) redStartsAtOnce() {
 	}
 	r.note("read back: when the start acted the tester was still %s on delivery %s, the one it confirmed before the red",
 		held.State, held.Pending.ID)
-	r.test.silent(liveSettle)
-	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown, no prompt", liveSettle)
+	// Nothing is sent to the tester's connection while the start acts: the RPC carries no abort
+	// frame, and a shutdown or a prompt sent now would be the next frame that connection reads,
+	// ahead of the second assignment's task, which step 4 reads (staleEntryRefused) and which
+	// fails on any frame but that task.
 	after := r.d.claim(r.test.token)
 	if after.State != string(supervise.StateWorking) || after.Pending == nil || after.Pending.ID != before.Pending.ID {
 		t.Fatalf("the tester is %s holding %+v after the red settled, want it still working its own delivery", after.State, after.Pending)
@@ -273,12 +267,30 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 	}
 	r.note("read back: the architect's own topic took the red's one checks-red notice (%s), a different message on a different topic",
 		architect[0].Payload)
-	// Nothing repeats either of them, and nothing else reaches the tester's topic.
-	time.Sleep(liveSettle)
-	if again := r.notices.acceptedOn(topic); len(again) != 1 {
-		t.Fatalf("the tester's topic took %d messages over %s, want the one", len(again), liveSettle)
+	// Nothing repeats either of them, and nothing else is on its way to the tester's topic: the
+	// phase-ended row finished, and a finished row is deleted (record.Postgres.FinishOutbox), so
+	// nothing publishes it again; the checks-red notice's row is gone the same way, which a read
+	// after a settlement of the issue's rows shows; and no row of a kind that publishes to a role's
+	// topic is left in the outbox for the issue. The two rows run on lanes of their own, so they
+	// settle in either order.
+	phaseEndedFinished := false
+	r.phaseEnded.next(t, "the settlements of the phase-ended row and of the checks-red notice's row", func(e observation) bool {
+		s, ok := e.(observedOutboxSettled)
+		if !ok || s.issue != r.key {
+			return false
+		}
+		if s.kind == record.OutboxKindPhaseEnded && s.outcome == settledFinished {
+			phaseEndedFinished = true
+		}
+		return phaseEndedFinished && r.checksRedRows() == 0
+	})
+	if rows := r.roleTopicRows(); rows != 0 {
+		t.Fatalf("the outbox holds %d rows of %s that publish to a role's topic, want none: nothing else is to reach the tester's", rows, r.key)
 	}
-	r.note("read back over %s: the tester's topic has taken that one message and no other", liveSettle)
+	if again := r.notices.acceptedOn(topic); len(again) != 1 {
+		t.Fatalf("the tester's topic took %d messages, want the one", len(again))
+	}
+	r.note("read back: the phase-ended and checks-red rows finished, no row bound for a role's topic is left, and the tester's topic has taken that one message and no other")
 }
 
 // Step 4. The implementer fixes and completes, which hands testing out again with a phase entry of
@@ -318,8 +330,15 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	// its own — the head the fix pushed — so the tester completes it at the handoff it wrote for
 	// that work, never at the commit the refused completion named, and it is taken.
 	r.test.endTurn()
+	// This task is the first frame the tester's connection has read since its first task in step
+	// 1, so it is also step 2's proof that the red sent that connection nothing: an abort, a
+	// shutdown or the first task sent again would have been read here first.
 	prompt := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester's first turn ended and the second assignment's task reached it (%s)", firstLine(prompt.Message))
+	if prompt.DeliveryID == r.testerFirst {
+		t.Fatalf("the tester's connection was sent its first assignment's task %s again, want the second assignment's: the red sent it a frame", r.testerFirst)
+	}
+	r.note("read back: the tester's first turn ended and the second assignment's task reached it (%s), the first frame its connection was sent since step 1's task",
+		firstLine(prompt.Message))
 	if status, failure := r.test.complete("tested the fix", conflictSecondTesterHandoff, "pass", ""); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -350,23 +369,21 @@ func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	if got := r.issue(r.key); got.Phase != phase.Implementing {
 		t.Fatalf("%s is in %s after the red in reviewing, want implementing", r.key, got.Phase)
 	}
+	// The row is finished, not retried: its settlement is finished (step 3's row took the first
+	// such report), and a finished row is deleted (record.Postgres.FinishOutbox), so no second
+	// attempt can come. The listener answered that row's one attempt before the row settled.
+	r.phaseEnded.settled(t, rowOf{issue: r.key, kind: record.OutboxKindPhaseEnded, outcome: settledFinished})
 	refused := r.listener.refusedNoHolder(topic)
 	if len(refused) != 1 {
-		t.Fatalf("the listener refused %d publishes to %s for want of a holder, want the phase-ended row's one", len(refused), topic)
+		t.Fatalf("the listener refused %d publishes to %s for want of a holder, want the finished phase-ended row's one attempt: the row is finished, not retried",
+			len(refused), topic)
 	}
 	r.note("read back: the listener answered the phase-ended publish to %s 404 unclaimed — %s", topic, refused[0].Message)
-	// The row is finished, not retried: nothing of its kind is left in the outbox, and no second
-	// attempt comes over the window a retry's first backoff (one second) falls well inside.
-	testwait.Eventually(t, "the phase-ended row finished", func() bool { return r.outboxRows("phase_ended") == 0 })
-	time.Sleep(liveSettle)
-	if again := r.listener.refusedNoHolder(topic); len(again) != 1 {
-		t.Fatalf("the listener was asked %d times over %s, want the one attempt: the row is finished, not retried", len(again), liveSettle)
-	}
 	if rows := r.outboxRows("phase_ended"); rows != 0 {
 		t.Fatalf("the outbox holds %d phase_ended rows of %s, want none: the row finished undelivered", rows, r.key)
 	}
-	r.note("read back over %s: one publish attempt, and the outbox holds no phase_ended row of %s — the row finished undelivered",
-		liveSettle, r.key)
+	r.note("read back: the row settled finished after one publish attempt, and the outbox holds no phase_ended row of %s — the row finished undelivered",
+		r.key)
 	if accepted := r.notices.acceptedOn(topic); len(accepted) != 0 {
 		t.Fatalf("the listener took %d messages on %s, want none: no session holds it", len(accepted), topic)
 	}
@@ -381,6 +398,30 @@ func (r *conflictNoTakeoverLive) outboxRows(kind string) int {
 	if err := r.st.Pool().QueryRow(context.Background(),
 		"select count(*) from outbox where issue = $1 and kind = $2", r.key, kind).Scan(&rows); err != nil {
 		r.t.Fatalf("read the outbox rows of %s: %v", r.key, err)
+	}
+	return rows
+}
+
+// checksRedRows is how many checks-red notice rows of the proof's issue the outbox still holds.
+func (r *conflictNoTakeoverLive) checksRedRows() int {
+	r.t.Helper()
+	var rows int
+	if err := r.st.Pool().QueryRow(context.Background(),
+		"select count(*) from outbox where issue = $1 and kind = $2 and payload->>'kind' = 'checks-red'",
+		r.key, string(record.OutboxKindNotice)).Scan(&rows); err != nil {
+		r.t.Fatalf("read the checks-red notice rows of %s: %v", r.key, err)
+	}
+	return rows
+}
+
+// roleTopicRows is how many rows of the proof's issue the outbox still holds of a kind that
+// publishes to a role's own topic (roleTopicKinds).
+func (r *conflictNoTakeoverLive) roleTopicRows() int {
+	r.t.Helper()
+	var rows int
+	if err := r.st.Pool().QueryRow(context.Background(),
+		"select count(*) from outbox where issue = $1 and kind = any($2)", r.key, roleTopicKinds).Scan(&rows); err != nil {
+		r.t.Fatalf("read the outbox rows of %s bound for a role's topic: %v", r.key, err)
 	}
 	return rows
 }
@@ -410,14 +451,28 @@ type conflictListener struct {
 	refusals map[string][]listenerPublish
 }
 
+// conflictEnvoyToken is the bearer the proof's daemon presents to its Envoy listener
+// (newConflictListener).
+const conflictEnvoyToken = "envoy-test-token"
+
 // newConflictListener puts this listener in front of the proof's noticeListener and points the
-// configuration the daemon boots with at it.
+// configuration the daemon boots with at it, with conflictEnvoyToken as the bearer the daemon
+// presents to it. A request without that bearer is another process's: it is answered 404 and
+// logged, and fails nothing (fromTheDaemon).
 func newConflictListener(t *testing.T, proof *liveProof) *conflictListener {
 	t.Helper()
 	l := &conflictListener{t: t, notices: proof.notices, unheld: map[string]bool{}, refusals: map[string][]listenerPublish{}}
-	server := httptest.NewServer(l)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, conflictEnvoyToken) {
+			l.ServeHTTP(w, r)
+		}
+	}))
 	t.Cleanup(server.Close)
 	proof.cfg.EnvoyURL = server.URL
+	proof.cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
+	if err := os.WriteFile(proof.cfg.EnvoyTokenFile, []byte(conflictEnvoyToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write the Envoy token: %v", err)
+	}
 	return l
 }
 

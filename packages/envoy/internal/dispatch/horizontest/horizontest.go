@@ -16,37 +16,24 @@
 // the worst run anyone has seen is the same flake on the day someone holds a transaction for a
 // minute.
 //
-// So the wait keys on the horizon's own account of itself. While the horizon keeps logging
-// events.StallWarning it is saying it is held back by an open transaction, and the wait goes on
-// for as long as that keeps arriving. When the horizon says nothing - no warning at all, or no new
-// warning for a window - the wait reads the instance's holder itself, as the horizon's diagnosis
-// does, since the goroutine that logs the warning can be late on a loaded machine; it fails fast
-// only when no transaction holds an id, because then nothing is holding the horizon and the
-// missing result is a defect. The one stall the wait refuses to wait out is a holder in the test's
-// own database that has itself stood OwnHoldBound: that is the defect class of
-// dispatch://INFRA-636 (a Dispatch write transaction left open across the horizon's proof). The
-// bound is what keeps that rule from failing on every other client of that database - the test's
-// own fixtures, an operator's psql session - whose ordinary short transaction holds the horizon
-// exactly as a foreign one does and is no defect. Each failure names the newest warning, so the
-// holder is in the output.
-//
-// The numbers below were measured in a pod on 2026-11-10, nproc 2, against PostgreSQL 18.6, each
-// arm driving cmd/dispatch's events_start wait (TestShutdown's openLiveEvents):
-//
-//   - U = 217 ms, the worst subscribe-to-events_start gap with no transaction held, over 20
-//     subscriptions in 10 runs under 8 busy loops (four times nproc, nice -n 10), all 10 runs
-//     passing. CPU load alone does not reproduce the failure.
-//   - W = 0.460 s, the worst subscribe-to-first-stall-warning gap, over 10 windows under both
-//     loads at once: those busy loops, and a pulse holding a transaction 12 s of every 13.
-//   - G = 0.319 s, the worst gap between two consecutive stall warnings while one hold stood, over
-//     324 samples under those same two loads.
+// So the wait is the shared one (internal/testwait), with no bound of its own: a hold of any
+// length only delays it, and only the test binary's deadline ends it. When it ends there, its last
+// read is the horizon's own account of itself (Watch.String): how many stall warnings
+// (events.StallWarning) the horizon logged while the test waited, none included, and the newest of
+// them, which names the holder's kind, pid, database and query from the horizon's own diagnosis.
+// The one stall the wait refuses to wait out is a holder in the test's own database that has
+// itself stood OwnHoldBound, by the horizon's own warning: that is the defect class of
+// dispatch://INFRA-636 (a Dispatch write transaction left open across the horizon's proof), and
+// the wait fails on it at once, naming the warning. The bound is what keeps that rule from failing
+// on every other client of that database - the test's own fixtures, an operator's psql session -
+// whose ordinary short transaction holds the horizon exactly as a foreign one does and is no
+// defect.
 package horizontest
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -58,46 +45,27 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
-	// StallWarning is the stall threshold and the repeat a horizon the wait keys on must warn at:
+	// StallWarning is the stall threshold and the repeat a horizon the wait reads must warn at:
 	// its stallAfter and its warnEvery (events.Horizon.SetStallWarning, which api.Deps'
 	// HorizonStallAfter and HorizonWarnEvery set, and cmd/dispatch's
 	// DISPATCH_TEST_HORIZON_STALL_AFTER and DISPATCH_TEST_HORIZON_WARN_EVERY for a test process).
-	// At the production five and thirty seconds the first warning would come after Base had
-	// already failed the wait.
+	// At the production five and thirty seconds a hold would go unreported for five seconds and
+	// the newest warning could be half a minute old; at this one the horizon names its holder
+	// within a fraction of a second and again as the hold goes on, so the own-hold rule and the
+	// account of a wait that gave up read the holder as it stands.
 	StallWarning = 250 * time.Millisecond
-	// Base is how long the wait gives a horizon that has said nothing. Three times the worst of U
-	// and W is 1.38 s, but the floor is the soonest a held horizon can have said so: its
-	// stallAfter (StallWarning) plus its warnEvery (StallWarning) plus horizonDiagnosisTimeout
-	// (2 s), the bound on the pg_stat_activity diagnosis warnStall runs before it logs, which is
-	// 2.5 s. Rounded up to a whole second.
-	Base = 3 * time.Second
-	// Extension is how long the wait gives a horizon that has said it is held, since its newest
-	// warning. Three times G is 0.96 s, but G's own ceiling is higher than anything measured, so
-	// this one comes from the horizon's constants rather than the measurement: warnStall logs
-	// after its diagnosis, on a goroutine of its own (the go h.warnStall(...) call in horizon.go's
-	// observation loop), and that diagnosis is bounded by horizonDiagnosisTimeout (2 s), so two
-	// logged warnings can stand warnEvery (StallWarning) plus horizonBackoffMax (250 ms) plus
-	// horizonDiagnosisTimeout apart - 2.5 s - on a server whose pg_stat_activity is slow, which
-	// is the server a test meets in CI. Rounded up to a whole second.
-	Extension = 3 * time.Second
-	// Poll is how often the wait reads the warnings. A sampling rate, not a bound: it is below a
-	// tenth of Extension, so it costs that window nothing.
-	Poll = 250 * time.Millisecond
-	// Drain is what the wait leaves of the run's own deadline, so its failure prints rather than
-	// being cut off by the package timeout, which would name no test.
-	Drain = 30 * time.Second
 	// OwnHoldBound is how long a hold in the test's own database must have stood, by the
-	// horizon's own account, before the wait fails on it rather than counting it as a stall.
-	// Without a bound the own-database rule is a deadline of about 0.3 s on any transaction in
-	// that database, from any client: the horizon warns at StallWarning, so the first warning
-	// naming the database would end the wait almost at once.
+	// horizon's own account, before the wait fails on it rather than waiting it out as it does
+	// any other hold. Without a bound the own-hold rule would fail on any transaction in that
+	// database, from any client: the horizon warns at StallWarning, so the first warning naming
+	// the database would end the wait almost at once.
 	//
 	// Sampling pg_stat_activity every 100 ms while cmd/dispatch's events_start test ran 10 times
 	// under the calibrated load (a rolling foreign hold, a new 25 s transaction every second in
@@ -441,321 +409,141 @@ func (h keepWarnings) WithGroup(name string) slog.Handler {
 
 // Wait returns the one result arrived delivers: the outcome of work that waits on the event
 // horizon, which what names in a failure. warnings answers every stall warning the horizon has
-// logged so far, oldest first; ownDatabase is the database the horizon's pool reads; probe, when
-// not nil, reads the instance's holder itself when the horizon has fallen silent (Watch); and
-// detail, when not nil, is printed after a failure, as a test that started Dispatch as a process
-// prints that process's output.
+// logged so far, oldest first; ownDatabase is the database the horizon's pool reads; and detail,
+// when not nil, is printed after a failure, as a test that started Dispatch as a process prints
+// that process's output. It waits as Watch.Poll does.
 //
 // A gorilla connection is unusable after a read timeout - "After a read has timed out, the
 // websocket connection state is corrupt" - so a reader the caller hands in sets no read deadline
 // and reads on a goroutine of its own (ReadFirstFrame), and the caller reads the connection again
 // only once this has returned.
-func Wait[T any](t *testing.T, what string, arrived <-chan T, warnings func() []Warning, ownDatabase string, probe Querier, detail func() string) T {
+func Wait[T any](t *testing.T, what string, arrived <-chan T, warnings func() []Warning, ownDatabase string, detail func() string) T {
 	t.Helper()
-	watch := NewWatch(t, warnings, ownDatabase, probe)
-	ticker := time.NewTicker(Poll)
-	defer ticker.Stop()
-	for {
+	var result T
+	NewWatch(warnings, ownDatabase).Poll(t, what, detail, func() bool {
 		select {
-		case result := <-arrived:
-			return result
-		case <-ticker.C:
-			failure := watch.Failure(what)
-			if failure == "" {
-				continue
-			}
-			// A result already delivered wins over a failing verdict: the ticker and the
-			// result can be ready at the same select, which chooses among ready arms at
-			// random, so a result delivered in the same tick would otherwise fail a run that
-			// had it.
-			select {
-			case result := <-arrived:
-				return result
-			default:
-			}
-			if detail != nil {
-				failure += "\n" + detail()
-			}
-			t.Fatal(failure)
-			var none T
-			return none
+		case result = <-arrived:
+			return true
+		default:
+			return false
 		}
-	}
+	})
+	return result
 }
 
-// Watch is the judgement Wait makes, for a wait the caller drives itself: a test that reads again
-// until an answer the horizon held back is whole (api's awaitHorizonRead) has no result to send on
-// a channel, and asks the watch after each read whether to read again.
-//
-// Silence alone does not end a wait that has a probe. The warnings come from a goroutine of the
-// horizon's that runs a diagnosis and then logs, and a loaded machine can put that goroutine off
-// past Base or Extension while a transaction holds the horizon as surely as before. So when the
-// horizon has said nothing for that long, the watch reads the holder itself, with the query the
-// diagnosis runs (events.StallHolderSQL), and fails only if no transaction holds an id on the
-// instance; a holder it finds counts as a warning, so the own-hold rule judges it too.
+// Watch is what a wait on the horizon reads of it: the own-hold rule it fails on at once
+// (Failure), and the account a wait that gave up prints (String). Poll is the wait; a test that
+// reads again until an answer the horizon held back is whole (api's awaitHorizonRead) polls
+// through it with its read as the condition.
 type Watch struct {
-	warnings func() []Warning
-	probe    Querier
-	began    time.Time
+	warnings    func() []Warning
+	ownDatabase string
 	// before is how many warnings were logged before the watch began: they belong to a hold
-	// before it, perhaps one long over, so the watch counts only what the horizon says from then.
+	// before it, perhaps one long over, so the watch reads only what the horizon says from then.
 	before int
-	// seen is how many of the warnings since the watch began it has counted.
-	seen int
-	// rose is when the watch last counted a warning or a holder it read itself, or began while it
-	// has counted neither.
-	rose time.Time
-	// drain is Drain before the run's own deadline, and zero for a run given none (go test
-	// -timeout 0), which has no drain to fail on.
-	drain   time.Time
-	current state
-}
-
-// Querier is what a watch reads the holder through: the pool of the test's own server, or a
-// connection to the database a Dispatch process reads (Dialed).
-type Querier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // NewWatch starts a watch now. warnings answers every stall warning the horizon has logged so far,
-// oldest first, ownDatabase is the database the horizon's pool reads, and probe, when not nil, is
-// what the watch reads the holder through once the horizon has fallen silent.
-func NewWatch(t *testing.T, warnings func() []Warning, ownDatabase string, probe Querier) *Watch {
-	t.Helper()
-	now := time.Now()
-	watch := &Watch{warnings: warnings, probe: probe, began: now, before: len(warnings()), rose: now, current: state{ownDatabase: ownDatabase}}
-	if deadline, ok := t.Deadline(); ok {
-		watch.drain = deadline.Add(-Drain)
-	}
-	return watch
+// oldest first, and ownDatabase is the database the horizon's pool reads.
+func NewWatch(warnings func() []Warning, ownDatabase string) *Watch {
+	return &Watch{warnings: warnings, ownDatabase: ownDatabase, before: len(warnings())}
 }
 
-// Failure says why the wait for what must end now, naming the newest warning, or "" while the
-// horizon's account lets it go on (verdictOf).
+// since is the stall warnings the horizon has logged since the watch began, oldest first.
+func (w *Watch) since() []Warning {
+	return w.warnings()[w.before:]
+}
+
+// Failure says why the wait for what must end at once, or "" while the horizon's account lets it
+// go on: the newest stall warning since the watch began names a holder in the test's own database
+// that has held the horizon back at least OwnHoldBound (ownHold).
 func (w *Watch) Failure(what string) string {
-	now := time.Now()
-	// A count of the warnings since the watch began, never whether one was seen: a check that
-	// latched on the first warning would extend the wait for ever on a horizon that has stopped
-	// warning.
-	if since := w.warnings()[w.before:]; len(since) > w.seen {
-		w.current.warnings += len(since) - w.seen
-		w.seen = len(since)
-		w.current.last = since[len(since)-1]
-		w.rose = now
+	since := w.since()
+	if len(since) == 0 {
+		return ""
 	}
-	w.observe(now)
-	elapsed := w.current.elapsed.Round(time.Millisecond)
-	if !w.drain.IsZero() && !now.Before(w.drain) {
-		return fmt.Sprintf("%s did not arrive in the %v the run had left; the event horizon's newest stall warning was %s",
-			what, elapsed, w.current.lastText())
+	newest := since[len(since)-1]
+	if !ownHold(newest, w.ownDatabase) {
+		return ""
 	}
-	verdict := verdictOf(w.current)
-	var probed string
-	if (verdict == noSignal || verdict == signalStopped) && w.probe != nil {
-		switch held, found, err := readHolder(w.probe); {
-		case err != nil:
-			probed = fmt.Sprintf("; reading the instance's holder failed too: %v", err)
-		case !found:
-			probed = "; and no transaction on the instance holds a transaction id now"
-		default:
-			// A holder stands, whether or not the horizon's warning about it has come yet.
-			w.current.warnings++
-			w.current.last = held
-			w.rose = now
-			w.observe(now)
-			verdict = verdictOf(w.current)
-		}
-	}
-	switch verdict {
-	case noSignal:
-		return fmt.Sprintf("%s did not arrive in %v, and the event horizon never said it was held back by an open transaction%s",
-			what, elapsed, probed)
-	case signalStopped:
-		return fmt.Sprintf("%s did not arrive in %v, and the event horizon stopped saying it was held back %v ago%s; its newest stall warning was %s",
-			what, elapsed, w.current.sinceNewWarning.Round(time.Millisecond), probed, w.current.lastText())
-	case ownHold:
-		return fmt.Sprintf("%s did not arrive in %v, and the event horizon says a client of the test's own database %s (%s) has held it back for %v; its newest stall warning was %s",
-			what, elapsed, w.current.ownDatabase, w.current.last.Client, w.current.last.heldFor(), w.current.lastText())
-	}
-	return ""
+	return fmt.Sprintf("%s did not arrive, and the event horizon says a client of the test's own database %s (%s) has held it back for %v; its newest stall warning was %s",
+		what, w.ownDatabase, newest.Client, newest.heldFor(), newest.Text)
 }
 
-// observe sets the watch's clocks at now.
-func (w *Watch) observe(now time.Time) {
-	w.current.elapsed = now.Sub(w.began)
-	w.current.sinceNewWarning = now.Sub(w.rose)
+// String is the watch's account of the horizon, which a wait that gave up at the test binary's
+// deadline prints as its last read: how many stall warnings the horizon has logged since the watch
+// began, and the newest of them, which names the holder from the horizon's own diagnosis. A count
+// of none says the horizon never reported itself held while the test waited.
+func (w *Watch) String() string {
+	since := w.since()
+	account := fmt.Sprintf("the event horizon logged %d stall warnings while the test waited", len(since))
+	if len(since) > 0 {
+		account += "; the newest: " + since[len(since)-1].Text
+	}
+	return account
 }
 
-// Poll asks condition every every until it holds, for as long as the horizon's account lets the
-// wait go on, and fails t naming what, with detail after it when not nil, when that account ends
-// the wait first: a condition on work that waits on the horizon, such as a reader's cursor reaching
-// an event, has no result to send on a channel.
-func (w *Watch) Poll(t *testing.T, what string, every time.Duration, detail func() string, condition func() bool) {
+// Poll asks condition until it holds, through the shared wait (testwait.Until) and with no bound
+// of its own: a hold of any length only delays it. It fails t at once, naming what, when the
+// horizon names an own hold (Failure), and when the wait gives up at the test binary's deadline its
+// last read is the watch's account of the horizon (String). On either failure, and on one the
+// condition makes itself, detail is printed after it when not nil.
+func (w *Watch) Poll(t *testing.T, what string, detail func() string, condition func() bool) {
 	t.Helper()
-	for !condition() {
+	held := false
+	// A failure ends the test goroutine (runtime.Goexit) inside the wait, which runs this before
+	// it ends.
+	defer func() {
+		if !held && detail != nil {
+			t.Log(detail())
+		}
+	}()
+	testwait.Until(t, what, func() (*Watch, bool) {
+		if condition() {
+			return w, true
+		}
 		if failure := w.Failure(what); failure != "" {
 			// The condition may have come true since it was last asked; a run that has it is
 			// not failed for the order of two reads.
 			if condition() {
-				return
-			}
-			if detail != nil {
-				failure += "\n" + detail()
+				return w, true
 			}
 			t.Fatal(failure)
 		}
-		time.Sleep(every)
-	}
-}
-
-// probeTimeout bounds the watch's own read of the holder, as horizonDiagnosisTimeout bounds the
-// horizon's.
-const probeTimeout = 2 * time.Second
-
-// readHolder reads the instance's oldest transaction holding an id through db, with the query the
-// horizon's diagnosis runs, as a warning: dated by the database's own clock, so its holder's age
-// is read on one clock, and holding for that age (pending_for), since a watch that reads it has
-// been waiting at least as long as the holder it finds has stood.
-func readHolder(db Querier) (Warning, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
-	defer cancel()
-	var kind, state, application, database, query string
-	var pid int32
-	var started *time.Time
-	var at time.Time
-	err := db.QueryRow(ctx, `select kind, pid, started, state, application_name, database, query, clock_timestamp() from (`+
-		events.StallHolderSQL+`) holder`).Scan(&kind, &pid, &started, &state, &application, &database, &query, &at)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return Warning{}, false, nil
-	case err != nil:
-		return Warning{}, false, err
-	}
-	held := Warning{At: at, Database: database, Named: true, Client: clientOf(application, strconv.Itoa(int(pid)))}
-	if started != nil {
-		held.HolderSince = *started
-		held.PendingFor = at.Sub(*started)
-	}
-	held.Text = fmt.Sprintf("(read by the wait itself, the horizon's warning not yet logged) holder=%s pid=%d xact_start=%v state=%s application_name=%q database=%s query=%q",
-		kind, pid, held.HolderSince, state, application, database, query)
-	return held, true, nil
-}
-
-// Dialed is a Querier that opens a connection of its own to databaseURL for each read and closes
-// it once the row is read: for a test whose Dispatch runs as a process, which holds no pool the
-// watch could read through, and whose connections the process may need.
-func Dialed(databaseURL string) Querier { return dialed(databaseURL) }
-
-type dialed string
-
-func (d dialed) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	conn, err := pgx.Connect(ctx, string(d))
-	if err != nil {
-		return failedRow{err}
-	}
-	return closingRow{conn: conn, row: conn.QueryRow(ctx, sql, args...)}
-}
-
-// failedRow is a row whose read fails with the connection's error.
-type failedRow struct{ err error }
-
-func (r failedRow) Scan(...any) error { return r.err }
-
-// closingRow closes its connection once it has been read.
-type closingRow struct {
-	conn *pgx.Conn
-	row  pgx.Row
-}
-
-func (r closingRow) Scan(dest ...any) error {
-	defer r.conn.Close(context.Background())
-	return r.row.Scan(dest...)
+		return w, false
+	})
+	held = true
 }
 
 // WaitInProcess is Wait on a horizon of the test's own process, on own's server: it listens for
-// the horizon's warnings for as long as it waits (Listen), and reads the holder through own's pool
-// once they fall silent. The horizon must warn at StallWarning.
+// the horizon's warnings for as long as it waits (Listen). The horizon must warn at StallWarning.
 func WaitInProcess[T any](t *testing.T, what string, arrived <-chan T, own *store.Store) T {
 	t.Helper()
 	warnings, stop := Listen(t)
 	defer stop()
-	return Wait(t, what, arrived, warnings, own.Pool.Config().ConnConfig.Database, own.Pool, nil)
+	return Wait(t, what, arrived, warnings, own.Pool.Config().ConnConfig.Database, nil)
 }
 
-// state is what the wait knows at one poll.
-type state struct {
-	elapsed         time.Duration // since the wait began
-	sinceNewWarning time.Duration // since the warning count last rose; meaningless while warnings is 0
-	warnings        int           // stall warnings since the wait began
-	last            Warning       // the newest of them; the zero Warning while warnings is 0
-	ownDatabase     string        // the database the horizon's pool reads
-}
-
-// lastText is the newest warning for a failure to print.
-func (s state) lastText() string {
-	if s.warnings == 0 {
-		return "(none since the wait began)"
-	}
-	return s.last.Text
-}
-
-// verdict is what the wait does with one state: wait on, or fail with the reason the state gives.
-type verdict int
-
-const (
-	waitOn        verdict = iota
-	noSignal              // nothing arrived and the horizon never said it was held
-	signalStopped         // the horizon stopped saying it was held, and nothing arrived
-	ownHold               // the stall is a hold in the test's own database, not a foreign one
-)
-
-// String names a verdict, so a failed row reads as the decision the wait made rather than as the
-// integer the constants are.
-func (v verdict) String() string {
-	switch v {
-	case waitOn:
-		return "waitOn"
-	case noSignal:
-		return "noSignal"
-	case signalStopped:
-		return "signalStopped"
-	case ownHold:
-		return "ownHold"
-	}
-	return fmt.Sprintf("verdict(%d)", int(v))
-}
-
-// verdictOf judges one poll of the wait. It is a function of the state alone, so it can be driven
-// with no server and no Postgres.
+// ownHold reports whether warning names the one stall a wait refuses to wait out: a holder in
+// ownDatabase that has itself held the horizon back at least OwnHoldBound, by the warning's own
+// account (heldFor). A hold that has stood the bound in the test's own database is the defect,
+// however long the test has waited: waiting it out would pass a test whose job is to fail on it
+// (dispatch://INFRA-636). A shorter one is some client's ordinary transaction, which the wait
+// waits out exactly as it does a foreign one.
 //
-// Three readings fall out of the rules, and all three are the safe ones. A warning whose diagnosis
+// Three readings fall out of the rule, and all three are the safe ones. A warning whose diagnosis
 // failed names no database (horizon.go's diagnosis_error arm), and neither does one that found no
-// holder ("none open now"); since neither names the test's own database, each counts as a stall
-// and extends the wait. A warning that dates neither its holder nor itself holds for zero
-// (heldFor), so the own-hold rule takes it as the plain stall it also is. The known limit is the
-// other way about: the warning names only the oldest holder at diagnosis time, so a foreign holder
-// can mask one of Dispatch's own.
+// holder ("none open now"); since neither names the test's own database, neither is an own hold. A
+// warning that dates neither its holder nor itself holds for zero (heldFor), so it is the plain
+// stall it also is. The known limit is the other way about: the warning names only the oldest
+// holder at diagnosis time, so a foreign holder can mask one of Dispatch's own.
 //
-// The own-hold rule is judged on how long the holder named has held the horizon (heldFor), not on
+// The rule is judged on how long the holder named has held the horizon (heldFor), not on
 // pending_for alone, which is the age of the oldest pending observation: a foreign holder that has
 // since released can carry that past OwnHoldBound while the holder now named is a transaction of
-// the test's own database that began a moment ago. Such a warning extends the wait as any short
-// hold does; a transaction of that database that has itself stood OwnHoldBound still fails it.
-func verdictOf(s state) verdict {
-	switch {
-	// A hold in the test's own database that has stood the bound is the defect, whatever the
-	// elapsed time: waiting it out would pass a test whose job is to fail on it
-	// (dispatch://INFRA-636). A shorter one is some client's ordinary transaction and extends
-	// the wait, exactly as a foreign warning does.
-	case s.warnings > 0 && s.last.heldFor() >= OwnHoldBound && s.last.Named && s.last.Database == s.ownDatabase:
-		return ownHold
-	case s.warnings == 0 && s.elapsed >= Base:
-		return noSignal
-	case s.warnings > 0 && s.sinceNewWarning >= Extension:
-		return signalStopped
-	default:
-		return waitOn
-	}
+// the test's own database that began a moment ago.
+func ownHold(warning Warning, ownDatabase string) bool {
+	return warning.Named && warning.Database == ownDatabase && warning.heldFor() >= OwnHoldBound
 }
 
 // FirstFrame is the one result ReadFirstFrame sends: the first frame but a heartbeat, with the
@@ -791,56 +579,64 @@ func ReadFirstFrame(conn *gws.Conn) <-chan FirstFrame {
 	return read
 }
 
-// AwaitPersisted proves horizon's H as often as it can until the H some process persisted reaches
-// newest, waiting as WaitInProcess does on the horizon's own account of itself (the horizon is set
-// to warn at StallWarning here), and fails t when that account ends the wait first. own is the
-// store whose database horizon's pool reads.
+// AwaitPersisted proves horizon's H until the H some process persisted reaches newest, waiting as
+// PollInProcess does on a horizon set to warn at StallWarning here, and fails t when a proof fails
+// or the horizon names an own hold. own is the store whose database horizon's pool reads. A proof
+// waits on the horizon, so each runs on a goroutine of its own (proveOnce) and the wait asks after
+// it: the next proof begins once the one before has answered.
 func AwaitPersisted(t *testing.T, horizon *events.Horizon, newest int64, own *store.Store) {
 	t.Helper()
 	horizon.SetStallWarning(StallWarning, StallWarning)
-	if err := WaitInProcess(t, fmt.Sprintf("a persisted horizon of %d", newest), persistedThrough(t.Context(), horizon, newest), own); err != nil {
-		t.Fatal(err)
-	}
+	var proof <-chan persisted // the proof under way, nil between two
+	PollInProcess(t, fmt.Sprintf("a persisted horizon of %d", newest), own, func() bool {
+		if proof == nil {
+			proof = proveOnce(t.Context(), horizon)
+		}
+		select {
+		case answer := <-proof:
+			proof = nil
+			if answer.err != nil {
+				t.Fatal(answer.err)
+			}
+			return answer.h >= newest
+		default:
+			return false
+		}
+	})
 }
 
-// persistedThrough proves horizon's H on a goroutine of its own, as often as it can, until the H
-// some process persisted reaches newest, and then sends nil, or sends the error that stopped it. It
-// stops when ctx ends, which t.Context does as the test ends, failed or not.
-func persistedThrough(ctx context.Context, horizon *events.Horizon, newest int64) <-chan error {
-	done := make(chan error, 1)
+// persisted is what one proof of the horizon answers: the H some process persisted once it was
+// proven, or the error that stopped the proof.
+type persisted struct {
+	h   int64
+	err error
+}
+
+// proveOnce proves horizon's H once on a goroutine of its own and sends what was persisted then.
+// It stops when ctx ends, which t.Context does as the test ends, failed or not; the channel is
+// buffered, so the goroutine leaves even when nobody receives.
+func proveOnce(ctx context.Context, horizon *events.Horizon) <-chan persisted {
+	done := make(chan persisted, 1)
 	go func() {
-		for {
-			if _, err := horizon.Safe(ctx); err != nil {
-				done <- fmt.Errorf("observe the horizon: %w", err)
-				return
-			}
-			persisted, err := horizon.Persisted(ctx)
-			if err != nil {
-				done <- fmt.Errorf("read the persisted horizon: %w", err)
-				return
-			}
-			if persisted >= newest {
-				done <- nil
-				return
-			}
-			select {
-			case <-ctx.Done():
-				done <- ctx.Err()
-				return
-			case <-time.After(10 * time.Millisecond):
-			}
+		if _, err := horizon.Safe(ctx); err != nil {
+			done <- persisted{err: fmt.Errorf("observe the horizon: %w", err)}
+			return
 		}
+		h, err := horizon.Persisted(ctx)
+		if err != nil {
+			err = fmt.Errorf("read the persisted horizon: %w", err)
+		}
+		done <- persisted{h: h, err: err}
 	}()
 	return done
 }
 
-// PollInProcess asks condition every 10 ms until it holds, for as long as a horizon of the test's
-// own process, on own's server, keeps saying it is held back (Watch.Poll), and fails the test
-// naming what when the horizon's account ends the wait first. The horizon must warn at
-// StallWarning.
+// PollInProcess asks condition until it holds, as Watch.Poll does, on a horizon of the test's own
+// process, on own's server: it listens for the horizon's warnings for as long as it waits (Listen).
+// The horizon must warn at StallWarning.
 func PollInProcess(t *testing.T, what string, own *store.Store, condition func() bool) {
 	t.Helper()
 	warnings, stop := Listen(t)
 	defer stop()
-	NewWatch(t, warnings, own.Pool.Config().ConnConfig.Database, own.Pool).Poll(t, what, 10*time.Millisecond, nil, condition)
+	NewWatch(warnings, own.Pool.Config().ConnConfig.Database).Poll(t, what, nil, condition)
 }

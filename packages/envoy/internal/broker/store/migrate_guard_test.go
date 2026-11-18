@@ -2,10 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +15,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The broker's set is numbered 1 to N with none missing; pgmigratetest.CheckNumberedOneToN says
@@ -105,7 +104,6 @@ func TestMigrateRefusesNonTransactionalFilesBeforeApplyingAnything(t *testing.T)
 // out, naming itself, the lock and its holder, rather than waiting for as long as the holder lives
 // with every broker request on that table queued behind it.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
-	lockTimeout := pgmigrate.LockTimeout
 	ctx := context.Background()
 	s := emptySchemaStore(t)
 	if _, err := s.Pool.Exec(ctx, "create table guard_held (id integer)"); err != nil {
@@ -128,22 +126,21 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 		"migrations/0001_widen_held.up.sql": {Data: []byte("alter table guard_held add column wider integer")},
 	}
 
-	bound := 6 * lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	started := time.Now()
+	bounded := testwait.Context(t)
 	err = s.migrate(bounded, set)
-	waited := time.Since(started)
 	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held lock, until the test's own %s bound cancelled it (%v): nothing bounds a migration's lock wait", waited.Round(time.Millisecond), bound, err)
+		t.Fatalf("migrate waited for the held lock until the shared wait's own bound cancelled it (%v): nothing bounds a migration's lock wait", err)
 	}
 	if err == nil {
-		t.Fatalf("migrate applied a migration whose lock another transaction held, after %s", waited.Round(time.Millisecond))
+		t.Fatal("migrate applied a migration whose lock another transaction held")
 	}
-	if waited < lockTimeout || waited > lockTimeout+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
+	// Postgres's own lock_timeout cancelled it, the one Exec sets to pgmigrate.LockTimeout
+	// before every migration: a wait that ended any other way — the holder letting go, a
+	// statement timeout, this test's context — is not the bound this row is about.
+	var lockTimeout *pgmigrate.LockTimeoutError
+	if !errors.As(err, &lockTimeout) {
+		t.Fatalf("migrate gave up with %v; want a *pgmigrate.LockTimeoutError, Postgres cancelling it at the %s lock_timeout Exec sets", err, pgmigrate.LockTimeout)
 	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
 	holderPID := strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
 	for _, want := range []string{"0001_widen_held.up.sql", "AccessExclusiveLock", "guard_held", "pid " + holderPID, "pg_stat_activity"} {
 		if !strings.Contains(err.Error(), want) {
@@ -165,9 +162,8 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 // lives.
 //
 // Control: remove the pgmigrate.Pin call after the advisory lock in migrate, and migrate waits
-// until the test's own deadline cancels it.
+// until the shared wait's own bound cancels it.
 func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
-	lockTimeout := pgmigrate.LockTimeout
 	ctx := context.Background()
 	s := emptySchemaStore(t)
 	if _, err := s.Pool.Exec(ctx, "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
@@ -190,23 +186,26 @@ func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 		"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
 	}
 
-	bound := 6 * lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
+	bounded := testwait.Context(t)
 	started := time.Now()
 	err = s.migrate(bounded, set)
 	waited := time.Since(started)
 	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), bound, err)
+		t.Fatalf("migrate waited %s for the held version table, until the shared wait's own bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), err)
 	}
+	// Postgres's own lock_timeout cancelled it, the one Pin sets to pgmigrate.LockTimeout right
+	// after the runner's advisory lock: a wait that ended any other way — the holder letting go, a
+	// statement timeout, this test's context — is not the bound this row is about.
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
+		t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03), Postgres cancelling it at the %s lock_timeout Pin sets", err, waited.Round(time.Millisecond), pgmigrate.LockTimeout)
 	}
-	if waited < lockTimeout || waited > lockTimeout+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
+	// And that lock_timeout is LockTimeout and no shorter. A loaded machine only makes the wait
+	// longer, so this check cannot fail for load. A check that the wait ended soon after
+	// LockTimeout could, so the shared wait's bound above is what holds the wait from above.
+	if waited < pgmigrate.LockTimeout {
+		t.Errorf("migrate gave up after %s, before the %s lock timeout: the first applied check ran under a shorter lock_timeout", waited.Round(time.Millisecond), pgmigrate.LockTimeout)
 	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
 	if left := existingTables(t, s, "guard_first"); len(left) != 0 {
 		t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
 	}
@@ -220,18 +219,19 @@ func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
 // migration ran on one of them. The pool is capped at 4, which is what pgxpool's default
 // (max(4, NumCPU)) gives on CI's 4-CPU runner: left at that default on a many-CPU machine, the
 // pool asks for more connections than a Postgres at its default max_connections (100) has, as it
-// did for 288 on a 288-CPU box. The store's search_path is a connection option (emptySchemaStore),
-// so the reset gives back the test's schema, which a new connection reads too. The control runs
-// the same SETs in a committed transaction on a connection of its own and reads them back: the SETs
-// survive a commit, so the row shows that the reset clears them.
+// did for 288 on a 288-CPU box. The store's database is the test's own (emptySchemaStore), and no
+// connection option sets its search_path, so the reset gives back the server's default, which a
+// new connection reads too. The control runs the same SETs in a committed transaction on a
+// connection of its own and reads them back: the SETs survive a commit, so the row shows that the
+// reset clears them.
 //
 // Control: remove the pgmigrate.ResetSession call from releaseMigrationConn, so the connection
 // goes back as it is, and this fails: a pooled connection reads 77s and the row's schema.
 func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
 	ctx := context.Background()
 	s := emptySchemaStore(t, "pool_max_conns=4")
-	schema := "broker_migrate_leak_" + randomSuffix(t)
-	t.Cleanup(func() { adminExec(t, testDatabaseURL(t), "drop schema if exists "+schema+" cascade") })
+	// The schema is the row's own: the database it lives in is dropped when the row ends.
+	schema := "broker_migrate_leak"
 	leaked := schema + ", public"
 	set := fstest.MapFS{
 		"migrations/0001_schema.up.sql": {Data: []byte("create schema " + schema)},
@@ -257,8 +257,7 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 		t.Fatalf("a new connection already reads the migration's settings (%q, %q), so the row proves nothing", wantTimeout, wantSearchPath)
 	}
 
-	acquire, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	acquire := testwait.Context(t)
 	held := make([]*pgxpool.Conn, 0, s.Pool.Config().MaxConns)
 	t.Cleanup(func() {
 		for _, conn := range held {
@@ -299,48 +298,27 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 	}
 }
 
-// emptySchemaStore opens a store on a schema of its own on the BROKER_TEST_DATABASE_URL server,
-// created empty and dropped when t ends, with params, extra connection parameters as key=value
-// (e.g. "pool_max_conns=4"), added to the URL. A test that migrates a set of its own needs one:
-// the server's shared schema already records the broker's real versions, which would pass over
-// the test set's numbers as applied.
+// emptySchemaStore opens a store on an empty database of the test's own (ownDatabase), whose
+// public schema records no version yet, with params, extra connection parameters as key=value
+// (e.g. "pool_max_conns=4"), added to the URL. A test that migrates a set of its own needs one: a
+// schema that already recorded the broker's real versions would pass over the test set's numbers
+// as applied.
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
-	raw := testDatabaseURL(t)
-	schema := "broker_migrate_test_" + randomSuffix(t)
-	adminExec(t, raw, "create schema "+schema)
-	t.Cleanup(func() { adminExec(t, raw, "drop schema "+schema+" cascade") })
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
+	databaseURL := ownDatabase(t)
 	for _, param := range params {
 		key, value, ok := strings.Cut(param, "=")
 		if !ok {
 			t.Fatalf("connection parameter %q is not key=value", param)
 		}
-		query.Set(key, value)
+		databaseURL = testdb.WithParameter(t, databaseURL, key, value)
 	}
-	parsed.RawQuery = query.Encode()
-	s, err := Open(context.Background(), parsed.String())
+	s, err := Open(context.Background(), databaseURL)
 	if err != nil {
-		t.Fatalf("open the test schema: %v", err)
+		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(s.Pool.Close)
 	return s
-}
-
-// randomSuffix is 16 random hex digits, for a name of the test's own on a server that other tests
-// share.
-func randomSuffix(t *testing.T) string {
-	t.Helper()
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random name: %v", err)
-	}
-	return hex.EncodeToString(suffix[:])
 }
 
 func adminExec(t *testing.T, databaseURL, statement string) {
@@ -348,7 +326,7 @@ func adminExec(t *testing.T, databaseURL, statement string) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
-		t.Fatalf("connect to BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("connect to the test database: %v", err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement); err != nil {

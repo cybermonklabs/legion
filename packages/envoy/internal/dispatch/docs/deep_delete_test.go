@@ -41,7 +41,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		// The peer writes on the room's document, as a browser does once the room has sent it, so
 		// the chain's root always lands beside the seeded paragraph.
-		if err := peer.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+		if err := peer.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 			t.Fatal(err)
 		}
 		fragment := peer.Doc.GetXmlFragment(fragmentName)
@@ -75,7 +75,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
 		live := service.srv.GetDoc(artifactID)
-		waitFor(t, 30*time.Second, "the room to hold the nested chain", func() bool {
+		waitFor(t, "the room to hold the nested chain", func() bool {
 			return live.StateVector().Clock(client) == sent
 		})
 		if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
@@ -102,7 +102,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 			t.Fatalf("send the chain's delete: %v", err)
 		}
 
-		waitFor(t, 30*time.Second, "the room to read back as the document it was", func() bool {
+		waitFor(t, "the room to read back as the document it was", func() bool {
 			text, err := service.Text(context.Background(), artifactID)
 			return err == nil && strings.TrimSpace(text) == "before"
 		})

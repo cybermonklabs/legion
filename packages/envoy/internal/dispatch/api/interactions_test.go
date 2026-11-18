@@ -148,7 +148,7 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
 	t.Helper()
-	if !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+	testwait.Eventually(t, "the second acceptance to reach the document service or wait for the comment lock", func() bool {
 		select {
 		case <-secondReplacement:
 			return true
@@ -162,9 +162,7 @@ func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, 
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0
-	}) {
-		t.Fatal("second accept did not reach document service or wait for the comment lock")
-	}
+	})
 }
 
 func TestAskWithoutOptionsEmitsEmptyOptionsArray(t *testing.T) {
@@ -1298,15 +1296,10 @@ func TestReopenOrphanedSuggestionSucceeds(t *testing.T) {
 
 func waitForArtifactVersion(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Eventually(t, fmt.Sprintf("artifact %s version %d to settle", artifactID, number), func() bool {
 		version := dispatchRequest(t, handler, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", artifactID, number), nil, "alice")
-		if version.Code == http.StatusOK {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("artifact version %d did not settle", number)
+		return version.Code == http.StatusOK
+	})
 }
 
 func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
@@ -1529,11 +1522,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
-	select {
-	case <-gate.firstEntered:
-	case <-time.After(time.Second):
-		t.Fatal("first acceptance did not reach the document replacement")
-	}
+	testwait.Receive(t, "the first acceptance to reach the document replacement", gate.firstEntered)
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
@@ -1542,18 +1531,14 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 
 	var success, conflict int
 	for range 2 {
-		select {
-		case response := <-responses:
-			switch response.Code {
-			case http.StatusOK:
-				success++
-			case http.StatusConflict:
-				if strings.Contains(response.Body.String(), `"code":"ALREADY_ACTIONED"`) {
-					conflict++
-				}
+		response := testwait.Receive(t, "both concurrent acceptances to answer", responses)
+		switch response.Code {
+		case http.StatusOK:
+			success++
+		case http.StatusConflict:
+			if strings.Contains(response.Body.String(), `"code":"ALREADY_ACTIONED"`) {
+				conflict++
 			}
-		case <-time.After(time.Second):
-			t.Fatal("concurrent acceptance did not complete")
 		}
 	}
 	if success != 1 || conflict != 1 {
@@ -2392,39 +2377,16 @@ func TestGetCommentReturnsNotFound(t *testing.T) {
 	}
 }
 
-// loadMarkProjection waits for the mark to reach the persisted document: the API answers once
-// the live document carries the mark, and persistence follows on its own schedule.
+// loadMarkProjection waits for the mark to reach the persisted document and answers its record.
+// A document's updates do not all reach Postgres inside the request that caused them: the API
+// answers once the live document carries the mark, and a server-side mark written outside a
+// transaction persists on the document service's own queue. Reading the instant a request
+// returns is therefore a race with that queue, not a statement about the write.
 func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		projection, found := findMarkProjection(t, database, artifactID, markID)
-		if found {
-			return projection
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("mark projection %q is missing", markID)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// awaitMarkProjection waits for the mark's durable record. A document's updates do not all
-// reach Postgres inside the request that caused them: a server-side mark written outside a
-// transaction persists on the document service's own queue, and a Yjs update that depends on
-// one still in flight stays pending in a freshly loaded document until it lands. Reading the
-// instant a request returns is therefore a race with that queue, not a statement about the
-// write - the record either appears here or the caller's assertion fails on the empty result.
-func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		projection, found := findMarkProjection(t, database, artifactID, markID)
-		if found || time.Now().After(deadline) {
-			return projection, found
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	return testwait.Until(t, "the persisted record of mark "+markID, func() (map[string]any, bool) {
+		return findMarkProjection(t, database, artifactID, markID)
+	})
 }
 
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {

@@ -220,7 +220,7 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 func bootClaimConsumers(t *testing.T, pool *store.Pool) *intake.Consumers {
 	t.Helper()
 	conn := testnats.Connect(t, workflowNATS(t))
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

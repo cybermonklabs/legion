@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testClock is a clock a test moves by hand, for the spacing between failed discovery attempts.
@@ -173,13 +174,22 @@ func TestDiscoverIsOneReadForConcurrentCallers(t *testing.T) {
 func TestDiscoverOutlivesACallerThatGoesAway(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
-	issuer.DelayDiscovery(300 * time.Millisecond)
+	// The read is held at the issuer until this test releases it, so the caller below goes away
+	// while it is in flight whatever the machine is doing.
+	release := issuer.HoldDiscovery()
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
-	impatient, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := flow.Discover(impatient); !errors.Is(err, ErrIssuerUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Discover on a context that ends mid-read: err = %v, want ErrIssuerUnavailable from the context's deadline", err)
+	impatient, cancel := context.WithCancel(context.Background())
+	left := make(chan error, 1)
+	go func() { left <- flow.Discover(impatient) }()
+	// The stand-in counts a read as it arrives, before the gate holds it.
+	testwait.Eventually(t, "the discovery read the impatient caller started to reach the issuer", func() bool {
+		return issuer.DiscoveryRequests() == 1
+	})
+	cancel()
+	if err := testwait.Receive(t, "the impatient caller to stop waiting", left); !errors.Is(err, ErrIssuerUnavailable) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Discover on a context cancelled mid-read: err = %v, want ErrIssuerUnavailable from the caller's cancel", err)
 	}
+	release()
 	if err := flow.Discover(context.Background()); err != nil {
 		t.Fatalf("Discover after the impatient caller left: %v", err)
 	}

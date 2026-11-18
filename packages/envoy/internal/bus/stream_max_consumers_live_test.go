@@ -67,7 +67,7 @@ func liveServerJetStream(t *testing.T, image string) (string, nats.JetStreamCont
 	_, uri := testnats.StartImageConfig(t, image, config, liveServerArgs, true)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -114,7 +114,8 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 			t.Fatalf("the deployed stream's consumer cap = %d, want the -1 or 0 a server answers for a stream deployed without one", deployed)
 		}
 
-		client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval))
+		clock := keeperClock()
+		client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), clock.option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -135,7 +136,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		if _, err := js.UpdateStream(&lowered); err != nil {
 			t.Fatalf("operator lowering of the cap: %v", err)
 		}
-		raised := awaitKept(t, js, Stream, "the consumer cap", func(info *nats.StreamInfo) bool {
+		raised := awaitKept(t, clock, 1, js, Stream, "the consumer cap", func(info *nats.StreamInfo) bool {
 			return info.Config.MaxConsumers == streamMaxConsumers
 		})
 
@@ -153,7 +154,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		if off.Config.MaxConsumers != -1 {
 			t.Fatalf("the stream's consumer cap after the operator unset it = %d, want the -1 this server answers for a stream with no cap", off.Config.MaxConsumers)
 		}
-		awaitKept(t, js, Stream, "the consumer cap over a stream the operator uncapped", func(info *nats.StreamInfo) bool {
+		awaitKept(t, clock, 1, js, Stream, "the consumer cap over a stream the operator uncapped", func(info *nats.StreamInfo) bool {
 			return info.Config.MaxConsumers == streamMaxConsumers
 		})
 	})
@@ -168,13 +169,14 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 				t.Fatalf("the deployed stream's consumer cap = %d, want the -1 or 0 a server answers for a stream deployed without one", deployed)
 			}
 
-			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval))
+			clock := keeperClock()
+			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), clock.option())
 			if err != nil {
 				t.Fatalf("the start against a stream with no cap on a server that caps none: %v, want no update and no refusal", err)
 			}
 			t.Cleanup(client.Close)
 
-			heldFor(t, js, Stream, "the consumer cap", 6, func(info *nats.StreamInfo) bool {
+			heldFor(t, clock, 1, js, Stream, "the consumer cap", 6, func(info *nats.StreamInfo) bool {
 				return info.Config.MaxConsumers == deployed
 			})
 			// The cap above is unchanged whether the keeper sent nothing or sent a raise this
@@ -191,7 +193,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 				t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, olderServerDeployedCap)
 			}
 
-			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval))
+			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), keeperClock().option())
 			if err == nil {
 				client.Close()
 				t.Fatal("the start raised the cap on a server that cannot take the change, want a refusal")

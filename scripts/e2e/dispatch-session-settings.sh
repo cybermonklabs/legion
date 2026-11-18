@@ -60,7 +60,8 @@ openai_key=${OPENAI_API_KEY:-}
 unset ANTHROPIC_API_KEY OPENAI_API_KEY
 
 # The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
-# packages/envoy/go.mod pins, as child-adoption.sh installs it. The Envoy listener refuses a
+# packages/envoy/go.mod pins and the daemon's own NATS tests run in their test process
+# (packages/daemon/go.mod), as child-adoption.sh installs it. The Envoy listener refuses a
 # nats-server below v2.11.12, v2.12.4 or v2.14.0 (packages/envoy/natsversion).
 nats_version=v2.15.1
 # The pi-envoy the older-plugin session runs: a release before the settings frame.
@@ -137,11 +138,12 @@ for tool in go bun jq curl psql tar python3; do
 done
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs in this step, before the builds, the services and the `create
-# database` further down: the rewrite refuses every DSN the loopback guard refuses, and a DSN
-# whose values the connection string cannot carry as well. Its answer is the connection string
-# the run keeps, and its refusal is the line this script fails with.
+# database` further down: the check refuses every DSN the loopback guard refuses, and a DSN
+# whose values Dispatch cannot be handed as well. Its refusal is the line this script fails with.
+# Dispatch is handed the run's own database by exec_run_database further down, and no variable
+# of this shell holds its connection string.
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$database_url"
+require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$refusal"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -223,8 +225,12 @@ env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token"
   "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
+# DATABASE_URL is the run's own database, which exec_run_database sets as the one variable of
+# Dispatch's environment (--env-only, the `env -i` this start had), and `env` names the rest.
+exec_run_database LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" \
+  "the run creates and drops a database there" --env-only DATABASE_URL -- \
+  env PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \

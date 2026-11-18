@@ -107,10 +107,9 @@ func TestABindingWriteRefusedAsAConflictIsRetriedOnceOverAFreshRead(t *testing.T
 // A binding write that conflicts again on its retry fails the launch with the conflict, as any other
 // write failure does: the bind is retried once, not until it lands. What ends this launch is the
 // row's own observable — the conflict reactor serving the second conflict, after which the bind
-// has no retry left and fails — and the context below is cancelled on it rather than on a wall
-// clock: the bind lies past a suspend, the wait for the previous pod, provision, the secret write,
-// the Running patch and the wait for the new pod, which a loaded machine spends more than the
-// second failedLaunch gives its own callers (relaunch_test.go).
+// has no retry left and fails — and the context below is cancelled on it, so a launch that went on
+// waiting for anything else past the bind (a suspend, the wait for the previous pod, provision,
+// the secret write, the Running patch and the wait for the new pod all lie before it) ends there.
 func TestABindingWriteConflictedTwiceFailsTheLaunch(t *testing.T) {
 	g := newRig(t, nil)
 	spec := workerSpec(t)

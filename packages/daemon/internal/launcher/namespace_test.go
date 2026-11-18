@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // namespaceHelperEnv marks the test binary re-executed as the PID 1 launcher below: TestMain
@@ -100,9 +101,6 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	self, err := os.Executable()
 	if err != nil {
@@ -121,19 +119,14 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// A launcher the wait below gave up on is killed after it, as cleanups run last first.
+	t.Cleanup(func() { _ = command.Process.Kill() })
 	g.cancel = func() { _ = stdin.Close() }
 	go func() { g.result <- command.Wait() }()
 	t.Cleanup(func() {
 		g.cancel()
-		select {
-		case err := <-g.result:
-			if err != nil {
-				t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
-			}
-		case <-time.After(10 * time.Second):
-			_ = command.Process.Kill()
-			<-g.result
-			t.Error("PID 1 launcher did not stop after its context ended")
+		if err := testwait.Receive(t, "the PID 1 launcher's exit after its context ended", g.result); err != nil {
+			t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
 		}
 	})
 	g.accept()
@@ -221,14 +214,10 @@ while :; do /bin/sleep 600 & wait; done
 			}
 			published(t, ready)
 			g.cancel()
-			select {
-			case err := <-g.result:
-				g.result <- err
-				if err != nil {
-					t.Fatalf("launcher exit: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("launcher exceeded its shutdown budget")
+			err := testwait.Receive(t, "the launcher's exit after its context ended", g.result)
+			g.result <- err
+			if err != nil {
+				t.Fatalf("launcher exit: %v", err)
 			}
 			body, err := os.ReadFile(finished)
 			if tc.graceful {

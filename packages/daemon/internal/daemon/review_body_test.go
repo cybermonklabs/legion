@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
@@ -17,12 +17,12 @@ import (
 func TestReviewBodyRestoresATruncatedReviewAppReview(t *testing.T) {
 	var gotPath string
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"body":"the full body\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\"} -->"}`))
-	}))
+	}})
 	defer server.Close()
 
 	pool := reviewPermissionPool(t)
@@ -49,10 +49,10 @@ func TestReviewBodyRestoresATruncatedReviewAppReview(t *testing.T) {
 // session could ever decide a round, so its capped body is returned unchanged with no call made.
 func TestReviewBodyLeavesAnotherAuthorsReviewUnchanged(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Write([]byte(`{"body":"should never be read"}`))
-	}))
+	}})
 	defer server.Close()
 
 	pool := reviewPermissionPool(t)
@@ -76,10 +76,10 @@ func TestReviewBodyLeavesAnotherAuthorsReviewUnchanged(t *testing.T) {
 // workflow drops it: its capped body is returned unchanged with no GitHub call made.
 func TestReviewBodyLeavesAnUnrecordedPullRequestsReviewUnchanged(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Write([]byte(`{"body":"should never be read"}`))
-	}))
+	}})
 	defer server.Close()
 
 	pool := reviewPermissionPool(t)
@@ -103,10 +103,10 @@ func TestReviewBodyLeavesAnUnrecordedPullRequestsReviewUnchanged(t *testing.T) {
 // made, as reviewerCanWrite's permission read is.
 func TestReviewBodyWithRateLimitHeldMakesNoRequest(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Write([]byte(`{"body":"should never be read"}`))
-	}))
+	}})
 	defer server.Close()
 
 	pool := reviewPermissionPool(t)
@@ -129,11 +129,11 @@ func TestReviewBodyWithRateLimitHeldMakesNoRequest(t *testing.T) {
 // out before the review's delivery is tried again, the same as a rate-limited permission read.
 func TestReviewBodyRateLimitedReadRetriesLater(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Retry-After", "120")
 		http.Error(w, "rate limited", http.StatusForbidden)
-	}))
+	}})
 	defer server.Close()
 
 	pool := reviewPermissionPool(t)
@@ -169,14 +169,14 @@ func TestReviewBodyRateLimitedReadRetriesLater(t *testing.T) {
 // old token is dropped and the delivery retried, and the retried read restores the full body.
 func TestReviewBodyA401IsRetriedWithAFreshToken(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
 		}
 		w.Write([]byte(`{"body":"the full body"}`))
-	}))
+	}})
 	defer server.Close()
 
 	pool := reviewPermissionPool(t)

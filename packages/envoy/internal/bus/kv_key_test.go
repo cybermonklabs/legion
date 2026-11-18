@@ -6,12 +6,12 @@ import (
 	"maps"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A KV call builds its subjects from its key, which nats.go checks only for the characters a key may
@@ -28,7 +28,7 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -63,9 +63,7 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 		// The leader-answered read builds its own request rather than letting nats.go build one,
 		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
 		"GetFromLeader": func(key string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err := kv.GetFromLeader(ctx, key)
+			_, err := kv.GetFromLeader(testwait.Context(t), key)
 			return err
 		},
 		"Put":       func(key string) error { _, err := kv.Put(key, []byte("v")); return err },
@@ -178,7 +176,7 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -273,7 +271,7 @@ func TestAKeyAnEarlierListenerStoredStaysListableAndDeletable(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -335,19 +333,30 @@ func listedKeys(t *testing.T, kv KeyValue) []string {
 	defer func() { _ = watcher.Stop() }()
 	var keys []string
 	for {
+		entry := nextUpdate(t, watcher, "the watch of every key")
+		if entry == nil {
+			return keys
+		}
+		keys = append(keys, entry.Key())
+	}
+}
+
+// nextUpdate is the next update of watcher, the nil that ends its scan included; a watch that
+// ended instead, closing its channel, fails the test, which the receive of a closed channel could
+// not be told from that nil.
+func nextUpdate(t *testing.T, watcher jetstream.KeyWatcher, what string) jetstream.KeyValueEntry {
+	t.Helper()
+	return testwait.Until(t, "the next update of "+what, func() (jetstream.KeyValueEntry, bool) {
 		select {
 		case entry, open := <-watcher.Updates():
 			if !open {
-				t.Fatalf("the watch of every key ended after %d keys, before its scan's nil", len(keys))
+				t.Fatalf("%s ended before its scan's nil", what)
 			}
-			if entry == nil {
-				return keys
-			}
-			keys = append(keys, entry.Key())
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the watch of every key delivered %d keys and no nil within 10 s, want the nil that ends its scan", len(keys))
+			return entry, true
+		default:
+			return nil, false
 		}
-	}
+	})
 }
 
 // watchKey watches key through kv's jetstream handle and fails the test unless the watch delivers
@@ -362,13 +371,9 @@ func watchKey(t *testing.T, kv KeyValue, key string) {
 	}
 	defer func() { _ = watcher.Stop() }()
 	for _, want := range []bool{true, false} {
-		select {
-		case entry := <-watcher.Updates():
-			if (entry != nil) != want || (entry != nil && entry.Key() != key) {
-				t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("watch of %d-byte key delivered nothing within 10 s", len(key))
+		entry := nextUpdate(t, watcher, "the watch of the key")
+		if (entry != nil) != want || (entry != nil && entry.Key() != key) {
+			t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
 		}
 	}
 }

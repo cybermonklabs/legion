@@ -12,11 +12,14 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // repositoryGitHub is GitHub's REST API answering GET /repos/acme/widgets with defaultBranch, or
 // with status when it is not 200. It counts its reads and records how each was authorized; release,
-// when set, holds every read until it is closed.
+// when set, holds every read until it is closed. A request that carries no lease of the package's
+// App token stand-ins (aLease) is another process's: it is answered 404 and logged, and counts as
+// no read.
 type repositoryGitHub struct {
 	url           string
 	reads         atomic.Int32
@@ -28,10 +31,10 @@ type repositoryGitHub struct {
 	release       chan struct{}
 }
 
-func newRepositoryGitHub(t *testing.T, defaultBranch string) *repositoryGitHub {
+func newRepositoryGitHub(t testing.TB, defaultBranch string) *repositoryGitHub {
 	t.Helper()
 	g := &repositoryGitHub{status: http.StatusOK, defaultBranch: defaultBranch}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/repos/acme/widgets" {
 			githubtest.Unexpected(t, w, r)
 			return
@@ -168,14 +171,7 @@ func TestDefaultBranchesSharesOneReadInFlight(t *testing.T) {
 			answers <- got.DefaultBranch
 		})
 	}
-	deadline := time.After(10 * time.Second)
-	for github.reads.Load() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("no read reached GitHub")
-		case <-time.After(time.Millisecond):
-		}
-	}
+	testwait.Eventually(t, "a read to reach GitHub", func() bool { return github.reads.Load() != 0 })
 	close(github.release)
 	wg.Wait()
 	close(answers)

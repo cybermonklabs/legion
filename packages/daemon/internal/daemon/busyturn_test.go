@@ -142,14 +142,16 @@ func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
 	if held.State != supervise.StateWorking {
 		t.Fatalf("the claim is %s after the busy answer, want it recorded working", held.State)
 	}
-	if last := held.Step.LastStep(); !last.Add(backstopBound).Before(time.Now()) {
+	// Each step is judged against the clock the sweep judges it by (backstopStalledTurns reads
+	// plan.clock), read where it is judged.
+	if last := held.Step.LastStep(); !last.Add(backstopBound).Before(rig.s.plan.clock.Now()) {
 		t.Fatalf("the machine's own copy of the step reads %v, want the earlier turn's, past the bound: the sweep below must post", last)
 	}
 	written := rig.claimStore()
 	written.mu.Lock()
 	stored := written.claims[idle.Token]
 	written.mu.Unlock()
-	if last := stored.Step.LastStep(); last.Add(backstopBound).Before(time.Now()) {
+	if last := stored.Step.LastStep(); last.Add(backstopBound).Before(rig.s.plan.clock.Now()) {
 		t.Fatalf("the stored step reads %v after the busy answer, want the start of the turn it recorded", last)
 	}
 

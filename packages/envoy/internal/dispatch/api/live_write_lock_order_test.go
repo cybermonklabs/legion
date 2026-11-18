@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A project document upload and another write to the same document, started together, both
@@ -80,8 +81,8 @@ func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
 			f.waitForWriteToEngage(t)
 			f.persistence.release()
 
-			upload := awaitWithin(t, uploads, cancel, "project document upload")
-			write := awaitWithin(t, writes, cancel, test.name)
+			upload := testwait.Receive(t, "the project document upload to finish", uploads)
+			write := testwait.Receive(t, test.name+" to finish", writes)
 			if upload.Code != http.StatusCreated {
 				t.Fatalf("upload: status=%d body=%s", upload.Code, upload.Body.String())
 			}
@@ -151,11 +152,10 @@ func (f *uploadRaceFixture) request(ctx context.Context, method, target string, 
 // waits on a database lock.
 func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, "the second write to enter its document operation or wait on a lock", func() bool {
 		select {
 		case <-f.docs.engaged:
-			return
+			return true
 		default:
 		}
 		var waiting int
@@ -165,32 +165,8 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second write neither entered its document operation nor waited on a lock")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-// awaitWithin waits for a request that must not hang. On a timeout it cancels every request
-// the test started, so a deadlocked pair unwinds before the test fails.
-func awaitWithin(t *testing.T, responses <-chan *httptest.ResponseRecorder, cancel context.CancelFunc, name string) *httptest.ResponseRecorder {
-	t.Helper()
-	select {
-	case response := <-responses:
-		return response
-	case <-time.After(10 * time.Second):
-		cancel()
-		select {
-		case <-responses:
-		case <-time.After(10 * time.Second):
-		}
-		t.Fatalf("%s did not finish within 10 s", name)
-		return nil
-	}
+		return waiting > 0
+	})
 }
 
 // heldAppendStore holds the next transactional append it sees, once asked to, until release.
@@ -215,11 +191,7 @@ func (s *heldAppendStore) waitHeld(t *testing.T) {
 	s.mu.Lock()
 	held := s.held
 	s.mu.Unlock()
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the upload never reached its transactional append")
-	}
+	testwait.Receive(t, "the upload to reach its transactional append", held)
 }
 
 func (s *heldAppendStore) release() {

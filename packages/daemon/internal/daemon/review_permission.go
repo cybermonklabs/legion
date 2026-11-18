@@ -244,22 +244,19 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 }
 
 // noWriteAccess says whether key is an account this repository gave no write access within the
-// window that still stands.
+// window that still stands, on the runtime's clock (timers).
 func (w *workflowRuntime) noWriteAccess(key permissionKey) bool {
+	now := w.timers().Now()
 	w.permissionsMu.Lock()
 	defer w.permissionsMu.Unlock()
-	return time.Now().Before(w.permissions[key])
+	return now.Before(w.permissions[key])
 }
 
-// keepNoWriteAccess keeps key as an account with no write access for the permission TTL, and drops
-// every answer that no longer stands, so no more is held than the accounts that reviewed within one
-// window.
+// keepNoWriteAccess keeps key as an account with no write access for reviewPermissionTTL, and
+// drops every answer that no longer stands, so no more is held than the accounts that reviewed
+// within one window.
 func (w *workflowRuntime) keepNoWriteAccess(key permissionKey) {
-	ttl := w.permissionTTL
-	if ttl == 0 {
-		ttl = reviewPermissionTTL
-	}
-	now := time.Now()
+	now := w.timers().Now()
 	w.permissionsMu.Lock()
 	defer w.permissionsMu.Unlock()
 	if w.permissions == nil {
@@ -270,22 +267,23 @@ func (w *workflowRuntime) keepNoWriteAccess(key permissionKey) {
 			delete(w.permissions, cached)
 		}
 	}
-	w.permissions[key] = now.Add(ttl)
+	w.permissions[key] = now.Add(reviewPermissionTTL)
 }
 
-// rateLimitLeft is how long GitHub's last rate limit still asks to be left alone, zero when none
-// stands. GitHub's documentation warns that calling on while a limit stands can get an integration
-// banned, so no read is made within it.
+// rateLimitLeft is how long GitHub's last rate limit still asks to be left alone, zero or less
+// when none stands, on the runtime's clock (timers). GitHub's documentation warns that calling on
+// while a limit stands can get an integration banned, so no read is made within it.
 func (w *workflowRuntime) rateLimitLeft() time.Duration {
+	now := w.timers().Now()
 	w.permissionsMu.Lock()
 	defer w.permissionsMu.Unlock()
-	return time.Until(w.limitedUntil)
+	return w.limitedUntil.Sub(now)
 }
 
 // holdRateLimit records that GitHub's rate limit stands for another after, keeping the later of
 // this limit and one already held.
 func (w *workflowRuntime) holdRateLimit(after time.Duration) {
-	until := time.Now().Add(after)
+	until := w.timers().Now().Add(after)
 	w.permissionsMu.Lock()
 	defer w.permissionsMu.Unlock()
 	if until.After(w.limitedUntil) {

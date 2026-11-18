@@ -11,14 +11,16 @@ import (
 	"time"
 )
 
-// slowStateAnswer is how long the daemon in this test takes to answer `GET /legion/v1/state`.
-// It is under the time a live deployment takes and over the budget the command reads with: the
-// INFRA daemon, 2368 issues and 610 of them waiting, answered that route in 7.05 s, 7.06 s and
-// 7.30 s to the first byte, measured from an issue pod of its own project on 2026-11-12, with
-// the whole 4.0 MB body in 7.07 s, 7.08 s and 7.32 s. A command that reads such a daemon with a
-// five-second budget prints no state at all, so the waiting line this change adds to the plain
-// output, and the `--json` body of the issue's two after-merge checks, reach nobody on that
-// deployment.
+// slowStateAnswer is how long the stand-in daemon in this test takes to answer
+// `GET /legion/v1/state`: a fixed sleep copying the latency of the production route, under the
+// time a live deployment takes and over the budget the command once read with. The INFRA daemon,
+// 2368 issues and 610 of them waiting, answered that route in 7.05 s, 7.06 s and 7.30 s to the
+// first byte, measured from an issue pod of its own project on 2026-11-12, with the whole 4.0 MB
+// body in 7.07 s, 7.08 s and 7.32 s. A command that reads such a daemon with a five-second budget
+// prints no state at all, so the waiting line this change adds to the plain output, and the
+// `--json` body of the issue's two after-merge checks, reach nobody on that deployment. The sleep
+// is the whole of the proof: a budget the command kept would end this read, and a stand-in that
+// answered at once would meet no budget at all.
 const slowStateAnswer = 6 * time.Second
 
 // TestStateReadsADaemonSlowerThanTheOldBudget holds `legion state` to the one thing its reader

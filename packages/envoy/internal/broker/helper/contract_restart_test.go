@@ -16,6 +16,8 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // failingTokenTransport fails every request to the broker's token endpoint as an unreachable
@@ -69,25 +71,22 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	}
 	first.cancel()
 	lossy := &losingTokenTransport{}
+	// The retry after a lost answer is the refresh loop's own wait, armed on this broker's
+	// clock at the production retry, and fired here rather than shortened.
+	fake := clocktest.New(time.Now())
 	b := &Broker{URL: brokeraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
-		HTTP: &http.Client{Transport: lossy}, refreshRetry: 200 * time.Millisecond}
+		HTTP: &http.Client{Transport: lossy}, Clock: fake}
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	fireArmedAt(t, fake, fake.Now().Add(b.refreshRetryOrDefault()), "the refresh loop's retry after the lost answer")
+	waitFor(t, func() bool {
 		now, err := LoadMachineFile(first.machineFile)
-		if err == nil && now.RefreshToken != kept.RefreshToken {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the retried refresh never kept a rotated login: %+v %v; status %+v", now, err, b.LoginStatus())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return err == nil && now.RefreshToken != kept.RefreshToken
+	})
 	lossy.mu.Lock()
 	lost := lossy.lost
 	lossy.mu.Unlock()
@@ -127,17 +126,10 @@ func TestContractALoginSurvivesARestart(t *testing.T) {
 		t.Fatalf("register on the restarted helper: %+v; want the session enrolled", reg)
 	}
 	waitForIssued(t, second.srv.Broker)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	waitFor(t, func() bool {
 		now, err := LoadMachineFile(first.machineFile)
-		if err == nil && now.RefreshToken != kept.RefreshToken && now.CredentialID == credentialID {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the start's refresh never rotated the kept refresh token: %+v %v; log:\n%s", now, err, second.logBuf.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return err == nil && now.RefreshToken != kept.RefreshToken && now.CredentialID == credentialID
+	})
 }
 
 // TestContractARevokedMachinesNextRefreshDropsItsLogin: the person who approved the login revokes
@@ -154,13 +146,7 @@ func TestContractARevokedMachinesNextRefreshDropsItsLogin(t *testing.T) {
 	}
 
 	second := startContractHelper(t, first.broker, first.machineFile, http.DefaultClient)
-	deadline := time.Now().Add(10 * time.Second)
-	for second.srv.Broker.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the revoked login was never dropped; log:\n%s", second.logBuf.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool { return !second.srv.Broker.HasCredential() })
 	got := second.call(t, Request{Op: "login-status"})
 	if !got.OK || got.LoginState != "expired" || !got.LoginRefused || got.CredentialDropped != dropRefreshRefused || got.CredentialHeld {
 		t.Fatalf("login-status after the refused refresh: %+v; want expired, dropped for %q", got, dropRefreshRefused)
@@ -186,13 +172,9 @@ func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
 	}
 
 	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}})
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(second.logBuf.String(), "the machine login's refresh did not reach the broker; retrying") {
-		if time.Now().After(deadline) {
-			t.Fatalf("no line says the refresh failed; log:\n%s", second.logBuf.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool {
+		return strings.Contains(second.logBuf.String(), "the machine login's refresh did not reach the broker; retrying")
+	})
 	if status := second.call(t, Request{Op: "login-status"}); !status.OK || status.LoginState != "issued" || !status.CredentialHeld {
 		t.Fatalf("login-status after a refresh that failed: %+v; want issued and held", status)
 	}
@@ -215,25 +197,29 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kept.ExpiresAt = time.Now().Add(time.Second).UTC()
+	kept.ExpiresAt = time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	if err := kept.Save(first.machineFile); err != nil {
 		t.Fatal(err)
 	}
 
-	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}})
+	// The expiry watch arms its drop on the broker's own clock, for the expiry the login
+	// kept: the row reads that it is armed for exactly that moment and fires it, so the drop
+	// cannot come before the expiry and nothing waits an hour.
+	fake := clocktest.New(time.Now())
+	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}}, func(b *Broker) { b.Clock = fake })
 	if !second.srv.Broker.HasCredential() {
 		t.Fatal("the restarted helper holds no login")
 	}
-	deadline := kept.ExpiresAt.Add(5 * time.Second)
-	for second.srv.Broker.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the credential is still held 5 s past its expiry %s", kept.ExpiresAt)
+	drop := testwait.Until(t, "the expiry watch to arm its drop at the kept expiry", func() (time.Time, bool) {
+		for _, at := range fake.Armed() {
+			if at.Equal(kept.ExpiresAt) {
+				return at, true
+			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if time.Now().Before(kept.ExpiresAt) {
-		t.Fatalf("the credential dropped before its expiry %s", kept.ExpiresAt)
-	}
+		return time.Time{}, false
+	})
+	fake.Set(drop)
+	waitFor(t, func() bool { return !second.srv.Broker.HasCredential() })
 	if got := second.call(t, Request{Op: "login-status"}); got.LoginState != "expired" || got.CredentialDropped != dropExpired {
 		t.Fatalf("login-status after the expiry: %+v; want expired, dropped for %q", got, dropExpired)
 	}
@@ -252,16 +238,10 @@ func TestContractAReLoginReplacesTheKeptLogin(t *testing.T) {
 		t.Fatalf("machine file while the re-login is pending: %+v %v; want the first login %s", kept, err, first)
 	}
 	second := cr.broker.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if cred := cr.srv.Broker.cred.Load(); cred != nil && cred.id == second {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the re-login was never installed: %+v", cr.srv.Broker.LoginStatus())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitFor(t, func() bool {
+		cred := cr.srv.Broker.cred.Load()
+		return cred != nil && cred.id == second
+	})
 	kept, err := LoadMachineFile(cr.machineFile)
 	if err != nil || kept.CredentialID != second || kept.Key.D.Cmp(cr.srv.Broker.cred.Load().key.D) != 0 {
 		t.Fatalf("machine file after the re-login: %+v %v; want the second login %s and its key", kept, err, second)
@@ -284,13 +264,9 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := cr.broker.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
-	for !strings.Contains(cr.logBuf.String(), "retired the machine login a new one replaced") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the replaced credential %s was never retired; log:\n%s", first, cr.logBuf.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitFor(t, func() bool {
+		return strings.Contains(cr.logBuf.String(), "retired the machine login a new one replaced")
+	})
 	var revoked, expired bool
 	if err := cr.broker.Store.Pool.QueryRow(context.Background(), `select revoked_at is not null, expires_at <= now() from launcher_credentials where id = $1`, first).Scan(&revoked, &expired); err != nil || revoked || !expired {
 		t.Fatalf("replaced credential revoked %v, expired %v (%v); want retired: expired, not revoked", revoked, expired, err)
@@ -300,8 +276,7 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The session renews its enrollment with its own proof after its login retired.
-	deadline = time.Now().Add(20 * time.Second)
-	for {
+	waitFor(t, func() bool {
 		var live bool
 		var now time.Time
 		if err := cr.broker.Store.Pool.QueryRow(context.Background(), `select revoked_at is null, lease_expires_at from enrollments where id = $1`, reg.EnrollmentID).Scan(&live, &now); err != nil {
@@ -310,14 +285,8 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		if !live {
 			t.Fatalf("the session's enrollment %s ended when its login was retired", reg.EnrollmentID)
 		}
-		if now.After(lease) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the session's enrollment %s never renewed after its login retired", reg.EnrollmentID)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return now.After(lease)
+	})
 	if s := cr.call(t, Request{Op: "sessions"}); len(s.Sessions) != 1 || s.Sessions[0].EnrollmentID != reg.EnrollmentID {
 		t.Fatalf("sessions after the retire = %+v; want the one session on enrollment %s", s.Sessions, reg.EnrollmentID)
 	}
@@ -347,6 +316,7 @@ func TestContractALostRefreshAnswerIsRedeemableUntilTheGraceEnds(t *testing.T) {
 			first.login(t)
 			first.cancel()
 			lossy := &losingTokenTransport{}
+			// A retry an hour out, so the only refresh after Start's is the row's own call.
 			b := &Broker{URL: brokeraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 				HTTP: &http.Client{Transport: lossy}, refreshRetry: time.Hour}
 			t.Cleanup(b.Close)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -34,9 +35,9 @@ const ControllerStartMessage = "Legion controller start: follow skill://legion-c
 // the controller role's lane could start its own turn first.
 const ControllerStartCommand = "/legion-controller-start"
 
-// The waits before a failed or retired controller is retried: the first (plan.controllerRetry,
-// controllerRetryFirst unless a test replaces it), then doubled at each retry that fails again, up
-// to the last. A controller that reaches ready resets them.
+// The waits before a failed or retired controller is retried: the first (controllerRetryFirst),
+// then doubled at each retry that fails again, up to the last. A controller that reaches ready
+// resets them.
 const (
 	controllerRetryFirst = time.Minute
 	controllerRetryMax   = 30 * time.Minute
@@ -59,33 +60,40 @@ type controllerKeeper struct {
 	// and from the ready route (ready), so each call that reaches the pool takes a fresh one.
 	ctx context.Context
 	log *slog.Logger
-	now func() time.Time
+	// clock is the daemon's time (plan.clock): the keeper reads from it when a retry is due, and
+	// arms its loop's timer on it. The wall clock in production, and a test's fake, which the
+	// test moves past a retry's wait.
+	clock clock.Clock
 	// retryFirst is the first wait before a failed or retired controller is retried.
 	retryFirst time.Duration
 	// retryAt is when a failed or retired controller is next retried, zero while none is waiting,
 	// and backoff the wait that set it.
 	retryAt time.Time
 	backoff time.Duration
+	// observe is the daemon's observer (overrides.observe), told of each look run makes; nil, in
+	// production, is nobody. passes is a test's trigger for the keeper's own loop (plan.passes).
+	observe func(observation)
+	passes  *passTriggers
 }
 
 func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst time.Duration, log *slog.Logger) *controllerKeeper {
-	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, now: time.Now, retryFirst: retryFirst}
+	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, clock: clock.Real(), retryFirst: retryFirst}
 }
 
 func (k *controllerKeeper) token() claim.Token { return claim.ControllerToken(k.project) }
 
-// run keeps the controller at once and then every interval until ctx is done.
+// run keeps the controller at once and then every interval, or whenever a test runs its pass,
+// until ctx is done.
 func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-	for {
+	looks := newPassTimer(k.clock, k.passes, passControllerKeeper, every)
+	defer looks.stop()
+	for pass := uint64(1); ; pass++ {
 		if err := k.keep(); err != nil && ctx.Err() == nil {
 			k.log.Error("controller: keep the daemon's controller running", "claim", k.token(), "error", err)
 		}
-		select {
-		case <-ctx.Done():
+		reportTo(k.observe, observedPass{loop: passControllerKeeper, pass: pass})
+		if !looks.next(ctx) {
 			return
-		case <-ticker.C:
 		}
 	}
 }
@@ -122,7 +130,7 @@ func (k *controllerKeeper) keep() error {
 		// only the operator's resume runs a controller the operator suspended.
 		request = supervise.RequestRuleResume{Claim: token, Reason: "the daemon keeps its controller running"}
 	case supervise.StateFailed, supervise.StateRetired:
-		now := k.now()
+		now := k.clock.Now()
 		if k.retryAt.IsZero() {
 			k.backoff = k.retryFirst
 			k.retryAt = now.Add(k.backoff)
@@ -254,10 +262,10 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 	prober := controller.NewProber(controller.ProberOptions{
 		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.secrets["ENVOY_TOKEN"], Project: p.project, Log: log,
 	})
-	ticker := time.NewTicker(p.orphanSweep)
-	defer ticker.Stop()
+	sweeps := newPassTimer(p.clock, p.passes, passControllerWatch, orphanSweepInterval)
+	defer sweeps.stop()
 	var logged time.Time
-	for {
+	for pass := uint64(1); ; pass++ {
 		record, _, err := st.Controller(ctx, p.project)
 		liveness := controller.Gone
 		switch {
@@ -273,7 +281,7 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 		case controller.Live:
 			logged = time.Time{}
 		case controller.Gone:
-			if logged.IsZero() || time.Since(logged) >= cfg.WorkerBootTimeout {
+			if logged.IsZero() || p.clock.Now().Sub(logged) >= cfg.WorkerBootTimeout {
 				if launched {
 					state, err := launchedControllerState(ctx, st, p.project)
 					attrs := []any{"project", cfg.Project, "registered", record.Registered(), "claimState", state}
@@ -284,13 +292,12 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 				} else {
 					log.Warn(controllerNotRegistered, "project", cfg.Project, "registered", record.Registered())
 				}
-				logged = time.Now()
+				logged = p.clock.Now()
 			}
 		}
-		select {
-		case <-ctx.Done():
+		reportTo(p.observe, observedPass{loop: passControllerWatch, pass: pass})
+		if !sweeps.next(ctx) {
 			return
-		case <-ticker.C:
 		}
 	}
 }

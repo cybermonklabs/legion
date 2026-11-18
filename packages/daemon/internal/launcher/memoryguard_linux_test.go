@@ -97,10 +97,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 			_ = initProcess.Wait()
 		}
 	})
-	bound := testwait.Bounded(t, time.Minute, time.Second)
-	if err := readyRead.SetReadDeadline(time.Now().Add(bound)); err != nil {
-		t.Fatal(err)
-	}
+	readBy(t, readyRead)
 	if line, err := bufio.NewReader(readyRead).ReadString('\n'); err != nil || line != "ready\n" {
 		t.Fatalf("the holder said %q (%v), want ready; the role's output: %s", line, err, output.String())
 	}
@@ -131,11 +128,16 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		Classify: func(table *memoryguard.Table) map[int]memoryguard.Class {
 			answer := classifier.classify(table)
 			// The hour's scan for the largest process runs beside the kill, and may read the
-			// pod once the holder is gone; the scan the kill was decided on reads it.
+			// holder after the kill went out: gone, or still being torn down, its exe, arguments
+			// and ns/pid no longer read. The scan the kill was decided on read the holder and
+			// asked this classifier before the kill, so the first scan to read the holder read it
+			// alive, and its read is the one kept.
 			if p, ok := table.Get(holder); ok {
 				mu.Lock()
 				defer mu.Unlock()
-				read, classes = p, answer
+				if read == nil {
+					read, classes = p, answer
+				}
 			}
 			return answer
 		},
@@ -150,15 +152,19 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	}()
 	defer func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the guard's loop to return once its context ended", done)
 	}()
 
 	var kill memoryguard.Kill
-	select {
-	case kill = <-kills:
-	case <-time.After(bound):
-		t.Fatalf("the guard ended nothing; its log:\n%s", lines.String())
-	}
+	testwait.Until(t, "the guard to end the holder (the reading is its log)", func() (string, bool) {
+		select {
+		case k := <-kills:
+			kill = k
+			return "", true
+		default:
+			return lines.String(), false
+		}
+	})
 	if kill.PID != holder || kill.Role != "tester" || kill.SizeBytes < memoryGuardHeld {
 		t.Fatalf("the guard ended %+v, want the holder %d of the tester, at least %d bytes; its log:\n%s", kill, holder, memoryGuardHeld, lines.String())
 	}
@@ -177,9 +183,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		t.Fatalf("the classifier says %+v of the role-init, want the tester's, protected, a process of its session", initClass)
 	}
 
-	if err := statusRead.SetReadDeadline(time.Now().Add(bound)); err != nil {
-		t.Fatal(err)
-	}
+	readBy(t, statusRead)
 	line, err := bufio.NewReader(statusRead).ReadString('\n')
 	if err != nil {
 		t.Fatalf("the role-init's report of the holder's wait status: %v; the role's output: %s", err, output.String())
@@ -255,6 +259,20 @@ func memoryGuardHold() {
 	time.Sleep(2 * time.Minute)
 	runtime.KeepAlive(held)
 	os.Exit(0)
+}
+
+// readBy gives file the one bound this test binary has for a read that must answer: the moment
+// every wait of the shared wait gives up at (testwait.Context), and none at all under
+// `go test -timeout 0`, where no wait of this test has an end either.
+func readBy(t *testing.T, file *os.File) {
+	t.Helper()
+	deadline, bounded := testwait.Context(t).Deadline()
+	if !bounded {
+		return
+	}
+	if err := file.SetReadDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeTestFile(t *testing.T, path, content string) {

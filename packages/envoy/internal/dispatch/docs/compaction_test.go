@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A tail-rule compaction folds the rows older than the tail into the newest of them and leaves
@@ -138,13 +140,12 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	ctx := context.Background()
 	unlock := holdDocumentLock(t, service.store, artifactID)
 	service.failRoom(artifactID, errors.New("test: fail the room"))
-	waitFor(t, 10*time.Second, "the failed room's compaction to wait for the document's lock", func() bool {
+	waitFor(t, "the failed room's compaction to wait for the document's lock", func() bool {
 		return lockWaits(t, ctx, service.store, "select pg_advisory_lock(%") > 0
 	})
 	requireRowsAsStored(t, service.store, artifactID, before)
 	unlock()
-	recoveryCtx, cancel := context.WithTimeout(ctx, recoveryBound)
-	defer cancel()
+	recoveryCtx := testwait.Context(t)
 	if err := service.awaitRoomRecovery(recoveryCtx, artifactID); err != nil {
 		t.Fatalf("wait for the failed room's recovery: %v", err)
 	}
@@ -432,8 +433,7 @@ func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
 	var cursor int64
 	duringCompactionFold(persist, artifactID, func() {
 		editLiveTree(t, service, artifactID, appendBlocks(t, "Third.\n"))
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 			t.Fatalf("the browser's append did not land while the compaction was inside its fold: %v", err)
 		}
@@ -471,13 +471,8 @@ func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 			_, err := joinedReplaceText(service, artifactID, "Replaced.\n", model.Actor{Kind: "session", ID: "agent"})
 			done <- err
 		}()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("the joined write: %v", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("the joined write did not commit while the compaction was inside its fold")
+		if err := testwait.Receive(t, "the joined write to commit while the compaction is inside its fold", done); err != nil {
+			t.Fatalf("the joined write: %v", err)
 		}
 		written, cursor = storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
 	})
@@ -549,12 +544,7 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 	})
 
 	run := compactAside(versioned, artifactID, false)
-	var held []*pgxpool.Conn
-	select {
-	case held = <-occupied:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the compaction never reached its fold, so its write never came to a connection")
-	}
+	held := testwait.Receive(t, "the compaction to reach its fold, so its write comes to a connection", occupied)
 	release := sync.OnceFunc(func() {
 		for _, conn := range held {
 			conn.Release()
@@ -577,20 +567,15 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 		_, err := versioned.AppendUpdate(context.Background(), artifactID, update)
 		appended <- err
 	}()
-	select {
-	case err := <-appended:
-		if err != nil {
-			t.Fatalf("append to the room while the compaction waits for a connection: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the append never landed while the compaction waited for a compaction-pool connection: the compaction holds the room's lock across that wait")
+	if err := testwait.Receive(t, "the append to land while the compaction waits for a compaction-pool connection (one that never does means the compaction holds the room's lock across that wait)", appended); err != nil {
+		t.Fatalf("append to the room while the compaction waits for a connection: %v", err)
 	}
 	if run.returned() {
 		t.Fatalf("the compaction returned (%+v, %v) before the append landed, so it never waited for a connection", run.result, run.err)
 	}
 
 	release()
-	run.await(t, "the compaction never returned once the connections it waited for were released")
+	run.await(t, "the compaction to return once the connections it waited for were released")
 	if run.err != nil || run.result.outcome != compactCompacted {
 		t.Fatalf("the compaction = (%+v, %v), want the rows folded once it had a connection", run.result, run.err)
 	}
@@ -608,19 +593,15 @@ func TestAWaitingCompactionWhoseReadFailedStillWaitsForTheRoomsLock(t *testing.T
 	run := compactAside(versioned, artifactID, true)
 	// The compaction's is the one advisory lock of this test's database waited for: nothing else
 	// here takes one, and the lock the test holds is granted.
-	deadline := time.Now().Add(roomWait(t))
-	for waitingAdvisoryLocks(t, database) == 0 {
+	waitFor(t, "the compaction whose read failed to wait for the document's lock", func() bool {
 		if run.returned() {
 			t.Fatalf("the compaction whose read failed returned (%+v, %v) without waiting for the document's lock", run.result, run.err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the compaction whose read failed never waited for the document's lock within roomWait")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return waitingAdvisoryLocks(t, database) > 0
+	})
 
 	unlock()
-	run.await(t, "the compaction never returned once the document's lock was let go")
+	run.await(t, "the compaction to return once the document's lock was let go")
 	if run.err == nil || !strings.Contains(run.err.Error(), "read compaction fold point") {
 		t.Fatalf("the compaction returned %v, want the error its read failed with", run.err)
 	}
@@ -732,38 +713,27 @@ func (c *compacted) returned() bool {
 	}
 }
 
-// await waits up to roomWait for the compaction to return, and fails the test by name when it
+// await waits for the compaction to return, failing the test naming what it waited for when it
 // never does rather than leaving the test binary's timeout to say so.
 func (c *compacted) await(t *testing.T, what string) {
 	t.Helper()
-	select {
-	case <-c.done:
-	case <-time.After(roomWait(t)):
-		t.Fatal(what)
-	}
+	testwait.Receive(t, what, c.done)
 }
 
-// waitForRoomLockUsers waits up to roomWait for want callers to be counted among the users of the
-// room's in-process lock (acquireRoomLock), which lockRoom counts itself among as it is entered,
-// before the connection and the advisory lock it goes on to take.
+// waitForRoomLockUsers waits for want callers to be counted among the users of the room's
+// in-process lock (acquireRoomLock), which lockRoom counts itself among as it is entered, before
+// the connection and the advisory lock it goes on to take.
 func waitForRoomLockUsers(t *testing.T, versioned *PgVersioned, room string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(roomWait(t))
-	for {
+	testwait.Until(t, fmt.Sprintf("%d callers of the room's in-process lock", want), func() (int, bool) {
 		users := 0
 		versioned.locksMu.Lock()
 		if lock := versioned.locks[room]; lock != nil {
 			users = lock.users
 		}
 		versioned.locksMu.Unlock()
-		if users >= want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d callers of the room's in-process lock within roomWait, want %d", users, want)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return users, users >= want
+	})
 }
 
 // renameDocUpdatesAway renames doc_updates out of the way, so that a compaction's read of the

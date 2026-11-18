@@ -276,18 +276,13 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 
 // catchUpWithRetries catches up one root, reading Dispatch again for an error it may stop giving,
 // and returns only what makes the boot's attempt fail: the boot's own end, or Dispatch not
-// answering at all. Every other error is logged, and the root is released as it stands.
+// answering at all. Every other error is logged, and the root is released as it stands. Each
+// attempt is bounded by bootTimeout, and the reads wait catchUpRetryDelay apart, both on the
+// runtime's clock (timers).
 func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRoot) error {
-	bound := w.catchUpRootTimeout
-	if bound == 0 {
-		bound = bootTimeout
-	}
-	delay := w.catchUpRetryDelay
-	if delay == 0 {
-		delay = catchUpRetryDelay
-	}
+	clk := w.timers()
 	for attempt := 1; ; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(ctx, bound)
+		attemptCtx, cancel := clk.WithTimeout(ctx, bootTimeout)
 		err := w.catchUpRoot(attemptCtx, root)
 		cancel()
 		refusal, answered := dispatchAnswered(err)
@@ -298,10 +293,8 @@ func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRo
 			return nil
 		case answered && retriable(refusal) && attempt < catchUpAttempts:
 			w.log.Warn("boot catch-up reads a root again after Dispatch refused it", "issue", root.issue.Key, "attempt", attempt, "error", err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
+			if err := clk.Sleep(ctx, catchUpRetryDelay); err != nil {
+				return err
 			}
 			continue
 		case answered:

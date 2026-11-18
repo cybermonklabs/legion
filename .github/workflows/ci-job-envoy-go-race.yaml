@@ -33,8 +33,11 @@ jobs:
   envoy-go-race:
     runs-on: ubuntu-24.04
     # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
+    # the dump that names it. It is 2.7 times the step's slowest package over this job's 20 newest
+    # green merge-group runs up to 2026-11-15: internal/dispatch/store, 664.278 s (run
+    # 43675730856). The limit is at least the job's sum over those runs: its other steps at their
+    # longest, 73 s, 6 s of its clock over them, and the step's longest 811 s plus its 30 minutes:
+    # 2690 s, or 45 minutes.
     timeout-minutes: 45
     services:
       postgres:

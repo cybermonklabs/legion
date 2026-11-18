@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blockIndexService is a document service whose settle delay is an hour, so no timer settles a
@@ -38,11 +39,9 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 		t.Fatalf("seed project CORE: %v", err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = service.Shutdown(stop)
-	})
+	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
+	stop := testwait.Context(t)
+	t.Cleanup(func() { _ = service.Shutdown(stop) })
 	return database, service
 }
 
@@ -733,8 +732,7 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 // Neither waits on the other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	database, service := blockIndexService(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)
@@ -765,13 +763,8 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
-	select {
-	case err := <-ticked:
-		if err != nil {
-			t.Fatalf("tick beside the edit: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("the tick never finished after the edit committed")
+	if err := testwait.Receive(t, "the tick to finish once the edit committed", ticked); err != nil {
+		t.Fatalf("tick beside the edit: %v", err)
 	}
 	if tick.Items != 0 || tick.OwedItems != 1 {
 		t.Fatalf("tick beside the edit = %#v, want nothing written and the comment still owed", tick)

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const testAudience = "broker"
@@ -966,14 +967,10 @@ func (g gatedReader) Read(ctx context.Context, source string) (string, error) {
 	return g.Reader.Read(ctx, source)
 }
 
-// awaitEntered waits for one announcement on entered, failing t after five seconds.
+// awaitEntered waits for one announcement on entered.
 func awaitEntered(t *testing.T, entered <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("%s never started", what)
-	}
+	testwait.Receive(t, what+" to start", entered)
 }
 
 // TestRevokeByApproverIsLimitedToTheApproverOrOperator pins that a human may end only a grant they

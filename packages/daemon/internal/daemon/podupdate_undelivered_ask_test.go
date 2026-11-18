@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -355,25 +356,17 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
 	go func() { _ = m.Handle(rig.ctx, gone) }()
-	select {
-	case <-inside:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the relaunch never reached its Resume")
-	}
+	testwait.Receive(t, "the relaunch to reach its Resume", inside)
 
+	// A row that waited on the claim's lock never returns while the relaunch holds it, so this
+	// wait fails; the deferred release then frees the relaunch and the row.
 	ran := make(chan error, 1)
 	go func() { ran <- rig.lane.execute(rig.ctx, row) }()
-	select {
-	case err := <-ran:
-		if !errors.Is(err, wait.ErrWaiting) {
-			t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
-		}
-		t.Logf("the row waits: %v", err)
-	case <-time.After(10 * time.Second):
-		release()
-		<-ran
-		t.Fatal("the ask did not return while its claim's machine was inside a Resume; it waited on the lock")
+	err := testwait.Receive(t, "the ask over a held claim to return without waiting on its claim's lock", ran)
+	if !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
 	}
+	t.Logf("the row waits: %v", err)
 	if n := rig.deliveredTo(claim.RoleImplementer); n != 0 {
 		t.Fatalf("the ask was delivered %d times while the claim's lock was held, want none: the publish and its mark are one step under that lock", n)
 	}

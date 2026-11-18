@@ -59,10 +59,12 @@ func sessionReport(c supervise.Claim, incarnation string) capabilities.Report {
 }
 
 // supervisorOf is a supervisor over machines for claims, as restore would build them, with nothing
-// fed to them: deployment reads each machine's published claim.
+// fed to them: deployment reads each machine's published claim. The machines' clock is held still
+// (stillClock), so no timeout below ever fires.
 func supervisorOf(t *testing.T, claims ...supervise.Claim) *supervisor {
 	t.Helper()
 	deps := supervise.Deps{
+		Clock:          newStillClock(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,

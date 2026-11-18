@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
-# step and names the tests that were running, a run within the limit ends with the peak, and a
-# `go test -json` stream's output reaches the log.
+# step and names the tests that were running, a process whose name is not UTF-8 is read and counted,
+# a run within the limit ends with the peak, and a `go test -json` stream's output reaches the log.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
 # prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
@@ -76,6 +76,26 @@ else
 fi
 check "took a sample at 0 s and another at 5 s" \
   "$([ "$(grep -c -- ' s, VmRSS ' <<<"$out")" -ge 2 ] && echo true || echo false)"
+
+echo "case: a process whose name is not UTF-8 is read and counted"
+# The command names itself with a byte that is not UTF-8, which /proc/<pid>/status's Name: line
+# then holds as it is, grows by 64 MiB and lives past the sample at 5 s; a strict decode of that
+# status ended the whole wrapper with UnicodeDecodeError after the run it measured had passed.
+renamed='
+import ctypes, time
+ctypes.CDLL(None).prctl(15, b"race\xffname", 0, 0, 0)
+block = b"x" * (64 * 1024 * 1024)
+time.sleep(6)
+raise SystemExit(3 if block else 0)
+'
+run_sampler '' python3 -c "$renamed"
+check "exits with the command's own status, 3" "$(is "$status" 3)"
+check "no decode error ends the wrapper" "$(is "$(contains "$out" 'UnicodeDecodeError')" false)"
+check "took a sample at 0 s and another at 5 s" \
+  "$([ "$(grep -c -- ' s, VmRSS ' <<<"$out")" -ge 2 ] && echo true || echo false)"
+peak_kb=$(sed -n 's/.*the peak was \([0-9][0-9]*\) kB.*/\1/p' <<<"$out" | tail -n 1)
+check "counts the renamed process's 64 MiB in the peak" \
+  "$([ "${peak_kb:-0}" -ge 65536 ] && echo true || echo false)"
 
 echo "case: a run within the limit exits 0 and ends with the peak"
 run_sampler '' sh -c 'echo the command spoke'

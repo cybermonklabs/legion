@@ -179,7 +179,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
-	clock := &heldClock{at: fleetStart}
+	clock := heldClockAt(fleetStart)
 	rt := fake.NewRuntime()
 	rt.Now = clock.Now
 	conns := fake.NewConns()
@@ -213,7 +213,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
 	rig.s = &supervision{
 		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
-		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true},
 		runtime: rt, supervisor: sup,
 		enqueue:     (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),

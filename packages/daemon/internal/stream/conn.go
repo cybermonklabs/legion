@@ -87,8 +87,10 @@ type Conn struct {
 	nc         net.Conn
 	writer     *shimwire.Writer
 	rpcTimeout time.Duration
-	log        *slog.Logger
-	events     *eventQueue
+	// clock measures every request's bound (request).
+	clock  Clock
+	log    *slog.Logger
+	events *eventQueue
 
 	mu      sync.Mutex
 	pending map[string]pendingRequest
@@ -121,12 +123,13 @@ type ackedPrompt struct {
 	deliveryID string
 }
 
-func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
+func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, clk Clock, log *slog.Logger, events *eventQueue) *Conn {
 	return &Conn{
 		claim:       token,
 		nc:          nc,
 		writer:      shimwire.NewWriter(connWriter{nc: nc, timeout: rpcTimeout}),
 		rpcTimeout:  rpcTimeout,
+		clock:       clk,
 		log:         log,
 		events:      events,
 		pending:     map[string]pendingRequest{},
@@ -417,8 +420,8 @@ func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id, deliveryID
 	if err := c.write(frame); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeoutCause(ctx, bound, ErrNoAnswer)
-	defer cancel()
+	noAnswer := c.clock.NewTimer(bound)
+	defer noAnswer.Stop()
 	select {
 	case got := <-answer:
 		return got, nil
@@ -433,6 +436,8 @@ func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id, deliveryID
 		return nil, fmt.Errorf("worker-stream: %s %s: %w before it was answered", c.claim, frame.FrameType(), ErrClosed)
 	case <-ctx.Done():
 		return nil, fmt.Errorf("worker-stream: %s %s: %w", c.claim, frame.FrameType(), context.Cause(ctx))
+	case <-noAnswer.C():
+		return nil, fmt.Errorf("worker-stream: %s %s: %w", c.claim, frame.FrameType(), ErrNoAnswer)
 	}
 }
 

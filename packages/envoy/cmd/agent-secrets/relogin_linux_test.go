@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestLoginStatusFollowsTheCredentialTheHelperHolds: an approved machine login, then a re-login
@@ -129,7 +130,7 @@ func machineLoginThen(t *testing.T, rig *brokertest.Rig, binary, sock, action st
 	t.Helper()
 	cmd := exec.Command(binary, "machine", "login")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_URL="+rig.URL, "AGENT_SECRETS_KEY_DIR=", "AGENT_SECRETS_APPROVE_URL=")
-	var errOut strings.Builder
+	var errOut syncWriter
 	cmd.Stderr = &errOut
 	out, w, err := os.Pipe()
 	if err != nil {
@@ -164,13 +165,14 @@ func machineLoginThen(t *testing.T, rig *brokertest.Rig, binary, sock, action st
 
 	rig.DecideMachineLogin(t, code, action == "approve")
 
-	select {
-	case <-waited:
-	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		<-waited
-		t.Fatalf("machine login never read the %s decision; stderr %q", action, errOut.String())
-	}
+	testwait.Until(t, "machine login to read the "+action+" decision", func() (string, bool) {
+		select {
+		case <-waited:
+			return "", true
+		default:
+			return "stderr: " + errOut.String(), false
+		}
+	})
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {
 		t.Fatalf("machine login: %v", waitErr)

@@ -30,6 +30,7 @@ import (
 // registration stands after it. atWrite, when set, is called with the write's number (1 for the
 // first) as the write arrives, before it is answered.
 type answeringBroker struct {
+	t       *testing.T
 	pod     string
 	atWrite func(n int)
 
@@ -38,6 +39,9 @@ type answeringBroker struct {
 }
 
 func (b *answeringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !fromTheDaemon(b.t, w, r, registrationsToken) {
+		return
+	}
 	var body struct{ Session, Thumbprint string }
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	b.mu.Lock()
@@ -144,7 +148,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 	// test reads after the stop returns, which Handle's deferred unlock precedes.
 	var waitingOnStep, leftStep atomic.Int64
 	var renewalArrived, parkedAtRenewal atomic.Bool
-	broker := &answeringBroker{pod: pod, atWrite: func(n int) {
+	broker := &answeringBroker{t: t, pod: pod, atWrite: func(n int) {
 		if n == 2 {
 			parkedAtRenewal.Store(waitingOnStep.Load() != 0 && leftStep.Load() == 0)
 			renewalArrived.Store(true)
@@ -181,7 +185,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 	}})
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: listener, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: rt, Conns: listener, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: rpc, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion,

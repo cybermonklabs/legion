@@ -25,7 +25,9 @@ const liveRepo = "acme/widgets"
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
 // never came from one it cannot see, and serves the handoff records a step seeds (handoff), which a
 // phase completion names and the daemon reads back. Anything else is a call a live proof does not
-// expect, and fails the test as workflowConfig's stand-in does.
+// expect, and fails the test as workflowConfig's stand-in does. A request without the daemon's
+// bearer (workflowDispatchToken) is another process's: it is answered 404 and logged, and fails
+// nothing (fromTheDaemon).
 type liveDispatch struct {
 	t       *testing.T
 	project string
@@ -106,6 +108,9 @@ func (b *liveDispatch) handoff(key, word, session string) string {
 }
 
 func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if !fromTheDaemon(b.t, w, req, workflowDispatchToken) {
+		return
+	}
 	if servedBootCall(b.t, w, req, b.project) {
 		return
 	}

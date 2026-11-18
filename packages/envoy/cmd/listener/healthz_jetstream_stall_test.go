@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -15,18 +14,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// healthzWithin is how long /healthz may take to answer a JetStream that stopped answering: its
-// healthzBudget (3 s) and a margin, well inside the JetStream MaxWait (10 s).
-const healthzWithin = 3500 * time.Millisecond
 
 // subjectStallRelay forwards NATS client connections to a server. Once stall names subject
 // prefixes, it drops each PUB or HPUB from the client whose subject starts with one, payload and
@@ -169,39 +164,39 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 				t.Fatalf("open the session registry: %v", err)
 			}
 			t.Cleanup(sessions.StopWatch)
-			ready, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ready := testwait.Context(t)
 			if err := registry.WaitForCacheReady(ready); err != nil {
 				t.Fatalf("wait for the interest cache: %v", err)
 			}
 			if err := sessions.WaitForCacheReady(ready); err != nil {
 				t.Fatalf("wait for the session cache: %v", err)
 			}
+			// The route reports a JetStream that stopped answering as the deadline its own budget
+			// imposes, "context deadline exceeded", rather than nats.go's 10 s MaxWait, whose
+			// failure reads differently ("nats: timeout"/no responders). That the stalled read
+			// answers with the budget's own deadline is the whole of what this test holds, so it
+			// is read from the error the 503 carries rather than from how long the answer took:
+			// /healthz cannot run on a fake clock, since its flush (FlushWithContext) refuses a
+			// context with no real deadline.
 			var state atomic.Pointer[listenerDeps]
 			state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
-			get := func() (int, map[string]any, time.Duration) {
+			get := func() (int, map[string]any) {
 				recorder := httptest.NewRecorder()
-				started := time.Now()
 				healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-				elapsed := time.Since(started)
 				var body map[string]any
 				_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-				return recorder.Code, body, elapsed
+				return recorder.Code, body
 			}
-			if code, body, _ := get(); code != http.StatusOK || body["status"] != "healthy" {
+			if code, body := get(); code != http.StatusOK || body["status"] != "healthy" {
 				t.Fatalf("/healthz with JetStream answering = %d %v, want 200 healthy", code, body)
 			}
 
 			relay.stall(stall.prefixes...)
-			code, body, elapsed := get()
-			if elapsed >= healthzWithin {
-				t.Fatalf("/healthz answered after %s (%d %v), want inside %s - a JetStream that stopped answering must be reported inside the budget",
-					elapsed, code, body, healthzWithin)
-			}
+			code, body := get()
 			if code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || body["error"] != stall.want {
-				t.Fatalf("/healthz with %s stalled = %d %v, want 503 unhealthy with the error %q", stall.name, code, body, stall.want)
+				t.Fatalf("/healthz with %s stalled = %d %v, want 503 unhealthy with the error %q - the budget's own deadline, not the JetStream MaxWait", stall.name, code, body, stall.want)
 			}
-			t.Logf("/healthz with %s stalled: %d in %s: %v", stall.name, code, elapsed, body["error"])
+			t.Logf("/healthz with %s stalled: %d with %q", stall.name, code, body["error"])
 		})
 	}
 }

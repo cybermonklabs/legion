@@ -51,14 +51,14 @@ merge_group_event() {
 }
 
 # find_payload <event name>: runs the script over $work/event.json; sets out (stdout, the path),
-# err (stderr) and status. Every case runs it under `timeout`, so a lookup that hung would fail
-# its case instead of hanging the job.
+# err (stderr) and status. A lookup that hung would hold the case until the limit of the CI step
+# that runs this harness, which is its one guard.
 find_payload() {
   rm -f "$work/gh-calls" "$work/temp/pull-request.json" "$work/temp/pull-request-event.json"
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r RUNNER_TEMP="$work/temp" \
     GITHUB_EVENT_NAME="$1" GITHUB_EVENT_PATH="$work/event.json" \
-    timeout 60 "$script_dir/find-pr-payload.sh" 2> "$work/err")
+    "$script_dir/find-pr-payload.sh" 2> "$work/err")
   status=$?
   set -e
   err=$(cat "$work/err")

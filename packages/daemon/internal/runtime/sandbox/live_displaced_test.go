@@ -82,12 +82,9 @@ func (r *liveRig) checkDisplaced() error {
 	note("runtime", "Spawn(%s) replaced pod %s with %s; Sandbox %s (same uid) annotated %s=%s by the Suspended merge patch",
 		displacer.name, short(old.Sandbox.PodUID), short(fresh.Sandbox.PodUID), name, displacedAnnotation, after.Annotations[displacedAnnotation])
 
-	ended, ok := r.obs.await(mark, liveGoneLimit, func(o runtime.Observation) bool {
+	ended := r.obs.await(r.t, mark, displaced.name+"'s "+old.Incarnation+" to be observed ended", func(o runtime.Observation) bool {
 		return o.Locator.Claim == displaced.token && (o.Kind == runtime.Gone || o.Kind == runtime.NotRecordedProcess)
 	})
-	if !ok {
-		return fmt.Errorf("no end of %s's %s within %s", displaced.name, old.Incarnation, liveGoneLimit)
-	}
 	if !sameLocator(ended.Locator, old) || !ended.Displaced {
 		return fmt.Errorf("%s's end is %s at %s, Displaced %t: %s; want Displaced at its recorded %s",
 			displaced.name, ended.Kind, ended.Locator.Incarnation, ended.Displaced, ended.Detail, old.Incarnation)

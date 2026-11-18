@@ -18,15 +18,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldPublisher answers no publish until the test answers it, as NATS answers a publish a round
-// trip after it was sent.
+// trip after it was sent. It records, for each send, how many answers the test had given when the
+// send was made, so a row reads which answer a send waited for rather than a span with none.
 type heldPublisher struct {
 	publishOnly
-	mu      sync.Mutex
-	topics  []string
-	answers []chan error
+	mu       sync.Mutex
+	topics   []string
+	answers  []chan error
+	answered int
+	after    []int
 }
 
 func (p *heldPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
@@ -39,6 +43,7 @@ func (p *heldPublisher) PublishAsync(item contracts.Envelope) <-chan error {
 	answer := make(chan error, 1)
 	p.topics = append(p.topics, item.Topic)
 	p.answers = append(p.answers, answer)
+	p.after = append(p.after, p.answered)
 	return answer
 }
 
@@ -53,6 +58,14 @@ func (p *heldPublisher) sent() []string {
 	return slices.Clone(p.topics)
 }
 
+// answeredBefore is, for each send in send order, how many answers the test had given when it
+// was made.
+func (p *heldPublisher) answeredBefore() []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.after)
+}
+
 // accept answers the publishes numbered from through to-1, in send order, as accepted.
 func (p *heldPublisher) accept(from, to int) {
 	p.mu.Lock()
@@ -60,6 +73,20 @@ func (p *heldPublisher) accept(from, to int) {
 	for _, answer := range p.answers[from:to] {
 		answer <- nil
 	}
+	p.answered += to - from
+}
+
+// taken reports whether the outbox has read the answers numbered from through to-1, which accept
+// gave: each answer waits in its channel until the batch receives it.
+func (p *heldPublisher) taken(from, to int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, answer := range p.answers[from:to] {
+		if len(answer) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // An issue's events go to each destination one at a time, in id order: the second event is sent
@@ -80,22 +107,21 @@ func TestAnIssuesEventsGoToEachDestinationOneAtATime(t *testing.T) {
 	defer stop()
 
 	firstTopics := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
-	waitFor(t, 5*time.Second, "the first event's destinations sent", func() bool { return len(publisher.sent()) == 3 })
-	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); !slices.Equal(got, firstTopics) {
-		t.Fatalf("sent %v before any answer, want only the first event's destinations %v", got, firstTopics)
+	testwait.Eventually(t, "the first event's destinations sent", func() bool { return len(publisher.sent()) >= 3 })
+	if got := publisher.sent()[:3]; !slices.Equal(got, firstTopics) {
+		t.Fatalf("sent %v first, want the first event's destinations %v", got, firstTopics)
 	}
-
+	// Every send past these three waits for an answer: the publisher records how many answers it
+	// had given when each send was made, which the checks below read.
 	publisher.accept(0, 1)
-	waitFor(t, 5*time.Second, "the second event's topic sent once the first's was answered", func() bool { return len(publisher.sent()) == 4 })
-	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); len(got) != 4 || got[3] != "notifications.dispatch.issue.T-1.message.created" {
-		t.Fatalf("sent %v, want the second event's issue topic next, and its role route still held", got)
+	testwait.Eventually(t, "the second event's topic sent once the first's was answered", func() bool { return len(publisher.sent()) >= 4 })
+	if got, after := publisher.sent(), publisher.answeredBefore(); got[3] != "notifications.dispatch.issue.T-1.message.created" || after[3] < 1 {
+		t.Fatalf("sent %v with %v answers given before each, want the second event's issue topic fourth, sent once the first event's was answered", got, after)
 	}
 	publisher.accept(1, 3)
-	waitFor(t, 5*time.Second, "the second event's role route sent", func() bool { return len(publisher.sent()) == 5 })
-	if got := publisher.sent()[4]; got != roleTopic {
-		t.Fatalf("the fifth send went to %s, want the role route", got)
+	testwait.Eventually(t, "the second event's role route sent", func() bool { return len(publisher.sent()) >= 5 })
+	if got, after := publisher.sent(), publisher.answeredBefore(); got[4] != roleTopic || after[4] < 2 {
+		t.Fatalf("sent %v with %v answers given before each, want the role route fifth, held until the first event's role send was answered", got, after)
 	}
 	for _, event := range []model.Event{first, second} {
 		if publishedAt(t, database, event.ID) != nil {
@@ -107,11 +133,14 @@ func TestAnIssuesEventsGoToEachDestinationOneAtATime(t *testing.T) {
 	}
 
 	publisher.accept(3, 5)
-	waitFor(t, 5*time.Second, "both events marked published", func() bool {
+	testwait.Eventually(t, "both events marked published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil
 	})
 	if destinations, _ := publishedDestinations(t, database, first.ID); !slices.Equal(destinations, firstTopics) {
 		t.Fatalf("published_destinations = %v, want %v", destinations, firstTopics)
+	}
+	if got := publisher.sent(); len(got) != 5 {
+		t.Fatalf("sent %v, want the two events' five destinations once each", got)
 	}
 }
 
@@ -128,10 +157,13 @@ func TestAnOutboxStoppedMidBatchMarksTheAnsweredAndReleasesTheRest(t *testing.T)
 	})
 	publisher := &heldPublisher{}
 	stop := run(t, database, publisher, broker)
-	waitFor(t, 5*time.Second, "the first event sent", func() bool { return len(publisher.sent()) == 3 })
+	testwait.Eventually(t, "the first event sent", func() bool { return len(publisher.sent()) == 3 })
 	publisher.accept(0, 3)
-	waitFor(t, 5*time.Second, "the second event sent", func() bool { return len(publisher.sent()) == 5 })
-	time.Sleep(100 * time.Millisecond)
+	testwait.Eventually(t, "the second event sent", func() bool { return len(publisher.sent()) == 5 })
+	// The batch reads the first event's third answer with nothing to show for it: no send waits on
+	// it and the owner settles only with the second event, so the read is waited for in the
+	// answers' own channels.
+	testwait.Eventually(t, "the batch to read the first event's three answers", func() bool { return publisher.taken(0, 3) })
 	stop()
 
 	if publishedAt(t, database, first.ID) == nil {
@@ -271,15 +303,18 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	proxy.Cut()
 	stop := runOutbox(t, database, client, broker)
 	defer stop()
-	// Long enough for the outbox to have tried, and failed, more than one send.
-	time.Sleep(12 * time.Second)
+	// Long enough for an outbox that publishes while NATS is down to have done so more than once.
+	testwait.Span(t, 12*time.Second, "an outbox that took the hold or marked an event published with its "+
+		"client disconnected would do it on its own timers (holdRetry, natsLossGrace), which runOutbox's "+
+		"outbox reports to no state this row reads, and no later action follows a send never made while "+
+		"NATS is down; the span outlasts several of those timers")
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published while NATS was down", count-left)
 	}
 	proxy.Restore()
 	restarted := time.Now()
 
-	waitFor(t, 30*time.Second, "the backlog published once NATS is back", func() bool {
+	testwait.Eventually(t, "the backlog published once NATS is back", func() bool {
 		return unpublishedCount(t, database) == 0
 	})
 	t.Logf("the backlog of %d events was published %s after NATS came back", count, time.Since(restarted).Round(time.Millisecond))
@@ -355,7 +390,7 @@ func TestOneIssuesEventsReachItsSubjectInSeqOrderWhileAnotherIssueCommitsAcrossT
 	if y1.ID >= x1.ID {
 		t.Fatalf("Y's open event drew id %d, not below X's committed %d, so this test proves nothing", y1.ID, x1.ID)
 	}
-	waitFor(t, 30*time.Second, "X's events published while Y's first write is open", func() bool {
+	testwait.Eventually(t, "X's events published while Y's first write is open", func() bool {
 		return publishedAt(t, database, x1.ID) != nil && publishedAt(t, database, x2.ID) != nil
 	})
 	if err := open.Commit(ctx); err != nil {
@@ -366,7 +401,7 @@ func TestOneIssuesEventsReachItsSubjectInSeqOrderWhileAnotherIssueCommitsAcrossT
 	// An owner's events run in one lane, which one batch at a time holds and no other batch reads
 	// into (lanes), and a lane's sends go in id order, so Y's first event is sent and recorded
 	// before its second, however many batches run beside them.
-	waitFor(t, 30*time.Second, "Y's second event published", func() bool {
+	testwait.Eventually(t, "Y's second event published", func() bool {
 		return publishedAt(t, database, y2.ID) != nil
 	})
 
@@ -393,7 +428,7 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 		t.Fatalf("connect the reader: %v", err)
 	}
 	defer reader.Close()
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -450,7 +485,7 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 		t.Fatalf("connect the reader: %v", err)
 	}
 	defer reader.Close()
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -466,7 +501,7 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 	stop := runOutbox(t, database, client, broker)
 	defer stop()
 	// Cut once the first envelopes reached the stream and before any acknowledgement made it back.
-	waitFor(t, 10*time.Second, "the first batch reaching the stream", func() bool {
+	testwait.Eventually(t, "the first batch reaching the stream", func() bool {
 		info, err := js.StreamInfo(bus.Stream)
 		return err == nil && info.State.Msgs > 0
 	})
@@ -474,10 +509,12 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published before the cut; the cut came too late to test anything", count-left)
 	}
-	time.Sleep(2 * time.Second)
+	// The batch in flight meets the cut once the client has lost its connection, which a cut
+	// closes at once and keeps refusing until the restore.
+	testwait.Eventually(t, "the outbox's client disconnected by the cut", func() bool { return !client.Connected() })
 	proxy.Restore()
 
-	waitFor(t, 90*time.Second, "the backlog published after the cut", func() bool {
+	testwait.Eventually(t, "the backlog published after the cut", func() bool {
 		return unpublishedCount(t, database) == 0
 	})
 	var attempted int
@@ -532,7 +569,7 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 		t.Fatalf("connect the reader: %v", err)
 	}
 	defer reader.Close()
-	waitFor(t, 30*time.Second, "every destination and the kept lane acknowledged", func() bool {
+	testwait.Eventually(t, "every destination and the kept lane acknowledged", func() bool {
 		_, all := streamOrder(t, reader)
 		return len(all) == wantOnDestinations+wantKept
 	})
@@ -541,25 +578,30 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 		t.Fatalf("%d events were marked published though every mark failed", count-left)
 	}
 	// What a process killed mid-batch leaves: the hold's row still naming it, lapsing a TTL after
-	// its last renewal.
+	// its last renewal. The lapse is the database's own moment, as every publication time is.
 	dead := uuid.New()
-	if _, err := database.Pool.Exec(context.Background(), `
+	var lapses time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
 		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
-	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()); err != nil {
+		returning expires_at
+	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()).Scan(&lapses); err != nil {
 		t.Fatalf("leave the dead holder's row: %v", err)
 	}
-	died := time.Now()
 
 	if _, err := database.Pool.Exec(context.Background(), `drop trigger refuse_mark on events`); err != nil {
 		t.Fatalf("let the mark succeed: %v", err)
 	}
 	stop = runOutbox(t, database, client, broker)
 	defer stop()
-	waitFor(t, publisherHoldOptions.TTL+10*time.Second, "the backlog marked published by the next holder", func() bool {
+	testwait.Eventually(t, "the backlog marked published by the next holder", func() bool {
 		return unpublishedCount(t, database) == 0
 	})
-	if took := time.Since(died); took < publisherHoldOptions.TTL-time.Second {
-		t.Fatalf("the next holder published %s after the death, before the dead holder's hold lapsed", took.Round(time.Millisecond))
+	var first time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select min(published_at) from events`).Scan(&first); err != nil {
+		t.Fatalf("read the first publication: %v", err)
+	}
+	if first.Before(lapses) {
+		t.Fatalf("the next holder published at %s, before the dead holder's hold lapsed at %s", first, lapses)
 	}
 	assertStreamInOrderPerDestination(t, url, wantOnDestinations)
 	assertKeptLaneInOrder(t, url, "reviewer", seeded, wantKept)

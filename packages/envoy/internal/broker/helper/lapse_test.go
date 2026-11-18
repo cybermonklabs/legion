@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -62,40 +63,51 @@ func revoked(r *rig, id string) bool {
 }
 
 // endSessionThenReleaseRevokes ends sess while every revoke is failing (reg.Remove, as retire and
-// unregister do), waits for the next revoke attempt after that, then clears the fake's revoke
-// fault. The fake fails an attempt in the same critical section that counts it, so the attempt the
-// helper sees has already failed. That attempt is the handed-off revoke's first, or at most one
-// last try of the session's own loop, which then returns at once. In that second case the
-// handed-off revoke's first try follows at once, and the 200 ms sleep before the fault is cleared
-// makes that try fail too. Either way the id lands on the handed-off revoke's next try, 2 s later,
-// although no test asserts which try lands it. The helper fails the test when no attempt comes
-// within 5 s: nothing handed the id on.
+// unregister do), waits for the next revoke attempt after that and for the session's own revoke
+// loop to have handed the id on, then clears the fake's revoke fault. The fake fails an attempt in
+// the same critical section that counts it, so the attempt the helper sees has already failed.
+// That attempt is the handed-off revoke's first, or one last try of the session's own loop, which
+// then returns at once and hands the id to the bounded revoke (Server.revoke) on a goroutine of
+// its own: that goroutine in the dump (handedOffRevokes) says the session's loop has made its last
+// try, so no revoke after the fault clears is that loop's. The id lands on one of the handed-off
+// revoke's tries, 2 s apart, although no test asserts which.
 func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Session) {
 	t.Helper()
 	r.fake.mu.Lock()
 	before := r.fake.revokeAttempts
 	r.fake.mu.Unlock()
+	handedOff := handedOffRevokes()
 	reg.Remove(sess)
 	if sess.peer != nil {
 		sess.peer.Close()
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitFor(t, func() bool {
 		r.fake.mu.Lock()
-		n := r.fake.revokeAttempts
-		r.fake.mu.Unlock()
-		if n > before {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no revoke was attempted after the session ended; nothing handed its id on")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	time.Sleep(200 * time.Millisecond)
+		defer r.fake.mu.Unlock()
+		return r.fake.revokeAttempts > before
+	})
+	testwait.Until(t, "the ended session's revoke loop to hand its lapsed id to the bounded revoke", func() (int, bool) {
+		now := handedOffRevokes()
+		return now, now > handedOff
+	})
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = 0
 	r.fake.mu.Unlock()
+}
+
+// handedOffRevokes counts the goroutines running the bounded revoke a session's revoke loop hands
+// an id to when the session ends (Server.revoke, which revokeLapsed starts as it returns), found
+// by name in the goroutine dump as blockedInRegisterReply finds its goroutine: a rename of revoke
+// must be made here too, and a name that no longer matches fails the row at the shared wait's
+// bound, naming the wait.
+func handedOffRevokes() int {
+	running := 0
+	for _, g := range goroutinetest.Traces() {
+		if strings.Contains(g, ".(*Server).revoke(") {
+			running++
+		}
+	}
+	return running
 }
 
 // testGate returns a gate for the fake's enrollGate or renewGate and the func that opens it, once
@@ -145,21 +157,14 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	release() // answered 401 PROOF_INVALID; the gate stays open for the retry
 
 	sess := r.srv.Registry.Get(os.Getpid())
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, "the session to renew again after a PROOF_INVALID renew", func() bool {
 		posts, deletes, renews := r.fake.snapshot()
 		if st := sess.snapshot(); st.State != "enrolled" || st.EnrollmentID != id || sess.lapsed() != "" || len(deletes) != 0 || len(posts) != 1 {
 			t.Fatalf("after a PROOF_INVALID renew: session %s under %q (lapsed id %q), revokes %q, %d enrolls; want enrolled under %q, no revoke, one enroll",
 				st.State, st.EnrollmentID, sess.lapsed(), deletes, len(posts), id)
 		}
-		if renews == 1 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the session never renewed again after a PROOF_INVALID renew")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return renews == 1
+	})
 }
 
 // TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries: once the broker refuses a renew, the
@@ -199,16 +204,10 @@ func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = 0
 	r.fake.mu.Unlock()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != lapsed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("once the lapsed id is revoked the session must enroll afresh")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool {
+		id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID
+		return id != "" && id != lapsed
+	})
 	if !revoked(r, lapsed) {
 		t.Fatal("the lapsed enrollment must be revoked before the session enrolls again")
 	}
@@ -226,13 +225,7 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 	r, lapsed, _ := lapseRig(t, failAlways)
 	sess := r.srv.Registry.Get(os.Getpid())
 	endSessionThenReleaseRevokes(t, r, r.srv.Registry, sess)
-	deadline := time.Now().Add(10 * time.Second)
-	for !revoked(r, lapsed) {
-		if time.Now().After(deadline) {
-			t.Fatal("the handed-off revoke never revoked the lapsed id")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the handed-off revoke to revoke the lapsed id", func() bool { return revoked(r, lapsed) })
 }
 
 // TestRegisterWaitWaitsForTheReEnrollmentAfterALapse: a lapse reopens the session's ready
@@ -281,13 +274,7 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 	r.fake.enrollGate = enrollGate // the third enrollment gets the fake's 900 s default lease
 	r.fake.mu.Unlock()
 	releaseRenew() // the second lapse
-	deadline := time.Now().Add(10 * time.Second)
-	for !revoked(r, second) {
-		if time.Now().After(deadline) {
-			t.Fatal("the second lapsed id was never revoked")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the second lapsed id to be revoked", func() bool { return revoked(r, second) })
 	replies = registerWaitBlocked(t, r, nil)
 	releaseEnroll()
 	third := freshEnrollment(t, replies, first, second)
@@ -350,14 +337,10 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 				when, st.State, st.EnrollmentID, sess.lapsed(), deletes, enrolls, id)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for renews() < 2 {
+	testwait.Eventually(t, "the session to renew again after a renew that failed with 503", func() bool {
 		kept("until the retry arrives")
-		if time.Now().After(deadline) {
-			t.Fatal("the session never renewed again after a renew that failed with 503")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return renews() >= 2
+	})
 	kept("with the retry waiting")
 	if resp := r.call(t, Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"}); !resp.OK {
 		t.Fatalf("sign while the retry waits: %+v", resp)
@@ -384,11 +367,15 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan registerAnswer {
 	t.Helper()
 	replies := make(chan registerAnswer, 1)
+	timeout := time.Duration(math.MaxInt64)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		timeout = time.Until(deadline)
+	}
 	go func() {
-		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: sessionID}, 20*time.Second)
+		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: sessionID}, timeout)
 		replies <- registerAnswer{resp, err}
 	}()
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	testwait.Eventually(t, "the register call to wait on the session's ready channel", func() bool {
 		if blockedInRegisterReply() {
 			return true
 		}
@@ -398,9 +385,7 @@ func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan registe
 		default:
 		}
 		return false
-	}) {
-		t.Fatal("the register call never started waiting on the session's ready channel")
-	}
+	})
 	return replies
 }
 
@@ -414,24 +399,19 @@ type registerAnswer struct {
 // again, requires it to name an enrollment none of stale holds, and returns that enrollment id.
 func freshEnrollment(t *testing.T, replies <-chan registerAnswer, stale ...string) string {
 	t.Helper()
-	select {
-	case got := <-replies:
-		if got.err != nil || !got.resp.OK || got.resp.State != "enrolled" || got.resp.EnrollmentID == "" || slices.Contains(stale, got.resp.EnrollmentID) {
-			t.Fatalf("register --wait in a lapsed session: %+v (%v); want a fresh enrollment, none of %q", got.resp, got.err, stale)
-		}
-		return got.resp.EnrollmentID
-	case <-time.After(15 * time.Second):
-		t.Fatal("register --wait never answered after the re-enrollment was released")
+	got := testwait.Receive(t, "register --wait to answer once the re-enrollment was released", replies)
+	if got.err != nil || !got.resp.OK || got.resp.State != "enrolled" || got.resp.EnrollmentID == "" || slices.Contains(stale, got.resp.EnrollmentID) {
+		t.Fatalf("register --wait in a lapsed session: %+v (%v); want a fresh enrollment, none of %q", got.resp, got.err, stale)
 	}
-	return ""
+	return got.resp.EnrollmentID
 }
 
 // blockedInRegisterReply reports whether some goroutine is blocked in a select inside
 // Server.registerReply, which is where a register call waits for its session to enroll. It finds
 // that goroutine by name in the goroutine dump, a "[select" header over a ").registerReply("
 // frame, so a rename of registerReply must be made here too. A name that no longer matches never
-// lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails after about
-// 10 s.
+// lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails at the
+// shared wait's bound, naming this wait.
 func blockedInRegisterReply() bool {
 	for _, g := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(g, "\n")

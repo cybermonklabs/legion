@@ -4,6 +4,7 @@ import { type AddressInfo, connect, createServer, type Server, type Socket } fro
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
@@ -63,7 +64,7 @@ beforeAll(async () => {
   silent.listen(0, "127.0.0.1", listening.resolve);
   await listening.promise;
   natsUrl = `nats://127.0.0.1:${(silent.address() as AddressInfo).port}`;
-}, 600_000);
+});
 
 afterEach(async () => {
   const running = started.splice(0);
@@ -150,43 +151,49 @@ function describeRun(running: Running): string {
   return `${running.name} (pid ${running.process.pid}, exit ${running.process.exitCode ?? running.process.signalCode ?? "none yet"}):\n${running.output()}`;
 }
 
-// readPort waits up to 10 s for path to hold a port, failing when running exits first. The writer
-// is a real process with no event to await, so this and requireAnswers poll on the real clock.
+// readPort waits for path to hold a port, failing at once when running exits first. The writer is
+// a real process with no event to await, so this and requireAnswers poll through the shared wait,
+// and a wait that fails says what the process printed.
 async function readPort(path: string, running: Running): Promise<number> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) {
-      const text = readFileSync(path, "utf8");
-      if (!/^[1-9][0-9]*\n$/.test(text)) throw new Error(`${path} holds ${JSON.stringify(text)}`);
-      return Number(text.trim());
-    }
-    if (running.exited())
-      throw new Error(`exited before it wrote ${path}: ${describeRun(running)}`);
-    await Bun.sleep(50);
+  try {
+    return await until(`${running.name} to write a port to ${path}`, () => {
+      if (existsSync(path)) {
+        const text = readFileSync(path, "utf8");
+        if (!/^[1-9][0-9]*\n$/.test(text)) throw new Error(`${path} holds ${JSON.stringify(text)}`);
+        return Number(text.trim());
+      }
+      if (running.exited()) throw new Error(`exited before it wrote ${path}`);
+      return undefined;
+    });
+  } catch (error) {
+    throw new Error(`${(error as Error).message}: ${describeRun(running)}`, { cause: error });
   }
-  throw new Error(`never wrote ${path}: ${describeRun(running)}`);
 }
 
-// requireAnswers waits up to 30 s for /healthz on port to answer at all, failing when running
-// exits first.
+// requireAnswers waits for /healthz on port to answer at all, failing at once when running exits
+// first. Each request may take what is left of the row's deadline.
 async function requireAnswers(port: number, running: Running): Promise<void> {
   const url = `http://127.0.0.1:${port}/healthz`;
-  const deadline = Date.now() + 30_000;
-  let last: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url, { keepalive: false, signal: AbortSignal.timeout(5_000) });
-      await response.arrayBuffer();
-      return;
-    } catch (error) {
-      last = error;
-    }
-    if (running.exited()) {
-      throw new Error(`exited before /healthz answered on ${port}: ${describeRun(running)}`);
-    }
-    await Bun.sleep(200);
+  let last: unknown = "no request had ended";
+  try {
+    await until(`/healthz to answer on ${port}`, async () => {
+      try {
+        const signal = AbortSignal.timeout(timeLeft());
+        const response = await fetch(url, { keepalive: false, signal });
+        await response.arrayBuffer();
+        return true;
+      } catch (error) {
+        last = error;
+      }
+      if (running.exited()) throw new Error(`exited before /healthz answered on ${port}`);
+      return false;
+    });
+  } catch (error) {
+    throw new Error(
+      `${(error as Error).message}; the last request: ${last}\n${describeRun(running)}`,
+      { cause: error }
+    );
   }
-  throw new Error(`/healthz never answered on ${port}: ${last}\n${describeRun(running)}`);
 }
 
 // bindOutcome binds 127.0.0.1:port and closes it again: "bound", or the error code of the refusal.
@@ -200,31 +207,35 @@ async function bindOutcome(port: number): Promise<string> {
   return await outcome.promise;
 }
 
-// answerWithin connects to port, sends a request and resolves what came back within milliseconds:
-// "no answer" on an accepted connection that stayed silent, "answered", "never connected", or the
-// connection's error. The silence it measures is real time, so it waits on the real clock.
-async function answerWithin(port: number, milliseconds: number): Promise<string> {
-  const outcome = Promise.withResolvers<string>();
-  let connected = false;
-  const client = connect(port, "127.0.0.1");
-  const timer = setTimeout(
-    () => outcome.resolve(connected ? "no answer" : "never connected"),
-    milliseconds
-  );
-  client.once("connect", () => {
-    connected = true;
-    client.write(`GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+// queuedRequest connects to port and sends a /healthz request on the connection: connected
+// resolves once the kernel has accepted it, answer with the first bytes that come back, and
+// answered says whether any have. A connection error, or a close before an answer, rejects both.
+// It closes the connection itself once the answer comes, and the caller destroys the socket on
+// any other way out.
+function queuedRequest(port: number) {
+  const connected = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<string>();
+  // Handled here as well, so a rejection no row has awaited yet does not end the run.
+  void answer.promise.catch(() => {});
+  let answered = false;
+  const socket = connect(port, "127.0.0.1");
+  socket.once("connect", () => {
+    socket.write(`GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
+    connected.resolve();
   });
-  client.once("data", () => outcome.resolve("answered"));
-  client.once("error", (error: NodeJS.ErrnoException) =>
-    outcome.resolve(error.code ?? String(error))
-  );
-  try {
-    return await outcome.promise;
-  } finally {
-    clearTimeout(timer);
-    client.destroy();
-  }
+  socket.once("data", (data: Buffer) => {
+    answered = true;
+    answer.resolve(data.toString("latin1"));
+    // This end closes first, so the connection leaves no TIME_WAIT on the listener's end of the
+    // kept port, which would refuse the row's last bind of that port.
+    socket.destroy();
+  });
+  socket.once("error", (error) => {
+    connected.reject(error);
+    answer.reject(error);
+  });
+  socket.once("close", () => answer.reject(new Error("the connection closed with no answer")));
+  return { socket, connected: connected.promise, answer: answer.promise, answered: () => answered };
 }
 
 // listeningInode returns the inode of the socket listening on 127.0.0.1:port from /proc/net/tcp,
@@ -256,6 +267,22 @@ function descriptorsOf(pid: number, target: string): number[] {
     .map(Number);
 }
 
+// holdersOf returns, in pid order, every process that holds a descriptor linked to target.
+function holdersOf(target: string): number[] {
+  return readdirSync("/proc")
+    .filter((entry) => /^[0-9]+$/.test(entry))
+    .map(Number)
+    .filter((pid) => {
+      try {
+        return descriptorsOf(pid, target).length > 0;
+      } catch {
+        // A process that has ended, or one this user may not read.
+        return false;
+      }
+    })
+    .sort((left, right) => left - right);
+}
+
 // closeOnExec reads the octal flags line of /proc/<pid>/fdinfo/<fd>.
 function closeOnExec(pid: number, fd: number): boolean {
   const info = readFileSync(`/proc/${pid}/fdinfo/${fd}`, "utf8");
@@ -272,12 +299,15 @@ describe.skipIf(skip)("held-port.py exec", () => {
     await requireAnswers(port, running);
     // The listener logs its line after it starts serving, so /healthz can answer before the line
     // is read: await the line itself.
-    await running.logged(
-      new RegExp(`"msg":"envoy-listener listening".*"addr":"127\\.0\\.0\\.1:${port}"`)
+    await settled(
+      "the listener's line that it listens",
+      running.logged(
+        new RegExp(`"msg":"envoy-listener listening".*"addr":"127\\.0\\.0\\.1:${port}"`)
+      )
     );
     // The PID Bun.spawn returned, a shell's $!, is the listener's: the helper executed it in place.
     expect(readlinkSync(`/proc/${running.process.pid}/exe`)).toBe(realpathSync(listener));
-  }, 60_000);
+  });
 
   test("from the moment the port file names it until the server runs, the port is held", async () => {
     const portFile = join(work, "held.port");
@@ -309,7 +339,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     stdin.write("go\n");
     await stdin.flush();
     await requireAnswers(port, running);
-  }, 60_000);
+  });
 
   test("the listener holds the socket only on its own close-on-exec copy, not on descriptor 3", async () => {
     const portFile = join(work, "descendant.port");
@@ -326,19 +356,19 @@ describe.skipIf(skip)("held-port.py exec", () => {
     expect(holders).toHaveLength(1);
     expect(holders[0]).not.toBe(3);
     expect(closeOnExec(pid, holders[0] as number)).toBe(true);
-  }, 60_000);
+  });
 
   test("a command that cannot run exits non-zero, and its port binds again", async () => {
     const portFile = join(work, "missing.port");
     const missing = join(work, "no-such-command");
     const running = exec("exec of a missing command", portFile, [missing]);
-    const code = await running.process.exited;
+    const code = await settled("the missing command's exit", running.process.exited);
     expect(code, describeRun(running)).toBe(127);
     expect(running.output()).toContain(`held-port: execute ${missing}`);
     const port = await readPort(portFile, running);
     expect(listeningInode(port)).toBeUndefined();
     expect(await bindOutcome(port)).toBe("bound");
-  }, 60_000);
+  });
 });
 
 describe.skipIf(skip)("held-port.py keep", () => {
@@ -362,19 +392,38 @@ describe.skipIf(skip)("held-port.py keep", () => {
     first.process.kill("SIGKILL");
     await first.process.exited;
 
-    // Between servers the kept socket still listens: the kernel accepts, and nothing answers.
-    expect(await answerWithin(port, 2_000)).toBe("no answer");
-    expect(await bindOutcome(port)).toBe("EADDRINUSE");
+    // Between servers the kept socket still listens, and nothing serves it: the keeper alone holds
+    // it, and the kernel accepts a connection into its queue, where the request waits unanswered
+    // until the next listener takes the connection and answers it (held-port.py, keep).
+    const inode = listeningInode(port);
+    if (!inode) throw new Error(`nothing listens on 127.0.0.1:${port} between servers`);
+    expect(holdersOf(`socket:[${inode}]`)).toEqual([keeper.process.pid]);
+    const queued = queuedRequest(port);
+    try {
+      await settled("the kernel to accept a connection to the kept port", queued.connected);
+      expect(await bindOutcome(port)).toBe("EADDRINUSE");
+      expect(queued.answered()).toBe(false);
 
-    const second = exec("the second listener", join(work, "second.port"), [listener], socket);
-    expect(await readPort(join(work, "second.port"), second)).toBe(port);
-    await requireAnswers(port, second);
-    second.process.kill("SIGKILL");
-    await second.process.exited;
+      const second = exec("the second listener", join(work, "second.port"), [listener], socket);
+      expect(await readPort(join(work, "second.port"), second)).toBe(port);
+      const answer = await settled(
+        "the second listener's answer to the request queued between servers",
+        queued.answer
+      );
+      expect(answer).toStartWith("HTTP/1.1 ");
+      await requireAnswers(port, second);
+      second.process.kill("SIGKILL");
+      await second.process.exited;
+    } finally {
+      queued.socket.destroy();
+    }
 
     keeper.process.kill("SIGTERM");
-    expect(await keeper.process.exited, describeRun(keeper)).toBe(0);
+    expect(
+      await settled("the keeper's exit on SIGTERM", keeper.process.exited),
+      describeRun(keeper)
+    ).toBe(0);
     expect(existsSync(socket)).toBe(false);
     expect(await bindOutcome(port)).toBe("bound");
-  }, 120_000);
+  });
 });

@@ -216,7 +216,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 	claim, err := r.RoleClaim(ctx, role)
 	if err != nil {
 		err = fmt.Errorf("renew role %s's claim held by %s: %w", role, sessionID, err)
-		r.renewalFailures.record(r.now(), key, err)
+		r.renewalFailures.record(r.clock.Now(), key, err)
 		return false, err
 	}
 	outcome, _, err := r.writeRoleClaim(ctx, claim, roleClaimWrite{
@@ -229,7 +229,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 		send: func(claim RoleClaim) (uint64, error) {
 			renewed := claim
 			renewed.ClientInstanceID = clientInstanceID
-			renewed.RenewedAt = r.now().UnixMilli()
+			renewed.RenewedAt = r.clock.Now().UnixMilli()
 			data, err := json.Marshal(renewed)
 			if err != nil {
 				return 0, err
@@ -241,7 +241,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 	switch {
 	case err != nil:
 		err = fmt.Errorf("renew role %s's claim held by %s: %w", role, sessionID, err)
-		r.renewalFailures.record(r.now(), key, err)
+		r.renewalFailures.record(r.clock.Now(), key, err)
 		return false, err
 	case outcome == roleClaimWriteLanded:
 		r.renewalFailures.clear(key)
@@ -271,7 +271,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 // which LastAnsweredAt says: it is renewed while that moment is inside the window, and stale
 // once it is older.
 func (r *Registry) ClaimRenewedWithin(claim RoleClaim, liveWindow time.Duration) bool {
-	return liveWindow > 0 && r.now().Sub(time.UnixMilli(claim.LastAnsweredAt())) < liveWindow
+	return liveWindow > 0 && r.clock.Now().Sub(time.UnixMilli(claim.LastAnsweredAt())) < liveWindow
 }
 
 // RenewalFailure is one renewal of a role's claim for one holder session that failed, as this
@@ -358,7 +358,7 @@ func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 	}
 	roles, _ := r.weighedRoles(sessionID, topics)
 	for _, role := range roles {
-		r.renewalFailures.record(r.now(), renewalFailureKey{role: role, sessionID: sessionID},
+		r.renewalFailures.record(r.clock.Now(), renewalFailureKey{role: role, sessionID: sessionID},
 			fmt.Errorf("renew role %s's claim held by %s: the registration failed before its renewal: %w", role, sessionID, cause))
 	}
 }
@@ -382,7 +382,7 @@ func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 // keeps nothing at a zero window.
 func (r *Registry) RenewalFailedWithin(role, sessionID string, window time.Duration) (RenewalFailure, bool) {
 	failure, ok := r.renewalFailures.get(renewalFailureKey{role: role, sessionID: sessionID})
-	if !ok || r.now().Sub(failure.At) >= window {
+	if !ok || r.clock.Now().Sub(failure.At) >= window {
 		return RenewalFailure{}, false
 	}
 	return failure, true

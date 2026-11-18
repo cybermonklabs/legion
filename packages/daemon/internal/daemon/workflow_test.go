@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -74,10 +75,13 @@ func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 
 // The engine judges a push by its pusher against the review App's login, so a configuration whose
 // two roles resolve to one App would read every red the implementer leaves as a planned one: boot
-// refuses it, and a review App with no login, before anything else opens.
+// refuses it, and a review App with no login, before anything else opens. A request to Dispatch
+// without the workflow's bearer is another process's: it is answered 404 and logged, and fails
+// nothing.
 func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testing.T) {
+	const dispatchToken = "dispatch-token"
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !servedBootCall(t, w, r, "demo") {
+		if fromTheDaemon(t, w, r, dispatchToken) && !servedBootCall(t, w, r, "demo") {
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
 		}
 	}))
@@ -93,7 +97,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, github, nil)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", dispatchToken, nil, newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, github, nil, clock.Real())
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}
@@ -105,7 +109,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 // under the App's own JWT, with no owner to mint for.
 func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	login, err := appLoginsAtBoot(context.Background(), tokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), clock.Real(), tokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("appLoginsAtBoot: %v", err)
 	}

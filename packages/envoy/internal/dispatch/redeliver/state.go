@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -134,7 +135,7 @@ func sortOpenRecords(open []openRecord) {
 // with nothing more in it, which would under-report the open deliveries and say nothing.
 func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]openRecord, error) {
 	var open []openRecord
-	if _, err := kvwatch.ScanExistingKeys(context.Background(), s.state, recordPrefix+"*", "webhook redelivery records", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
+	if _, err := kvwatch.ScanExistingKeys(context.Background(), clock.Real(), s.state, recordPrefix+"*", "webhook redelivery records", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
 		guid := strings.TrimPrefix(entry.Key, recordPrefix)
 		if _, seen := listed[guid]; seen {
 			return nil

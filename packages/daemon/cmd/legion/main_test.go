@@ -45,6 +45,7 @@ func TestMain(m *testing.M) {
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
 		}
+		holdGhBounds()
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the
@@ -131,9 +132,7 @@ func runningLegion(t *testing.T) int {
 		_ = probe.Process.Kill()
 		_, _ = probe.Process.Wait()
 	})
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
-		t.Fatalf("the probe at %s never exec'd", path)
-	}
+	testwait.Eventually(t, "the probe at "+path+" to exec", func() bool { return registry.Alive(probe.Process.Pid) })
 	return probe.Process.Pid
 }
 
@@ -340,13 +339,13 @@ func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, s
 		_ = command.Wait()
 		close(exited)
 	}()
-	select {
-	case <-exited:
-	case <-time.After(30 * time.Second):
+	// A legion start that never exits is killed when the test ends, so the wait below fails
+	// naming it rather than leaving a process behind.
+	t.Cleanup(func() {
 		_ = command.Process.Kill()
 		<-exited
-		t.Fatalf("legion start did not exit within 30s; stderr = %q", stderr.String())
-	}
+	})
+	testwait.Receive(t, "legion start to exit", exited)
 	return command.ProcessState.ExitCode(), stderr.String()
 }
 

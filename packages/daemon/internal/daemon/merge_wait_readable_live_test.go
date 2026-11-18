@@ -17,7 +17,7 @@
 // shows by failing at that step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real intake consumers, the real review
 // round and its stuck notice, the real merge-state ladder (daemon's readMergeStates) and the real
 // state build. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -163,7 +163,7 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	o := fakeRuntime(r.rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	return r
 }
 
@@ -315,7 +315,7 @@ func (r *mergeWaitReadableLive) aConfirmingReadMovesTheStamp() {
 	t := r.t
 	// The read the review of step 1 asked for lands behind that step's own reads, so the stamp is
 	// taken once the step's own facts have been answered for.
-	time.Sleep(liveSettle)
+	testwait.Span(t, liveSettle, "the read step 1's review asked for runs on the merge-state ladder behind that step's own reads, and nothing the daemon or the GitHub stand-in records says that no read of the round is still to come: the stand-in counts the reads it answered, not the ones the daemon still owes")
 	before := r.mergeWaitOf(r.stuck)
 	beforeAnswered := r.github.answeredReads(r.stuckNumber)
 	r.note("the stamp step 1 left: stateReadAt %s, mergeState %q, waiting on %s, with %d reads of the pull request answered so far",

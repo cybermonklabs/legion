@@ -3,13 +3,14 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The acceptance clause this holds: a hook failure the recovery repairs by itself logs no ERROR.
@@ -43,14 +44,10 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 	srv.Stop(t)
 	srv.Start(t)
 	for run := 1; run <= 2; run++ {
-		select {
-		case <-hooked:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the reconnect hooks ran %d time(s); want the failed run and the retry", run-1)
-		}
+		testwait.Receive(t, fmt.Sprintf("run %d of the reconnect hooks, the failed run and then the retry", run), hooked)
 	}
 	// The retry clears the stall as it records the events it covered, just after the hook returned.
-	waitFor(t, 15*time.Second, "the retry that covered the reconnect", func() bool {
+	testwait.Eventually(t, "the retry that covered the reconnect", func() bool {
 		stall, hookErr := client.HookStall()
 		return stall == 0 && hookErr == nil
 	})
@@ -74,7 +71,7 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 // the error of the last run that failed, so the answer names what is broken and for how long.
 func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
 	_, uri := testnats.Start(t)
-	clock := &reconnectErrClock{now: time.Now()}
+	clock := newReconnectErrClock()
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -87,7 +84,7 @@ func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the failed run of the hooks to be recorded", func() bool {
+	testwait.Eventually(t, "the failed run of the hooks to be recorded", func() bool {
 		_, hookErr := client.HookStall()
 		return hookErr != nil
 	})

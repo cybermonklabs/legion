@@ -3,14 +3,15 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"github.com/sjawhar/legion/daemon/internal/bootprobe"
-	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"

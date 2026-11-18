@@ -1492,7 +1492,13 @@ func TestRenewAndReadSelf(t *testing.T) {
 	renewed := decode[struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}](t, body)
-	if renewed.LeaseExpiresAt.Before(time.Now()) {
+	// Judged by the clock that decides whether a lease is live, which is the database's own
+	// now() and never this process's.
+	var live bool
+	if err := ts.Store.Pool.QueryRow(context.Background(), `select $1::timestamptz > now()`, renewed.LeaseExpiresAt).Scan(&live); err != nil {
+		t.Fatalf("read the renewed lease against the database's clock: %v", err)
+	}
+	if !live {
 		t.Fatalf("renewed lease %v is not in the future", renewed.LeaseExpiresAt)
 	}
 

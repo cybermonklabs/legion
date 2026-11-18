@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fileIssue creates the project and issue a file upload lands on and returns the issue key.
@@ -315,12 +316,6 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 	return h.Memory.Put(ctx, sha, mime, body)
 }
 
-// uploadLockProbeWindow bounds how long the probe below retries the issue's row lock. It is far
-// longer than any write this test's own setup makes - the issue create and the settlement of the
-// spec document it wrote - and shorter than the package's test timeout, so a holder the probe
-// cannot name is reported as a failure rather than a hang.
-const uploadLockProbeWindow = 20 * time.Second
-
 // uploadIssueLock is the statement an upload's transaction takes the issue row with
 // (storeArtifact's issue branch, through requireOpenOwnerStatus and issueOpenStatus under
 // ownerRowLock), as pg_stat_activity shows it, and it is the only statement of this test's two
@@ -446,7 +441,6 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
-	deadline := time.Now().Add(uploadLockProbeWindow)
 	// Read once, at the first refusal: a reading per attempt would bury the one that matters,
 	// and a holder parked in Put is still there to be named at any later attempt.
 	var holder *issueRowLockHolder
@@ -460,10 +454,10 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 		}
 		return holder.String()
 	}
-	for {
+	testwait.Eventually(t, "the issue's row to lock while its upload's bytes are in the store", func() bool {
 		_, err := database.Pool.Exec(context.Background(), `select key from issues where key = $1 for no key update nowait`, issue)
 		if err == nil {
-			break
+			return true
 		}
 		var refused *pgconn.PgError
 		if !looked && errors.As(err, &refused) && refused.Code == "55P03" {
@@ -474,11 +468,8 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 				t.Fatalf("the upload holds the issue's row while its bytes are in the store: %s", holder)
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lock the issue while its upload's bytes are in flight, over %s of attempts: %v; the first refusal read %s", uploadLockProbeWindow, err, heldBy())
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return false
+	})
 	release()
 	if response := <-uploaded; response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())

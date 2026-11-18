@@ -41,11 +41,15 @@ func TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes(t *testing.T) {
 	})
 }
 
+// mappingChangeAtRuntime runs the change with intake's acknowledgement window at ackWait and every
+// GitHub installation read answering delay later. Both are of the wall clock: the window is the
+// NATS server's own redelivery timer, which no module clock reaches, so the stand-in's delay that
+// must outlast it is real too; the test waits only through the shared wait.
 func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

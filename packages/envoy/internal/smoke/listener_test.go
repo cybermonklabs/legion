@@ -16,25 +16,57 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/testcontainers/testcontainers-go"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
-	"github.com/testcontainers/testcontainers-go/network"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// capped limits a smoke container to cpus CPUs and mib MiB, as every container the repository's
-// tests start is capped on a shared host. NATS holds the smoke's few messages; the listener serves
-// one client.
+// capped runs a smoke container on the host's network, limited to cpus CPUs and mib MiB, as every
+// container the repository's tests start is capped on a shared host. NATS holds the smoke's few
+// messages; the listener serves one client. On the host's network Docker publishes nothing:
+// testcontainers publishes each port an image declares on Docker's bridge network (the listener
+// image's 9020, NATS's 4222, 6222 and 8222), and a port Docker publishes is one its own allocator
+// chooses, without asking the kernel whether another program holds it, so ten taken ports in a
+// row fail the start (docs/testing.md, "A container a test starts publishes no port"). Each
+// server here binds a loopback port the kernel chooses and logs it instead (loggedPort).
 func capped(cpus, mib int64) testcontainers.CustomizeRequestOption {
 	return testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
+		hostConfig.NetworkMode = "host"
 		hostConfig.NanoCPUs = cpus * 1_000_000_000
 		hostConfig.Memory = mib << 20
+	})
+}
+
+// The lines NATS (-p -1) and the listener (PORT=0) log once each has bound the port the kernel
+// chose, with the port.
+var (
+	natsClientPortLine = regexp.MustCompile(`Listening for client connections on 127\.0\.0\.1:(\d+)`)
+	listenerPortLine   = regexp.MustCompile(`"msg":"envoy-listener listening".*"addr":"127\.0\.0\.1:(\d+)"`)
+)
+
+// loggedPort waits for the log of ctr to hold line, and returns the port it names.
+func loggedPort(t *testing.T, ctr testcontainers.Container, line *regexp.Regexp) string {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("container %s to log %q", ctr.GetContainerID(), line), func() (string, bool) {
+		logs, err := ctr.Logs(context.Background())
+		if err != nil {
+			return err.Error(), false
+		}
+		defer logs.Close()
+		text, err := io.ReadAll(logs)
+		if err != nil {
+			return err.Error(), false
+		}
+		found := line.FindSubmatch(text)
+		if found == nil {
+			return "no such line", false
+		}
+		return string(found[1]), true
 	})
 }
 
@@ -55,75 +87,62 @@ func TestSmoke(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Shared Docker network for container-to-container communication.
-	net, err := network.New(ctx)
-	if err != nil {
-		t.Fatalf("create network: %v", err)
-	}
-	t.Cleanup(func() { net.Remove(ctx) })
-
-	// Start NATS using the same module the rest of the project uses, on the server the hub runs:
-	// the listener refuses to start on nats:2.10 (natsversion.Refusal).
-	natsC, err := tcnats.Run(ctx, testnats.HubImage,
-		network.WithNetwork([]string{"nats"}, net),
+	// NATS on the server the hub runs: the listener refuses to start on nats:2.10
+	// (natsversion.Refusal). It listens on a loopback port the kernel chooses.
+	natsC, err := testcontainers.Run(ctx, testnats.HubImage,
+		testcontainers.WithCmd("-js", "-a", "127.0.0.1", "-p", "-1"),
 		capped(1, 512),
 	)
 	testcontainers.CleanupContainer(t, natsC)
 	if err != nil {
 		t.Fatalf("start NATS: %v", err)
 	}
+	natsURL := "nats://127.0.0.1:" + loggedPort(t, natsC, natsClientPortLine)
 
 	listenerC, err := testcontainers.Run(ctx, image,
-		network.WithNetwork([]string{"listener"}, net),
 		capped(1, 512),
 		testcontainers.WithEnv(map[string]string{
-			"NATS_URLS": "nats://nats:4222",
-			// The listener owns ENVOY_NOTIFICATIONS on a NATS that is not its own container, as
-			// every deployed listener does; without this the connect refuses it
+			// On the host's network NATS is this machine's, at 127.0.0.1, as on the GCP hub, whose
+			// listener runs on the host's network too, so the connect needs no ENVOY_ALLOW_REMOTE_NATS
 			// (internal/bus/reach.go).
-			"ENVOY_ALLOW_REMOTE_NATS": "1",
-			"ENVOY_LISTEN_HOST":       "0.0.0.0",
-			"ENVOY_MACHINE_ID":        "smoke-test",
-			"PORT":                    "9020",
-			// A non-loopback bind refuses to start without a token; the smoke
-			// exercises the same bearer path a deployed listener requires.
+			"NATS_URLS":         natsURL,
+			"ENVOY_LISTEN_HOST": "127.0.0.1",
+			"ENVOY_MACHINE_ID":  "smoke-test",
+			"PORT":              "0",
+			// With a token the listener requires a bearer on every /v1 route, the path a deployed
+			// listener serves.
 			"ENVOY_API_TOKEN": smokeAPIToken,
 		}),
-		testcontainers.WithExposedPorts("9020/tcp"),
-		// /healthz answers 200 from the moment the port binds: "starting" until the durable consumer
-		// binds, then "healthy" (a liveness answer, docs/solutions/envoy/async-health-startup-pattern.md).
-		// /v1 answers 503 "service starting" until NATS is connected and the interest and session
-		// caches are warm, so the subtests below start once the body says "healthy"; a 200 alone
-		// released them into that window.
-		testcontainers.WithWaitStrategy(
-			wait.ForHTTP("/healthz").
-				WithPort("9020/tcp").
-				WithStatusCodeMatcher(func(status int) bool {
-					return status == http.StatusOK
-				}).
-				WithResponseMatcher(func(body io.Reader) bool {
-					var health struct {
-						Status string `json:"status"`
-					}
-					return json.NewDecoder(body).Decode(&health) == nil && health.Status == "healthy"
-				}).
-				WithStartupTimeout(60*time.Second),
-		),
 	)
 	testcontainers.CleanupContainer(t, listenerC)
 	if err != nil {
 		t.Fatalf("start listener: %v", err)
 	}
+	baseURL := "http://127.0.0.1:" + loggedPort(t, listenerC, listenerPortLine)
 
-	host, err := listenerC.Host(ctx)
-	if err != nil {
-		t.Fatalf("get host: %v", err)
-	}
-	port, err := listenerC.MappedPort(ctx, "9020")
-	if err != nil {
-		t.Fatalf("get mapped port: %v", err)
-	}
-	baseURL := fmt.Sprintf("http://%s:%s", host, port.Port())
+	// /healthz answers 200 from the moment the port binds: "starting" until the durable consumer
+	// binds, then "healthy" (a liveness answer, docs/solutions/envoy/async-health-startup-pattern.md).
+	// /v1 answers 503 "service starting" until NATS is connected and the interest and session
+	// caches are warm, so the subtests below start once the body says "healthy"; a 200 alone
+	// released them into that window.
+	testwait.Until(t, "the listener at "+baseURL+" to answer /healthz 200 healthy", func() (string, bool) {
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, baseURL+"/healthz", nil)
+		if err != nil {
+			return err.Error(), false
+		}
+		resp, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return err.Error(), false
+		}
+		defer resp.Body.Close()
+		var health struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+			return fmt.Sprintf("%d, a body that is no health answer: %v", resp.StatusCode, err), false
+		}
+		return fmt.Sprintf("%d %q", resp.StatusCode, health.Status), resp.StatusCode == http.StatusOK && health.Status == "healthy"
+	})
 
 	t.Run("healthz", func(t *testing.T) {
 		resp, err := http.Get(baseURL + "/healthz")

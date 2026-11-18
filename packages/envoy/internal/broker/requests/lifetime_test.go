@@ -73,8 +73,15 @@ func TestATTLGrantEndsAfterItsLifetime(t *testing.T) {
 		if err != nil || len(release.Values) != 1 {
 			t.Fatalf("Values(%s grant) at once = %v, %v; want its value", name, release.Values, err)
 		}
-		if release.Expires == nil || time.Until(*release.Expires) > 2*time.Minute || time.Until(*release.Expires) < 110*time.Second {
-			t.Fatalf("Values(%s grant) expires %v, want two minutes from now", name, release.Expires)
+		// The grant's expiry is judged on the clock that made it: insertGrant stamps created_at and
+		// expires_at from one now() of its transaction, so a grant that lasts its asked lifetime
+		// expires exactly that long after its own creation, however long this test took to ask.
+		var created time.Time
+		if err := m.Store.Pool.QueryRow(ctx, `select created_at from grants where id=$1`, grantID).Scan(&created); err != nil {
+			t.Fatalf("read the %s grant's creation: %v", name, err)
+		}
+		if release.Expires == nil || !release.Expires.Equal(created.Add(2*time.Minute)) {
+			t.Fatalf("Values(%s grant) expires %v, want two minutes after the grant was made at %v", name, release.Expires, created)
 		}
 		age(t, m, grantID, 119*time.Second)
 		if _, err := m.Values(ctx, grantID, enr, nil, ReleaseCall{}); err != nil {

@@ -77,7 +77,7 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 			t.Logf("the boot probe ran out of its bound at a dial of %s", bootProbeDialDelay)
 		}
 	}()
-	process.waitForLog(t, 2*time.Minute, process.listeningLine())
+	process.waitForLog(t, process.listeningLine())
 
 	status, health := process.health(t)
 	if status != http.StatusOK || !health.DB {

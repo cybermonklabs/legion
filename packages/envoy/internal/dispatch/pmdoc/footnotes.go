@@ -72,12 +72,16 @@ var footnoteKeysKey = parser.NewContextKey()
 // footnoteDefinitionsByKey is each footnote definition in goldmark's list by its label's key
 // (footnoteLabelKey), the first in the document where two share one. It is built once per parse,
 // on the first reference goldmark's parser leaves unresolved: inline text is parsed after every
-// block has closed, so each definition has its slot by then.
+// block has closed, so each definition has its slot by then. Each lookup in it, and each
+// definition keyed as it is built, is a step of the parse (ParseWork), so a parse that keyed every
+// definition again for each reference would count definitions times references.
 func footnoteDefinitionsByKey(pc parser.Context) map[string]*extensionast.Footnote {
+	parseWork.Add(1)
 	if byKey, ok := pc.Get(footnoteKeysKey).(map[string]*extensionast.Footnote); ok {
 		return byKey
 	}
 	slots, _ := pc.Get(footnoteSlotsKey).([]*footnoteSlot)
+	parseWork.Add(uint64(len(slots)))
 	byKey := make(map[string]*extensionast.Footnote, len(slots))
 	for _, slot := range slots {
 		definition, ok := slot.definition.(*extensionast.Footnote)

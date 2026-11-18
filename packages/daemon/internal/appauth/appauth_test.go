@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func testAppKey(t *testing.T) (*rsa.PrivateKey, string) {
@@ -132,7 +133,7 @@ func mintedFor(token string, expires time.Time, permissions map[string]string, r
 // and as GitHub parses it: the permissions the token is to hold. A stand-in GitHub answers from
 // it, as GitHub answers a token request from the body it was sent (mintedFor), and a test that
 // asks whether a request named a repository at all reads the text.
-func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
+func askedInExchange(t testing.TB, r *http.Request) (string, accessTokensBody) {
 	t.Helper()
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -241,7 +242,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	exchanges, discoveries, identities := 0, 0, 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		jwt := r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/app/installations":
@@ -278,7 +279,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 
 	tokens := New(config.GitHubApps{
@@ -318,11 +319,11 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 // ErrNotInstalled, an answer about the owner, rather than an error a caller retries without end;
 // and an App installed there again, under a new installation, mints on that one.
 func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	installation, discoveries := "77", 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		current := installation
 		mu.Unlock()
@@ -360,7 +361,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
@@ -397,11 +398,11 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 // token's, in any case of the owner's name, so the next Token and ReadToken each mint again; a
 // lease it did not drop is still served from the cache, and each lease records when it was minted.
 func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	exchanges := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/app/installations":
 			fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
@@ -421,7 +422,7 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
@@ -468,7 +469,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	var bodies []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		jwt := r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/app/installations":
@@ -491,7 +492,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 
 	tokens := New(config.GitHubApps{
@@ -864,11 +865,11 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 		{"the secondary limit in the body", nil, `{"message":"You have exceeded a secondary rate limit."}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, privatePEM := testAppKey(t)
+			key, privatePEM := testAppKey(t)
 			now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 			var mu sync.Mutex
 			exchanges := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/app/installations":
 					fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
@@ -886,7 +887,7 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 				default:
 					t.Errorf("unexpected GitHub path %s", r.URL.Path)
 				}
-			}))
+			}})
 			defer server.Close()
 
 			var stderr bytes.Buffer
@@ -922,7 +923,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 	releaseExchange := make(chan struct{})
 	var mu sync.Mutex
 	exchanges := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		jwt := r.Header.Get("Authorization")
 		if r.URL.Path == "/app/installations/77/access_tokens" {
 			verifyAppJWT(t, jwt[len("Bearer "):], &key.PublicKey, now, "12345")
@@ -947,7 +948,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 
 	tokens := New(config.GitHubApps{
@@ -991,7 +992,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 // for, or an owner the App is not installed on is refused at once. The boot's retry reads nothing
 // else.
 func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	status := func(code int, header ...string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			for i := 0; i+1 < len(header); i += 2 {
@@ -1006,6 +1007,9 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		http.Error(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`, http.StatusForbidden)
 	}
 	installed := func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`) }
+	// endCaller ends the running subtest's caller's context: the request GitHub holds and never
+	// answers is cut there, the moment the test chooses, as a caller's deadline cuts it.
+	var endCaller context.CancelFunc
 	for _, tc := range []struct {
 		name      string
 		discovery http.HandlerFunc
@@ -1019,7 +1023,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		{name: "discovery 403", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "4999")},
 		{name: "discovery 403 for a secondary rate limit", discovery: secondaryLimit, transient: true},
 		{name: "discovery 401", discovery: status(http.StatusUnauthorized)},
-		{name: "discovery never answers", discovery: func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }, transient: true},
+		{name: "discovery never answers", discovery: func(_ http.ResponseWriter, r *http.Request) { endCaller(); <-r.Context().Done() }, transient: true},
 		{name: "discovery body cut off mid-read", discovery: func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Length", "1000")
 			fmt.Fprint(w, `[{"id":77,`)
@@ -1040,7 +1044,10 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 		{name: "exchange 403 for a secondary rate limit", discovery: installed, exchange: secondaryLimit, transient: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithCancel(testwait.Context(t))
+			defer cancel()
+			endCaller = cancel
+			server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/app/installations":
 					tc.discovery(w, r)
@@ -1056,12 +1063,10 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 				default:
 					t.Errorf("unexpected GitHub path %s", r.URL.Path)
 				}
-			}))
+			}})
 			defer server.Close()
 			tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}},
 				Options{BaseURL: server.URL, HTTPClient: server.Client()})
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
 
 			_, err := tokens.Token(ctx, Implement, "acme")
 			if err == nil {
@@ -1081,7 +1086,9 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 // GitHub parsed it (bodies) and as the text it was sent as (raw), which is what a test asking
 // whether a request named a repository must read. answer decides each exchange from the body it
 // carried and how many came before it, and granted, when it is set, answers the permissions
-// read of an installation instead of its grants.
+// read of an installation instead of its grants. A request without the credential of a Manager
+// holding the App key (anAppCredential) is another process's: it is answered 404 and logged, and
+// is recorded as nothing.
 //
 // refuses, when it is set, is the owners whose every token exchange is answered 422 before
 // answer is asked, as an installation that is granted none of what the request asks for is: a
@@ -1134,9 +1141,9 @@ func (g *keyModeGitHub) ownerOf(installation string) string {
 	return ""
 }
 
-func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
+func (g *keyModeGitHub) serve(t testing.TB, key *rsa.PublicKey) *httptest.Server {
 	t.Helper()
-	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(key), Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
 			g.mu.Lock()
@@ -1242,8 +1249,8 @@ func (g *keyModeGitHub) permissionReads() []string {
 // the buffer holds is what the Manager logged.
 func keyModeManager(t *testing.T, github *keyModeGitHub, now *time.Time, stderr *bytes.Buffer) *Manager {
 	t.Helper()
-	_, privatePEM := testAppKey(t)
-	server := github.serve(t)
+	key, privatePEM := testAppKey(t)
+	server := github.serve(t, &key.PublicKey)
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
@@ -1779,15 +1786,16 @@ func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t 
 // project's pods are built side by side, so an overlapping pair asking GitHub the same question
 // twice costs a page walk under a fresh JWT for nothing. It is no cache: a read made once the
 // first has ended reads GitHub again, which is what a bundle's directories must rest on
-// (INFRA-2543 R2).
+// (INFRA-2543 R2). A request without the Manager's App credential (anAppCredential) is another
+// process's: it is answered 404 and logged, and counts as no read.
 func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
 	var reads atomic.Int64
 	reading, release := make(chan struct{}), make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/app/installations" {
-			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+			githubtest.Unexpected(t, w, r)
 			return
 		}
 		if reads.Add(1) == 1 {
@@ -1795,31 +1803,32 @@ func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
 			<-release
 		}
 		fmt.Fprint(w, `[{"id":77,"account":{"login":"Acme"}}]`)
-	}))
-	defer server.Close()
+	}})
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
 	answers := make(chan []string, 2)
-	read := func() {
-		owners, err := tokens.InstalledOwners(context.Background(), Implement)
+	read := func(ctx context.Context) {
+		owners, err := tokens.InstalledOwners(ctx, Implement)
 		if err != nil {
 			t.Errorf("InstalledOwners: %v", err)
 		}
 		answers <- owners
 	}
-	go read()
-	<-reading
-	// The second caller joins while the first is still inside GitHub's answer. Were it not
-	// sharing that read, its own request would reach the handler here and count a second read,
-	// since the first is held until release is closed.
-	go read()
-	time.Sleep(50 * time.Millisecond)
+	go read(context.Background())
+	testwait.Receive(t, "the first read to reach GitHub", reading)
+	// The second caller joins while the first is still inside GitHub's answer. It waits on its
+	// own context only once it has joined the read in flight (InstalledOwners), which its
+	// watched context reports. Were it not sharing that read, its own request would reach the
+	// handler and count a second read, since the first is held until release is closed.
+	joined := newWatchedContext()
+	go read(joined)
+	testwait.Receive(t, "the second caller to wait on the read in flight", joined.watched)
 	close(release)
 	for range 2 {
-		if owners := <-answers; !slices.Equal(owners, []string{"acme"}) {
+		if owners := testwait.Receive(t, "an overlapping caller's owners", answers); !slices.Equal(owners, []string{"acme"}) {
 			t.Fatalf("the owners read = %v, want acme", owners)
 		}
 	}
@@ -1842,13 +1851,13 @@ func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
 // owners GitHub lists rather than with `context canceled`, and GitHub is asked once
 // (InstalledOwners, readSharedInstallations).
 func TestTheSharedInstallationReadOutlivesItsFirstCallersCancellation(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	var reads atomic.Int64
 	reading, release := make(chan struct{}), make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/app/installations" {
-			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+			githubtest.Unexpected(t, w, r)
 			return
 		}
 		if reads.Add(1) == 1 {
@@ -1862,8 +1871,7 @@ func TestTheSharedInstallationReadOutlivesItsFirstCallersCancellation(t *testing
 			return
 		}
 		fmt.Fprint(w, `[{"id":77,"account":{"login":"Acme"},"suspended_at":null},{"id":78,"account":{"login":"sjawhar"},"suspended_at":null}]`)
-	}))
-	defer server.Close()
+	}})
 	defer func() {
 		select {
 		case <-release:
@@ -1883,40 +1891,29 @@ func TestTheSharedInstallationReadOutlivesItsFirstCallersCancellation(t *testing
 		_, err := tokens.InstalledOwners(first, Implement)
 		firstErr <- err
 	}()
-	select {
-	case <-reading:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first caller never asked GitHub")
-	}
+	testwait.Receive(t, "the first caller to ask GitHub", reading)
 	type answer struct {
 		owners []string
 		err    error
 	}
 	second := make(chan answer, 1)
+	// The second caller joins the read the first started while GitHub holds its answer. It waits
+	// on its own context only once it has joined the read in flight (InstalledOwners), which its
+	// watched context reports.
+	joined := newWatchedContext()
 	go func() {
-		owners, err := tokens.InstalledOwners(context.Background(), Implement)
+		owners, err := tokens.InstalledOwners(joined, Implement)
 		second <- answer{owners, err}
 	}()
-	// The second caller joins the read the first started while GitHub holds its answer.
-	time.Sleep(50 * time.Millisecond)
+	testwait.Receive(t, "the second caller to join the read in flight", joined.watched)
 
 	cancelFirst()
-	select {
-	case err := <-firstErr:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the cancelled first caller = %v, want its own context's end", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the cancelled first caller is still waiting")
+	if err := testwait.Receive(t, "the cancelled first caller's answer", firstErr); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the cancelled first caller = %v, want its own context's end", err)
 	}
 	close(release)
-	select {
-	case got := <-second:
-		if got.err != nil || !slices.Equal(got.owners, []string{"acme", "sjawhar"}) {
-			t.Fatalf("the caller that joined the read = %v, %v; want acme and sjawhar: the first caller's cancellation is not the read's", got.owners, got.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the caller that joined the read was never answered")
+	if got := testwait.Receive(t, "the answer of the caller that joined the read", second); got.err != nil || !slices.Equal(got.owners, []string{"acme", "sjawhar"}) {
+		t.Fatalf("the caller that joined the read = %v, %v; want acme and sjawhar: the first caller's cancellation is not the read's", got.owners, got.err)
 	}
 	if got := reads.Load(); got != 1 {
 		t.Errorf("GitHub was asked %d times, want once: the second caller shares the first's read", got)

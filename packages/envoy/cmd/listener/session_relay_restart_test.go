@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errCreateFault is the error the tests' create fault fails a consumer create with.
@@ -48,14 +50,20 @@ func failCreates(t *testing.T, rig *relayRig, sessionID string, n int) <-chan st
 	return failed
 }
 
-// awaitCreateFailure waits up to 10 s for the next failure failCreates reports.
+// awaitCreateFailure waits for the next failure failCreates reports.
 func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-failed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the relay's restart never reached its create")
-	}
+	testwait.Receive(t, "the relay's restart to reach its create", failed)
+}
+
+// fireRelayRetry moves the relay's clock to the deadline of the retry the relay armed after a
+// failed call, once the relay has armed it. The relay's clock stands still (relayRig.relayClock),
+// so a relay waiting out its retry backoff restarts only when the test moves it there. what names
+// the retry, and what waits on it, for the failure of a relay that never arms one.
+func fireRelayRetry(t *testing.T, rig *relayRig, what string) {
+	t.Helper()
+	armed := rig.relayClock.AwaitArmed(t, what, 1)
+	rig.relayClock.Set(armed[0])
 }
 
 // requireNoConsumer fails the test unless sessionID has no consumer.
@@ -84,11 +92,11 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	written, floor := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), written)
+	requireFrames(t, standIn.collect(t, 1), written)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 	holdNext.Store(true)
 	held, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
+	requireFrames(t, standIn.collect(t, 1), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
 	// Every caller's next step restarts the relay at the ack floor, which deletes the consumer
 	// holding that message and creates it again.
@@ -105,8 +113,9 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_create_failed_")
 	agent := contracts.LegacyAgentSubject(sessionID)
 
-	// The relay's first create and its first retry's (1 s on) fail; its second retry, 3 s on,
-	// creates.
+	// The relay's first create and its first retry's fail; its second retry creates. Each retry
+	// waits out the relay's backoff on its clock, relayRetryFirst and then twice that, and the
+	// test moves that clock to each retry's deadline once the relay has armed it.
 	failed := failCreates(t, rig, sessionID, 2)
 	// A new epoch restarts the relay at the ack floor: it reads the floor and deletes the consumer.
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
@@ -117,8 +126,11 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 		item, _ := rig.storeEvent(t, agent)
 		missed = append(missed, item)
 	}
-	requireFrames(t, standIn.collect(t, 4, 10*time.Second), missed...)
-	standIn.none(t, time.Second)
+	fireRelayRetry(t, rig, "the relay's first retry after its failed create, which alone brings the session frame 1 of 4")
+	awaitCreateFailure(t, failed)
+	fireRelayRetry(t, rig, "the relay's second retry after its first retry's create failed, which alone brings the session frame 1 of 4")
+	requireFrames(t, standIn.collect(t, 4), missed...)
+	standIn.none(t)
 	info, err := rig.consumers.Info(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the consumer the relay created again: %v", err)
@@ -154,8 +166,8 @@ func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFlo
 		t.Fatalf("the registration created the consumer at %d, want the floor's next sequence %d, not the stream's end", info.Config.OptStartSeq, floor+1)
 	}
 
-	requireFrames(t, standIn.collect(t, 4, 10*time.Second), backlog...)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, 4), backlog...)
+	standIn.none(t)
 }
 
 // burstSessions is how many sessions TestSessionConsumerBurstOfRestartsDeliversEveryBacklog
@@ -208,16 +220,26 @@ func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 }
 
 // registerBurst registers every session with the listener on port in consumer mode, a few at a
-// time, with no resume point, and fails the test unless each answer says consumer.
+// time, with no resume point, and fails the test unless each answer says consumer. A session the
+// listener refuses with a 503 is registered again until it is answered: the listener refuses a
+// registration while it cannot write the session's record (its bus or its store does not
+// answer), and that 503 asks the client to try the same route again, so the refusal is no
+// verdict, and only the test's deadline limits the retries. Any other answer is the verdict.
 func registerBurst(t *testing.T, port int, sessionIDs []string) {
 	t.Helper()
 	work := make(chan string)
-	errs := make(chan error, len(sessionIDs))
+	type answer struct {
+		sessionID string
+		refused   bool
+		err       error
+	}
+	answers := make(chan answer, len(sessionIDs))
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
 			for sessionID := range work {
-				errs <- registerConsumerSession(port, sessionID)
+				refused, err := registerConsumerSession(port, sessionID)
+				answers <- answer{sessionID, refused, err}
 			}
 		})
 	}
@@ -226,63 +248,75 @@ func registerBurst(t *testing.T, port int, sessionIDs []string) {
 	}
 	close(work)
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
+	close(answers)
+	for answer := range answers {
+		if !answer.refused {
+			if answer.err != nil {
+				t.Fatal(answer.err)
+			}
+			continue
 		}
+		t.Logf("%v; registering again", answer.err)
+		testwait.Until(t, "the listener to answer the registration of "+answer.sessionID+" it refused with a 503", func() (string, bool) {
+			refused, err := registerConsumerSession(port, answer.sessionID)
+			if !refused && err != nil {
+				t.Fatal(err)
+			}
+			return fmt.Sprint(err), !refused
+		})
 	}
 }
 
-// registerConsumerSession registers sessionID with the listener on port in consumer mode and
-// reports an answer that is not 200 with consumer delivery.
-func registerConsumerSession(port int, sessionID string) error {
+// registerConsumerSession registers sessionID with the listener on port in consumer mode. It
+// reports a 503, the listener's refusal while it cannot write the session's record, as refused
+// with that answer, and any other answer that is not 200 with consumer delivery as an error.
+func registerConsumerSession(port int, sessionID string) (refused bool, err error) {
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+"/v1/interests/subscribe", strings.NewReader(consumerRegistration(sessionID, "epoch-1")))
 	if err != nil {
-		return err
+		return false, err
 	}
 	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("register %s: %w", sessionID, err)
+		return false, fmt.Errorf("register %s: %w", sessionID, err)
 	}
 	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return false, fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
+	}
+	if response.StatusCode == http.StatusServiceUnavailable {
+		return true, fmt.Errorf("register %s: status 503: %s", sessionID, strings.TrimSpace(string(body)))
+	}
 	var answer subscribeAnswer
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
-		return fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return false, fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
 	}
 	if response.StatusCode != http.StatusOK || answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer {
-		return fmt.Errorf("register %s: status %d, delivery %+v; want 200 in consumer mode", sessionID, response.StatusCode, answer.Delivery)
+		return false, fmt.Errorf("register %s: status %d, delivery %+v; want 200 in consumer mode", sessionID, response.StatusCode, answer.Delivery)
 	}
-	return nil
+	return false, nil
 }
 
-// awaitPulled waits up to 30 s until every session's consumer has a pull request waiting: the
-// listener's relay has restarted it and pulls it.
+// awaitPulled waits until every session's consumer has a pull request waiting: the listener's
+// relay has restarted it and pulls it.
 func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
 	for _, sessionID := range sessionIDs {
-		for {
+		testwait.Until(t, "the consumer of "+sessionID+" to have a pull waiting", func() (string, bool) {
 			info, err := consumers.Info(context.Background(), sessionID)
-			if err == nil && info.NumWaiting > 0 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the consumer of %s has no pull waiting after 30 s: %+v, %v", sessionID, info, err)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			return fmt.Sprintf("%+v, %v", info, err), err == nil && info.NumWaiting > 0
+		})
 	}
 }
 
 // A listener killed (SIGKILL) while it relays many sessions restarts every one of their consumers
 // at once when it starts again, from its watched session cache, with no new registration: each
 // session, none of which ever sent a resume point, receives the messages stored while the listener
-// was down within 10 s of its restart, each once and in stream order. The restarts wait their turn
-// (relayRestartLimit) and their calls' timeout starts only once they hold it, so none times out
-// waiting, and none leaves its consumer missing.
+// was down once its restart has restarted the consumers, each once and in stream order. The
+// restarts wait their turn (relayRestartLimit) and their calls' timeout starts only once they hold
+// it, so none times out waiting, and none leaves its consumer missing.
 func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
@@ -322,36 +356,16 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 			t.Logf("the restarted listener's output:\n%s", restarted.Output.String())
 		}
 	})
-	startedAt := time.Now()
 	got := map[string][]burstFrame{}
-	deadline := time.After(10 * time.Second)
-	var last time.Time
-	for received := range burstSessions * perSession {
-		select {
-		case frame := <-standIn.frames:
-			got[frame.sessionID] = append(got[frame.sessionID], frame)
-			last = time.Now()
-		case <-deadline:
-			complete := 0
-			for _, sessionID := range sessionIDs {
-				if len(got[sessionID]) >= perSession {
-					complete++
-				}
-			}
-			t.Fatalf("10 s after the restart %d of %d frames arrived; %d of %d sessions have their whole backlog", received, burstSessions*perSession, complete, burstSessions)
-		}
+	for range burstSessions * perSession {
+		frame := testwait.Receive(t, "a backlog frame after the listener's restart", standIn.frames)
+		got[frame.sessionID] = append(got[frame.sessionID], frame)
 	}
-	t.Logf("every session had its backlog %s after the listener's restart", last.Sub(startedAt).Round(time.Millisecond))
-	// A frame relayed twice would arrive within this second.
-	extra := time.After(time.Second)
-	for waiting := true; waiting; {
-		select {
-		case frame := <-standIn.frames:
-			got[frame.sessionID] = append(got[frame.sessionID], frame)
-		case <-extra:
-			waiting = false
-		}
-	}
+	t.Logf("every session had its backlog after the listener's restart")
+	// A frame relayed twice would arrive promptly: the restarted listener delivers each backlog
+	// frame once, and no state read distinguishes none-yet from none on a live delivery stream.
+	testwait.Quiet(t, "a duplicate backlog frame", standIn.frames, time.Second,
+		"the restarted listener delivers each backlog frame once; a duplicate would arrive promptly, and no state read distinguishes none-yet from none on a live delivery stream")
 	for _, sessionID := range sessionIDs {
 		frames := got[sessionID]
 		events := make([]string, len(frames))

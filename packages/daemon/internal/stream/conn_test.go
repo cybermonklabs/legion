@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // agentEndFrame is the frame that arrives chunked: the only worker frame whose size grows with
@@ -53,11 +55,10 @@ func TestPromptReturnsNilOnTheAck(t *testing.T) {
 	if frame.DeliveryID != "delivery-1" || frame.Message != "verify <#41> & report" || frame.ID == "" {
 		t.Fatalf("prompt frame = %#v", frame)
 	}
-	select {
-	case err := <-result:
-		t.Fatalf("Prompt returned before the ack: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
+	testwait.Quiet(t, "Prompt's return", result, 20*time.Millisecond,
+		"a Prompt that did not wait for its ack would return on its own goroutine right after its write, which "+
+			"no state records; the listener does real socket I/O no synctest bubble holds; and no later action of "+
+			"the test is ordered after that return")
 	p.send(shimwire.Response{ID: frame.ID, Command: shimwire.TypePrompt, Success: true})
 	if err := awaitResult(t, result); err != nil {
 		t.Fatalf("Prompt = %v, want nil on the ack", err)
@@ -115,13 +116,13 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 		t.Fatalf("Prompt after its context was cancelled = %v, want context.Canceled", err)
 	}
 
-	short := startListener(t, harnessOptions{rpcTimeout: 50 * time.Millisecond})
-	q := dial(t, short.listener.Addr())
-	q.hello(testToken)
-	q.expect(shimwire.TypeHelloAck)
-	short.next()
-	quiet := short.conn()
-	err := awaitResult(t, async(func() error { return quiet.Prompt(context.Background(), "delivery-1", "verify #41") }))
+	quiet := startListener(t, harnessOptions{})
+	q := quiet.connect(testToken)
+	unanswered := async(func() error { return quiet.conn().Prompt(context.Background(), "delivery-1", "verify #41") })
+	// The negotiation ahead of the prompt is never answered, so its RPC bound runs out.
+	q.expect(shimwire.TypeNegotiateProtocol)
+	quiet.noAnswer()
+	err := awaitResult(t, unanswered)
 	if !errors.Is(err, ErrNoAnswer) {
 		t.Fatalf("Prompt with no answer = %v, want ErrNoAnswer", err)
 	}
@@ -149,8 +150,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 	const staleLock = "Command failed (exit 1): jj metaedit: git lock /w/.git/index.lock was last written 31m ago"
 	var refusal *RefusedError
 	for _, test := range []struct {
-		name       string
-		rpcTimeout time.Duration
+		name string
 		// drive answers (or does not) whatever the connection sent, and returns the error the
 		// call under test returned.
 		drive func(h *harness, p *peer) error
@@ -221,9 +221,10 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			},
 			isCase: func(err error) bool { return errors.Is(err, ErrClosed) },
 		},
-		{name: "no answer within the RPC timeout", rpcTimeout: 300 * time.Millisecond,
+		{name: "no answer within the RPC timeout",
 			drive: func(h *harness, p *peer) error {
 				_, result := h.prompt(p, "delivery-1", "verify #41")
+				h.noAnswer()
 				return awaitResult(h.t, result)
 			},
 			isCase: func(err error) bool { return errors.Is(err, ErrNoAnswer) },
@@ -231,11 +232,13 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 		{name: "the caller's deadline",
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
-				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+				caller := clocktest.New(testMoment)
+				ctx, cancel := caller.WithTimeout(context.Background(), 300*time.Millisecond)
 				defer cancel()
 				result := async(func() error { return conn.Prompt(ctx, "delivery-1", "verify #41") })
 				p.negotiate()
 				p.expect(shimwire.TypePrompt)
+				caller.Advance(300 * time.Millisecond)
 				return awaitResult(h.t, result)
 			},
 			isCase: func(err error) bool { return errors.Is(err, context.DeadlineExceeded) },
@@ -265,7 +268,7 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := startListener(t, harnessOptions{rpcTimeout: test.rpcTimeout})
+			h := startListener(t, harnessOptions{})
 			err := test.drive(h, h.connect(testToken))
 			if !test.isCase(err) {
 				t.Fatalf("the call returned %v, not the failure this case is about", err)

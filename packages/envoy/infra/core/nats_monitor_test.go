@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // runStartScript runs script, a StartScript, with a stub nats-server first on PATH, so the script
@@ -46,7 +49,9 @@ func startFromScript(t *testing.T, script, configPath string, serverArgs []strin
 	require.NoError(t, err)
 	go s.Start()
 	t.Cleanup(s.Shutdown)
-	require.True(t, s.ReadyForConnections(10*time.Second), "nats-server did not start")
+	testwait.Until(t, "nats-server to accept connections", func() (string, bool) {
+		return "", s.ReadyForConnections(100 * time.Millisecond)
+	})
 	addr := s.MonitorAddr()
 	require.NotNil(t, addr, "nats-server serves no monitoring")
 	return addr
@@ -67,10 +72,13 @@ func outsideAddress(t *testing.T) net.IP {
 	return nil
 }
 
-// monitorHealthz reports whether GET /healthz at host:port answers 200.
-func monitorHealthz(host net.IP, port int) (bool, error) {
-	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s/healthz", net.JoinHostPort(host.String(), fmt.Sprint(port))))
+// monitorHealthz reports whether GET /healthz at host:port answers 200 within ctx.
+func monitorHealthz(ctx context.Context, host net.IP, port int) (bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s/healthz", net.JoinHostPort(host.String(), fmt.Sprint(port))), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return false, err
 	}
@@ -78,6 +86,11 @@ func monitorHealthz(host net.IP, port int) (bool, error) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode == http.StatusOK, nil
 }
+
+// unanswered is how long the read the private start script's monitoring must not answer waits for
+// an answer before it counts as none: a listener on loopback alone refuses the outside address at
+// once, and a dropped connection is no answer either, so this bound can only make that row pass.
+const unanswered = 2 * time.Second
 
 // monitorArgs are server arguments that open nats-server's monitoring on a free port, as a
 // component's serverArgs open it on 8222 for its health check (aws/rendering/nats.go:50-51).
@@ -101,11 +114,13 @@ func TestAPrivateStartScriptServesMonitoringOnLoopbackAlone(t *testing.T) {
 	addr := startFromScript(t, script, configPath, monitorArgs)
 	require.True(t, addr.IP.IsLoopback(), "monitoring is bound to %s", addr)
 
-	ok, err := monitorHealthz(net.IPv4(127, 0, 0, 1), addr.Port)
+	ok, err := monitorHealthz(testwait.Context(t), net.IPv4(127, 0, 0, 1), addr.Port)
 	require.NoError(t, err)
 	require.True(t, ok, "the task's health check reads monitoring on loopback")
 	outside := outsideAddress(t)
-	_, err = monitorHealthz(outside, addr.Port)
+	outsideRead, cancel := context.WithTimeout(testwait.Context(t), unanswered)
+	defer cancel()
+	_, err = monitorHealthz(outsideRead, outside, addr.Port)
 	require.Error(t, err, "monitoring answered at %s, outside loopback", outside)
 }
 
@@ -118,7 +133,7 @@ func TestAStartScriptWithoutPrivateProjectsServesMonitoringAsBefore(t *testing.T
 	require.NoError(t, err)
 	require.NotContains(t, script, "http:")
 	addr := startFromScript(t, script, configPath, monitorArgs)
-	ok, err := monitorHealthz(outsideAddress(t), addr.Port)
+	ok, err := monitorHealthz(testwait.Context(t), outsideAddress(t), addr.Port)
 	require.NoError(t, err)
 	require.True(t, ok, "monitoring on every address answers at the outside address")
 }

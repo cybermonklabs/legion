@@ -22,6 +22,8 @@
 #                                                  <dir> (read-only but for <dir>/<output> and
 #                                                  <dir>/sessions), output to <dir>/out.txt, the
 #                                                  model and thinking level to <dir>/judge-model.txt
+#   rig.sh judge-image                             pulls the judges' container image unless Docker
+#                                                  holds it: the pull judge-omp makes when it must
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
 # batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
@@ -116,10 +118,11 @@
 # (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. Docker assigns the containers' host
-# ports, the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it
-# until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
-# reports, and the kernel assigns each run's daemon stand-in its port.
+# and score.ts does not score two runs that name one database. The containers publish no port
+# (scripts/e2e/lib/containers.sh): Postgres listens on a unix socket and NATS on a loopback port the
+# kernel chose. The listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for
+# it until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way
+# and reports, and the kernel assigns each run's daemon stand-in its port.
 #
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach
@@ -143,7 +146,8 @@
 #   LEGION_E2E_MODEL_PROVIDER_MODEL
 #                                 provider, optional: the model id of that block a label's agents run
 #                                 (default the judge's, claude-opus-4-8); the judge keeps its own
-# `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
+# `judge`, `judge-omp` and `judge-image` also need Docker: each judge runs in a container
+# (cmd_judge_omp).
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
@@ -282,7 +286,7 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
 # ports and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
-S='' envoy_port='' dispatch_port='' pg_port='' nats_port=''
+S='' envoy_port='' dispatch_port='' nats_port=''
 
 label_dir() {
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
@@ -774,22 +778,22 @@ lock_services() {
 # packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
 # servers at once, so max_connections is 30 for each concurrent run and 20 more for psql.
 services_up() {
+  local sockets
   evidence=$S
-  # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
-  [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
+  # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml). Neither
+  # container publishes a port (scripts/e2e/lib/containers.sh): Postgres listens on a unix socket in
+  # a directory of the rig's own, which each run reads back from the container (own_dispatch), and
+  # NATS binds a loopback port the kernel chooses.
+  start_postgres_container "$tag-pg" sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+    -e POSTGRES_PASSWORD=ci -- ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20))
   # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-  nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
-  [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
-  until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
-  until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+  start_nats_container "$tag-nats" --cpus 1 --memory 512m -- "$nats_image" -js
+  until_true 60 "Postgres to accept connections on its socket" postgres_container_ready "$tag-pg"
+  until_true 60 "NATS to be ready" nats_container_ready "$tag-nats" nats_port
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
@@ -798,13 +802,16 @@ services_up() {
     echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
-  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres :$pg_port"
+  note "services up: listener :$envoy_port, NATS :$nats_port, Postgres on a socket in $sockets"
 }
 
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
+  local sockets
   stop_tree "${listener_pid:-}"
+  sockets=$(postgres_container_sockets "$tag-pg" 2>/dev/null) || sockets=''
   docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  case $sockets in /*) rm -rf "$sockets" || true ;; esac
   rm -f "$services_env" "$S/up"
 }
 
@@ -813,16 +820,18 @@ services_down() {
 # Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port.
 own_dispatch() {
-  local seed=$1 database=run_${R##*/} pg_port postgres
+  local seed=$1 database=run_${R##*/} sockets postgres
   database=${database//-/_}
   # Postgres cuts a longer name to 63 bytes, and two runs whose names agree that far would share it.
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
-  pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
+  sockets=$(postgres_container_sockets "$tag-pg")
   postgres=$(docker inspect -f '{{.Id}}' "$tag-pg")
-  [ -n "$pg_port" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
+  [ -n "$sockets" ] && [ -n "$postgres" ] || fail "no Postgres container $tag-pg for the run's Dispatch"
   docker exec "$tag-pg" psql -U postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
     fail "CREATE DATABASE $database failed; see $R/fixture.log"
-  start_dispatch "postgres://postgres:ci@127.0.0.1:$pg_port/$database?sslmode=disable"
+  # The user and password go in the query, not the authority: a URL reader (WHATWG's, as Bun's and
+  # the stand-ins' `new URL`) refuses userinfo before an empty host, and libpq and pgx read both.
+  start_dispatch "postgres:///$database?host=$sockets&user=postgres&password=ci&sslmode=disable"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
@@ -1224,6 +1233,29 @@ judge_keys() {
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
 }
 
+# cmd_judge_image pulls judge_image unless Docker already holds it, quietly. cmd_judge_omp runs it
+# before its container, so a first judge's pull progress never lands in its out.txt and a failed
+# pull names itself; a caller that starts many judges can run it first, so that no judge's own time
+# holds the pull, as rig.test.ts's judge-omp tests do in a beforeAll. The registry answers one
+# request of a batch badly now and then (a token it refuses to mint, a manifest GET it drops) and
+# serves the next, so the pull is asked three times a couple of seconds apart before the rig
+# refuses. Only the last attempt's own words are kept, and only for the refusal: an attempt the
+# next one makes good says nothing.
+cmd_judge_image() {
+  [ $# = 0 ] || fail "usage: rig.sh judge-image"
+  command -v docker >/dev/null || fail "judge-image: docker is not on PATH; each judge runs in a container"
+  docker image inspect "$judge_image" >/dev/null 2>&1 && return 0
+  local pulled='' pull_error='' attempt
+  for attempt in 1 2 3; do
+    pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+      pulled=1
+      break
+    }
+    [ "$attempt" -eq 3 ] || sleep 2
+  done
+  [ -n "$pulled" ] || fail "judge-image: docker could not pull $judge_image in 3 attempts: $pull_error"
+}
+
 # cmd_judge_omp KIND DIR OUTPUT runs one fresh judge session in DIR on DIR/prompt.txt: no plugins,
 # the KIND profile's skills alone (ste: asd-ste100; bare: none), the judge's pinned model and
 # thinking level, its transcript under DIR/sessions, its output to DIR/out.txt with a last line
@@ -1287,22 +1319,7 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
-  # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself. The registry answers one request of a batch badly now and then (a
-  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
-  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
-  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
-  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
-    local pulled='' pull_error='' attempt
-    for attempt in 1 2 3; do
-      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
-        pulled=1
-        break
-      }
-      [ "$attempt" -eq 3 ] || sleep 2
-    done
-    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
-  fi
+  cmd_judge_image
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -1605,5 +1622,6 @@ run) shift && cmd_run "$@" ;;
 score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
+judge-image) shift && cmd_judge_image "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
 esac; exit

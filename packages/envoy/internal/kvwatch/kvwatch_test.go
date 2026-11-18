@@ -15,6 +15,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -118,25 +119,16 @@ func (e legacyView) Operation() natsgo.KeyValueOp {
 	return natsgo.KeyValuePut
 }
 
-// clock is the injected clock a stale episode is measured on (kvwatch.WithNow).
-type clock struct {
-	mu  sync.Mutex
-	now time.Time
-}
+// newClock is the module's fake clock, which a watcher reads the stale episode, the age of its
+// latest stream confirmation and the time since its scan's last entry on (kvwatch.WithNow takes
+// its Now). It stands at one moment until the test moves it, so none of those spans passes on its
+// own.
+func newClock() *clocktest.Fake { return clocktest.New(time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)) }
 
-func newClock() *clock { return &clock{now: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)} }
-
-func (c *clock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *clock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
+// firstWatchReplaced is the INFO line a first start writes when its watch failed after a Rewatch
+// had armed the replacement that feeds the cache. It is that start's last act, so a test reading
+// what the start left waits for this line first.
+const firstWatchReplaced = "test cache first watch failed after a rewatch replaced it; the replacement feeds the cache"
 
 // scriptedKV is a bucket's jetstream handle whose watches go as the steps of its script say, and
 // through the handle itself once the script has run out. It counts the watches it was asked for.
@@ -288,14 +280,19 @@ func (h *heldEnd) step() watchStep {
 	}
 }
 
-// wait waits for ch, which names what, failing the test after 10 s.
-func wait(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
+// consuming counts the watchers being read: one goroutine runs (*Watcher).consume per watcher the
+// package has armed and nats.go has not yet closed. A watcher that was stopped, replaced or
+// discarded is read until its updates close, so its consume returns once nats.go has closed them,
+// and nothing it delivered can reach a cache after that. A test that must read a state no later
+// delivery can change waits for this count to fall to the watchers it still expects to be read.
+func consuming() int {
+	n := 0
+	for _, goroutine := range goroutinetest.Traces() {
+		if strings.Contains(goroutine, "kvwatch.(*Watcher).consume(") {
+			n++
+		}
 	}
+	return n
 }
 
 // forwardedWatcher is a watcher whose updates a step's goroutine forwards from the real one.
@@ -312,7 +309,7 @@ func bucket(t *testing.T, uri string) (*natsgo.Conn, bus.KeyValue) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -321,6 +318,19 @@ func bucket(t *testing.T, uri string) (*natsgo.Conn, bus.KeyValue) {
 		t.Fatalf("bucket: %v", err)
 	}
 	return conn, kv
+}
+
+// delivered is how many records the server has pushed to the test bucket's watchers, summed over
+// their consumers. A watcher's updates buffer holds what the cache has not taken yet, so a test
+// whose premise is that records are queued in a watcher waits on this rather than on a span of
+// its own.
+func delivered(t *testing.T, conn *natsgo.Conn) uint64 {
+	t.Helper()
+	var pushed uint64
+	for info := range jetStream(t, conn).Consumers("KV_" + testBucketName) {
+		pushed += info.Delivered.Consumer
+	}
+	return pushed
 }
 
 // wrap is kv, a legacy handle opened on conn (a recreated bucket), as the bus.KeyValue a watcher
@@ -337,9 +347,7 @@ func wrap(t *testing.T, conn *natsgo.Conn, kv natsgo.KeyValue) bus.KeyValue {
 // jetStreamEntry reads key through kv's jetstream handle, as a watcher would deliver it.
 func jetStreamEntry(t *testing.T, kv bus.KeyValue, key string) jetstream.KeyValueEntry {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	entry, err := kv.WatchHandle().Get(ctx, key)
+	entry, err := kv.WatchHandle().Get(testwait.Context(t), key)
 	if err != nil {
 		t.Fatalf("get %s: %v", key, err)
 	}
@@ -364,11 +372,6 @@ func waitingForTheApplyLock() bool {
 	return false
 }
 
-func eventually(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, what, cond)
-}
-
 // The cache is ready once the first watcher has delivered every existing key, and not before. Its
 // copy can be served only once that first read has completed: before it, Servable refuses.
 func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
@@ -380,8 +383,12 @@ func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", kv, into)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// The deadline is on a clock of the test's own, moved past it before the call, so WaitReady
+	// before Start is answered by its context with nothing waited out.
+	passed := clocktest.New(time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC))
+	ctx, cancel := passed.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
+	passed.Advance(100 * time.Millisecond)
 	if err := w.WaitReady(ctx); !errors.Is(err, context.DeadlineExceeded) || w.Ready() {
 		t.Fatalf("WaitReady before Start = %v (ready %v), want the context's deadline", err, w.Ready())
 	}
@@ -390,11 +397,9 @@ func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
 	}
 
 	w.Start()
+	started := testwait.Context(t)
 	for range 2 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := w.WaitReady(ctx)
-		cancel()
-		if err != nil {
+		if err := w.WaitReady(started); err != nil {
 			t.Fatalf("WaitReady after Start: %v", err)
 		}
 	}
@@ -419,9 +424,7 @@ func TestAFailedFirstStartIsReadyAndRecordsItsError(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen())
 
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady after a failed first start: %v", err)
 	}
 	if w.Err() == nil {
@@ -437,25 +440,20 @@ func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
 	t.Run("while the first watch is still starting", func(t *testing.T) {
 		uri := testnats.URL(t)
 		_, kv := bucket(t, uri)
-		held := holdWatch(kv)
+		held := holdWatch(t, kv)
 		w := kvwatch.New("test cache", held.handle(), newSeen())
 		t.Cleanup(w.Stop)
 
 		w.Start()
-		select {
-		case <-held.watched:
-		case <-time.After(5 * time.Second):
-			close(held.release)
-			t.Fatal("the watch never armed its watcher")
-		}
+		testwait.Receive(t, "the watch to arm its watcher", held.watched)
 		// Read while the watch is held inside its KV Watch, before it takes the watcher's locks:
 		// the state a self-health probe would find in the window this test is about.
 		needsRead := w.NeedsRead()
-		close(held.release)
+		held.let()
 		if needsRead {
 			t.Fatal("a watcher whose first watch is still starting reports a copy that needs a read")
 		}
-		eventually(t, "the first read to complete", func() bool { return w.Following() })
+		testwait.Eventually(t, "the first read to complete", func() bool { return w.Following() })
 		if w.NeedsRead() {
 			t.Fatal("a copy that follows its bucket reports it needs a read")
 		}
@@ -468,9 +466,7 @@ func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
 		w := kvwatch.New("test cache", kv, newSeen())
 
 		w.Start()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := w.WaitReady(ctx); err != nil {
+		if err := w.WaitReady(testwait.Context(t)); err != nil {
 			t.Fatalf("WaitReady after a failed first start: %v", err)
 		}
 		if !w.NeedsRead() {
@@ -487,26 +483,29 @@ func TestAFirstStartFailingAfterARewatchLeavesTheLiveWatcherHealthy(t *testing.T
 	liveConn, _ := bucket(t, uri)
 	firstConn.Close()
 	into := newSeen()
-	w := kvwatch.New("test cache", first, into)
+	logger, records := jsonLogger(t)
+	w := kvwatch.New("test cache", first, into, kvwatch.WithLogger(logger))
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	live := w.KV()
 
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	// The failed first start's last act is this line, so Err is read once that start is over and
+	// not while it might still be about to record its error.
+	testwait.Eventually(t, "the failed first start's end", func() bool {
+		return len(matching(records(), "INFO", firstWatchReplaced)) == 1
+	})
 	if err := w.Err(); err != nil {
 		t.Fatalf("the failed first start marked the live watcher dead: %v", err)
 	}
 	if _, err := live.Put("after-start", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	eventually(t, "the live watcher's delivery", func() bool { return into.has("after-start") })
+	testwait.Eventually(t, "the live watcher's delivery", func() bool { return into.has("after-start") })
 }
 
 // The ERROR a failed first start logs is the live cache's alone. A first start that fails while
@@ -517,7 +516,7 @@ func TestAFirstStartFailingAfterARewatchLeavesTheLiveWatcherHealthy(t *testing.T
 // every such cut runs its caches through that replacement path.
 func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 	const failed = "test cache watch failed"
-	const replaced = "test cache first watch failed after a rewatch replaced it; the replacement feeds the cache"
+	const replaced = firstWatchReplaced
 
 	t.Run("no replacement", func(t *testing.T) {
 		uri := testnats.URL(t)
@@ -527,7 +526,7 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
 
 		w.Start()
-		eventually(t, "the failed first start's ERROR", func() bool {
+		testwait.Eventually(t, "the failed first start's ERROR", func() bool {
 			return len(matching(records(), "ERROR", failed)) == 1
 		})
 		if ended := matching(records(), "INFO", replaced); len(ended) != 0 {
@@ -551,7 +550,7 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		w.Start()
 		// The watch ends in one of two ways, and the wait takes whichever comes: the INFO line
 		// this watch writes, or an ERROR, which is the case this test refuses.
-		eventually(t, "the replaced first watch's end", func() bool {
+		testwait.Eventually(t, "the replaced first watch's end", func() bool {
 			return len(matching(records(), "INFO", replaced))+len(atError(records())) > 0
 		})
 		if logged := atError(records()); len(logged) != 0 {
@@ -565,7 +564,7 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		if _, err := live.Put("after-start", []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
-		eventually(t, "the live watcher's delivery", func() bool { return into.has("after-start") })
+		testwait.Eventually(t, "the live watcher's delivery", func() bool { return into.has("after-start") })
 		if logged := atError(records()); len(logged) != 0 {
 			t.Fatalf("the live watcher logged %v, want no ERROR", logged)
 		}
@@ -610,24 +609,25 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 			<-release
 		}
 	}
-	w := kvwatch.New("test cache", first, withApply{seen: into, before: apply})
+	logger, records := jsonLogger(t)
+	w := kvwatch.New("test cache", first, withApply{seen: into, before: apply}, kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the Rewatch's scan never reached the held key")
-	}
+	testwait.Receive(t, "the Rewatch's scan to reach the held key", entered)
 
 	w.Start()
-	time.Sleep(300 * time.Millisecond)
+	// The failed first start is over once it has logged this line, and a start that is over can no
+	// longer release readiness; the held scan has not delivered every key, so nothing else can.
+	testwait.Eventually(t, "the failed first start's end", func() bool {
+		return len(matching(records(), "INFO", firstWatchReplaced)) == 1
+	})
 	if w.Ready() {
 		t.Fatal("the cache was ready while the current watcher's scan had not delivered every key")
 	}
 	releaseScan()
-	eventually(t, "readiness after the current watcher's scan", w.Ready)
+	testwait.Eventually(t, "readiness after the current watcher's scan", w.Ready)
 	if !into.has("held") {
 		t.Fatal("ready without the held key")
 	}
@@ -644,9 +644,9 @@ func TestAWatcherThatEndsOnItsOwnRecordsItsError(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", kv, into)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 	conn.Close()
-	eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
+	testwait.Eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
 
 	liveConn, _ := bucket(t, uri)
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
@@ -659,7 +659,7 @@ func TestAWatcherThatEndsOnItsOwnRecordsItsError(t *testing.T) {
 	if _, err := live.Put("after-rewatch", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-rewatch") })
+	testwait.Eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-rewatch") })
 	for _, read := range into.reads() {
 		if read.Recreated || read.Epoch != 0 {
 			t.Fatalf("a rewatch onto the same bucket began read %+v, want every read of epoch 0", read)
@@ -675,12 +675,14 @@ func TestAReplacedWatcherEndingRecordsNothing(t *testing.T) {
 	secondConn, _ := bucket(t, uri)
 	w := kvwatch.New("test cache", first, newSeen())
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 	if err := w.Rewatch(context.Background(), secondConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	firstConn.Close()
-	time.Sleep(500 * time.Millisecond)
+	// The replaced watcher's end is handled when its consume returns, leaving the replacement's
+	// alone; whatever that end recorded is recorded by then.
+	testwait.Eventually(t, "the replaced watcher to be read to its end", func() bool { return consuming() == 1 })
 	if err := w.Err(); err != nil {
 		t.Fatalf("the replaced watcher's end was recorded: %v", err)
 	}
@@ -708,7 +710,7 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithLogger(logger), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
@@ -722,8 +724,8 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 	if err := kvwatch.WatchOn(w, scripted(wrap(t, conn, recreated), end.step()).handle()); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	wait(t, end.reached, "the new read to deliver every record")
-	eventually(t, "the new bucket's key, as delivered", func() bool { return into.has("fresh") })
+	testwait.Receive(t, "the new read to deliver every record", end.reached)
+	testwait.Eventually(t, "the new bucket's key, as delivered", func() bool { return into.has("fresh") })
 
 	if !into.has("ghost") || !into.has("both") || !into.has("fresh") {
 		t.Fatalf("while the new read runs: ghost %v, both %v, fresh %v; want the old copy kept and the new key delivered",
@@ -743,7 +745,7 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 	}
 
 	end.let()
-	wait(t, end.handled, "the new read's end to be handled")
+	testwait.Receive(t, "the new read's end to be handled", end.handled)
 	if into.has("ghost") || !into.has("both") || !into.has("fresh") || !w.Following() {
 		t.Fatalf("after the new read completed: ghost %v, both %v, fresh %v, Following %v; want the ghost swept and the rest kept",
 			into.has("ghost"), into.has("both"), into.has("fresh"), w.Following())
@@ -771,7 +773,7 @@ func TestCheckReportsABucketRecreatedUnderALiveWatcher(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 	if err := w.Check(); err != nil || w.Err() != nil {
 		t.Fatalf("Check on the watched bucket = %v, Err %v, want both nil", err, w.Err())
 	}
@@ -798,7 +800,7 @@ func TestCheckReportsABucketRecreatedUnderALiveWatcher(t *testing.T) {
 	if err := w.Err(); err != nil {
 		t.Fatalf("Err after the rewatch = %v, want nil", err)
 	}
-	eventually(t, "the new read's completion", w.Following)
+	testwait.Eventually(t, "the new read's completion", w.Following)
 	if into.has("ghost") || w.Epoch() != 1 {
 		t.Fatalf("after the new read completed: ghost kept %v, Epoch %d; want the ghost swept in epoch 1", into.has("ghost"), w.Epoch())
 	}
@@ -812,10 +814,12 @@ func TestStopMakesTheEndSilentAndRewatchANoOp(t *testing.T) {
 	into := newSeen()
 	w := kvwatch.New("test cache", kv, into)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	testwait.Eventually(t, "the first scan", w.Ready)
 	w.Stop()
 	conn.Close()
-	time.Sleep(500 * time.Millisecond)
+	// The stopped watcher's end is handled when its consume returns, and nothing is read after
+	// that, so whatever the end recorded is recorded here.
+	testwait.Eventually(t, "the stopped watcher to be read to its end", func() bool { return consuming() == 0 })
 	if err := w.Err(); err != nil {
 		t.Fatalf("a stopped watcher's end was recorded: %v", err)
 	}
@@ -828,16 +832,14 @@ func TestStopMakesTheEndSilentAndRewatchANoOp(t *testing.T) {
 	if _, err := live.Put("after-stop", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// A Rewatch after Stop arms no watcher, and a watcher armed would have a consume reading it
+	// from the moment the Rewatch returned, so the copy below can take nothing later either.
+	if reading := consuming(); reading != 0 {
+		t.Fatalf("a Rewatch after Stop armed %d watchers, want none", reading)
+	}
 	if into.has("after-stop") {
 		t.Fatal("a Rewatch after Stop armed a watcher")
 	}
-}
-
-// eventuallyWithin is eventually with its own deadline, for a wait that spans a NATS restart.
-func eventuallyWithin(t *testing.T, within time.Duration, what string, cond func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, within, 20*time.Millisecond, what, cond)
 }
 
 // staleBound is the default stale bound, which these tests move the injected clock past.
@@ -875,7 +877,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 			if err := kvwatch.WatchOn(w, scripted(kv, newer.step()).handle()); err != nil {
 				t.Fatalf("the newer read: %v", err)
 			}
-			wait(t, newer.reached, "the newer read to deliver every record")
+			testwait.Receive(t, "the newer read to deliver every record", newer.reached)
 			return newer
 		}},
 		{name: "Check finding the bucket recreated", overtake: func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, _ bus.KeyValue) *heldEnd {
@@ -908,19 +910,19 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 			w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 			t.Cleanup(w.Stop)
 			w.Start()
-			eventually(t, "the first read's completion", w.Following)
+			testwait.Eventually(t, "the first read's completion", w.Following)
 
 			held := newHeldEnd(t)
 			if err := kvwatch.WatchOn(w, scripted(kv, held.step()).handle()); err != nil {
 				t.Fatalf("the held read: %v", err)
 			}
-			wait(t, held.reached, "the held read to deliver every record")
-			now.advance(staleBound + time.Second)
+			testwait.Receive(t, "the held read to deliver every record", held.reached)
+			now.Advance(staleBound + time.Second)
 			refuses(t, w, "with a read held past the bound")
 
 			restorer := test.overtake(t, w, conn, kv)
 			held.let()
-			wait(t, held.handled, "the held read's end to be handled")
+			testwait.Receive(t, "the held read's end to be handled", held.handled)
 			if done := len(into.completions()); done != 1 || w.Following() {
 				t.Fatalf("after the overtaken read's end: %d reads completed, Following %v; want only the first, not following", done, w.Following())
 			}
@@ -930,7 +932,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 				return
 			}
 			restorer.let()
-			wait(t, restorer.handled, "the newer read's end to be handled")
+			testwait.Receive(t, "the newer read's end to be handled", restorer.handled)
 			if done := len(into.completions()); done != 2 || !w.Following() || !into.has("kept") {
 				t.Fatalf("after the newer read's end: %d reads completed, Following %v, kept %v; want two, following, kept",
 					done, w.Following(), into.has("kept"))
@@ -956,27 +958,27 @@ func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	if err := kvwatch.WatchOn(w, scripted(kv, stallsAfter(0)).handle()); err != nil {
 		t.Fatalf("the read that times out: %v", err)
 	}
-	now.advance(kvwatch.ScanIdleTimeout)
+	now.Advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	eventually(t, "the timed-out read's re-read to be armed", func() bool { return arm.waits() == 1 })
-	now.advance(staleBound - 30*time.Second - kvwatch.ScanIdleTimeout)
+	testwait.Eventually(t, "the timed-out read's re-read to be armed", func() bool { return arm.waits() == 1 })
+	now.Advance(staleBound - 30*time.Second - kvwatch.ScanIdleTimeout)
 	serves(t, w, "within the bound of the first failed read")
 
 	if err := kvwatch.WatchOn(w, scripted(kv, endsEarly(0)).handle()); err != nil {
 		t.Fatalf("the read that ends early: %v", err)
 	}
-	eventually(t, "the early end's error", func() bool { return w.Err() != nil })
+	testwait.Eventually(t, "the early end's error", func() bool { return w.Err() != nil })
 	closed := testnats.Connect(t, uri)
 	closed.Close()
 	if err := w.Rewatch(context.Background(), closed); err == nil {
 		t.Fatal("a Rewatch on a closed connection succeeded")
 	}
-	now.advance(31 * time.Second)
+	now.Advance(31 * time.Second)
 	refuses(t, w, "past the bound of the first failed read")
 	if !w.NeedsRead() {
 		t.Fatal("NeedsRead = false for a copy no read is under way to repair")
@@ -985,7 +987,7 @@ func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	eventually(t, "the complete read", w.Following)
+	testwait.Eventually(t, "the complete read", w.Following)
 	serves(t, w, "after one complete read")
 	if done := len(into.completions()); done != 2 || !into.has("kept") {
 		t.Fatalf("%d reads completed, kept %v; want the first and the last only, kept", done, into.has("kept"))
@@ -1003,14 +1005,14 @@ func TestAFailedRewatchLeavesAFollowingWatcherServing(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	closed := testnats.Connect(t, uri)
 	closed.Close()
 	if err := w.Rewatch(context.Background(), closed); err == nil {
 		t.Fatal("a Rewatch on a closed connection succeeded")
 	}
-	now.advance(time.Hour)
+	now.Advance(time.Hour)
 	if !w.Following() || w.NeedsRead() || w.Err() != nil {
 		t.Fatalf("after the failed Rewatch: Following %v, NeedsRead %v, Err %v; want following, nothing needed, no error",
 			w.Following(), w.NeedsRead(), w.Err())
@@ -1047,10 +1049,10 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 			kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 		t.Cleanup(w.Stop)
 		w.Start()
-		eventually(t, "the scan's one record", func() bool { return into.has("one") })
-		now.advance(kvwatch.ScanIdleTimeout)
+		testwait.Eventually(t, "the scan's one record", func() bool { return into.has("one") })
+		now.Advance(kvwatch.ScanIdleTimeout)
 		arm.fireIdle(t)
-		eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
+		testwait.Eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
 		if got := arm.asked(); got != 5*time.Second {
 			t.Fatalf("the re-read waits %v, want 5s", got)
 		}
@@ -1065,7 +1067,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 	// hold.
 	completed := func(t *testing.T, w *kvwatch.Watcher, into *seen) {
 		t.Helper()
-		eventually(t, "the re-read's completion", w.Following)
+		testwait.Eventually(t, "the re-read's completion", w.Following)
 		serves(t, w, "after the re-read")
 		if into.has("gone-from-the-bucket") || !into.has("one") || !into.has("three") || len(into.completions()) != 1 {
 			t.Fatalf("after the re-read: gone %v, one %v, three %v, %d completed; want the bucket's keys only, one read completed",
@@ -1130,7 +1132,7 @@ func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
 		kvwatch.WithAfterFunc((&armed{}).afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the early end's error", func() bool { return w.Err() != nil })
+	testwait.Eventually(t, "the early end's error", func() bool { return w.Err() != nil })
 	if len(into.completions()) != 0 || !into.has("gone-from-the-bucket") || !w.NeedsRead() {
 		t.Fatalf("after the early end: %d completed, kept %v, NeedsRead %v; want none completed, the copy kept, a read needed",
 			len(into.completions()), into.has("gone-from-the-bucket"), w.NeedsRead())
@@ -1140,7 +1142,7 @@ func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
 	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	eventually(t, "the complete read", w.Following)
+	testwait.Eventually(t, "the complete read", w.Following)
 	if into.has("gone-from-the-bucket") || !into.has("two") {
 		t.Fatalf("after the complete read: gone %v, two %v; want the bucket's keys only", into.has("gone-from-the-bucket"), into.has("two"))
 	}
@@ -1158,17 +1160,17 @@ func TestABucketRecreatedWithAShorterTTLShortensTheStaleBound(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	held := newHeldEnd(t)
 	if err := kvwatch.WatchOn(w, scripted(kv, held.step()).handle()); err != nil {
 		t.Fatalf("the held read: %v", err)
 	}
-	wait(t, held.reached, "the held read to deliver every record")
-	now.advance(31 * time.Second)
+	testwait.Receive(t, "the held read to deliver every record", held.reached)
+	now.Advance(31 * time.Second)
 	serves(t, w, "31 s into a stale episode on a bucket without a TTL")
 	held.let()
-	wait(t, held.handled, "the held read's end to be handled")
+	testwait.Receive(t, "the held read's end to be handled", held.handled)
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
@@ -1177,14 +1179,14 @@ func TestABucketRecreatedWithAShorterTTLShortensTheStaleBound(t *testing.T) {
 	if err := kvwatch.WatchOn(w, scripted(wrap(t, conn, recreated), shorter.step()).handle()); err != nil {
 		t.Fatalf("the read of the recreated bucket: %v", err)
 	}
-	wait(t, shorter.reached, "the recreated bucket's read to deliver every record")
+	testwait.Receive(t, "the recreated bucket's read to deliver every record", shorter.reached)
 	if reads := into.reads(); reads[len(reads)-1].MaxAge != time.Minute {
 		t.Fatalf("the recreated bucket's read = %+v, want MaxAge 1m", reads[len(reads)-1])
 	}
-	now.advance(31 * time.Second)
+	now.Advance(31 * time.Second)
 	refuses(t, w, "31 s into a stale episode on a bucket with a 1-minute TTL")
 	shorter.let()
-	wait(t, shorter.handled, "the recreated bucket's read end to be handled")
+	testwait.Receive(t, "the recreated bucket's read end to be handled", shorter.handled)
 	serves(t, w, "after the recreated bucket's read completed")
 }
 
@@ -1214,15 +1216,15 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 	client.AddDisconnectHook(w.Disconnected)
 	client.AddReconnectHook(w.Rewatch)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	srv.Stop(t)
-	eventually(t, "the disconnect hook", func() bool { return !w.Following() })
+	testwait.Eventually(t, "the disconnect hook", func() bool { return !w.Following() })
 	if err := w.Err(); err != nil || !w.NeedsRead() {
 		t.Fatalf("during the outage: Err %v, NeedsRead %v; want the watcher still running and a read needed", err, w.NeedsRead())
 	}
 	serves(t, w, "within the bound of the disconnect")
-	now.advance(staleBound + time.Second)
+	now.Advance(staleBound + time.Second)
 	refuses(t, w, "past the bound of the disconnect")
 	if err := w.Rewatch(context.Background(), client.Conn); err == nil {
 		t.Fatal("a Rewatch while the server is down succeeded")
@@ -1230,7 +1232,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 	refuses(t, w, "after a Rewatch failed during the outage")
 
 	srv.Start(t)
-	eventuallyWithin(t, 30*time.Second, "the reconnect hook's read to complete", w.Following)
+	testwait.Eventually(t, "the reconnect hook's read to complete", w.Following)
 	serves(t, w, "after the read that followed the reconnect")
 	if !into.has("kept") || w.Err() != nil {
 		t.Fatalf("after the reconnect: kept %v, Err %v; want the key and no error", into.has("kept"), w.Err())
@@ -1291,19 +1293,13 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	w := kvwatch.New("test cache", kv, withApply{seen: newSeen(), before: apply})
 	w.Start()
 	t.Cleanup(w.Stop)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 	if _, err := kv.Put("late1", []byte("1")); err != nil {
 		t.Fatalf("put late1: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first watcher never applied late1")
-	}
+	testwait.Receive(t, "the first watcher's apply of late1", entered)
 	const queued = 40
 	keys := make([]string, 0, queued)
 	for i := range queued {
@@ -1313,22 +1309,20 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
-	// The keys wait in the first watcher's updates while its apply of late1 is held.
-	time.Sleep(300 * time.Millisecond)
+	// The keys wait in the first watcher's updates while its apply of late1 is held: the server
+	// has pushed every one of them to its consumer, and the cache has taken only late1.
+	testwait.Eventually(t, "the queued keys to reach the watcher", func() bool {
+		return delivered(t, secondConn) >= queued+1
+	})
 	rewatched := make(chan error, 1)
 	go func() {
 		err := w.Rewatch(context.Background(), secondConn)
 		rewatched <- err
 	}()
-	eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
+	testwait.Eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
 	releaseApply()
-	select {
-	case err := <-rewatched:
-		if err != nil {
-			t.Fatalf("Rewatch: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Rewatch never returned")
+	if err := testwait.Receive(t, "Rewatch to return", rewatched); err != nil {
+		t.Fatalf("Rewatch: %v", err)
 	}
 	// The premise the lock wait sets up: the switch came while the first watcher still held most of
 	// its queue. If the wait released late1 before the Rewatch was parked on applyMu, the first
@@ -1341,8 +1335,10 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	}
 
 	last := keys[len(keys)-1]
-	eventually(t, "the new watcher's scan to apply "+last, func() bool { return count(last) > 0 })
-	time.Sleep(300 * time.Millisecond)
+	testwait.Eventually(t, "the new watcher's scan to apply "+last, func() bool { return count(last) > 0 })
+	// The replaced watcher is read until its updates close; once its consume has returned, the
+	// counts below can take nothing more from it.
+	testwait.Eventually(t, "the replaced watcher to be read to its end", func() bool { return consuming() == 1 })
 	once := 0
 	for _, key := range keys {
 		switch got := count(key); got {
@@ -1406,7 +1402,7 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), slow, kv.Streams()), into, kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Eventually(t, "the first read's completion", w.Following)
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
@@ -1417,18 +1413,14 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 
 	doneA := make(chan error, 1)
 	go func() { err := w.Rewatch(context.Background(), conn); doneA <- err }()
-	select {
-	case <-slow.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Rewatch A never stopped the replaced watcher")
-	}
+	testwait.Receive(t, "Rewatch A to stop the replaced watcher", slow.entered)
 	if !into.has("ghost") {
 		t.Fatal("the old bucket's key was dropped when A's read began, before any read of the new bucket completed")
 	}
 	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch B: %v", err)
 	}
-	eventually(t, "B's read to complete", w.Following)
+	testwait.Eventually(t, "B's read to complete", w.Following)
 	if !into.has("fresh") || into.has("ghost") {
 		t.Fatalf("after B's read completed: fresh %v, ghost %v; want the new bucket's key only", into.has("fresh"), into.has("ghost"))
 	}
@@ -1436,9 +1428,9 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 	if err := <-doneA; err != nil {
 		t.Fatalf("Rewatch A: %v", err)
 	}
-	// A's watcher runs from here, and its scan's end must complete nothing; nothing observable
-	// marks that end, so the check waits as long as the rest of this file's negative checks do.
-	time.Sleep(300 * time.Millisecond)
+	// A's watcher is read until its updates close, which B's stop of it brings about; once A's
+	// consume has returned, A's read has completed whatever it was going to complete.
+	testwait.Eventually(t, "A's watcher to be read to its end", func() bool { return consuming() == 1 })
 	reads, done := into.reads(), into.completions()
 	if !into.has("fresh") || into.has("ghost") || !w.Following() || w.Err() != nil || len(done) != 2 {
 		t.Fatalf("fresh %v, ghost %v, Following %v, Err %v, reads completed %+v: want the new bucket's key kept by B's read and A's read completing nothing",
@@ -1458,14 +1450,21 @@ type heldWatchKV struct {
 	legacy                  natsgo.KeyValue
 	streams                 jetstream.JetStream
 	watched, release, ended chan struct{}
+	once                    sync.Once
 	// watcher is the real watcher, set before watched closes.
 	watcher jetstream.KeyWatcher
 }
 
-func holdWatch(kv bus.KeyValue) *heldWatchKV {
-	return &heldWatchKV{KeyValue: kv.WatchHandle(), legacy: kv.Legacy(), streams: kv.Streams(),
+func holdWatch(t *testing.T, kv bus.KeyValue) *heldWatchKV {
+	h := &heldWatchKV{KeyValue: kv.WatchHandle(), legacy: kv.Legacy(), streams: kv.Streams(),
 		watched: make(chan struct{}), release: make(chan struct{}), ended: make(chan struct{})}
+	t.Cleanup(h.let)
+	return h
 }
+
+// let releases the held watch, once however often it is called: a test releases it where its case
+// asks, and the cleanup releases one whose test failed first, so no watch is left parked on it.
+func (k *heldWatchKV) let() { k.once.Do(func() { close(k.release) }) }
 
 func (k *heldWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	watcher, err := k.KeyValue.Watch(ctx, keys, opts...)
@@ -1499,23 +1498,13 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	if _, err := first.Put("ghost", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	held := holdWatch(first)
-	released := false
-	t.Cleanup(func() {
-		if !released {
-			close(held.release)
-		}
-	})
+	held := holdWatch(t, first)
 	into := newSeen()
 	w := kvwatch.New("test cache", held.handle(), into)
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first watch never armed its watcher")
-	}
+	testwait.Receive(t, "the first watch to arm its watcher", held.watched)
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -1530,11 +1519,12 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	eventually(t, "the newer watcher's scan", func() bool { return into.has("fresh") })
+	testwait.Eventually(t, "the newer watcher's scan", func() bool { return into.has("fresh") })
 
-	close(held.release)
-	released = true
-	time.Sleep(500 * time.Millisecond)
+	held.let()
+	// The discarded watch's watcher is read until nats.go closes it; nothing of the old stream can
+	// reach the cache after that.
+	testwait.Receive(t, "the discarded old-stream watch to end", held.ended)
 	if into.has("ghost") || !into.has("fresh") {
 		t.Fatalf("after the old stream's watch arrived: ghost %v, fresh %v, reads %+v; want the recreated bucket's keys only",
 			into.has("ghost"), into.has("fresh"), into.reads())
@@ -1545,7 +1535,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	if _, err := w.KV().Put("after", []byte("1")); err != nil {
 		t.Fatalf("put through the handle: %v", err)
 	}
-	eventually(t, "a write through the current handle", func() bool { return into.has("after") })
+	testwait.Eventually(t, "a write through the current handle", func() bool { return into.has("after") })
 }
 
 // A discarded watch's watcher is read until it ends. nats.go delivers into a watcher's 256-entry
@@ -1560,25 +1550,15 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 			t.Fatalf("put: %v", err)
 		}
 	}
-	held := holdWatch(first)
-	released := false
-	t.Cleanup(func() {
-		if !released {
-			close(held.release)
-		}
-	})
+	held := holdWatch(t, first)
 	into := newSeen()
 	w := kvwatch.New("test cache", held.handle(), into)
 	w.Start()
-	select {
-	case <-held.watched:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first watch never armed its watcher")
-	}
+	testwait.Receive(t, "the first watch to arm its watcher", held.watched)
 	updates := held.watcher.Updates()
-	eventually(t, "the held watcher's buffer to fill", func() bool { return len(updates) == cap(updates) })
+	testwait.Eventually(t, "the held watcher's buffer to fill", func() bool { return len(updates) == cap(updates) })
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -1590,14 +1570,9 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
-	close(held.release)
-	released = true
+	held.let()
 
-	select {
-	case <-held.ended:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the discarded watcher never ended: it was left unread (its delivery goroutine parks on a full buffer) or never stopped")
-	}
+	testwait.Receive(t, "the discarded watcher to end: left unread, its delivery goroutine parks on a full buffer", held.ended)
 }
 
 // Readiness is the current watcher's to release. A watcher a Rewatch replaced mid-scan still reads
@@ -1637,11 +1612,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	w := kvwatch.New("probe", first, withApply{seen: into, before: apply})
 	t.Cleanup(w.Stop)
 	w.Start()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first watcher never applied k000")
-	}
+	testwait.Receive(t, "the first watcher's apply of k000", entered)
 	// The first watcher is held on its first key; its buffer holds the rest of its scan and its
 	// sentinel. The Rewatch's scan sees 200 keys. The first watcher is released only once the
 	// Rewatch is parked on applyMu, so the switch comes before the first watcher's sentinel.
@@ -1653,7 +1624,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	liveConn, _ := bucket(t, uri)
 	done := make(chan error, 1)
 	go func() { done <- w.Rewatch(context.Background(), liveConn) }()
-	eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
+	testwait.Eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
 	slow.Store(true)
 	releaseOnce.Do(func() { close(release) })
 	if err := <-done; err != nil {
@@ -1666,7 +1637,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	if firstScanApplied.Load() == 9 {
 		t.Fatal("the first watcher applied all of k001..k009 before the Rewatch switched: the lock wait did not hold k000 until the Rewatch was parked on applyMu")
 	}
-	eventually(t, "readiness", w.Ready)
+	testwait.Eventually(t, "readiness", w.Ready)
 	if !into.has("k199") {
 		t.Fatal("ready while the current watcher's scan was incomplete: k199 missing")
 	}
@@ -1677,76 +1648,141 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 // is still a recreated bucket. The stale-watch discard compares creation times, so it must only
 // apply against a live, healthy watcher; otherwise every Rewatch would discard itself and the
 // cache would keep the deleted bucket's keys.
+//
+// nats-server v2.15.1 stamps a restored stream with the time of the restore (restoreStream), so the
+// stream the server restores here is newer than the live one. The test's reads therefore go through
+// kvwatch.WatchOn, the install a Rewatch makes once it has opened its handle, on a handle that reads
+// the restored stream with the first bucket's creation time (createdAs), as a restore that keeps the
+// snapshot's creation time reports it. Every request the test makes itself waits through the shared
+// wait (testwait.Context), not a bound of nats.go's own.
 func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.T) {
-	_, uri := testnats.Start(t)
-	conn := testnats.Connect(t, uri)
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	const stream = "KV_" + testBucketName
+	ctx := testwait.Context(t)
+	// The first bucket lives, and is deleted, on a server of its own. nats-server's file store
+	// answers a stream delete once it has renamed the stream's directory to "."+name, and removes
+	// that directory in a goroutine of its own (filestore.go, fileStore.Delete). A second delete of
+	// the same name on the same server, while that removal runs, fails its own rename, leaves the
+	// deleted stream's messages where the restore then makes its stream, and still answers
+	// success; the restore then fails on those messages. On the restoring server below, the live
+	// bucket's delete is the only delete of the name.
+	_, snapshotURI := testnats.Start(t)
+	snapshotConn := testnats.Connect(t, snapshotURI)
+	t.Cleanup(snapshotConn.Close)
+	snapshotStreams, err := jetstream.New(snapshotConn, testnats.RequestTimeout(t))
 	if err != nil {
-		t.Fatalf("jetstream: %v", err)
+		t.Fatalf("jetstream on the snapshot's server: %v", err)
 	}
-	// accountKeeper exists so the account is never emptied by the deletes below. nats-server
-	// schedules the removal of the account's streams directory, in the background, on every stream
-	// delete, not only on the last one; that removal is an os.Remove, which fails on a directory that
-	// is not empty. Without the keeper, each delete below leaves the directory empty — once the
-	// deleted stream's renamed copy, which goes in a goroutine of its own, is gone — so the removal
-	// it schedules can succeed, and the restore after the second delete races it and fails. With
-	// the keeper's stream in it, the directory is never empty, so every scheduled removal fails and
-	// leaves it in place.
-	const accountKeeper = "kvwatch-test-account-keeper"
-	if _, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: accountKeeper}); err != nil {
-		t.Fatalf("create the account keeper bucket: %v", err)
-	}
-	const stream = "KV_kvwatch-test"
-	old, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
+	first, err := snapshotStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: testBucketName})
 	if err != nil {
 		t.Fatalf("create the first bucket: %v", err)
 	}
-	if _, err := old.Put("restored-key", []byte("1")); err != nil {
+	if _, err := first.Put(ctx, "restored-key", []byte("1")); err != nil {
 		t.Fatalf("put restored-key: %v", err)
 	}
-	snap := snapshotStream(t, conn, stream)
-
-	// Delete and create the bucket again: a newer stream the watcher installs.
-	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
+	firstStream, err := snapshotStreams.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("read the first bucket's stream: %v", err)
+	}
+	firstCreated := firstStream.CachedInfo().Created
+	snap := snapshotStream(t, snapshotConn, stream)
+	if err := snapshotStreams.DeleteKeyValue(ctx, testBucketName); err != nil {
 		t.Fatalf("delete the first bucket: %v", err)
 	}
-	live := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
-	if _, err := live.Put("live-key", []byte("1")); err != nil {
+
+	// The restoring server, and on it the live bucket: a newer stream the watcher installs.
+	_, uri := testnats.Start(t)
+	conn, live := bucket(t, uri)
+	streams := live.Streams()
+	// accountKeeper exists so the account is never emptied by the delete below. nats-server
+	// schedules the removal of the account's streams directory, in the background, on every stream
+	// delete, not only on the last one; that removal is an os.Remove, which fails on a directory that
+	// is not empty. Without the keeper, the delete below leaves the directory empty — once the
+	// deleted stream's renamed copy, which goes in a goroutine of its own, is gone — so the removal
+	// it schedules can succeed, and the restore after the delete races it and fails. With the
+	// keeper's stream in it, the directory is never empty, so every scheduled removal fails and
+	// leaves it in place.
+	const accountKeeper = "kvwatch-test-account-keeper"
+	if _, err := streams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: accountKeeper}); err != nil {
+		t.Fatalf("create the account keeper bucket: %v", err)
+	}
+	if _, err := live.WatchHandle().Put(ctx, "live-key", []byte("1")); err != nil {
 		t.Fatalf("put live-key: %v", err)
 	}
 	into := newSeen()
-	w := kvwatch.New("probe cache", wrap(t, conn, live), into)
+	// No stream probe: a probe that found the restored stream would read it again through the live
+	// bucket's handle, at the restore's own creation time, before the reads below.
+	w := kvwatch.New("probe cache", live, into, kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the live bucket's key", func() bool { return into.has("live-key") })
+	testwait.Eventually(t, "the live bucket's read to complete", w.Following)
+	if !into.has("live-key") {
+		t.Fatal("the live bucket's read completed without live-key")
+	}
 
 	keeperPresent := false
-	for name := range js.StreamNames() {
+	names := streams.StreamNames(ctx)
+	for name := range names.Name() {
 		keeperPresent = keeperPresent || name == "KV_"+accountKeeper
+	}
+	if err := names.Err(); err != nil {
+		t.Fatalf("list the streams: %v", err)
 	}
 	if !keeperPresent {
 		t.Fatal("the account keeper bucket is gone before the delete: the delete would empty the account and the restore would race the streams-directory removal")
 	}
+	// The live stream's creation time, read before its delete: after the restore, a read through
+	// the live bucket's handle reads the restored stream, which has the same name.
+	liveStream, err := streams.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("read the live bucket's stream: %v", err)
+	}
+	liveCreated := liveStream.CachedInfo().Created
 	// Delete it and restore the older snapshot in its place.
-	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
+	if err := streams.DeleteKeyValue(ctx, testBucketName); err != nil {
 		t.Fatalf("delete the live bucket: %v", err)
 	}
 	restoreStream(t, conn, stream, snap)
+	older := bus.NewKeyValue(live.Legacy(), live.WatchHandle(), createdAs{JetStream: streams, created: firstCreated})
+	olderState, err := older.ReadStreamState(ctx)
+	if err != nil || !olderState.Created.Before(liveCreated) {
+		t.Fatalf("the restored stream reads created %v (%v) through the handle the reads use, and the live bucket's stream was created %v; want the restored stream older",
+			olderState.Created, err, liveCreated)
+	}
 
 	if err := w.Check(); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	for tick := 1; tick <= 3; tick++ {
-		if err := w.Rewatch(context.Background(), conn); err != nil {
-			t.Fatalf("tick %d Rewatch: %v", tick, err)
-		}
-		time.Sleep(300 * time.Millisecond)
-		_ = w.Check()
+	if w.Err() == nil {
+		t.Fatal("Check recorded no error after the restore: the rule under test holds only while Check's error is recorded")
 	}
-	eventually(t, "the restored bucket's read to complete", w.Following)
+	// While Check's error is recorded, a watch onto the older stream installs at once: a read of a
+	// recreated bucket begins before WatchOn returns. A watch that discarded itself against the
+	// older stream begins no read.
+	begun := len(into.reads())
+	if err := kvwatch.WatchOn(w, older); err != nil {
+		t.Fatalf("the watch onto the restored bucket: %v", err)
+	}
+	if reads := into.reads(); len(reads) != begun+1 || !reads[begun].Recreated {
+		t.Fatalf("the watch onto the restored bucket left the reads begun at %+v; want one more, of a recreated bucket: the watch was discarded against the older stream while Check's error was recorded",
+			reads)
+	}
+	// The listener's self-health rebuild rewatches a copy that needs a read on every tick of its
+	// own, so the wait does the same: it reads the restored bucket again whenever the copy is
+	// waiting for a read, and ends when the read of the restored bucket has completed.
+	testwait.Eventually(t, "the restored bucket's read to complete", func() bool {
+		if w.Following() {
+			return true
+		}
+		if w.NeedsRead() {
+			if err := kvwatch.WatchOn(w, older); err != nil {
+				t.Fatalf("the self-health rebuild's read of the restored bucket: %v", err)
+			}
+		}
+		_ = w.Check()
+		return w.Following()
+	})
 	if w.Err() != nil || !into.has("restored-key") || into.has("live-key") || w.Epoch() == 0 {
-		t.Fatalf("after three Rewatches onto the restored bucket: Err=%v, restored-key=%v, live-key=%v, Epoch=%d; "+
+		t.Fatalf("after the reads of the restored bucket: Err=%v, restored-key=%v, live-key=%v, Epoch=%d; "+
 			"want the restored bucket's key only, read as a new epoch", w.Err(), into.has("restored-key"), into.has("live-key"), w.Epoch())
 	}
 }
@@ -1758,16 +1794,18 @@ type snapshot struct {
 	chunks        [][]byte
 }
 
-// snapshotStream snapshots stream through the raw JetStream API, which nats.go does not wrap.
+// snapshotStream snapshots stream through the raw JetStream API, which nats.go does not wrap. Each
+// request and each chunk waits through the shared wait (testwait.Context).
 func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	t.Helper()
+	ctx := testwait.Context(t)
 	inbox := natsgo.NewInbox()
 	chunks, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		t.Fatalf("snapshot %s: subscribe: %v", stream, err)
 	}
 	req, _ := json.Marshal(map[string]any{"deliver_subject": inbox, "no_consumers": true})
-	msg, err := conn.Request("$JS.API.STREAM.SNAPSHOT."+stream, req, 5*time.Second)
+	msg, err := conn.RequestWithContext(ctx, "$JS.API.STREAM.SNAPSHOT."+stream, req)
 	if err != nil {
 		t.Fatalf("snapshot %s: request: %v", stream, err)
 	}
@@ -1781,7 +1819,7 @@ func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	}
 	snap := snapshot{config: resp.Config, state: resp.State}
 	for {
-		m, err := chunks.NextMsg(5 * time.Second)
+		m, err := chunks.NextMsgWithContext(ctx)
 		if err != nil {
 			t.Fatalf("snapshot %s: chunk %d: %v", stream, len(snap.chunks), err)
 		}
@@ -1795,12 +1833,17 @@ func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	}
 }
 
-// restoreStream restores snap as stream through the raw JetStream API. The restored stream keeps
-// the snapshot's creation time.
+// restoreStream restores snap as stream through the raw JetStream API, each request waiting through
+// the shared wait (testwait.Context), and fails the test unless the server answers the end of the
+// data with no error: a restore that fails can still leave a stream behind (nats-server v2.15.1
+// stream_backup.go, RestoreStreamV2 makes the stream it built active on its way out). nats-server
+// v2.15.1 gives the restored stream the time of the restore as its creation time, not the
+// snapshot's.
 func restoreStream(t *testing.T, conn *natsgo.Conn, stream string, snap snapshot) {
 	t.Helper()
+	ctx := testwait.Context(t)
 	req, _ := json.Marshal(map[string]any{"config": snap.config, "state": snap.state})
-	msg, err := conn.Request("$JS.API.STREAM.RESTORE."+stream, req, 5*time.Second)
+	msg, err := conn.RequestWithContext(ctx, "$JS.API.STREAM.RESTORE."+stream, req)
 	if err != nil {
 		t.Fatalf("restore %s: request: %v", stream, err)
 	}
@@ -1812,11 +1855,49 @@ func restoreStream(t *testing.T, conn *natsgo.Conn, stream string, snap snapshot
 		t.Fatalf("restore %s: %v %s", stream, err, msg.Data)
 	}
 	for i, chunk := range snap.chunks {
-		if _, err := conn.Request(resp.DeliverSubject, chunk, 5*time.Second); err != nil {
+		if _, err := conn.RequestWithContext(ctx, resp.DeliverSubject, chunk); err != nil {
 			t.Fatalf("restore %s: chunk %d: %v", stream, i, err)
 		}
 	}
-	if _, err := conn.Request(resp.DeliverSubject, nil, 10*time.Second); err != nil {
+	end, err := conn.RequestWithContext(ctx, resp.DeliverSubject, nil)
+	if err != nil {
 		t.Fatalf("restore %s: end of data: %v", stream, err)
 	}
+	var done struct {
+		Error *struct{ Description string } `json:"error"`
+	}
+	if err := json.Unmarshal(end.Data, &done); err != nil {
+		t.Fatalf("restore %s: read the server's answer to the end of the data, %s: %v", stream, end.Data, err)
+	}
+	if done.Error != nil {
+		t.Fatalf("restore %s: the server did not restore the snapshot: %s", stream, end.Data)
+	}
+}
+
+// createdAs is a bucket's jetstream context whose every stream read reports the stream's creation
+// time as created, as a server that keeps it across a restore of a snapshot reports it: the rest of
+// what the read reports, its sequences among it, is the server's.
+type createdAs struct {
+	jetstream.JetStream
+	created time.Time
+}
+
+func (s createdAs) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	stream, err := s.JetStream.Stream(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return createdStream{Stream: stream, created: s.created}, nil
+}
+
+// createdStream is a stream read whose cached information reports created as its creation time.
+type createdStream struct {
+	jetstream.Stream
+	created time.Time
+}
+
+func (s createdStream) CachedInfo() *jetstream.StreamInfo {
+	info := *s.Stream.CachedInfo()
+	info.Created = s.created
+	return &info
 }

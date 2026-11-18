@@ -28,12 +28,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -205,7 +207,7 @@ func (d *fakeDaemon) resolve(bootToken string) (bootClaim, bool) {
 func (d *fakeDaemon) awaitReady(t *testing.T, bootToken string) claim.RegisterRequest {
 	t.Helper()
 	var registration claim.RegisterRequest
-	eventually(t, 20*time.Second, "the agent to register and declare ready", func() bool {
+	testwait.Eventually(t, "the agent to register and declare ready", func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		for _, r := range d.registers {
@@ -309,7 +311,7 @@ func (s *streamStub) Conn(token claim.Token) (runtime.Conn, bool) {
 func (s *streamStub) await(t *testing.T, token claim.Token) *stubConn {
 	t.Helper()
 	var conn *stubConn
-	eventually(t, 20*time.Second, "the shim of "+string(token)+" to connect", func() bool {
+	testwait.Eventually(t, "the shim of "+string(token)+" to connect", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		c, ok := s.conns[token]
@@ -327,15 +329,19 @@ func (s *streamStub) await(t *testing.T, token claim.Token) *stubConn {
 	return conn
 }
 
-// stubConn is one shim connection as a runtime.Conn.
+// stubConn is one shim connection as a runtime.Conn. shutdowns counts the shutdown frames the
+// runtime sent through it; with holdShutdowns set, a frame is counted and never reaches the shim,
+// whose agent then has no end of its own coming.
 type stubConn struct {
-	seq     uint64
-	writer  *shimwire.Writer
-	mu      sync.Mutex
-	pending map[string]chan shimwire.Response
-	next    int
-	events  chan string
-	done    chan struct{}
+	seq           uint64
+	writer        *shimwire.Writer
+	mu            sync.Mutex
+	pending       map[string]chan shimwire.Response
+	next          int
+	events        chan string
+	done          chan struct{}
+	shutdowns     atomic.Int32
+	holdShutdowns atomic.Bool
 }
 
 func (c *stubConn) read(reader *shimwire.Reader) {
@@ -409,7 +415,13 @@ func (c *stubConn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	return runtime.ConnState{IsStreaming: *data.IsStreaming}, nil
 }
 
-func (c *stubConn) Shutdown(context.Context) error { return c.writer.WriteFrame(shimwire.Shutdown{}) }
+func (c *stubConn) Shutdown(context.Context) error {
+	c.shutdowns.Add(1)
+	if c.holdShutdowns.Load() {
+		return nil
+	}
+	return c.writer.WriteFrame(shimwire.Shutdown{})
+}
 
 func (c *stubConn) Sequence() uint64 { return c.seq }
 
@@ -435,22 +447,19 @@ func (c *stubConn) AgentSecretsToken(context.Context) (string, error) {
 
 func (c *stubConn) awaitEvent(t *testing.T, want string) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case got := <-c.events:
-			if got == want {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("no %s frame arrived", want)
+		if got := testwait.Receive(t, "a "+want+" frame", c.events); got == want {
+			return
 		}
 	}
 }
 
 // rig is one test's private tmux server, daemon, stream stub, and runtime.
 type rig struct {
-	t            *testing.T
+	t *testing.T
+	// clock is every runtime's of the rig (Options.Clock): the sweep's period and each tmux
+	// client's command timeout run on it, and a row moves it (nextSweep, hungServer.outlast).
+	clock        *clocktest.Fake
 	dir          string // the server's TMUX_TMPDIR as well as the rig's files
 	stateDir     string
 	rolePrompt   string
@@ -468,7 +477,7 @@ type rig struct {
 func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	t.Helper()
 	requireTmux(t)
-	r := &rig{t: t}
+	r := &rig{t: t, clock: clocktest.New(time.Now())}
 	r.legion, r.omp = standins(t)
 	r.project = "t" + randomHex(t, 4)
 	// The directory is the server's TMUX_TMPDIR itself, with no subdirectory: tmux binds
@@ -514,17 +523,19 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 	r.t.Helper()
 	opts := Options{
-		Project:              r.project,
-		StateDir:             r.stateDir,
-		StreamAddress:        "unix://" + filepath.Join(r.dir, "stream.sock"),
-		DaemonURL:            r.daemon.server.URL,
-		EnvoyURL:             "http://127.0.0.1:9020",
-		NatsURLs:             []string{"nats://127.0.0.1:4222"},
-		Launchers:            ompOnly(shellprefix.Word(r.omp)),
-		StopGrace:            5 * time.Second,
-		ProbeInterval:        100 * time.Millisecond,
-		AdoptTimeout:         5 * time.Second,
-		CommandTimeout:       10 * time.Second,
+		Project:       r.project,
+		StateDir:      r.stateDir,
+		StreamAddress: "unix://" + filepath.Join(r.dir, "stream.sock"),
+		DaemonURL:     r.daemon.server.URL,
+		EnvoyURL:      "http://127.0.0.1:9020",
+		NatsURLs:      []string{"nats://127.0.0.1:4222"},
+		Launchers:     ompOnly(shellprefix.Word(r.omp)),
+		StopGrace:     5 * time.Second,
+		// The daemon's defaults (probe_interval_seconds, slow_command_timeout_seconds, and the
+		// runtime's own 30 s command timeout), on the rig's fake clock, which only a row moves.
+		ProbeInterval:        30 * time.Second,
+		AdoptTimeout:         300 * time.Second,
+		Clock:                r.clock,
 		Conns:                r.stream,
 		Environ:              r.environ,
 		Executable:           func() (string, error) { return r.legion, nil },
@@ -615,13 +626,6 @@ func (r *rig) workspace(issue string) string {
 	return filepath.Join(r.stateDir, "workspaces", issue)
 }
 
-func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
-	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatalf("timed out after %s waiting for %s", within, what)
-	}
-}
-
 func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 	t.Helper()
 	obs, err := rt.Probe(context.Background(), loc)
@@ -631,6 +635,136 @@ func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 	return obs
 }
 
+// nextSweep is the report of the sweep that starts once the rig's clock reaches the end of the
+// sweep's period. The caller has received the previous sweep's report, after which that sweep
+// runs no tmux client, so it moves the clock only once exactly one deadline is armed and that
+// deadline is the period's, ProbeInterval from the clock's present, and only to it: the move ends
+// no client's wait. Then it waits for the report the next sweep sends.
+func (r *rig) nextSweep(t *testing.T, what string, observations <-chan runtime.Observation) runtime.Observation {
+	t.Helper()
+	period := r.clock.Now().Add(r.rt.probeInterval)
+	testwait.Until(t, what+": the sweep's period, at "+period.Format(time.RFC3339Nano)+", the one deadline armed", func() ([]time.Time, bool) {
+		armed := r.clock.Armed()
+		return armed, len(armed) == 1 && armed[0].Equal(period)
+	})
+	r.clock.Set(period)
+	got := testwait.Until(t, what, func() (sweepReport, bool) {
+		select {
+		case obs, open := <-observations:
+			return sweepReport{obs, open}, true
+		default:
+			return sweepReport{}, false
+		}
+	})
+	if !got.open {
+		t.Fatalf("%s: the sweep's channel closed", what)
+	}
+	return got.obs
+}
+
+// sweepReport is one receive from the sweep's channel: what came, and whether the channel was
+// still open.
+type sweepReport struct {
+	obs  runtime.Observation
+	open bool
+}
+
+// hungServer is a tmux server that accepts every client and never says anything to one: a server
+// not responding. Each client it accepts it holds, under its lock, until the row ends.
+type hungServer struct {
+	mu   sync.Mutex
+	held []net.Conn
+	// ranOut is how many of the held clients the row has moved its clock past (outlast); the
+	// row's own goroutine alone reads and writes it.
+	ranOut int
+}
+
+// listenHung serves a hung server on the unix socket at path until the test ends.
+func listenHung(t *testing.T, path string) *hungServer {
+	t.Helper()
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &hungServer{}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			h.mu.Lock()
+			h.held = append(h.held, conn)
+			h.mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for _, conn := range h.held {
+			conn.Close()
+		}
+	})
+	return h
+}
+
+// accepted is how many clients the server has accepted and holds.
+func (h *hungServer) accepted() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.held)
+}
+
+// outlast waits until done reports true, running out on clk, the clock of the runtime whose
+// clients reach the server, the command timeout of each client the server holds: once the server
+// has accepted a client the clock has not yet been moved past and that client's deadline,
+// commandTimeout from the clock's present, is armed, it sets the clock to that deadline and no
+// further. A client the server holds never hears from it, so only its timeout ends it; the clock
+// moves for no other wait.
+func (h *hungServer) outlast(t *testing.T, clk *clocktest.Fake, commandTimeout time.Duration, what string, done func() bool) {
+	t.Helper()
+	for {
+		var deadline time.Time
+		finished := false
+		testwait.Eventually(t, what+", or a client the hung server holds, its command timeout armed", func() bool {
+			if done() {
+				finished = true
+				return true
+			}
+			if h.accepted() <= h.ranOut {
+				return false
+			}
+			deadline = clk.Now().Add(commandTimeout)
+			return slices.Contains(clk.Armed(), deadline)
+		})
+		if finished {
+			return
+		}
+		clk.Set(deadline)
+		h.ranOut++
+	}
+}
+
+// returning runs call, running out the command timeout of each client of its that the server
+// holds (outlast) until it returns.
+func (h *hungServer) returning(t *testing.T, r *rig, what string, call func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		call()
+	}()
+	h.outlast(t, r.clock, r.rt.commandTimeout, what+" to return", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
+}
+
 // awaitGone re-probes loc until it reads Gone, and fails if the process is ever Alive again. A stop
 // returns once its process no longer runs, and the pane then passes through states a single probe
 // cannot call Gone (LEGION-274): the exited process not yet reaped, whose pane still lists its pid
@@ -638,16 +772,13 @@ func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 // exiting under the probe's own list-panes. Both converge on Gone.
 func awaitGone(t *testing.T, rt *Runtime, loc runtime.Locator, after string) {
 	t.Helper()
-	var obs runtime.Observation
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
-		obs = probe(t, rt, loc)
+	testwait.Until(t, "Probe after "+after+" to read gone", func() (runtime.Observation, bool) {
+		obs := probe(t, rt, loc)
 		if obs.Kind == runtime.Alive {
 			t.Fatalf("Probe after %s = %+v: the stopped process is running", after, obs)
 		}
-		return obs.Kind == runtime.Gone
-	}) {
-		t.Fatalf("Probe after %s = %+v, want gone within 10s", after, obs)
-	}
+		return obs, obs.Kind == runtime.Gone
+	})
 }
 
 func panePid(t *testing.T, loc runtime.Locator) int {
@@ -686,7 +817,7 @@ func procEnviron(t *testing.T, pid int) map[string]string {
 func descendant(t *testing.T, root int, name string) int {
 	t.Helper()
 	found := 0
-	eventually(t, 20*time.Second, name+" under pid "+strconv.Itoa(root), func() bool {
+	testwait.Eventually(t, name+" under pid "+strconv.Itoa(root), func() bool {
 		children := map[int][]int{}
 		entries, _ := os.ReadDir("/proc")
 		for _, entry := range entries {
@@ -725,11 +856,11 @@ func descendant(t *testing.T, root int, name string) int {
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
-	// The read's own answer is the failure text, so err is the wait's verdict: it holds the last
-	// "no such file" when the bound passes, and any other error the moment the read returns it.
+	// The read's own answer is the failure text, so err is the wait's verdict: the wait ends on a
+	// read that succeeds or fails for any reason but the file's absence.
 	var raw []byte
 	var err error
-	testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+	testwait.Eventually(t, "the stand-in's report at "+path, func() bool {
 		raw, err = os.ReadFile(path)
 		return err == nil || !errors.Is(err, os.ErrNotExist)
 	})
@@ -758,8 +889,7 @@ func hasKillPane(argvs [][]string) bool {
 // grace.
 func TestRealTmuxLifecycle(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	spec := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
 
 	loc, err := r.rt.Spawn(ctx, spec)
@@ -919,15 +1049,38 @@ func TestRealTmuxLifecycle(t *testing.T) {
 		t.Errorf("the resumed OMP was not started with --resume: %v", report["argv"])
 	}
 
-	// An agent that will not end itself: the grace runs out and its pane is killed.
+	// An agent that will not end itself: the grace runs out and its pane is killed. The grace runs
+	// on the rig's clock, which the row moves past it once the release has armed it. The release's
+	// shutdown frame is counted and held (holdShutdowns), so nothing ends the agent in the
+	// meantime: given the frame, the pane's shim kills its agent itself after its own 5 s grace
+	// (shim.DefaultGrace), a real timer in another process that a loaded machine can let run out
+	// before the row moves the rig's clock, and the pane is then gone before it can be killed.
 	conn2 := r.stream.await(t, spec.Claim)
 	if err := conn2.Prompt(ctx, "delivery-2", "ignore SIGTERM"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
+	conn2.holdShutdowns.Store(true)
 	before = len(r.recorded())
-	impatient := r.newRuntime(func(o *Options) { o.StopGrace = 500 * time.Millisecond })
-	if err := impatient.Release(ctx, runtime.Known{Claim: loc2.Claim, Locator: &loc2}); err != nil {
+	const grace = 500 * time.Millisecond
+	impatient := r.newRuntime(func(o *Options) { o.StopGrace = grace })
+	released := make(chan error, 1)
+	go func() { released <- impatient.Release(ctx, runtime.Known{Claim: loc2.Claim, Locator: &loc2}) }()
+	ends := r.clock.Now().Add(grace)
+	testwait.Until(t, fmt.Sprintf("the release's %s grace armed at %v on the rig's clock", grace, ends), func() ([]time.Time, bool) {
+		select {
+		case err := <-released:
+			t.Fatalf("Release returned %v before it armed its %s grace on the rig's clock", err, grace)
+		default:
+		}
+		armed := r.clock.Armed()
+		return armed, slices.Contains(armed, ends)
+	})
+	r.clock.Advance(grace)
+	if err := testwait.Receive(t, "the release once its grace passed", released); err != nil {
 		t.Fatalf("Release: %v", err)
+	}
+	if sent := conn2.shutdowns.Load(); sent != 1 {
+		t.Errorf("the release sent %d shutdown frames, want one before it killed the pane", sent)
 	}
 	if !hasKillPane(r.recorded()[before:]) {
 		t.Errorf("an agent that ignored its shutdown was not killed")
@@ -970,15 +1123,17 @@ func TestRealTmuxLifecycle(t *testing.T) {
 // pane's pid at fork, and until that child execs its command it is a copy of the tmux server: its
 // /proc names the server, its argv included. A probe in that window read a starting agent as not
 // running OMP, which supervision takes for a death, relaunching the claim over its still-starting
-// process (LEGION-274, window 1). Here every pane reads as the server's copy for its first half
-// second, as a pane does on a loaded host for as long as its exec waits.
+// process (LEGION-274, window 1). Here every pane reads as the server's copy for the runtime's
+// first forkReads reads of it once it has exec'd, as a pane does on a loaded host for as long as
+// its exec waits: a count of the runtime's own reads rather than a span of the clock, so the window
+// holds as many reads at any load.
 func TestRealTmuxSpawnReturnsOnlyOnceThePaneRunsItsCommand(t *testing.T) {
+	const forkReads = 20
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	read := r.rt.readProc
 	var mu sync.Mutex
-	firstSeen := map[int]time.Time{}
+	reads := map[int]int{}
 	r.rt.readProc = func(path string) ([]byte, error) {
 		body, err := read(path)
 		var pid int
@@ -1004,13 +1159,10 @@ func TestRealTmuxSpawnReturnsOnlyOnceThePaneRunsItsCommand(t *testing.T) {
 			return body, nil
 		}
 		mu.Lock()
-		seen, ok := firstSeen[pid]
-		if !ok {
-			seen = time.Now()
-			firstSeen[pid] = seen
-		}
+		reads[pid]++
+		forked := reads[pid] <= forkReads
 		mu.Unlock()
-		if time.Since(seen) > 500*time.Millisecond {
+		if !forked {
 			return body, nil
 		}
 		// Still the server's fork, as the kernel shows it before exec: its comm and argv.
@@ -1051,8 +1203,7 @@ func TestRealTmuxSpawnThatFailsAfterOpeningItsPaneKillsThePane(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newRig(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			read := r.rt.readProc
 			var mu sync.Mutex
 			execedReads, refused := map[int]int{}, map[int]int{}
@@ -1101,16 +1252,10 @@ func TestRealTmuxSpawnThatFailsAfterOpeningItsPaneKillsThePane(t *testing.T) {
 				if tc.startTime && reads < 2 {
 					t.Fatalf("pane process %d's refused read came %d reads after its command started, not startTicks' second", pid, reads)
 				}
-				deadline := time.Now().Add(10 * time.Second)
-				for {
-					if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
-						break
-					}
-					if time.Now().After(deadline) {
-						t.Fatalf("pane process %d still runs after its Spawn failed", pid)
-					}
-					time.Sleep(20 * time.Millisecond)
-				}
+				testwait.Eventually(t, fmt.Sprintf("pane process %d to end after its Spawn failed", pid), func() bool {
+					_, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
+					return os.IsNotExist(err)
+				})
 			}
 		})
 	}
@@ -1138,8 +1283,7 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 	}
 	withMinting := func(o *Options) { o.GitHubCredential = minting }
 	r := newRig(t, withMinting)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	architect, err := r.rt.Spawn(ctx, r.spec("LEGION-2", "LEGION-2", claim.RoleArchitect))
 	if err != nil {
@@ -1212,10 +1356,29 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 	if after := readSecrets(); !maps.Equal(after, before) {
 		t.Errorf("the refused second spawn rewrote the live tester's secret files from %q to %q", before, after)
 	}
-	impatient := r.newRuntime(withMinting, func(o *Options) { o.StopGrace = 300 * time.Millisecond })
+	// The resume waits its grace on the rig's clock, which the row moves past it once the resume
+	// has armed it, and the live tester is still running then.
+	const grace = 300 * time.Millisecond
+	impatient := r.newRuntime(withMinting, func(o *Options) { o.StopGrace = grace })
 	resume := r.spec("LEGION-2", "LEGION-2", claim.RoleTester)
 	resume.ResumeSessionFile = r.rolePrompt
-	if _, err := impatient.Resume(ctx, &tester, resume); err == nil ||
+	resumed := make(chan error, 1)
+	go func() {
+		_, err := impatient.Resume(ctx, &tester, resume)
+		resumed <- err
+	}()
+	ends := r.clock.Now().Add(grace)
+	testwait.Until(t, fmt.Sprintf("the resume's %s grace armed at %v on the rig's clock", grace, ends), func() ([]time.Time, bool) {
+		select {
+		case err := <-resumed:
+			t.Fatalf("the resume over a live incarnation returned %v before it armed its %s grace on the rig's clock", err, grace)
+		default:
+		}
+		armed := r.clock.Armed()
+		return armed, slices.Contains(armed, ends)
+	})
+	r.clock.Advance(grace)
+	if err := testwait.Receive(t, "the resume once its grace passed", resumed); err == nil ||
 		!strings.Contains(err.Error(), "previous incarnation "+tester.Incarnation+" is still running") {
 		t.Errorf("a resume over a live incarnation = %v", err)
 	}
@@ -1227,37 +1390,13 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 // A tmux server that does not answer proves nothing about a pane: Probe says Uncertain, and a stop
 // that cannot confirm its process gone is an error, never a success.
 func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
-	r := newRig(t, func(o *Options) { o.CommandTimeout = time.Second })
+	r := newRig(t)
 	socketDir := filepath.Join(r.dir, fmt.Sprintf("tmux-%d", os.Getuid()))
 	if err := os.MkdirAll(socketDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// A socket that accepts and never says anything: a server not responding.
-	hung, err := net.Listen("unix", filepath.Join(socketDir, r.rt.Socket()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hung.Close()
-	var held []net.Conn
-	var heldMu sync.Mutex
-	go func() {
-		for {
-			conn, err := hung.Accept()
-			if err != nil {
-				return
-			}
-			heldMu.Lock()
-			held = append(held, conn)
-			heldMu.Unlock()
-		}
-	}()
-	defer func() {
-		heldMu.Lock()
-		defer heldMu.Unlock()
-		for _, conn := range held {
-			conn.Close()
-		}
-	}()
+	hung := listenHung(t, filepath.Join(socketDir, r.rt.Socket()))
 	loc := runtime.Locator{
 		Runtime:     runtime.RuntimeTmux,
 		Claim:       "legion-t-LEGION-9-architect",
@@ -1266,34 +1405,60 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	obs := probe(t, r.rt, loc)
-	if obs.Kind != runtime.Uncertain || !strings.Contains(obs.Detail, "cannot verify pane %1: list-panes -t %1 timed out") {
-		t.Errorf("Probe on a hung server = %+v, want uncertain naming the timeout", obs)
+	// Every client against the hung server runs to its command timeout, which runs on the rig's
+	// clock: each call below returns once the clock has been moved past the timeout of each client
+	// of its the server holds (outlast).
+	var obs runtime.Observation
+	var probeErr, suspendErr, releaseErr, reconcileErr error
+	hung.returning(t, r, "the probe on the hung server", func() { obs, probeErr = r.rt.Probe(ctx, loc) })
+	if probeErr != nil || obs.Kind != runtime.Uncertain || !strings.Contains(obs.Detail, "cannot verify pane %1: list-panes -t %1 timed out") {
+		t.Errorf("Probe on a hung server = %+v, %v; want uncertain naming the timeout", obs, probeErr)
 	}
-	if err := r.rt.Suspend(ctx, loc); err == nil || !strings.Contains(err.Error(), "cannot verify pane %1") {
-		t.Errorf("Suspend on a hung server = %v, want a refusal", err)
+	hung.returning(t, r, "the suspend on the hung server", func() { suspendErr = r.rt.Suspend(ctx, loc) })
+	if suspendErr == nil || !strings.Contains(suspendErr.Error(), "cannot verify pane %1") {
+		t.Errorf("Suspend on a hung server = %v, want a refusal", suspendErr)
 	}
-	if err := r.rt.Release(ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}); err == nil || !strings.Contains(err.Error(), "cannot verify pane %1") {
-		t.Errorf("Release on a hung server = %v, want a refusal", err)
+	hung.returning(t, r, "the release on the hung server", func() { releaseErr = r.rt.Release(ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}) })
+	if releaseErr == nil || !strings.Contains(releaseErr.Error(), "cannot verify pane %1") {
+		t.Errorf("Release on a hung server = %v, want a refusal", releaseErr)
 	}
-	if err := r.rt.ReconcileOrphans(ctx, []runtime.Known{{Claim: loc.Claim, Locator: &loc}}, 0); err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("ReconcileOrphans on a hung server = %v, want the listing's failure", err)
+	hung.returning(t, r, "the reconcile on the hung server", func() {
+		reconcileErr = r.rt.ReconcileOrphans(ctx, []runtime.Known{{Claim: loc.Claim, Locator: &loc}}, 0)
+	})
+	if reconcileErr == nil || !strings.Contains(reconcileErr.Error(), "timed out") {
+		t.Errorf("ReconcileOrphans on a hung server = %v, want the listing's failure", reconcileErr)
 	}
-	// The sweep reports the same, and keeps the process watched.
+	// The sweep reports the same, and keeps the process watched. Each sweep's probe is a client
+	// the hung server holds, and the sweep's period and that client's timeout are armed from the
+	// same present for the same length, so the move that runs the client out ends the period too,
+	// and the next sweep starts as soon as this one has reported: no move of the period's own is
+	// needed.
+	if r.rt.probeInterval != r.rt.commandTimeout {
+		t.Fatalf("the rig's probe interval %s is not its command timeout %s, which this row's sweeps rest on", r.rt.probeInterval, r.rt.commandTimeout)
+	}
 	sweepCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	observations, err := r.rt.Observe(sweepCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		select {
-		case obs := <-observations:
-			if obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
-				t.Errorf("sweep %d reported %+v, want uncertain", i, obs)
+	for i := range 2 {
+		what := fmt.Sprintf("sweep %d's report", i)
+		var report sweepReport
+		hung.outlast(t, r.clock, r.rt.commandTimeout, what, func() bool {
+			select {
+			case obs, open := <-observations:
+				report = sweepReport{obs, open}
+				return true
+			default:
+				return false
 			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("sweep %d reported nothing", i)
+		})
+		if !report.open {
+			t.Fatalf("%s: the sweep's channel closed", what)
+		}
+		if obs := report.obs; obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
+			t.Errorf("sweep %d reported %+v, want uncertain", i, obs)
 		}
 	}
 }
@@ -1302,8 +1467,7 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 // the way tmux prints raw to a UTF-8 client — and keeps every allow-listed name.
 func TestRealTmuxScrubRemovesAPlantedVariableAndKeepsTheAllowList(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	loc, err := r.rt.Spawn(ctx, r.spec("LEGION-5", "LEGION-5", claim.RoleArchitect))
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1367,8 +1531,7 @@ func TestRealTmuxScrubRemovesAPlantedVariableAndKeepsTheAllowList(t *testing.T) 
 // back to the daemon, so a restarted runtime can reap it at boot (grace zero).
 func TestRealTmuxReconcilesAWindowWhoseReportWasLost(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	spec := r.spec("LEGION-1", "LEGION-9", claim.RoleReviewer)
 	base := r.rt.run
 	dropped := false
@@ -1390,7 +1553,7 @@ func TestRealTmuxReconcilesAWindowWhoseReportWasLost(t *testing.T) {
 	// The pane marks its window as this runtime's from its own shell, after tmux has started it, and
 	// reconciliation reaps only a marked window: the start command names the worker-shim from the
 	// pane's creation, so waiting for that alone let a loaded host reconcile before the mark was set.
-	eventually(t, 30*time.Second, "the unrecorded worker-shim pane to mark its window", func() bool {
+	testwait.Eventually(t, "the unrecorded worker-shim pane to mark its window", func() bool {
 		for _, line := range strings.Split(panes(), "\n") {
 			fields := strings.SplitN(line, "\t", 4)
 			if len(fields) == 4 && fields[2] == r.rt.Socket() && strings.Contains(fields[3], "worker-shim") {
@@ -1405,9 +1568,13 @@ func TestRealTmuxReconcilesAWindowWhoseReportWasLost(t *testing.T) {
 	if err := r.rt.ReconcileOrphans(ctx, nil, 0); err != nil {
 		t.Fatalf("ReconcileOrphans: %v", err)
 	}
-	if listing := panes(); strings.Contains(listing, "worker-shim") {
-		t.Fatalf("the lost-report worker pane survived reconciliation:\n%s", listing)
-	} else if !strings.Contains(listing, "sleep 3600") {
+	// The sweep's kills are tmux's to carry out, so the listing is waited on until the lost-report
+	// worker pane has left it, rather than read once the sweep returns (INFRA-2186).
+	listing := testwait.Until(t, "the lost-report worker pane to leave the pane listing after reconciliation", func() (string, bool) {
+		listing := panes()
+		return listing, !strings.Contains(listing, "worker-shim")
+	})
+	if !strings.Contains(listing, "sleep 3600") {
 		t.Fatalf("reconciliation reaped the unmarked private-server bootstrap pane too:\n%s", listing)
 	}
 }
@@ -1417,8 +1584,7 @@ func TestRealTmuxReconcilesAWindowWhoseReportWasLost(t *testing.T) {
 // the marker is a human's and stays. A restarted daemon told of a live pane watches it.
 func TestRealTmuxReconcileOrphans(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	live, err := r.rt.Spawn(ctx, r.spec("LEGION-4", "LEGION-4", claim.RoleArchitect))
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1440,13 +1606,12 @@ func TestRealTmuxReconcileOrphans(t *testing.T) {
 	if err := r.rt.ReconcileOrphans(ctx, nil, 0); err != nil {
 		t.Fatalf("ReconcileOrphans: %v", err)
 	}
-	listing := panes()
-	if strings.Contains(listing, orphanPane+" ") {
-		t.Errorf("the orphaned worker-shim pane %s survived:\n%s", orphanPane, listing)
-	}
-	if strings.Contains(listing, orphanWindow) {
-		t.Errorf("the orphaned marked window %s survived:\n%s", orphanWindow, listing)
-	}
+	// The sweep's kills are tmux's to carry out, so the listing is waited on until both orphans
+	// have left it, rather than read once the sweep returns (INFRA-2186).
+	listing := testwait.Until(t, "the orphaned worker-shim pane "+orphanPane+" and the orphaned marked window "+orphanWindow+" to leave the pane listing", func() (string, bool) {
+		listing := panes()
+		return listing, !strings.Contains(listing, orphanPane+" ") && !strings.Contains(listing, orphanWindow)
+	})
 	if !strings.Contains(listing, humans) {
 		t.Errorf("the unmarked window %s was reaped:\n%s", humans, listing)
 	}
@@ -1467,13 +1632,8 @@ func TestRealTmuxReconcileOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case obs := <-observations:
-		if obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
-			t.Errorf("the restarted daemon's sweep reported %+v, want the known pane alive", obs)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the restarted daemon's sweep reported nothing")
+	if obs := testwait.Receive(t, "the restarted daemon's sweep to report", observations); obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
+		t.Errorf("the restarted daemon's sweep reported %+v, want the known pane alive", obs)
 	}
 }
 
@@ -1481,8 +1641,7 @@ func TestRealTmuxReconcileOrphans(t *testing.T) {
 // final verdict, Gone or NotRecordedProcess, and then never again.
 func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	loc, err := r.rt.Spawn(ctx, r.spec("LEGION-6", "LEGION-6", claim.RoleArchitect))
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1491,7 +1650,7 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs := <-observations; obs.Kind != runtime.Alive {
+	if obs := testwait.Receive(t, "the first sweep's report", observations); obs.Kind != runtime.Alive {
 		t.Fatalf("first sweep = %+v, want alive", obs)
 	}
 	r.mustTmux("kill-pane", "-t", loc.Tmux.Pane)
@@ -1503,24 +1662,25 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	// probe straddled the kill — the pane listed the recorded pid, and its /proc had emptied or
 	// vanished by the time it was read. The supervisor takes either for the same death
 	// (internal/supervise/machine.go:806), and the sweep untracks on either, so it reports either
-	// once (observe.go:58-60). The deadline names the last observation, since a classifier stuck on
-	// Uncertain or Alive and a sweep gone silent would otherwise fail alike.
-	deadline := time.After(10 * time.Second)
+	// once (observe.go:58-60). Each wait names the last observation, since a classifier stuck on
+	// Uncertain or Alive and a sweep gone silent would otherwise fail alike. Each later sweep starts
+	// once the rig's clock passes the period (nextSweep).
 	var last runtime.Observation
 	for final := false; !final; {
-		select {
-		case obs := <-observations:
-			last = obs
-			final = obs.Kind == runtime.Gone || obs.Kind == runtime.NotRecordedProcess
-		case <-deadline:
-			t.Fatalf("the sweep never reported the killed pane gone; last = %+v", last)
+		last = r.nextSweep(t, fmt.Sprintf("the sweep to report the killed pane gone (last report: %+v)", last), observations)
+		final = last.Kind == runtime.Gone || last.Kind == runtime.NotRecordedProcess
+	}
+	// The sweep reports only what it watches, and lets a process go right after sending its final
+	// verdict (untrack): once the watch no longer holds the killed pane's incarnation, no later
+	// sweep reports it again.
+	testwait.Eventually(t, "the sweep to let the killed pane go after its final verdict", func() bool {
+		for _, entry := range r.rt.trackedProcesses() {
+			if entry.locator.Incarnation == loc.Incarnation {
+				return false
+			}
 		}
-	}
-	select {
-	case obs := <-observations:
-		t.Errorf("the sweep reported a final verdict again: %+v", obs)
-	case <-time.After(time.Second):
-	}
+		return true
+	})
 }
 
 // A pane id or a pid is never taken as proof of the recorded process. A locator whose pane now runs
@@ -1529,8 +1689,7 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 // reaches the claim's live agent, nothing is killed, and the pane's real occupant survives.
 func TestRealTmuxNeverKillsAPaneThatIsNotTheRecordedProcess(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	live, err := r.rt.Spawn(ctx, r.spec("LEGION-7", "LEGION-7", claim.RoleArchitect))
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1592,11 +1751,11 @@ func TestRealTmuxNeverKillsAPaneThatIsNotTheRecordedProcess(t *testing.T) {
 			}
 		})
 	}
-	// A shutdown frame would have had the live agent's shim end it and close its connection.
-	select {
-	case <-liveConn.done:
-		t.Errorf("the live agent's connection closed: a stale locator reached the claim's live agent")
-	case <-time.After(500 * time.Millisecond):
+	// A shutdown frame would have had the live agent's shim end it and close its connection, and
+	// the runtime sends one only through the stream stub, which counts what it carried: the
+	// suspends and releases above have returned, so none sent one if the count is still zero.
+	if sent := liveConn.shutdowns.Load(); sent != 0 {
+		t.Errorf("the live agent's connection carried %d shutdown frames: a stale locator reached the claim's live agent", sent)
 	}
 	if obs := probe(t, r.rt, live); obs.Kind != runtime.Alive {
 		t.Errorf("the live agent did not survive: %+v", obs)
@@ -1618,8 +1777,7 @@ func TestRealTmuxVerifiesAPaneByItsConfiguredHarnessesMarkers(t *testing.T) {
 	}
 	claude := NewClaudeLauncher(ClaudeLaunch{Binary: fakeClaude, PluginDir: t.TempDir(), Bun: "/bin/true"})
 	r := newRig(t, func(o *Options) { o.Launchers[runtime.BackendClaude] = claude })
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	spec := r.spec("LEGION-2", "LEGION-2", claim.RoleImplementer)
 	spec.Backend = runtime.BackendClaude
 	loc, err := r.rt.Spawn(ctx, spec)
@@ -1697,8 +1855,7 @@ func (m markedLauncher) SessionsDir(runtime.SpawnSpec, Host, map[string]string, 
 // environment names them.
 func TestRealTmuxProviderKeysReachOMPAndNothingElse(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	bin := t.TempDir()
 	stub := "#!/bin/sh\ncase \"$2:$3\" in\n" +
 		"  LEGION_TEST_PROVIDER_SECRET:--no-request) echo '{\"key\":\"LEGION_TEST_PROVIDER_SECRET\",\"tier\":\"agent\"}' ;;\n" +
@@ -2006,8 +2163,7 @@ func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
 // it ends itself. A claim still known keeps its pane: an in-flight launch has no locator yet.
 func TestRealTmuxAReleasedClaimsPaneIsTheSweeps(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	worker, err := r.rt.Spawn(ctx, r.spec("LEGION-3", "LEGION-5", claim.RoleTester))
 	if err != nil {
 		t.Fatalf("Spawn worker: %v", err)
@@ -2048,10 +2204,13 @@ func TestRealTmuxAReleasedClaimsPaneIsTheSweeps(t *testing.T) {
 	if err := r.rt.ReconcileOrphans(ctx, []runtime.Known{{Claim: launching.Claim}}, 0); err != nil {
 		t.Fatalf("ReconcileOrphans: %v", err)
 	}
+	// The sweep's kills are tmux's to carry out, so each released claim's pane is probed until it
+	// reads Gone, rather than once the sweep returns (INFRA-2186).
 	for _, loc := range []runtime.Locator{worker, root} {
-		if obs := probe(t, r.rt, loc); obs.Kind != runtime.Gone {
-			t.Errorf("%s's pane survived the sweep after its claim was released: %+v", loc.Claim, obs)
-		}
+		testwait.Until(t, string(loc.Claim)+"'s pane to read gone after the sweep, its claim released", func() (runtime.Observation, bool) {
+			obs := probe(t, r.rt, loc)
+			return obs, obs.Kind == runtime.Gone
+		})
 	}
 	if obs := probe(t, r.rt, launching); obs.Kind != runtime.Alive {
 		t.Errorf("the in-flight launch's pane did not survive the sweep: %+v", obs)
@@ -2066,8 +2225,7 @@ func TestRealTmuxAReleasedClaimsPaneIsTheSweeps(t *testing.T) {
 // still names keeps its pane watched: a stop that failed and will be asked again.
 func TestRealTmuxAPaneAStaleSweepAdoptedIsReapedByTheNextSweep(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	worker, err := r.rt.Spawn(ctx, r.spec("LEGION-3", "LEGION-5", claim.RoleTester))
 	if err != nil {
 		t.Fatalf("Spawn worker: %v", err)
@@ -2097,9 +2255,12 @@ func TestRealTmuxAPaneAStaleSweepAdoptedIsReapedByTheNextSweep(t *testing.T) {
 	if err := r.rt.ReconcileOrphans(ctx, []runtime.Known{{Claim: kept.Claim, Locator: &kept}}, 0); err != nil {
 		t.Fatalf("the next sweep: %v", err)
 	}
-	if obs := probe(t, r.rt, worker); obs.Kind != runtime.Gone {
-		t.Errorf("the released pane survived the first sweep that no longer names its claim: %+v", obs)
-	}
+	// The sweep's kill is tmux's to carry out, so the released pane is probed until it reads Gone,
+	// rather than once the sweep returns.
+	testwait.Until(t, "the released pane to read gone after the first sweep that no longer names its claim", func() (runtime.Observation, bool) {
+		obs := probe(t, r.rt, worker)
+		return obs, obs.Kind == runtime.Gone
+	})
 	if obs := probe(t, r.rt, kept); obs.Kind != runtime.Alive {
 		t.Errorf("the pane of a claim the sweep still names did not survive: %+v", obs)
 	}

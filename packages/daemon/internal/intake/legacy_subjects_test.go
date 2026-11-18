@@ -6,10 +6,10 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -99,9 +99,8 @@ func TestTheDispatchDurableReadsBothFormsAndRefusesANameInNeither(t *testing.T) 
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
-	var elapsed atomic.Int64
-	opened := time.Date(2026, 11, 16, 3, 0, 0, 0, time.UTC)
-	spec.Now = func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
+	clock := clocktest.New(time.Now())
+	spec.Clock = clock
 	stop := startConsume(t, js, spec, pool, writeHandler("applied", nil))
 	defer stop()
 	dispatch := dispatchConsumerName(spec.Project)
@@ -129,7 +128,7 @@ func TestTheDispatchDurableReadsBothFormsAndRefusesANameInNeither(t *testing.T) 
 	if got := strings.Count(logs.String(), oldFormLine); got != 1 {
 		t.Fatalf("%d old-form lines inside one minute, want 1:\n%s", got, logs)
 	}
-	elapsed.Store(int64(time.Minute))
+	clock.Advance(time.Minute)
 	last = publish(t, js, "notifications.dispatch.issue.LEGION-8.issue.updated", capturedIssueUpdatedEnvelope(t))
 	assertAcknowledgedThrough(t, stream, dispatch, last)
 	requireLogLine(t, logs, oldFormLine, "subject=notifications.dispatch.issue.LEGION-8.issue.updated", "legacy_count=3")

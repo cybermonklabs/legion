@@ -1,7 +1,6 @@
 package procgroup
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,8 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// testMoment is where a test's fake clock stands until the test moves it.
+var testMoment = time.Date(2026, time.November, 14, 12, 0, 0, 0, time.UTC)
 
 // Configure's Cancel runs in the race window between ctx firing and the process finishing on its
 // own: by the time its SIGTERM reaches the group, there may be nothing left to stop. exec's
@@ -47,50 +51,60 @@ func TestConfigureCancelMapsESRCHToErrProcessDone(t *testing.T) {
 // for a command whose own process exited first, though WaitDelay then held Run open past the
 // context's deadline for a child still holding the command's output pipe. The first case's sleep
 // handles neither signal of Cancel's stop, so its group is gone as soon as the SIGTERM lands and
-// the grace adds nothing to the run. The second case's deadline is 100 ms short of WaitDelay, so
-// its Run always returns past it, while the leader still has 900 ms to exit under load: a caller
-// that read a timeout from the deadline having passed would call that command's own exit a
-// timeout.
+// the grace adds nothing to the run. In the second case the test moves the context's fake clock
+// past the deadline only once the leader has exited and been reaped, and before WaitDelay lets
+// Run return: a caller that read a timeout from the deadline having passed would call that
+// command's own exit a timeout.
 func TestKilledIsWhetherTheContextsEndSignaledTheGroup(t *testing.T) {
 	t.Run("cut off by its deadline", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		clock := clocktest.New(testMoment)
+		ctx, cancel := clock.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "sleep", "30")
 		killed := Configure(cmd)
-
-		err := cmd.Run()
-
-		if cmd.Process == nil {
-			t.Fatalf("Run = %v before the command started: the deadline passed before Start, so this run proves nothing", err)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start the command: %v", err)
 		}
+
+		clock.Advance(2 * time.Second)
+		err := cmd.Wait()
+
 		if !killed() {
 			t.Errorf("killed() = false for a command its deadline cut off (Run = %v)", err)
 		}
 	})
 	t.Run("exited before its deadline, a child holding its pipe past it", func(t *testing.T) {
+		clock := clocktest.New(testMoment)
 		budget := WaitDelay - 100*time.Millisecond
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		ctx, cancel := clock.WithTimeout(context.Background(), budget)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30 & exit 0")
-		var out bytes.Buffer
+		var out testlog.Buffer
 		cmd.Stdout = &out
 		killed := Configure(cmd)
-
-		started := time.Now()
-		err := cmd.Run()
-		elapsed := time.Since(started)
-		if cmd.Process == nil {
-			t.Fatalf("Run = %v before the command started: the deadline passed before Start, so this run proves nothing", err)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start the command: %v", err)
 		}
+		leader := cmd.Process.Pid
 		// The backgrounded sleep is still in the command's own process group, which outlives the
 		// reaped leader while it does.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-
-		// The wall clock, not ctx.Err(): under load the context's own timer can fire after Run has
-		// returned, and what this run needs is that the drain outlasted the deadline.
-		if elapsed < budget {
-			t.Fatalf("Run = %v returned after %s, inside its %s deadline: nothing held the pipe past it, so this run proves nothing", err, elapsed, budget)
+		defer syscall.Kill(-leader, syscall.SIGKILL)
+		ran := make(chan error, 1)
+		go func() { ran <- cmd.Wait() }()
+		// Wait reaps the leader as soon as it exits, and only then waits on the pipe the sleep
+		// holds, so a leader gone from /proc is one whose own exit Wait has already seen.
+		testwait.Eventually(t, "the command's leader to exit and be reaped", func() bool {
+			_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(leader)))
+			return errors.Is(err, os.ErrNotExist)
+		})
+		clock.Advance(budget)
+		select {
+		case err := <-ran:
+			t.Fatalf("Run = %v returned before its deadline passed: nothing held the pipe past it, so this run proves nothing", err)
+		default:
 		}
+		err := testwait.Receive(t, "Run's return once WaitDelay gave up on the pipe", ran)
+
 		if killed() {
 			t.Errorf("killed() = true for a command that exited on its own before its deadline (Run = %v)", err)
 		}
@@ -105,18 +119,20 @@ func TestKilledIsWhetherTheContextsEndSignaledTheGroup(t *testing.T) {
 // A killed that counted only a Cancel that succeeded would call a command its deadline ended an
 // exit of its own, exit -1, where the old reading of the deadline called it a timeout.
 func TestKilledCountsACancelWhoseSignalFailed(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	clock := clocktest.New(testMoment)
+	ctx, cancel := clock.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sleep", "30")
 	cmd.Cancel = func() error { return syscall.EPERM }
 	cmd.WaitDelay = WaitDelay
 	killed := KilledByContext(cmd)
-
-	err := cmd.Run()
-
-	if cmd.Process == nil {
-		t.Fatalf("Run = %v before the command started: the deadline passed before Start, so this run proves nothing", err)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the command: %v", err)
 	}
+
+	clock.Advance(time.Second)
+	err := cmd.Wait()
+
 	if !killed() {
 		t.Errorf("killed() = false for a command its deadline ended though Cancel's signal failed (Run = %v)", err)
 	}
@@ -226,36 +242,34 @@ const (
 	handlesSIGTERM = `trap 'echo term >"$1"; exit 0' TERM; ` + helperTrapped + childLives
 )
 
-// loadSlack is what a row allows a loaded machine beyond the span it measures. It is scheduling
-// noise around the grace and WaitDelay, never a span anything under test may spend: a row's own
-// bound is written as the grace and the delay, with this added to it.
-const loadSlack = 2 * time.Second
-
-// childRun is one child started under Configure and still running: stop ends its context, ran
-// carries what Wait returned, killed is Configure's answer, and out holds everything the child
-// printed, which a failure names.
+// childRun is one child started under ConfigureOn and still running: stop ends its context, ran
+// carries what Wait returned, killed is ConfigureOn's answer, clock is the fake its grace is measured
+// on, and out holds everything the child printed, which a failure names.
 type childRun struct {
 	cmd    *exec.Cmd
 	ran    <-chan error
 	stop   context.CancelFunc
 	killed func() bool
-	out    *bytes.Buffer
+	clock  *clocktest.Fake
+	out    *testlog.Buffer
 }
 
-// startChild starts `sh -c script sh args…` under Configure and waits for the child to report
-// that it is running by creating the file args[0] names. The stop is a cancel rather than a
-// deadline so that no row's measurement holds the child's own start-up: Cancel does the same work
-// either way, and killed answers the same. The child's output goes to a pipe, as a real command's
-// does, so a helper that outlived the stop would hold Run open the way git-remote-https does.
+// startChild starts `sh -c script sh args…` under ConfigureOn, its grace measured on a fake clock
+// that moves only when the row moves it, and waits for the child to report that it is running by
+// creating the file args[0] names. The stop is a cancel rather than a deadline: Cancel does the
+// same work either way, and killed answers the same. The child's output goes to a pipe, as a real
+// command's does, so a helper that outlived the stop would hold Run open the way git-remote-https
+// does.
 func startChild(t *testing.T, script string, args ...string) childRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c", script, "sh"}, args...)...)
 	cmd.Dir = filepath.Dir(args[0])
-	var out bytes.Buffer
+	var out testlog.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	killed := Configure(cmd)
+	clock := clocktest.New(testMoment)
+	killed := ConfigureOn(cmd, clock)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the child: %v", err)
 	}
@@ -268,20 +282,54 @@ func startChild(t *testing.T, script string, args ...string) childRun {
 		_, err := os.Stat(args[0])
 		return err == nil
 	})
-	return childRun{cmd: cmd, ran: ran, stop: cancel, killed: killed, out: &out}
+	return childRun{cmd: cmd, ran: ran, stop: cancel, killed: killed, clock: clock, out: &out}
 }
 
-// wait answers what the child's Wait returned, failing the row when the run has not ended within
-// bound: a stop that reached nothing would otherwise hang the row until go test's own deadline.
-func (c childRun) wait(t *testing.T, bound time.Duration) error {
+// wait answers what the child's Wait returned; a failure prints what the child printed.
+func (c childRun) wait(t *testing.T) error {
+	t.Helper()
+	var err error
+	testwait.Until(t, "the run's end after the stop", func() (string, bool) {
+		select {
+		case err = <-c.ran:
+			return "", true
+		default:
+			return "the child printed " + strconv.Quote(c.out.String()), false
+		}
+	})
+	return err
+}
+
+// graceArmed waits for the stop's grace to be armed and requires it to end StopGrace after the
+// moment the fake stands at. Only a row whose group outlives the SIGTERM may ask: a group that
+// leaves on it ends the grace, which is then never pending.
+func (c childRun) graceArmed(t *testing.T) {
+	t.Helper()
+	if armed := c.clock.AwaitArmed(t, "the stop's grace", 1); len(armed) != 1 || !armed[0].Equal(c.clock.Now().Add(StopGrace)) {
+		t.Fatalf("the stop armed %v, want its one grace of %s from %v", armed, StopGrace, c.clock.Now())
+	}
+}
+
+// runningInsideTheGrace fails the row if the run has already ended, which inside the grace only
+// a stop that did not wait the grace out could have done to a group that outlives its SIGTERM.
+func (c childRun) runningInsideTheGrace(t *testing.T) {
 	t.Helper()
 	select {
 	case err := <-c.ran:
-		return err
-	case <-time.After(bound):
-		t.Fatalf("the run had not ended %s after the stop, and the child printed %q", bound, c.out.String())
-		return nil
+		t.Fatalf("the run ended inside the %s grace, though its group outlives the SIGTERM: the SIGKILL must follow the grace, not the SIGTERM (Run = %v, printed %q)", StopGrace, err, c.out.String())
+	default:
 	}
+}
+
+// recorded waits for the file a child's SIGTERM handler writes, the child's own report that the
+// stop's SIGTERM reached it. A row moves the grace past its end only after this report: the fake's
+// move is instant, so a SIGKILL sent then could otherwise reach the child before its handler ran.
+func recorded(t *testing.T, who, path string) {
+	t.Helper()
+	testwait.Eventually(t, who+" to record the stop's SIGTERM in "+path, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
 }
 
 // killedBySIGKILL reports whether the child's own leader process was killed by SIGKILL, which is
@@ -339,17 +387,13 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 	ready, caught := filepath.Join(dir, "ready"), filepath.Join(dir, "caught")
 	child := startChild(t, `trap 'echo term >"$2"' TERM; : >"$1"; `+childLives, ready, caught)
 
-	stopped := time.Now()
 	child.stop()
-	err := child.wait(t, StopGrace+WaitDelay+loadSlack)
-	took := time.Since(stopped)
+	child.graceArmed(t)
+	recorded(t, "the child", caught)
+	child.runningInsideTheGrace(t)
+	child.clock.Advance(StopGrace)
+	err := child.wait(t)
 
-	if _, statErr := os.Stat(caught); statErr != nil {
-		t.Errorf("the child recorded no SIGTERM (%v): the stop reached it with SIGKILL alone (Run = %v, printed %q)", statErr, err, child.out.String())
-	}
-	if took < StopGrace {
-		t.Errorf("the run ended %s after the stop, inside the %s grace: the SIGKILL must follow the grace, not the SIGTERM (Run = %v)", took, StopGrace, err)
-	}
 	if !killedBySIGKILL(child.cmd.ProcessState) {
 		t.Errorf("the child ended as %v, want killed by SIGKILL: it handled its SIGTERM and kept running, so the group's SIGKILL is what must end it", child.cmd.ProcessState)
 	}
@@ -363,25 +407,22 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 // a git killed outright leaves that lock behind and every later git and jj of the repository fails
 // on it (dispatch://INFRA-3098). The child here stands in for that git: it takes a lock before it
 // reports that it is running, removes it on SIGTERM and leaves. The lock must be gone by the time
-// the run ends, and the run must end well inside the grace rather than at the end of it, which is
-// what tells a grace that ends as soon as the group is gone from one slept in full on every stop.
+// the run ends, and the run must end while the grace's clock has not moved at all, which is what
+// tells a grace that ends as soon as the group is gone from one slept in full on every stop.
 func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 	dir := t.TempDir()
 	ready, lock := filepath.Join(dir, "ready"), filepath.Join(dir, "index.lock")
 	child := startChild(t, `: >"$2"; trap 'rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock)
 
-	stopped := time.Now()
 	child.stop()
-	err := child.wait(t, StopGrace+WaitDelay+loadSlack)
-	took := time.Since(stopped)
+	// The grace's fake clock never moves here, so a run that ends is one the group's own exit
+	// ended, not the grace running out.
+	err := child.wait(t)
 
 	// The child took the lock before it reported that it was running, which startChild waited for,
 	// so a lock that is gone here is one the child's own SIGTERM handler removed.
 	if _, statErr := os.Stat(lock); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("the lock the child held is still there (%v) after the run ended: the stop gave it no SIGTERM to remove it on (Run = %v)", statErr, err)
-	}
-	if took > StopGrace/2 {
-		t.Errorf("the run ended %s after the stop, which is no sooner than half the %s grace: a child that leaves on its SIGTERM must end the grace, not sit out its whole span (Run = %v)", took, StopGrace, err)
 	}
 	if !child.killed() {
 		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
@@ -389,28 +430,20 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 }
 
 // A child that ignores SIGTERM is still gone when the run ends: the grace is a grace and not a
-// reprieve. It is alive at half the grace, which is what pins the grace's length — a stop that
-// killed at once would have ended the run by then — and gone by the grace plus WaitDelay, which is
-// what keeps the whole stop inside the three seconds
-// TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires (internal/workspace) allows a killed fetch.
+// reprieve. It is alive while the grace runs, which is what pins the grace's length — a stop that
+// killed at once would have ended the run by then — and the group's SIGKILL at the grace's end is
+// what ends it.
 func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 	child := startChild(t, `trap '' TERM; : >"$1"; `+childLives, ready)
 
-	stopped := time.Now()
 	child.stop()
-	select {
-	case err := <-child.ran:
-		t.Fatalf("the run ended %s after the stop, inside half the %s grace: the child ignores SIGTERM, so a run that ended there was killed with no grace at all (Run = %v)", time.Since(stopped), StopGrace, err)
-	case <-time.After(StopGrace / 2):
-	}
-	err := child.wait(t, StopGrace/2+WaitDelay+loadSlack)
-	took := time.Since(stopped)
+	child.graceArmed(t)
+	child.runningInsideTheGrace(t)
+	child.clock.Advance(StopGrace)
+	err := child.wait(t)
 
-	if took < StopGrace {
-		t.Errorf("the run ended %s after the stop, inside the %s grace (Run = %v)", took, StopGrace, err)
-	}
 	if !killedBySIGKILL(child.cmd.ProcessState) {
 		t.Errorf("the child ended as %v, want killed by SIGKILL: it ignores SIGTERM, so nothing else can have ended it", child.cmd.ProcessState)
 	}
@@ -449,11 +482,11 @@ func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
 		helper := pidOf(t, pidFile)
 
 		child.stop()
-		err := child.wait(t, StopGrace+WaitDelay+loadSlack)
+		child.graceArmed(t)
+		child.clock.Advance(StopGrace)
+		err := child.wait(t)
 
-		if !testwait.Holds(loadSlack, testwait.Poll, func() bool { return !runningUnder(t, helper, marker) }) {
-			t.Errorf("the helper (pid %d) was still running %s after the run ended: the stop reached the leader alone (Run = %v)", helper, loadSlack, err)
-		}
+		helperGone(t, helper, marker, err)
 	})
 
 	t.Run("a helper that handles SIGTERM gets it", func(t *testing.T) {
@@ -464,13 +497,21 @@ func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
 		helper := pidOf(t, pidFile)
 
 		child.stop()
-		err := child.wait(t, StopGrace+WaitDelay+loadSlack)
+		child.graceArmed(t)
+		// The group's SIGTERM must reach a forked helper too, not only the group's SIGKILL.
+		recorded(t, "the helper", marker)
+		child.clock.Advance(StopGrace)
+		err := child.wait(t)
 
-		if _, statErr := os.Stat(marker); statErr != nil {
-			t.Errorf("the helper recorded no SIGTERM (%v): the group's SIGTERM must reach a forked helper too, not only the group's SIGKILL (Run = %v)", statErr, err)
-		}
-		if !testwait.Holds(loadSlack, testwait.Poll, func() bool { return !runningUnder(t, helper, marker) }) {
-			t.Errorf("the helper (pid %d) was still running %s after the run ended (Run = %v)", helper, loadSlack, err)
-		}
+		helperGone(t, helper, marker, err)
+	})
+}
+
+// helperGone waits for the forked helper to be gone once the run has ended: a stop that reached
+// the leader alone leaves it running.
+func helperGone(t *testing.T, helper int, marker string, ran error) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the helper (pid %d) to be gone after the run ended", helper), func() (string, bool) {
+		return fmt.Sprintf("the helper is still running (Run = %v)", ran), !runningUnder(t, helper, marker)
 	})
 }

@@ -1,14 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The listener's shutdown ends its KV watchers itself, before the connection drains: main adds the
@@ -35,7 +36,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 
 			admin := testnats.Connect(t, uri)
 			t.Cleanup(admin.Close)
-			js, err := admin.JetStream()
+			js, err := admin.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("admin JetStream: %v", err)
 			}
@@ -89,16 +90,14 @@ func streamConsumers(js natsgo.JetStreamContext, stream string) []string {
 	return names
 }
 
-// onlyConsumer waits, up to 30 s, until the stream carries exactly one consumer, its cache
-// watcher's, and returns its name; it fails naming the consumers it last saw.
+// onlyConsumer waits until the stream carries exactly one consumer, its cache watcher's, and
+// returns its name; it fails naming the consumers it last saw.
 func onlyConsumer(t *testing.T, js natsgo.JetStreamContext, stream string) string {
 	t.Helper()
-	var consumers []string
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if consumers = streamConsumers(js, stream); len(consumers) == 1 {
-			return consumers[0]
-		}
-	}
-	t.Fatalf("%s carried consumers %v for 30 s after the listener turned healthy, want its cache watcher's one", stream, consumers)
-	return ""
+	consumers := testwait.Until(t, fmt.Sprintf("%s to carry only its cache watcher's consumer after the listener turned healthy", stream),
+		func() ([]string, bool) {
+			consumers := streamConsumers(js, stream)
+			return consumers, len(consumers) == 1
+		})
+	return consumers[0]
 }

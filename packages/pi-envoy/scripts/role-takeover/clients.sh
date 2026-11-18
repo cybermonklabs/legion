@@ -24,11 +24,10 @@
 #   nats_url               natsd, which each client subscribes through
 #   omp_heartbeat_ms       the Oh My Pi client's heartbeat period
 #   omp_pass_deadline_ms   how long one of its passes may take
-#   client_reply_timeout   how long a client may take to answer one command
-#   listener_wait_timeout  how long a renewal may take to reach the listener
 #   run_id                 this run's id, which renew_claude's topic carries
-# and defines refuse, wait_for, pick_port and port_open, and the scenario_pids and scenario_fds
-# its teardown kills and closes, which every process and descriptor started here is added to.
+# and defines refuse, pick_port and port_open, and the scenario_pids and scenario_fds its teardown
+# kills and closes, which every process and descriptor started here is added to. Every wait here
+# is local-stack.sh's wait_for, which ends at the guard the smoke set (proof_guard).
 
 # ---- the clients ---------------------------------------------------------------------------------
 declare -A proxy_url proxy_log client_fd client_out client_pid
@@ -45,7 +44,7 @@ start_proxy() {
     --log "${proxy_log[$label]}" --label "$label") >>"${work}/logs/proxy-${label}.log" 2>&1 &
   scenario_pids+=($!)
   proxy_url["$label"]="http://127.0.0.1:${port}"
-  wait_for 30 port_open "$port" ||
+  wait_for "the ${label} proxy to listen on 127.0.0.1:${port}" port_open "$port" ||
     refuse "the ${label} proxy did not listen on 127.0.0.1:${port}: $(tail -n 5 "${work}/logs/proxy-${label}.log")"
 }
 
@@ -85,7 +84,7 @@ start_omp() {
     <"${work}/${label}.stdin" >"${client_out[$label]}" 2>"${work}/logs/${label}.err" &
   client_pid["$label"]=$!
   scenario_pids+=($!)
-  wait_for 90 client_ready "$label" ||
+  wait_for "the ${label} Oh My Pi client to start" client_ready "$label" ||
     refuse "the ${label} Oh My Pi client did not start: $(tail -n 10 "${work}/logs/${label}.err")"
 }
 
@@ -102,13 +101,14 @@ start_claude() {
   client_fifo "$label"
   (cd -- "${repo_root}/packages/claude-envoy" &&
     exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
+      LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
       bun "${drivers}/claude-client.ts" --server "$channel_server" --session "$session" \
       --state-dir "$state" --config-dir "$config" --heartbeat-ms "$heartbeat" \
       --stderr "${work}/logs/${label}-channel.err") \
     <"${work}/${label}.stdin" >"${client_out[$label]}" 2>"${work}/logs/${label}.err" &
   client_pid["$label"]=$!
   scenario_pids+=($!)
-  wait_for 120 client_ready "$label" ||
+  wait_for "the ${label} Claude Code channel server to start" client_ready "$label" ||
     refuse "the ${label} Claude Code channel server did not start: $(tail -n 10 "${work}/logs/${label}.err") $(tail -n 10 "${work}/logs/${label}-channel.err" 2>/dev/null)"
 }
 
@@ -121,8 +121,8 @@ send() {
   printf '%s\n' "$(jq -c --arg id "$id" '. + {id: $id}' <<<"$body")" >&"${client_fd[$label]}"
   local answered=()
   answered=(grep -q "\"id\":\"${id}\"" "${client_out[$label]}")
-  wait_for "$client_reply_timeout" "${answered[@]}" ||
-    refuse "the ${label} client did not answer ${body} within ${client_reply_timeout}s: $(tail -n 10 "${work}/logs/${label}.err")"
+  wait_for "the ${label} client to answer ${body}" "${answered[@]}" ||
+    refuse "the ${label} client did not answer ${body}: $(tail -n 10 "${work}/logs/${label}.err")"
   reply="$(grep -F "\"id\":\"${id}\"" "${client_out[$label]}" | tail -n 1)"
   jq -e '.ok == true' <<<"$reply" >/dev/null ||
     refuse "the ${label} client refused ${body}: ${reply}"
@@ -268,8 +268,8 @@ renew_omp() {
     [[ "$(registered_at "$label" "$session")" -gt "$before" ]]
   }
   send "$label" '{"op":"heartbeat"}'
-  wait_for "$listener_wait_timeout" registered_again ||
-    refuse "the ${label} client did not re-register ${session} within ${listener_wait_timeout}s"
+  wait_for "the ${label} client to re-register ${session}" registered_again ||
+    refuse "the ${label} client did not re-register ${session}"
 }
 
 # renew_claude LABEL: one registration from that channel server, answered once it has landed. The

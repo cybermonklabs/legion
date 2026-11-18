@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The front door's certificate scripts (dispatch_frontdoor.go), run rather than read: each test
@@ -54,8 +56,7 @@ func requireFrontDoorTools(t *testing.T) {
 // and how it exited.
 func runFrontDoorScript(t *testing.T, script string, env ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var out, errOut strings.Builder
 	cmd := tailnetTestShell(ctx, "-c", script)
 	cmd.Env = append(os.Environ(), env...)
@@ -516,6 +517,11 @@ esac
 	t.Cleanup(func() {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-run.exited
+		// What the program said, for a test that failed waiting for something in it.
+		if t.Failed() {
+			stdout, stderr := run.output(t)
+			t.Logf("cert-publish wrote:\n%s%s", stdout, stderr)
+		}
 	})
 	return run
 }
@@ -530,12 +536,7 @@ func TestDispatchCertPublishExitsWhenTheClaimGateDies(t *testing.T) {
 
 	t.Run("the gate dies", func(t *testing.T) {
 		run := startCertPublish(t, newFrontDoorCertPaths(t, store.url), true, false)
-		select {
-		case <-run.exited:
-		case <-time.After(30 * time.Second):
-			stdout, stderr := run.output(t)
-			t.Fatalf("cert-publish still runs 30s after its gate was killed:\n%s%s", stdout, stderr)
-		}
+		testwait.Receive(t, "cert-publish to exit once the claim gate it needs was killed", run.exited)
 		stdout, stderr := run.output(t)
 		var exit *exec.ExitError
 		require.ErrorAs(t, run.err, &exit, "cert-publish exits non-zero once its gate is gone (stderr: %q)", stderr)
@@ -546,16 +547,25 @@ func TestDispatchCertPublishExitsWhenTheClaimGateDies(t *testing.T) {
 
 	t.Run("the gate lives", func(t *testing.T) {
 		run := startCertPublish(t, newFrontDoorCertPaths(t, store.url), false, false)
+		// Each pass of the publishing loop checks the gate before it publishes
+		// (dispatchCertPublishLoop), and the first pass's own line is written by the publish that
+		// follows that check: once the line is there, the loop has read a living gate and gone on.
+		// The gate runs beside the loop in a process of its own and writes its own pass's line
+		// when it gets there, which can come after the loop's, so both lines are waited for.
+		testwait.Eventually(t, "the publishing loop's first pass, which follows its first reading of the gate, and the gate's own first pass", func() bool {
+			stdout, _ := run.output(t)
+			return strings.Contains(stdout, "waiting for tailscaled to cache a certificate") &&
+				strings.Contains(stdout, "node id is not read yet")
+		})
 		select {
 		case <-run.exited:
 			stdout, stderr := run.output(t)
 			t.Fatalf("cert-publish exited (%v) with its gate alive:\n%s%s", run.err, stdout, stderr)
-		case <-time.After(3 * time.Second):
+		default:
 		}
 		stdout, stderr := run.output(t)
 		require.NotContains(t, stderr, gateLine)
 		require.Contains(t, stdout, "node id is not read yet", "the gate runs")
-		require.Contains(t, stdout, "waiting for tailscaled to cache a certificate", "the publishing loop runs")
 	})
 }
 
@@ -566,20 +576,14 @@ func TestDispatchCertPublishExitsWhenTheClaimGateDies(t *testing.T) {
 func TestDispatchCertPublishExitsOnSIGTERM(t *testing.T) {
 	store := newFrontDoorSecretStore(t)
 	run := startCertPublish(t, newFrontDoorCertPaths(t, store.url), false, true)
-	require.Eventually(t, func() bool {
+	testwait.Eventually(t, "the publishing loop's first pass", func() bool {
 		stdout, _ := run.output(t)
 		return strings.Contains(stdout, "waiting for tailscaled to cache a certificate")
-	}, 10*time.Second, 50*time.Millisecond, "the publishing loop never ran its first pass")
-	sent := time.Now()
+	})
 	require.NoError(t, run.cmd.Process.Signal(syscall.SIGTERM))
-	select {
-	case <-run.exited:
-	case <-time.After(5 * time.Second):
-		stdout, stderr := run.output(t)
-		t.Fatalf("cert-publish still runs 5s after SIGTERM, held by its sleep:\n%s%s", stdout, stderr)
-	}
+	testwait.Receive(t, "cert-publish to exit on the SIGTERM sent while its publishing loop slept", run.exited)
 	_, stderr := run.output(t)
-	require.NoError(t, run.err, "cert-publish was killed by SIGTERM rather than exiting on it (after %s):\n%s", time.Since(sent), stderr)
+	require.NoError(t, run.err, "cert-publish was killed by SIGTERM rather than exiting on it:\n%s", stderr)
 }
 
 // frontDoorLedger is Secret <hostname>-tailnet-tls's claim annotation, its node registry and its

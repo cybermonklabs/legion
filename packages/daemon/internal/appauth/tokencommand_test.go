@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeBroker is a token_command that answers as `agent-secrets <NAME> [--github-owner O
@@ -95,9 +96,51 @@ func (b fakeBroker) refusesNarrowing(t *testing.T, owner string) {
 	t.Setenv("FAKE_BROKER_NARROW", owner)
 }
 
+// endedContext is a caller's context that has already ended, as one whose deadline passed while
+// its token_command ran: runTokenCommand starts the run or joins it first, and then answers the
+// caller ErrCommandPending while the run goes on, so the test chooses when the caller gives up
+// rather than a timer.
+func endedContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// runsEnded waits until every token_command run of tokens has ended (Manager.runs), which a run
+// does once its command exits and its result is kept.
+func runsEnded(t *testing.T, tokens *Manager) {
+	t.Helper()
+	ended := make(chan struct{})
+	go func() {
+		tokens.runs.Wait()
+		close(ended)
+	}()
+	testwait.Receive(t, "every token_command run to end", ended)
+}
+
+// watchedContext is a caller's context that never ends and says when the caller first watched for
+// its end: watched closes the first time Done is asked for. Manager.lease asks for it first where
+// a caller waits on another caller's pending mint, so a closed watched is a caller waiting there.
+type watchedContext struct {
+	context.Context
+	once    sync.Once
+	watched chan struct{}
+}
+
+func newWatchedContext() *watchedContext {
+	return &watchedContext{Context: context.Background(), watched: make(chan struct{})}
+}
+
+func (c *watchedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.watched) })
+	return c.Context.Done()
+}
+
 // fakeTokenGitHub answers what token mode asks of GitHub under an installation token: GraphQL's
 // viewer, GET /apps/<slug>, GET /users/<login> and GET /installation/repositories. It refuses any
 // JWT-only route (GET /app, the installation listing and exchange), since token mode signs none.
+// A request without an installation token of the fake broker's (`token ghs_…`) is another
+// process's: it is answered 404 and logged, and is recorded as nothing asked.
 type fakeTokenGitHub struct {
 	mu        sync.Mutex
 	slug      string
@@ -109,13 +152,9 @@ type fakeTokenGitHub struct {
 }
 
 func (g *fakeTokenGitHub) serve(t *testing.T) *httptest.Server {
-	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: anInstallationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "token ghs_") {
-			t.Errorf("%s %s with authorization %q, want an installation token", r.Method, r.URL.Path, auth)
-		}
 		g.asked = append(g.asked, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
@@ -300,8 +339,7 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	}
 
 	huge := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "yes ghs_secret_value_padding"}}, Options{Now: func() time.Time { return now }})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, err = huge.runTokenCommand(ctx, huge.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err == nil || !strings.Contains(err.Error(), "printed more than") || ctx.Err() != nil {
 		t.Fatalf("a command printing without end = %v (ctx %v), want the over-limit refusal before the deadline", err, ctx.Err())
@@ -462,7 +500,7 @@ func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {
 	}
 }
 
-// A command still running when its caller's deadline ends goes on: the caller gets
+// A command still running when its caller's context ends goes on: the caller gets
 // ErrCommandPending, the next caller joins the same run, and the command runs once.
 func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
@@ -471,10 +509,8 @@ func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) 
 	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
 		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	var transient *TransientError
-	if _, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) || !errors.As(err, &transient) {
+	if _, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) || !errors.As(err, &transient) {
 		t.Fatalf("a caller past its deadline = %v, want a transient ErrCommandPending", err)
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
@@ -489,23 +525,23 @@ func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) 
 	}
 }
 
-// A caller whose deadline ended before the command finished, and who comes back only after it
+// A caller whose context ended before the command finished, and who comes back only after it
 // finished, gets the finished run's release; the command does not run again.
 func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	runs := filepath.Join(t.TempDir(), "runs")
-	command := fmt.Sprintf(`echo run >>%q; sleep 0.5; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
-		runs, now.Add(time.Hour).Format(time.RFC3339))
+	dir := t.TempDir()
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
-		t.Fatalf("a caller past its deadline = %v, want ErrCommandPending", err)
+	if _, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
+		t.Fatalf("a caller whose context ended = %v, want ErrCommandPending", err)
 	}
-	time.Sleep(800 * time.Millisecond)
-	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancelLater()
-	got, err := tokens.runTokenCommand(later, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"})
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runsEnded(t, tokens)
+	got, err := tokens.runTokenCommand(testwait.Context(t), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err != nil || got["acme"].token != "ghs_x" {
 		t.Fatalf("the caller after the run finished = %v, %v; want the finished run's release", got, err)
 	}
@@ -602,7 +638,7 @@ func TestTokenModeInstalledOnReadsTheInstallationsRepositories(t *testing.T) {
 // The command sees the daemon's environment less the NATS seeds, with the two variables the
 // daemon sets replacing any it inherited. The daemon names an owner to the command and no
 // repository at all, since the owner's installation is the whole of a token's reach
-// (INFRA-2543). A command cut off by its context is transient.
+// (INFRA-2543). A command its caller's context ended on is transient.
 func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -622,11 +658,9 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	}
 
 	slow := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "sleep 30"}}, Options{})
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
 	var transient *TransientError
-	if _, err := slow.runTokenCommand(ctx, slow.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.As(err, &transient) {
-		t.Fatalf("a command past its deadline = %v, want a transient error", err)
+	if _, err := slow.runTokenCommand(endedContext(), slow.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.As(err, &transient) {
+		t.Fatalf("a command its caller's context ended on = %v, want a transient error", err)
 	}
 }
 
@@ -699,47 +733,50 @@ func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing
 	}
 }
 
-// A caller waiting on another's mint, which ended only because that caller's deadline did, joins
+// A caller waiting on another's mint, which ended only because that caller's context did, joins
 // the command still running under its own context and gets its lease.
 func TestTokenModeAWaiterOutlivesTheInitiatorsDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
-	gate := filepath.Join(dir, "gate")
-	command := fmt.Sprintf(`while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_waited","expires_at":"%s"}}}'`,
-		gate, now.Add(time.Hour).Format(time.RFC3339))
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_waited","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
 	server := github.serve(t)
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: command}},
 		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
+	short, endInitiator := context.WithCancel(context.Background())
+	defer endInitiator()
 	initiator := make(chan error, 1)
 	go func() {
 		_, err := tokens.Token(short, Implement, "acme")
 		initiator <- err
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// The initiator's mint is pending (Manager.lease) once its command runs.
+	testwait.Eventually(t, "the initiator's token_command to start", func() bool {
+		data, _ := os.ReadFile(runs)
+		return strings.Count(string(data), "run") == 1
+	})
+	watched := newWatchedContext()
 	waiter := make(chan Lease, 1)
 	go func() {
-		lease, err := tokens.Token(context.Background(), Implement, "acme")
+		lease, err := tokens.Token(watched, Implement, "acme")
 		if err != nil {
 			t.Errorf("the waiter = %v, want the lease", err)
 		}
 		waiter <- lease
 	}()
-	if err := <-initiator; !errors.Is(err, ErrCommandPending) {
+	// The initiator's context ends once the waiter waits on its mint, as its deadline would.
+	testwait.Receive(t, "the waiter to wait on the initiator's pending mint", watched.watched)
+	endInitiator()
+	if err := testwait.Receive(t, "the initiator's answer once its context ended", initiator); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("the initiator = %v, want ErrCommandPending", err)
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case lease := <-waiter:
-		if lease.Token != "ghs_waited" {
-			t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the waiter never got the lease")
+	if lease := testwait.Receive(t, "the waiter's lease once the command finished", waiter); lease.Token != "ghs_waited" {
+		t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
 	}
 }
 
@@ -748,18 +785,16 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "pid")
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`echo $$ >%q; sleep 600`, pidFile)}}, Options{})
-	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.Token(short, Implement, "acme"); !errors.Is(err, ErrCommandPending) {
+	if _, err := tokens.Token(endedContext(), Implement, "acme"); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("Token = %v, want ErrCommandPending", err)
 	}
+	testwait.Eventually(t, "the token_command to run", func() bool {
+		pid, _ := os.ReadFile(pidFile)
+		return strings.TrimSpace(string(pid)) != ""
+	})
 	closed := make(chan struct{})
 	go func() { tokens.Close(); close(closed) }()
-	select {
-	case <-closed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Close did not end the running command")
-	}
+	testwait.Receive(t, "Close to end the running command", closed)
 	if _, err := tokens.Token(context.Background(), Implement, "acme"); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Token after Close = %v, want a refusal", err)
 	}
@@ -801,9 +836,7 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	defer tokens.Close()
 	for _, read := range []bool{true, false, true} {
-		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", read: read})
-		cancel()
+		_, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", read: read})
 		if !errors.Is(err, ErrCommandPending) {
 			t.Fatalf("the run for read=%v = %v, want ErrCommandPending while it goes on", read, err)
 		}
@@ -811,6 +844,8 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Every run goes on to its end once the gate opens, so each has written its line by then.
+	runsEnded(t, tokens)
 	tokens.Close()
 	data, _ := os.ReadFile(runs)
 	if ran := strings.Count(string(data), "run"); ran != 2 {

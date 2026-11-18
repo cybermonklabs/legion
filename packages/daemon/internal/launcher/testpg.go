@@ -47,13 +47,13 @@ const (
 	testPGProgram = "legion-testpg"
 )
 
-// testPGInterval is how often the launcher asks the script again. `ensure` returns after one
-// connection through the DSN while the server serves it, so the poll costs milliseconds, and a
-// postmaster that died — killed by the node under memory pressure, or crashed — is replaced
-// within it, as is a start that left the server up and its role or database unmade. The
-// launcher polls rather than waiting on a child because `pg_ctl` daemonises the postmaster: it is
-// reparented to this process, and PID 1's reaper collects it. A test shortens it.
-var testPGInterval = 15 * time.Second
+// testPGInterval is how often the launcher asks the script again, on the launcher's clock
+// (Config.Clock). `ensure` returns after one connection through the DSN while the server serves
+// it, so the poll costs milliseconds, and a postmaster that died — killed by the node under memory
+// pressure, or crashed — is replaced within it, as is a start that left the server up and its role
+// or database unmade. The launcher polls rather than waiting on a child because `pg_ctl`
+// daemonises the postmaster: it is reparented to this process, and PID 1's reaper collects it.
+const testPGInterval = 15 * time.Second
 
 // testPGDir is where the server's data and admin socket live for this launcher's roles directory.
 func testPGDir(rolesDir string) string { return filepath.Join(rolesDir, TestPGDirName) }
@@ -114,10 +114,7 @@ func testPGEnv(env []string, serves bool) []string {
 // hold the image's empty mount point for its whole generation and see nothing of what the server
 // a later tick starts logs. A log that cannot be made is logged as the script's failures are.
 func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard) <-chan struct{} {
-	// The interval is read here, in the caller's own goroutine, and not inside the one below: it
-	// is a package variable a test shortens, and a goroutine still reading it after the test
-	// restored it is a data race the race detector fails the test for.
-	interval := testPGInterval
+	clk := cfg.clock()
 	if err := makeTestPGLog(cfg.RolesDir); err != nil {
 		log.linef("launcher: test database: %v", err)
 	}
@@ -130,13 +127,13 @@ func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
 		for {
+			tick := clk.NewTimer(testPGInterval)
 			select {
 			case <-ctx.Done():
+				tick.Stop()
 				return
-			case <-ticker.C:
+			case <-tick.C():
 				ensure()
 			}
 		}
@@ -161,13 +158,13 @@ func makeTestPGLog(rolesDir string) error {
 	return file.Close()
 }
 
-// testPGBound is how long one run of the script may take. The first `ensure` runs before the
-// launcher serves any role, and the daemon's boot timeout for a pod is 120 s by default, so an
-// `ensure` that hangs — a lock a dead holder still owns, a disk that does not answer — must not
-// take the pod's whole boot with it. `flock` inside the script waits up to 180 s of its own, which
-// this bound cuts short deliberately: a role starting without its test database and a line in the
-// log is better than a pod the daemon gives up on. A test shortens it.
-var testPGBound = 60 * time.Second
+// testPGBound is how long one run of the script may take, on the launcher's clock. The first
+// `ensure` runs before the launcher serves any role, and the daemon's boot timeout for a pod is
+// 120 s by default, so an `ensure` that hangs — a lock a dead holder still owns, a disk that does
+// not answer — must not take the pod's whole boot with it. `flock` inside the script waits up to
+// 180 s of its own, which this bound cuts short deliberately: a role starting without its test
+// database and a line in the log is better than a pod the daemon gives up on.
+const testPGBound = 60 * time.Second
 
 // runTestPG runs one command of the image's script with the DSN it must serve, the directory it
 // must serve it from and the file it must log to, writing its output to the container's log
@@ -176,7 +173,7 @@ var testPGBound = 60 * time.Second
 // at testPGBound final: without it a child that keeps the output pipe open — the postmaster
 // `pg_ctl` leaves running — would hold this wait past the bound.
 func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, command string) error {
-	bounded, cancel := context.WithTimeout(ctx, testPGBound)
+	bounded, cancel := cfg.clock().WithTimeout(ctx, testPGBound)
 	defer cancel()
 	out, _ := log.writers(testPGProgram)
 	cmd := exec.CommandContext(bounded, testPGProgram, command)

@@ -43,9 +43,9 @@ func heavyWrites() []heavyWrite {
 // holding each to a second of wall clock as well (heavy-document-writes.e2e.ts,
 // nested-directive.e2e.ts). Nothing here reads a clock: two wall times a shared CI runner took
 // cannot separate a regression from the runner's own noise (INFRA-1013, INFRA-985). What the
-// bodies cost is measured in pmdoc's own CPU time
-// (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime) and by BenchmarkHeavyDocumentWrite
-// beside this file; what a writer is answered is gated here.
+// bodies cost is counted in the steps of pmdoc's parse
+// (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter) and measured by
+// BenchmarkHeavyDocumentWrite beside this file; what a writer is answered is gated here.
 func TestHeavyDocumentWriteVerdicts(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)

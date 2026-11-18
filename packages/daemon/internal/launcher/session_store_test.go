@@ -3,30 +3,26 @@ package launcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
-
-// shortenResumeLookup makes a lookup that cannot reach the session table give up in seconds rather
-// than the thirty seconds a launch is allowed, so a test that expects an answer fails quickly when
-// none comes.
-func shortenResumeLookup(t *testing.T) {
-	t.Helper()
-	savedBackoff, savedTimeout := resumeLookupBackoff, resumeLookupTimeout
-	resumeLookupBackoff, resumeLookupTimeout = []time.Duration{100 * time.Millisecond}, 3*time.Second
-	t.Cleanup(func() { resumeLookupBackoff, resumeLookupTimeout = savedBackoff, savedTimeout })
-}
 
 // Under SQL session storage (either database kind of the runtime's session_store, postgres or
 // cloudsql-iam: OMP_SESSION_STORAGE=sql and OMP_SESSION_SQL_DSN_FILE in the generation's
@@ -157,6 +153,8 @@ func TestAResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheTableWroteItsSessio
 // A session database that cannot be reached for a moment does not fail the launch: the lookup is
 // asked again after each backoff wait, reading the URL file afresh, until the table answers. One
 // that stays unreachable past resumeLookupTimeout refuses the start, naming how often it asked.
+// The lookup's clock is the test's, so the database comes back during a backoff the test holds,
+// and the lookup is seen still asking at every backoff before its bound.
 func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T) {
 	dsn, dsnFile := testdb.DSNFile(t, "legion_launcher_retry_test")
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0003.jsonl")
@@ -168,46 +166,72 @@ func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T
 	if _, err := ompsessions.Import(context.Background(), conn, sessionFile, []byte("{}\n"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	shortenResumeLookup(t)
 	// writeURL replaces the URL file whole, as a rename does, so a read never sees half of it.
 	writeURL := func(url string) {
 		staged := dsnFile + ".staged"
 		if err := os.WriteFile(staged, []byte(url+"\n"), 0o600); err != nil {
-			t.Error(err)
-			return
+			t.Fatal(err)
 		}
 		if err := os.Rename(staged, dsnFile); err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 	}
 	unreachable := "postgres://legion:unused@127.0.0.1:1/none?sslmode=disable&connect_timeout=1"
 	writeURL(unreachable)
 	env := []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + dsnFile}
-	sessions, err := newSessionDial(env, "")
+	clk := clocktest.New(time.Now())
+	sessions, err := newSessionDial(env, "", clk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	back := make(chan struct{})
-	go func() {
-		defer close(back)
-		time.Sleep(300 * time.Millisecond)
-		writeURL(dsn)
-	}()
-	_, found, err := sessionWritten(context.Background(), sessions, sessionFile)
-	if err != nil {
-		t.Fatalf("a lookup whose database came back during the backoff = %v, want the session found", err)
+	type lookup struct {
+		conn *pgx.Conn
+		err  error
 	}
-	closeSessions(found)
-	<-back
+	looked := make(chan lookup, 1)
+	look := func() {
+		go func() {
+			_, found, err := sessionWritten(context.Background(), sessions, sessionFile)
+			looked <- lookup{found, err}
+		}()
+	}
+
+	start := clk.Now()
+	look()
+	armed := clk.AwaitArmed(t, "the lookup's first backoff beside its bound", 2)
+	if want := []time.Time{start.Add(resumeLookupBackoff[0]), start.Add(resumeLookupTimeout)}; !slices.Equal(armed, want) {
+		t.Fatalf("after its first attempt the lookup armed %v, want its first backoff and its bound %v", armed, want)
+	}
+	writeURL(dsn)
+	clk.Advance(resumeLookupBackoff[0])
+	got := testwait.Receive(t, "the lookup once its database came back", looked)
+	if got.err != nil {
+		t.Fatalf("a lookup whose database came back during the backoff = %v, want the session found", got.err)
+	}
+	closeSessions(got.conn)
 
 	writeURL(unreachable)
-	started := time.Now()
-	_, _, err = sessionWritten(context.Background(), sessions, sessionFile)
-	if err == nil || !strings.Contains(err.Error(), "resume session "+sessionFile) || !strings.Contains(err.Error(), "attempts in "+resumeLookupTimeout.String()) {
-		t.Fatalf("a lookup whose database never came back = %v, want the refusal naming the session and the attempts", err)
+	start = clk.Now()
+	bound := start.Add(resumeLookupTimeout)
+	look()
+	attempts := 1
+	for {
+		// Two waits armed is the lookup still asking: a lookup that gave up before its bound
+		// arms no backoff after its attempt.
+		armed := clk.AwaitArmed(t, fmt.Sprintf("the lookup's backoff after attempt %d beside its bound", attempts), 2)
+		if !slices.ContainsFunc(armed, bound.Equal) {
+			t.Fatalf("the lookup armed %v, want its bound at %s among them", armed, bound)
+		}
+		clk.Set(armed[0])
+		if armed[0].Equal(bound) {
+			break
+		}
+		attempts++
 	}
-	if waited := time.Since(started); waited < resumeLookupTimeout-time.Second {
-		t.Fatalf("the lookup gave up after %s, want it to keep asking for %s", waited, resumeLookupTimeout)
+	got = testwait.Receive(t, "the lookup's refusal once its bound passed", looked)
+	if want := fmt.Sprintf("(after %d attempts in %s)", attempts, resumeLookupTimeout); got.err == nil ||
+		!strings.Contains(got.err.Error(), "resume session "+sessionFile) || !strings.Contains(got.err.Error(), want) {
+		t.Fatalf("a lookup whose database never came back = %v, want the refusal naming the session and %s", got.err, want)
 	}
 }
 
@@ -241,7 +265,6 @@ func sessionDatabaseAt(t *testing.T, dsn string) (ompsessions.Database, *session
 func TestAResumeUnderASessionDatabaseIsServedThroughTheProxy(t *testing.T) {
 	dsn := testdb.Database(t, "legion_launcher_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
-	shortenResumeLookup(t)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
 	marker := filepath.Join(t.TempDir(), "marker")
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0004.jsonl")
@@ -278,23 +301,23 @@ func TestAResumeUnderASessionDatabaseIsServedThroughTheProxy(t *testing.T) {
 	g.stop(4)
 }
 
-// identityStub stands in for the pod's own cloud identity: a credential with an expiry, which the
+// identityStub stands in for the pod's own cloud identity: a credential that expires, which the
 // dialer presents at every dial and which only a fresh minting renews.
 type identityStub struct {
 	mu      sync.Mutex
-	expires time.Time
+	expired bool
 }
 
 func (s *identityStub) mint() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.expires = time.Now().Add(time.Minute)
+	s.expired = false
 }
 
 func (s *identityStub) expire() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.expires = time.Now().Add(-time.Second)
+	s.expired = true
 }
 
 // present is the credential work a dial does before it reaches the database: an expired credential
@@ -302,7 +325,7 @@ func (s *identityStub) expire() {
 func (s *identityStub) present() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !time.Now().Before(s.expires) {
+	if s.expired {
 		return errors.New("the session database refused an expired credential")
 	}
 	return nil
@@ -328,8 +351,7 @@ func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
 	child := publishedAll(t, marker)
 	endpoint := ompsessions.Endpoint{SocketDir: g.generationDir(2), Database: database.Name, User: database.User}
 	ask := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		conn, err := ompsessions.ConnectURL(ctx, endpoint.ClientURL())
 		if err != nil {
 			return err

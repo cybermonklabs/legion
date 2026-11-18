@@ -2,18 +2,12 @@ package webhook
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
-	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testnats"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +16,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestGitHubHandler(t *testing.T) {
@@ -1326,9 +1327,7 @@ func TestGitHubHandlerStoresAPushWhoseRefIsFiveThousandBytes(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	stored, err := client.NextStoredMessage(ctx, "notifications.github.acme.widgets.push.branch.>", 0)
+	stored, err := client.NextStoredMessage(testwait.Context(t), "notifications.github.acme.widgets.push.branch.>", 0)
 	if err != nil {
 		t.Fatalf("read the stored push: %v", err)
 	}

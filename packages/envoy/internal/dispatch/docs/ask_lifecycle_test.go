@@ -343,7 +343,7 @@ func TestASettlementAfterAReleasingCloseAndAReopenNamesTheLatestEditor(t *testin
 			closer := model.Actor{Kind: "user", ID: "carol"}
 			writeIssueAskStates(t, service, []model.Ask{withdrawnAsk(region, closer)}, closer, true)
 			closeTestIssue(t, service)
-			waitFor(t, 30*time.Second, "the closed issue's room state to be released", func() bool {
+			waitFor(t, "the closed issue's room state to be released", func() bool {
 				state := service.lockExistingState(artifactID)
 				if state == nil {
 					return true

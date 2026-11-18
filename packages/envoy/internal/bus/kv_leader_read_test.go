@@ -1,15 +1,14 @@
 package bus
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // leaderReadBucket opens bucket on a connection of its own and answers the server's URL with it,
@@ -22,7 +21,7 @@ func leaderReadBucket(t *testing.T, bucket string) (string, KeyValue) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -34,21 +33,13 @@ func leaderReadBucket(t *testing.T, bucket string) (string, KeyValue) {
 	return uri, kv
 }
 
-// requestFor is the next message the subscription holds whose subject names stream, waited for up
-// to wait, and nil where none came: the requests of the other rows sharing this server, and of
-// this row's own setup, name another stream and are passed over.
-func requestFor(t *testing.T, sub *nats.Subscription, stream string, wait time.Duration) *nats.Msg {
+// requestFor is the next message the subscription holds whose subject names stream: the requests
+// of the other rows sharing this server, and of this row's own setup, name another stream and are
+// passed over.
+func requestFor(t *testing.T, sub *nats.Subscription, stream string) *nats.Msg {
 	t.Helper()
-	deadline := time.Now().Add(wait)
 	for {
-		left := time.Until(deadline)
-		if left <= 0 {
-			return nil
-		}
-		msg, err := sub.NextMsg(left)
-		if errors.Is(err, nats.ErrTimeout) {
-			return nil
-		}
+		msg, err := sub.NextMsgWithContext(testwait.Context(t))
 		if err != nil {
 			t.Fatalf("read the requests of %s: %v", stream, err)
 		}
@@ -58,9 +49,28 @@ func requestFor(t *testing.T, sub *nats.Subscription, stream string, wait time.D
 	}
 }
 
-// noRequestFor is the quiet wait requestFor's absence takes: long enough for a request already
-// sent to reach this subscriber, since the read that would have sent it has already answered.
-const noRequestFor = 500 * time.Millisecond
+// requireNoRequestFor fails the test when sub holds a request naming stream that the read under
+// test sent: the read has answered, so the server had already routed any request of it to sub's
+// connection, and the marker this call publishes on marker, through that same connection, is
+// routed after it. So a request of the read reaches sub ahead of the marker.
+func requireNoRequestFor(t *testing.T, conn *nats.Conn, sub *nats.Subscription, stream, marker, what string) {
+	t.Helper()
+	if err := conn.Publish(marker, nil); err != nil {
+		t.Fatalf("publish the marker: %v", err)
+	}
+	for {
+		msg, err := sub.NextMsgWithContext(testwait.Context(t))
+		if err != nil {
+			t.Fatalf("read the requests of %s: %v", stream, err)
+		}
+		if msg.Subject == marker {
+			return
+		}
+		if strings.Contains(msg.Subject, stream) {
+			t.Errorf("%s sent %s, want none before the marker", what, msg.Subject)
+		}
+	}
+}
 
 // A Get of a key is a direct get, which nats-server answers from any copy of the bucket's stream
 // that is 90% caught up, and the leader-answered read is the stream message get of the bucket's
@@ -101,35 +111,24 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 	if _, err := kv.Get(key); err != nil {
 		t.Fatalf("Get(%s): %v", key, err)
 	}
-	direct := requestFor(t, directGets, stream, 5*time.Second)
-	if direct == nil {
-		t.Fatalf("Get(%s) sent no direct get of %s; this read is the one the leader need not answer", key, stream)
-	}
+	direct := requestFor(t, directGets, stream)
 	if want := "$JS.API.DIRECT.GET." + stream + ".$KV." + bucket + "." + key; direct.Subject != want {
 		t.Errorf("Get(%s) sent %s, want %s", key, direct.Subject, want)
 	}
-	if sent := requestFor(t, streamMsgGets, stream, noRequestFor); sent != nil {
-		t.Errorf("Get(%s) sent %s too, want the direct get alone", key, sent.Subject)
-	}
+	requireNoRequestFor(t, watcher.Conn, streamMsgGets, stream, "$JS.API.STREAM.MSG.GET.marker-after-get", "Get("+key+")")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := kv.GetFromLeader(ctx, key); err != nil {
 		t.Fatalf("GetFromLeader(%s): %v", key, err)
 	}
-	leader := requestFor(t, streamMsgGets, stream, 5*time.Second)
-	if leader == nil {
-		t.Fatalf("GetFromLeader(%s) sent no stream message get of %s; a direct get would be answered by a copy that is behind", key, stream)
-	}
+	leader := requestFor(t, streamMsgGets, stream)
 	if want := "$JS.API.STREAM.MSG.GET." + stream; leader.Subject != want {
 		t.Errorf("GetFromLeader(%s) sent %s, want %s", key, leader.Subject, want)
 	}
 	if want := `"last_by_subj":"$KV.` + bucket + "." + key + `"`; !strings.Contains(string(leader.Data), want) {
 		t.Errorf("GetFromLeader(%s) asked %s, want it to carry %s: the newest message on the key's subject", key, leader.Data, want)
 	}
-	if sent := requestFor(t, directGets, stream, noRequestFor); sent != nil {
-		t.Errorf("GetFromLeader(%s) sent %s, want no direct get at all: a copy that is behind answers one", key, sent.Subject)
-	}
+	requireNoRequestFor(t, watcher.Conn, directGets, stream, "$JS.API.DIRECT.GET.marker-after-leader-read", "GetFromLeader("+key+")")
 }
 
 // The leader-answered read speaks Get's vocabulary: a key the bucket holds answers that key's
@@ -139,8 +138,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	revision, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {

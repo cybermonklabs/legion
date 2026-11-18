@@ -9,6 +9,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A loop's done channel closes only once a pass in flight when its context ends has finished, and
@@ -26,23 +28,17 @@ func TestALoopEndsWithItsContextOnlyAfterItsPassInFlight(t *testing.T) {
 			<-release
 		}
 	})
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the loop never ran a pass")
-	}
+	testwait.Receive(t, "the loop to run a pass", entered)
 	cancel()
+	// The pass is blocked on release, so the loop cannot have reported done: the done channel closes
+	// only once the in-flight pass returns.
 	select {
 	case <-done:
 		t.Fatal("the loop reported done with its pass still running")
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the loop never ended after its context")
-	}
+	testwait.Receive(t, "the loop to end after its context", done)
 	if got := passes.Load(); got != 1 {
 		t.Fatalf("the loop ran %d passes, want none after its context ended", got)
 	}
@@ -55,7 +51,7 @@ func TestTheMarkerCollectorDeletesItsScansConsumerBeforeItEnds(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	registry := openRegistry(t, conn)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -72,11 +68,7 @@ func TestTheMarkerCollectorDeletesItsScansConsumerBeforeItEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := registry.StartInterestMarkerCollector(ctx, func() natsgo.JetStreamContext { return js }, time.Hour)
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the collector never ended after its context")
-	}
+	testwait.Receive(t, "the collector to end after its context", done)
 	if got := consumers(); got != 1 {
 		t.Fatalf("the interest bucket has %d consumers after the collector ended, want the cache watcher's one", got)
 	}

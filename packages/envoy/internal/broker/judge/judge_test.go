@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing is each of the six checks in
@@ -422,7 +425,7 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
 
-	waitFor(t, "the run Consider started to apply its decision", 10*time.Second, func() bool {
+	waitFor(t, "the run Consider started to apply its decision", func() bool {
 		applied, _ := machine.rows()
 		return len(applied) == 1
 	})
@@ -436,41 +439,73 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 // all — the broker would have paid for two HTTP reads and a model call with no audit row to
 // show for them, which is the one outcome the trail exists to prevent.
 //
-// The request is left pending either way, so the row is the whole of what this proves. It takes
-// the wall-clock time it says it does — the bounds are real durations — and runs beside the
-// rest of the package's tests rather than after them.
+// The request is left pending either way, so the row is the whole of what this proves. Every
+// bound runs on the run's clock (Options.Clock), a fake the test moves step by step - each read
+// held for just under half of dispatchBound, the model call to modelBound, the write its two
+// seconds - so the arithmetic is the bounds' alone, and no machine's speed decides it.
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
+	fake := clocktest.New(time.Now())
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
-	// Each of the phase's two GETs takes half of its bound, less a twentieth of a second
-	// for the two round trips themselves: the phase has to spend its bound and still
-	// answer, since a read the bound cut short would fail the issue check and the model
-	// would never be asked at all.
-	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
-	// The model never answers, so the call ends on modelBound.
-	model.delay = runBudget
+	// Each of the phase's two GETs is held for just under half of its bound: the phase has to
+	// spend its bound and still answer, since a read the bound cut short would fail the issue
+	// check and the model would never be asked at all.
+	read := dispatchBound/2 - time.Millisecond
+	dispatch.delay, dispatch.clock = read, fake
+	// The model never answers inside the run, so the call ends on modelBound.
+	model.delay, model.clock = runBudget, fake
 	// The row's own transaction, which has to commit inside what is left of the budget.
-	machine.writeTakes = 2 * time.Second
-	started := time.Now()
-	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
+	machine.writeTakes, machine.clock = 2*time.Second, fake
+	options := testOptions(t, dispatch, model, machine)
+	options.Clock = fake
+	start := fake.Now()
 
-	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
+	New(t.Context(), options).Consider(pending())
+
+	awaitArmedAt(t, fake, "the run's budget", start.Add(runBudget))
+	awaitArmedAt(t, fake, "the Dispatch phase's bound", start.Add(dispatchBound))
+	awaitArmedAt(t, fake, "the issue read's hold", start.Add(read))
+	fake.Advance(read)
+	awaitArmedAt(t, fake, "the spec read's hold", start.Add(2*read))
+	fake.Advance(read)
+	asked := fake.Now()
+	awaitArmedAt(t, fake, "the model call's bound", asked.Add(modelBound))
+	fake.Advance(modelBound)
+	writing := fake.Now()
+	awaitArmedAt(t, fake, "the write's own time", writing.Add(machine.writeTakes))
+	fake.Advance(machine.writeTakes)
+	waitFor(t, "the slowest run there is to write its row", func() bool {
 		_, logged := machine.rows()
 		return len(logged) == 1
 	})
-	if took := time.Since(started); took < dispatchBound+modelBound-time.Second {
-		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
+	// Both bounds were spent, read from what the stand-ins saw rather than from the clock:
+	// the Dispatch phase made both of its reads, each held for half of dispatchBound, and the
+	// model call ran to its own bound, which is the error the row carries below.
+	if got := dispatch.got(); len(got) != 2 {
+		t.Errorf("the Dispatch stand-in answered %d reads; want the issue and the spec, each held for half of %s", len(got), dispatchBound)
 	}
 	row := theOneRow(t, machine)
 	if row["verdict"] != Refer || row["asked"] != true {
 		t.Errorf("the row reads verdict %v, asked %v; want the model asked and the request referred", row["verdict"], row["asked"])
 	}
-	if _, carries := row["error"].(string); !carries {
-		t.Errorf("the row carries error %v; want the model call's own timeout", row["error"])
+	// agentloop's own words for its time bound ("the run went past 20s"), naming modelBound:
+	// the call ran to its bound rather than failing early on something else.
+	if message, carries := row["error"].(string); !carries || !strings.Contains(message, "went past "+modelBound.String()) {
+		t.Errorf("the row carries error %v; want the model call's own timeout at %s, which is how the call is known to have run to modelBound", row["error"], modelBound)
 	}
 	if failed := failedCheck(t, row); failed != "" {
 		t.Errorf("the row names %q as a failed check; want every check passed before the model", failed)
 	}
+}
+
+// awaitArmedAt waits until a timer for at is pending on fake, the run's clock, and fails naming
+// what and the deadlines it last saw when none ever is.
+func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
 }
 
 // TestARequestThatIsNoLongerPendingIsNeverPutToTheModel: the run reads the request's state again

@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The Dispatch consumer's position reads idle only once the notification stream's own store holds
+  no message of its filters after the last one it delivered. NATS counts a message pending on a
+  consumer a moment after it stores it, so a position read in that moment read idle while the
+  boot's target already counted the message, and the boot's reconcile held no key behind the
+  consumer although a message its listing was ahead of had still to be delivered.

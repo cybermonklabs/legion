@@ -54,26 +54,7 @@ export interface PasteCase {
   /** The cells the editor must draw, row by row: the editor-side reading of a row that read them
    *  out of the DOM. */
   readonly rows?: readonly (readonly string[])[];
-  /** A per-test timeout in milliseconds, for a case whose regression is slow rather than wrong.
-   *  Bun reports a case that overruns it only once the case returns; EMPTY_ROW_TIMEOUT_MS says
-   *  what that does and does not buy. */
-  readonly timeoutMs?: number;
 }
-
-/**
- * The limit the cases a missing prosemirror-tables patch would hang in carry. A full editor boot
- * and one paste is milliseconds here, so five seconds is a hang - but Bun interrupts nothing. A
- * case that overruns its limit is reported, by name, only after it returns: a three-second
- * synchronous spin under a 500 ms limit runs all three seconds and is then failed. The hang
- * these cases guard against is prosemirror-tables' `fixTables` looping inside
- * `appendTransaction`, which is synchronous and never returns, so nothing is reported at all and
- * the whole `proof-editor` test step hangs until the job's own timeout kills it.
- *
- * So the limit buys a named failure for a case that merely grew slow, or one that waits on a
- * promise that never settles. It buys nothing against that loop, and five seconds is Bun's own
- * default per-test timeout, so it states the intent rather than tightening anything.
- */
-const EMPTY_ROW_TIMEOUT_MS = 5_000;
 
 /** The same wording the e2e file's own `targetName` gives a row. */
 function targetName(target: PasteTarget): string {
@@ -458,9 +439,8 @@ for (const [clipboard, target, stored] of [
     stored,
     target: where,
     // Without the prosemirror-tables patch an empty row sends fixTables round forever. That loop
-    // is synchronous, so Bun interrupts nothing and names nothing: the step hangs until the job's
-    // own timeout. The limit below reports this case only if it grows slow and returns.
-    timeoutMs: EMPTY_ROW_TIMEOUT_MS,
+    // is synchronous, so Bun interrupts nothing and names nothing: the step hangs until the
+    // command's guard ends it.
   });
 }
 
@@ -473,7 +453,6 @@ cases.push({
   spec: table,
   stored: "|  |  |\n| :--- | :--- |\n|  |  |\n",
   target: { cells: ["alpha one", "delta four"] },
-  timeoutMs: EMPTY_ROW_TIMEOUT_MS,
 });
 
 // Cells copied inside the editor paste back as the same cells, at a caret in another row's cell
@@ -624,9 +603,7 @@ for (const [row, clipboard, header, body] of [
       // The hang this row exists for: without the prosemirror-tables patch fixTables runs forever
       // on a cell-less header row, inside appendTransaction and synchronously, so the case never
       // returns. Bun cannot interrupt it, so `bun test` reports nothing and the whole
-      // `proof-editor` step hangs until the job's own timeout; the limit below reports only a
-      // case that grew slow and returned.
-      timeoutMs: EMPTY_ROW_TIMEOUT_MS,
+      // `proof-editor` step hangs until the command's guard ends it.
     });
   }
 }

@@ -19,6 +19,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	moduleclock "github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const clientID = "Iv1.redeliver"
@@ -116,7 +118,7 @@ func openState(tb testing.TB) bus.KeyValue {
 		tb.Fatalf("connect NATS: %v", err)
 	}
 	tb.Cleanup(nc.Close)
-	js, err := nc.JetStream()
+	js, err := nc.JetStream(testnats.MaxWait(tb))
 	if err != nil {
 		tb.Fatalf("JetStream: %v", err)
 	}
@@ -198,7 +200,7 @@ func (h *harness) toTheLongestBackoff() {
 func (h *harness) keys() []string {
 	h.t.Helper()
 	var held []string
-	if _, err := kvwatch.ScanExistingKeys(context.Background(), h.state, jetstream.AllKeys, "redelivery state", kvwatch.ScanIdleTimeout, slog.Default(), func(entry kvwatch.Entry) error {
+	if _, err := kvwatch.ScanExistingKeys(context.Background(), moduleclock.Real(), h.state, jetstream.AllKeys, "redelivery state", kvwatch.ScanIdleTimeout, slog.Default(), func(entry kvwatch.Entry) error {
 		held = append(held, entry.Key)
 		return nil
 	}, jetstream.MetaOnly(), jetstream.IgnoreDeletes()); err != nil {
@@ -1277,7 +1279,7 @@ func TestDryRunReportsWithoutActing(t *testing.T) {
 		t.Fatalf("a dry run requested %v", got)
 	}
 	var written []string
-	if _, err := kvwatch.ScanExistingKeys(context.Background(), h.state, jetstream.AllKeys, "redelivery state", kvwatch.ScanIdleTimeout, slog.New(slog.DiscardHandler), func(entry kvwatch.Entry) error {
+	if _, err := kvwatch.ScanExistingKeys(context.Background(), moduleclock.Real(), h.state, jetstream.AllKeys, "redelivery state", kvwatch.ScanIdleTimeout, slog.New(slog.DiscardHandler), func(entry kvwatch.Entry) error {
 		written = append(written, entry.Key)
 		return nil
 	}, jetstream.MetaOnly(), jetstream.IgnoreDeletes()); err != nil || len(written) != 0 {
@@ -2207,15 +2209,11 @@ func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 		defer close(done)
 		h.sweeper().Run(ctx, time.Hour, leases)
 	}()
-	for deadline := time.Now().Add(10 * time.Second); h.logs.count("webhook redelivery sweep") == 0; {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("no summary line:\n%s", h.logs)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the running sweep's summary line", func() (string, bool) {
+		return h.logs.String(), h.logs.count("webhook redelivery sweep") > 0
+	})
 	cancel()
-	<-done
+	testwait.Receive(t, "the running sweep to return once its context ended", done)
 
 	want := []string{
 		" failed_attempts=1", " deliveries=1",

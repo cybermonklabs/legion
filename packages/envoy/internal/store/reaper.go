@@ -50,7 +50,7 @@ func InterestReapAllowance(grace time.Duration) time.Duration {
 // skipped. Where the copy holds no revision for it, the row and the revision come from the
 // bucket instead, and the delete is made only for the very row this pass judged.
 func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (int, error) {
-	now := r.now().UnixMilli()
+	now := r.clock.Now().UnixMilli()
 	allowanceMs := InterestReapAllowance(graceWindow).Milliseconds()
 
 	type candidate struct {
@@ -256,7 +256,7 @@ type RoleClaimSweep struct {
 // too: the reaper is the one caller handed the deployment's live window, and a failure older
 // than that window answers no reader of it (RenewalFailedWithin).
 func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool, sessionTTL, liveWindow time.Duration) (RoleClaimSweep, error) {
-	r.renewalFailures.prune(r.now(), liveWindow)
+	r.renewalFailures.prune(r.clock.Now(), liveWindow)
 	claims, err := r.roleClaimsUntil(ctx)
 	if err != nil {
 		return RoleClaimSweep{}, err

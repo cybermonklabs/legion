@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
 
 // Retry is the wait between attempts whose failure is transient: after the i-th such failure the
@@ -59,14 +61,22 @@ type Outcome struct {
 	Detail  string
 }
 
+// Clock is the time Run waits on between attempts: a narrowing of the module's clock.Clock, so
+// clock.Real() and a test's clocktest.Fake both fit it. Run waits on a timer it arms, never a
+// Sleep, so on a fake the wait is an armed timer the test sees and moves past, whatever the fake
+// does with a Sleep.
+type Clock interface {
+	NewTimer(d time.Duration) clock.Timer
+}
+
 // Run runs attempt until it passes, is refused, or has failed transiently retry.Attempts times,
-// logging each transient failure with the wait before the next attempt. A refusal is returned as
-// it is. A waiting outcome is logged with what it waits on and retried after retry.Max, counted
-// against neither the attempt budget nor the backoff: transient failures before and after it are
-// counted together as if it had not happened. A ctx that ends — during an attempt, whatever the
-// attempt then returned, or during a wait — ends Run with an error wrapping ctx's, and starts no
-// other attempt.
-func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
+// logging each transient failure with the wait before the next attempt, which it waits on clk. A
+// refusal is returned as it is. A waiting outcome is logged with what it waits on and retried after
+// retry.Max, counted against neither the attempt budget nor the backoff: transient failures before
+// and after it are counted together as if it had not happened. A ctx that ends — during an
+// attempt, whatever the attempt then returned, or during a wait — ends Run with an error wrapping
+// ctx's, and starts no other attempt.
+func Run(ctx context.Context, clk Clock, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
 	transients := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -110,12 +120,12 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			log.Warn("boot probe failed transiently; waiting to run it again",
 				"probe", name, "attempt", label, "retryIn", delay.String(), "detail", outcome.Detail)
 		}
-		wait := time.NewTimer(delay)
+		wait := clk.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			wait.Stop()
 			return abandoned(name, ctx.Err())
-		case <-wait.C:
+		case <-wait.C():
 		}
 	}
 }

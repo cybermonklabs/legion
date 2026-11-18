@@ -81,6 +81,10 @@ export interface ShellCommandResult {
   /** One sentence naming the exit status of a command that failed, was killed or was stopped;
    *  undefined for one that exited 0. */
   readonly status: string | undefined;
+  /** Bytes of what the command printed this module held when it ended, which is the most it held
+   *  at any moment: what it keeps only grows, and stops at `SHELL_OUTPUT_BYTES`. The module's own
+   *  count of what a command cost the session, which nothing here decides on. */
+  readonly keptBytes: number;
 }
 
 /** The command a person's message says to run, or undefined for a message that is no command: the
@@ -187,6 +191,11 @@ class BoundedOutput {
     const keep = chunk.length <= room ? chunk : chunk.subarray(0, room);
     this.#kept.set(keep, this.#length);
     this.#length += keep.length;
+  }
+
+  /** How many bytes are kept. */
+  get bytes(): number {
+    return this.#length;
   }
 
   text(): string {
@@ -303,6 +312,7 @@ export async function runShellCommand(
       cut: false,
       output: "",
       status: `The command could not start: ${messageFor(error)}.`,
+      keptBytes: 0,
     };
   }
   runningGroups.add(child.pid);
@@ -339,6 +349,7 @@ export async function runShellCommand(
     cut,
     output: output.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
     status: statusOf(child, ended, options.limitMs),
+    keptBytes: printed.bytes,
   };
 }
 

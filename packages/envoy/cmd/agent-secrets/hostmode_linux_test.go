@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -84,16 +85,12 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sh must print its pid, got %q", out)
 	}
-	select {
-	case seen := <-requests:
-		if seen.pid != printed {
-			t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
-		}
-		if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
-			t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the helper saw no register")
+	seen := testwait.Receive(t, "the helper to see the register", requests)
+	if seen.pid != printed {
+		t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
+	}
+	if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
+		t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
 	}
 }
 
@@ -231,12 +228,7 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 	waited := make(chan struct{})
 	t.Cleanup(func() {
 		_ = stdin.Close()
-		select {
-		case <-waited:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-		<-waited
+		testwait.Receive(t, "the session's process to exit once its stdin closed", waited)
 	})
 	go func() { _ = cmd.Wait(); close(waited) }()
 
@@ -251,12 +243,14 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 			}
 		}
 	}()
-	var report launcherReport
-	select {
-	case report = <-reports:
-	case <-time.After(60 * time.Second):
-		t.Fatalf("the launcher never reported; stderr %q", stderr.String())
-	}
+	report := testwait.Until(t, "the launcher to report (the reading is its stderr)", func() (launcherReport, bool) {
+		select {
+		case report := <-reports:
+			return report, true
+		default:
+			return launcherReport{}, false
+		}
+	})
 
 	if report.RegisterCode != 0 || !strings.HasSuffix(strings.TrimSpace(report.RegisterOut), "enrolled") {
 		t.Fatalf("register --session-id inside the launcher: exit %d, stdout %q, stderr %q; want 0 and an enrolled line",
@@ -324,16 +318,19 @@ func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
 // its ancestry before the command runs. It fails, rather than skipping, when an `omp` is still
 // above that shell: a check that cannot see the thing it is for must say so.
 //
-// The orphan cannot be waited on, so it reports through files: its stdout, its stderr and its
-// exit code, the last written under another name and renamed, so a code read is never a partial
-// write.
+// The orphan cannot be waited on, so it reports through files: its pid, its stdout, its stderr
+// and its exit code. The test polls for the pid and the code, so each of those two is written
+// under another name and renamed into place: a redirect creates its file before the shell writes
+// to it, and a read in between would find the file empty. The stdout and stderr are read only
+// once the code is there, after the command that wrote them has exited.
 func runWithNoLauncherAbove(t *testing.T, binary string, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "orphan.sh")
 	const body = `d=$1
 shift
-printf '%s\n' "$$" > "$d/shell.pid"
+printf '%s\n' "$$" > "$d/shell.pid.tmp"
+mv "$d/shell.pid.tmp" "$d/shell.pid"
 i=0
 while [ ! -e "$d/go" ]; do
 	if [ -e "$d/stop" ]; then exit 1; fi
@@ -354,7 +351,7 @@ mv "$d/code.tmp" "$d/code"
 	if err := outer.Run(); err != nil {
 		t.Fatalf("starting the orphaned shell: %v", err)
 	}
-	shellPID := atoiFile(t, filepath.Join(dir, "shell.pid"), 10*time.Second)
+	shellPID := atoiFile(t, filepath.Join(dir, "shell.pid"))
 	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(dir, "stop"), nil, 0o600) })
 	if pid, found := ancestorNamed(t, shellPID, "omp"); found {
 		t.Fatalf("pid %d is still an `omp` above the orphaned shell %d, so this test could not show the refusal it is for", pid, shellPID)
@@ -362,28 +359,22 @@ mv "$d/code.tmp" "$d/code"
 	if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code = atoiFile(t, filepath.Join(dir, "code"), 60*time.Second)
+	code = atoiFile(t, filepath.Join(dir, "code"))
 	return code, readFile(t, filepath.Join(dir, "out")), readFile(t, filepath.Join(dir, "err"))
 }
 
-// atoiFile is the number in path once it is there, waiting at most wait for it.
-func atoiFile(t *testing.T, path string, wait time.Duration) int {
+// atoiFile is the number in path once it is there, through the shared wait.
+func atoiFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(wait)
-	for {
+	data := testwait.Until(t, path+" to be written", func() ([]byte, bool) {
 		data, err := os.ReadFile(path)
-		if err == nil {
-			n, err := strconv.Atoi(strings.TrimSpace(string(data)))
-			if err != nil {
-				t.Fatalf("%s holds %q, want a number", path, data)
-			}
-			return n
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s was never written (%v)", path, err)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return data, err == nil
+	})
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("%s holds %q, want a number", path, data)
 	}
+	return n
 }
 
 func readFile(t *testing.T, path string) string {
@@ -501,13 +492,8 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 	if code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("register --session-id: exit %d, stderr %q", code, stderr.String())
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" || !req.Attach || req.RootPID != launcher {
-			t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake helper saw no request")
+	if req := testwait.Receive(t, "the fake helper to see a request", reqs); req.Op != "register" || !req.Attach || req.RootPID != launcher {
+		t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
 	}
 	wire, err := json.Marshal(helper.Request{Op: "register", Attach: true, RootPID: 4242})
 	if err != nil || !strings.Contains(string(wire), `"attach":true`) || !strings.Contains(string(wire), `"root_pid":4242`) {
@@ -529,13 +515,8 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
 		t.Fatalf("register with no launcher inside a session: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" || !req.Attach || req.RootPID != 0 {
-			t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake helper saw no request")
+	if req := testwait.Receive(t, "the fake helper to see a request", reqs); req.Op != "register" || !req.Attach || req.RootPID != 0 {
+		t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
 	}
 }
 
@@ -635,12 +616,7 @@ func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
 	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
 		t.Fatalf("register output: got %q, want %q", got, want)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" {
-			t.Fatalf("request sent to the default socket: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the helper on the default socket never saw a request")
+	if req := testwait.Receive(t, "the helper on the default socket to see a request", reqs); req.Op != "register" {
+		t.Fatalf("request sent to the default socket: %+v", req)
 	}
 }

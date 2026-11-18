@@ -110,14 +110,14 @@ func (r *SessionRegistry) setExpiryLocked(id string, kind expiryKind, deadline t
 // deadline later) is left alone: it fires early, finds nothing due, and re-arms. While the copy
 // does not follow its bucket the timer is armed no earlier than unfollowedRecheck from now, since
 // nothing may expire until a read restores following and a deadline already past would otherwise
-// re-arm it at once on every write. The timer is a time.AfterFunc, so no goroutine waits on it and
+// re-arm it at once on every write. The timer is an AfterFunc, so no goroutine waits on it and
 // nothing has to stop with the watcher. The wait is measured on the registry's own clock, so a
 // test that moves that clock moves the deadlines with it. Callers must hold r.mu for writing.
 func (r *SessionRegistry) armExpiryLocked() {
 	if len(r.expiries) == 0 {
 		return
 	}
-	now := r.now()
+	now := r.clock.Now()
 	earliest := r.expiries[0].deadline
 	if recheck := now.Add(unfollowedRecheck); !r.following() && earliest.Before(recheck) {
 		earliest = recheck
@@ -127,7 +127,7 @@ func (r *SessionRegistry) armExpiryLocked() {
 	}
 	wait := max(earliest.Sub(now), 0)
 	if r.expiryTimer == nil {
-		r.expiryTimer = time.AfterFunc(wait, r.expireDue)
+		r.expiryTimer = r.clock.AfterFunc(wait, r.expireDue)
 	} else {
 		r.expiryTimer.Reset(wait)
 	}
@@ -161,7 +161,7 @@ func (r *SessionRegistry) expireDue() {
 		r.armExpiryLocked()
 		return
 	}
-	now := r.now()
+	now := r.clock.Now()
 	for len(r.expiries) > 0 && !r.expiries[0].deadline.After(now) {
 		item := heap.Pop(&r.expiries).(*expiryItem)
 		delete(r.expiryIndex, item.key)

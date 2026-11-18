@@ -6,6 +6,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // Each window is the age a record may reach, not the age it may not: a record exactly one live
@@ -80,8 +81,7 @@ func TestStateOfOnThePackagesOwnWindows(t *testing.T) {
 func statedRegistry(t *testing.T, now time.Time) *SessionRegistry {
 	t.Helper()
 	const bucket = 2 * time.Hour
-	r := newTestRegistry(bucket)
-	r.now = func() time.Time { return now }
+	r := newTestRegistryOn(bucket, clocktest.New(now))
 	rows := map[string]cachedSession{}
 	for id, age := range map[string]time.Duration{
 		"ses_live":         time.Minute,

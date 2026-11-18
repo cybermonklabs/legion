@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -46,6 +47,12 @@ type GoogleAccount struct {
 	// flight is the one metadata read in progress, which every reader that finds nothing fresh
 	// enough joins rather than opening a second one.
 	flight singleflight.Group
+	// waiting is how many readers hold a place on a metadata read in flight: a reader is counted
+	// once DoChan has put it on a read, the one it started or the one it joined, and uncounted
+	// once that read has answered it. Nothing here decides by it. A test reads it to know that
+	// every reader it started shares the one read its stub holds open, which singleflight itself
+	// does not say.
+	waiting atomic.Int64
 }
 
 // NewGoogleAccount is a reader of this machine's Google identity token for audience, which Read
@@ -62,7 +69,9 @@ func NewGoogleAccount(audience string) *GoogleAccount {
 //
 // The read runs on a context of its own, bounded by internal/googleidentity's own timeout, rather
 // than on the request's: one request going away must not leave the next one without the machine's
-// identity, and the answer is cached for every caller.
+// identity, and the answer is cached for every caller. It runs on a goroutine of its own too
+// (singleflight's DoChan), so a reader has its place on the read as soon as DoChan returns, before
+// it waits for the answer; that place is what waiting counts.
 //
 // Readers that arrive while a read is in flight take its answer — the token, or the error it
 // failed with — instead of each asking the metadata server in turn, and the lock is released
@@ -75,7 +84,7 @@ func (g *GoogleAccount) Read() (string, error) {
 	if token, fresh := g.fresh(); fresh {
 		return token, nil
 	}
-	shared, err, _ := g.flight.Do(g.Audience, func() (any, error) {
+	answer := g.flight.DoChan(g.Audience, func() (any, error) {
 		// The flight's own look at the cache: a reader that waited out this flight's predecessor
 		// would otherwise ask the metadata server again for a token just read.
 		if token, fresh := g.fresh(); fresh {
@@ -90,10 +99,13 @@ func (g *GoogleAccount) Read() (string, error) {
 		g.mu.Unlock()
 		return token, nil
 	})
-	if err != nil {
-		return "", err
+	g.waiting.Add(1)
+	shared := <-answer
+	g.waiting.Add(-1)
+	if shared.Err != nil {
+		return "", shared.Err
 	}
-	return shared.(string), nil
+	return shared.Val.(string), nil
 }
 
 // fresh is the cached token while it is younger than TTL, and false once it is not.

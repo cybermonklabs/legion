@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // roomConnectionsQuery counts, in one read, the backends of database dispatch that hold rooms'
@@ -60,7 +61,7 @@ func (s *roomSampler) loop(ctx context.Context, url string, from, to time.Time, 
 		return
 	}
 	defer conn.Close(context.Background())
-	s.errors = poll(ctx, from, to, roomSamplerInterval, "room sampler", lg, func(ctx context.Context) error {
+	s.errors = poll(ctx, clock.Real(), from, to, roomSamplerInterval, "room sampler", lg, func(ctx context.Context) error {
 		var r roomSample
 		if err := conn.QueryRow(ctx, roomConnectionsQuery, commitOrderLockClassID, commitOrderLockObjID).Scan(&r.held, &r.shared); err != nil {
 			return err

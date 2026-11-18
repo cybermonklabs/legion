@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -101,7 +101,7 @@ type readRenameGitHub struct {
 func newReadRenameGitHub(t *testing.T, repo string) *readRenameGitHub {
 	t.Helper()
 	g := &readRenameGitHub{repo: repo}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.paths = append(g.paths, strings.TrimPrefix(r.URL.Path, "/repos/"))
 		g.calls = append(g.calls, r.Header.Get("Authorization"))
@@ -118,7 +118,8 @@ func newReadRenameGitHub(t *testing.T, repo string) *readRenameGitHub {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(pull)
-	}))
+	}})
+
 	t.Cleanup(server.Close)
 	g.url = server.URL
 	return g

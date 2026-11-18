@@ -10,14 +10,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // unresolvable is the server every proxied case names: a host name that resolves nowhere, so only a
@@ -27,7 +28,7 @@ const unresolvable = "nats.example.test:4222"
 // waitForConnects waits for the proxy to have received n requests, every one of them want.
 func waitForConnects(t *testing.T, proxy *testsocks5.Server, n int, want testsocks5.Request) {
 	t.Helper()
-	waitFor(t, 15*time.Second, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
+	testwait.Eventually(t, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
 	requireConnects(t, proxy, slices.Repeat([]testsocks5.Request{want}, n))
 }
 
@@ -103,18 +104,17 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 				t.Helper()
 				envelope := roleEnvelope(topic)
 				envelope.EventID = marker
-				waitFor(t, 15*time.Second, "a core publish to come back through the proxy "+marker, func() bool {
+				testwait.Eventually(t, "a core publish to come back through the proxy "+marker, func() bool {
 					if err := client.Publish(envelope); err != nil {
 						return false
 					}
-					deadline := time.After(250 * time.Millisecond)
 					for {
 						select {
 						case data := <-received:
 							if bytes.Contains(data, []byte(marker)) {
 								return true
 							}
-						case <-deadline:
+						default:
 							return false
 						}
 					}
@@ -130,7 +130,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 			// with the same proxy.
 			client.Conn.Close()
 			waitForConnects(t, fake, 3, want)
-			waitFor(t, 15*time.Second, "the replacement connection", client.Connected)
+			testwait.Eventually(t, "the replacement connection", client.Connected)
 			roundTrip("after-the-replacement")
 		})
 	}
@@ -152,12 +152,15 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 		}
 		roundTrip := func(marker string) {
 			t.Helper()
-			waitFor(t, 15*time.Second, "a publish to come back through the proxy "+marker, func() bool {
+			testwait.Eventually(t, "a publish to come back through the proxy "+marker, func() bool {
 				if err := conn.Publish(subject, []byte(marker)); err != nil {
 					return false
 				}
 				for {
-					msg, err := sub.NextMsg(250 * time.Millisecond)
+					// A read of what the subscription already holds, not a wait: the wait is this
+					// Eventually's, which publishes again at each pass, since a publish made while
+					// the connection is down reaches nobody.
+					msg, err := sub.NextMsg(0)
 					if err != nil {
 						return false
 					}
@@ -299,31 +302,36 @@ func TestAFailedConnectThroughAProxyNamesIt(t *testing.T) {
 func TestAPublishWhoseDeadlineEndsFirstNamesTheProxy(t *testing.T) {
 	uri := testnats.URL(t)
 	fake := testsocks5.Start(t, hostOf(t, uri))
-	client, err := bus.Connect([]string{withHost(t, uri, unresolvable)}, bus.WithEnvironment(proxied(fake.Addr)))
+	clock := clocktest.New(fakeStart)
+	client, err := bus.Connect([]string{withHost(t, uri, unresolvable)}, bus.WithEnvironment(proxied(fake.Addr)), bus.WithClock(clock), bus.WithPublishAcknowledgementClock(clock))
 	if err != nil {
 		t.Fatalf("connect through the proxy: %v", err)
 	}
 	t.Cleanup(client.Close)
 	// The proxy goes away, then the connection: the publish dials a replacement, and every attempt
-	// is refused.
+	// is refused. Its bound is a deadline on the client's clock, which the test moves to it once
+	// the publish has armed it, so the publish ends there rather than when its attempts run out.
 	fake.Close()
 	client.Conn.Close()
-	started := time.Now()
-	err = client.Publish(roleEnvelope("notifications.role.socks5"))
-	elapsed := time.Since(started)
+	published := make(chan error, 1)
+	go func() { published <- client.Publish(roleEnvelope("notifications.role.socks5")) }()
+	bound := fakeStart.Add(bus.PublishBound)
+	awaitArmedAt(t, clock, "the publish's bound", bound.Equal)
+	if len(published) != 0 {
+		t.Fatalf("the publish through a dead proxy returned %v before its bound", <-published)
+	}
+	clock.Set(bound)
+	err = testwait.Receive(t, "the publish through a dead proxy to end at its bound", published)
 	if err == nil {
 		t.Fatal("a publish through a dead proxy succeeded")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("publish error %q after %s is not its deadline's: the replacement dial ran out of attempts first", err, elapsed)
+		t.Fatalf("publish error %q is not its deadline's: the replacement dial ran out of attempts first", err)
 	}
 	for _, want := range []string{bus.SOCKS5ProxyEnvVar, fake.Addr} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("publish error %q does not name %q", err, want)
 		}
-	}
-	if elapsed > 7*time.Second {
-		t.Errorf("the publish failed after %s, past its 5 s deadline", elapsed)
 	}
 }
 
@@ -364,13 +372,15 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 	}
 	for _, value := range malformed {
 		for name, connect := range connects {
-			started := time.Now()
 			err := connect(proxied(value))
 			if err == nil || !strings.Contains(err.Error(), bus.SOCKS5ProxyEnvVar) {
 				t.Fatalf("%s with %s=%q: %v, want a refusal naming %s", name, bus.SOCKS5ProxyEnvVar, value, err, bus.SOCKS5ProxyEnvVar)
 			}
-			if elapsed := time.Since(started); elapsed >= time.Second {
-				t.Fatalf("%s with %s=%q took %s to fail (%v): it dialled", name, bus.SOCKS5ProxyEnvVar, value, elapsed, err)
+			// The check's own refusal, word for word, after the setting's name: a value a dial
+			// was attempted with comes back as the dial's failure instead, which names the
+			// proxy's address and nats.go's reason beside the setting.
+			if want := bus.CheckSOCKS5Proxy(value); want == nil || err.Error() != bus.SOCKS5ProxyEnvVar+" "+want.Error() {
+				t.Fatalf("%s with %s=%q = %v, want the check's own refusal after the setting's name, %s %v: it dialled", name, bus.SOCKS5ProxyEnvVar, value, err, bus.SOCKS5ProxyEnvVar, want)
 			}
 		}
 	}
@@ -388,7 +398,7 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 		t.Fatalf("dial the server URL: %v", err)
 	}
 	_ = conn.Close()
-	waitFor(t, 5*time.Second, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
+	testwait.Eventually(t, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
 }
 
 // A host:port whose host is an IP address without a zone, or a DNS name as Go's resolver reads one
@@ -500,13 +510,10 @@ func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 				{bus.SOCKS5ProxyEnvVar: row.value, bus.AllowRemoteEnvVar: "1"},
 			} {
 				errs := map[string]error{}
-				started := time.Now()
 				_, errs["Connect"] = bus.Connect([]string{"nats://127.0.0.1:1"}, bus.WithEnvironment(lookupOf(environment)))
 				_, errs["ConnectOwningStream"] = bus.ConnectOwningStream([]string{"nats://127.0.0.1:1"}, bus.WithEnvironment(lookupOf(environment)))
 				_, errs["Dial"] = bus.Dial("socks5-test", []string{"nats://127.0.0.1:1"}, lookupOf(environment))
-				if elapsed := time.Since(started); elapsed >= time.Second {
-					t.Errorf("three connects with %v took %s to fail: one dialled", environment, elapsed)
-				}
+				refusal := bus.CheckSOCKS5Proxy(row.value)
 				_, optedIn := environment[bus.AllowRemoteEnvVar]
 				for name, err := range errs {
 					if err == nil {
@@ -516,8 +523,10 @@ func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 					if !strings.Contains(err.Error(), bus.SOCKS5ProxyEnvVar) || printsSome(err.Error(), row.seed) {
 						t.Errorf("%s with %v: %v, want a refusal naming %s and printing none of the seed", name, environment, err, bus.SOCKS5ProxyEnvVar)
 					}
-					if optedIn && !strings.Contains(err.Error(), "nkey seed") {
-						t.Errorf("%s with %v: %v, want the refusal to say the value holds an nkey seed", name, environment, err)
+					if optedIn && (refusal == nil || err.Error() != bus.SOCKS5ProxyEnvVar+" "+refusal.Error()) {
+						// The check's own refusal, word for word, after the setting's name: a value
+						// a dial was attempted with comes back as the dial's failure instead.
+						t.Errorf("%s with %v: %v, want the check's own refusal after the setting's name, %s %v: it dialled", name, environment, err, bus.SOCKS5ProxyEnvVar, refusal)
 					}
 				}
 			}

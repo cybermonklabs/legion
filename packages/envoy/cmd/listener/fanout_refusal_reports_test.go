@@ -3,12 +3,12 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The fan-out reports its own refusal of a message on a followed topic for every recipient it
@@ -111,7 +111,7 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 				// turns on the entry this path read -- an attempt record is left only for a
 				// session whose entry it read and nothing reaches (fanoutDelivery) -- so the
 				// message goes to the handler once that read answers, never on the write alone.
-				waitFor(t, 10*time.Second, "the seeded entry of "+sessionID+" to be readable", func() bool {
+				testwait.Eventually(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 					_, err := harness.sessions.Get(sessionID)
 					return err == nil
 				})
@@ -178,7 +178,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	// The attempt record this test is about is left only for a session whose entry the fan-out
 	// read, so the message goes to the handler once that read answers rather than on the write
 	// alone (the wait above the table).
-	waitFor(t, 10*time.Second, "the seeded entry of "+sessionID+" to be readable", func() bool {
+	testwait.Eventually(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 		_, err := harness.sessions.Get(sessionID)
 		return err == nil
 	})
@@ -242,7 +242,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Unowned, so no relay runs: the fan-out is the only path that reads the message, and
 			// the test orders them by construction rather than by timing.
-			rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+			rig := newRelayRigUnowned(t)
 			relayed := "ses_consumer_mode_" + id.New()
 			topic := "notifications.github.acme.consumer-mode-" + id.New() + ".mention"
 			exceptions := exceptionProbe(t, rig.harness.client)
@@ -265,7 +265,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 			}
 			awaitFanoutFinished(t, rig, durable, ack.Sequence)
 
-			if reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second); len(reasons) != 1 || reasons[0] != "delivery_failed" {
+			if reasons := deliveryExceptionsFor(t, rig.harness.client, exceptions, relayed, 1); len(reasons) != 1 || reasons[0] != "delivery_failed" {
 				t.Fatalf("the exception lanes carried %v for the session on consumer delivery, want one delivery_failed: its relay judges nothing, so the fan-out reports the refusal", reasons)
 			}
 			if rig.harness.config.attemptCache.Seen(item.DedupeKey, relayed) {
@@ -283,7 +283,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
-	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	rig := newRelayRigUnowned(t)
 	relayed := "ses_consumer_take_" + id.New()
 	topic := "notifications.github.acme.consumer-take-" + id.New() + ".mention"
 
@@ -307,8 +307,8 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 	}
 
 	rig.relays.setOwned(true)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, 1), item)
+	standIn.none(t)
 }
 
 // A message on a topic the session that published it follows is skipped for that session as an
@@ -326,7 +326,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublishedIt(t *testing.T) {
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
-	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	rig := newRelayRigUnowned(t)
 	run := id.New()
 	sender := "ses_echo_sender_" + run
 	other := "ses_echo_other_" + run
@@ -356,7 +356,7 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", sessionID)
 		}
 	}
-	if reasons := deliveryExceptionsFor(t, exceptions, sender, 2*time.Second); len(reasons) != 0 {
+	if reasons := deliveryExceptionsFor(t, rig.harness.client, exceptions, sender, 0); len(reasons) != 0 {
 		t.Fatalf("the exception lanes carried %v for %s, want none: the message it published itself is skipped, not failed", reasons, sender)
 	}
 	var echoes []string
@@ -372,6 +372,6 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 	// The message the fan-out handed to nobody is still the other session's to receive: the
 	// relay of its own consumer is what sends it.
 	rig.relays.setOwned(true)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.collect(t, 1), item)
+	standIn.none(t)
 }

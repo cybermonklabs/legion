@@ -238,15 +238,13 @@ func (socket *liveSocket) closeUnserved() {
 
 // write sends the page each queued frame, the hub's queue ahead of the stream, and every heartbeat
 // a ping beside a heartbeat frame (a browser shows the page no ping), until the reader ends,
-// something closes the socket, or the socket reaches its age. No stream frame goes out ahead of a
-// hub frame queued before it: a sub the read loop replaces has every frame the hub sends it queued
-// before the replacement starts (Unsubscribe takes the hub's lock, which the hub sends under), so
-// the replacement's frames follow the replaced view's last answer.
-func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat, age time.Duration, readerDone <-chan struct{}) {
+// something closes the socket, or the socket reaches its age, which aged receives. No stream frame
+// goes out ahead of a hub frame queued before it: a sub the read loop replaces has every frame the
+// hub sends it queued before the replacement starts (Unsubscribe takes the hub's lock, which the
+// hub sends under), so the replacement's frames follow the replaced view's last answer.
+func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat time.Duration, aged <-chan time.Time, readerDone <-chan struct{}) {
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
-	aged := time.NewTimer(age)
-	defer aged.Stop()
 	// taken is a stream frame the pick took while a hub frame waited; its from is nil while it
 	// holds none. It goes out once the hub's queue is empty.
 	var taken liveStreamFrame
@@ -285,7 +283,7 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 		case <-socket.shut:
 			socket.close(socket.shutCode, socket.shutReason)
 			return
-		case <-aged.C:
+		case <-aged:
 			socket.close(contracts.LiveSocketMaxAgeClose, liveSocketMaxAgeReason)
 			return
 		case <-lifetime:
@@ -353,7 +351,9 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // the upgrader has answered the request
 	}
-	age := s.liveSocketAge()
+	// The socket's age runs on the server's clock from the upgrade.
+	aged := s.clock.NewTimer(s.liveSocketAge())
+	defer aged.Stop()
 	socket := newLiveSocket(r.Context(), conn, actor.Credential)
 	socket.beforePick = s.liveWriterBeforePick
 	if !s.liveSockets.add(socket) {
@@ -377,7 +377,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(writerDone)
 		defer socket.ended()
-		socket.write(r.Context(), s.lifetime.Done(), s.deps.StreamHeartbeat, age, readerDone)
+		socket.write(r.Context(), s.lifetime.Done(), s.deps.StreamHeartbeat, aged.C(), readerDone)
 	}()
 
 	var readErr error

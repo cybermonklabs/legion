@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -334,7 +335,9 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 
 // request issues method against baseURL+path through client, with an optional body (marshaled to
 // JSON) and headers, and answers the status and the body bytes. It asserts no status itself: a
-// caller does that, so a mismatch names the actual body.
+// caller does that, so a mismatch names the actual body. Its one bound is the shared wait's
+// (testwait.Context): a handler that takes its whole budget, one waiting on a row another process
+// holds, still answers it.
 //
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
 // name, the client they go out on, and at — the process a failure is about, " (at host:port)"
@@ -357,7 +360,7 @@ func request(
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := http.NewRequestWithContext(testwait.Context(t), method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}

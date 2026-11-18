@@ -120,8 +120,10 @@ run-end self-check, and both plugin entries by path; no stand-in `legion` is on 
 since nothing in a pane runs `legion` from bash (LEGION-631). `name` keys every fixture string a
 case asserts (`<name>-grant-<n>`, `legion-<name>-<issue>-<role>`); `answer` is tried before the
 runner's routes (a case answers `handoff/complete` there), `prepare` runs before the profile and
-the spawn, and `quietMs` settles on gateway silence instead of the terminal `agent_end`. The pane
-it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEntries`.
+the spawn, and `settledWhen` settles on a fact of the case's run (the turn a timer or a background
+job's end starts, with an optional named `span` after it for an absence) instead of the first
+terminal `agent_end`. The pane it returns reads back as `turns`, `selfChecks`, `toolResults` and
+`transcriptEntries`.
 
 ## Where to look
 

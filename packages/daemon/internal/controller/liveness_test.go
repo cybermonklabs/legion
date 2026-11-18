@@ -16,7 +16,10 @@ import (
 var probeNow = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
 // listener is the Envoy listener's role lookup as the probe reaches it: it answers every request
-// with status and body, and records the path and bearer it was asked with.
+// with status and body, and records the path and bearer it was asked with. It records only a
+// request of the shape the probe sends, a role lookup (GET /v1/roles/…), since a probe with no
+// token sends no credential to tell its request by; any other is another process's, answered 404
+// and recorded as nothing (fromTheDaemonWhen).
 type listener struct {
 	status        int
 	body          string
@@ -24,9 +27,12 @@ type listener struct {
 	authorization bool
 }
 
-func (l *listener) serve(t *testing.T) string {
+func (l *listener) serve(t testing.TB) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/")) {
+			return
+		}
 		l.path = r.URL.Path
 		l.bearer = r.Header.Get("Authorization")
 		_, l.authorization = r.Header["Authorization"]

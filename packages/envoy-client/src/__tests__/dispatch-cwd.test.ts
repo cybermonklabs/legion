@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalRepo } from "@legion/contracts/repo";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import {
   defaultExec,
   type ExecFn,
@@ -34,7 +35,8 @@ async function settle(): Promise<void> {
 /** A tmux stand-in, run under fake timers, that answers after `answerAfterMs` or never (null).
  *  It never heeds its abort signal, as a tmux client waiting to connect to a busy server catches
  *  the SIGTERM a plain execFile timeout sends and keeps waiting. Calls are recorded, not asserted
- *  here, since the lookup swallows whatever its exec throws. */
+ *  here, since the lookup swallows whatever its exec throws. Its delay is fake time and copies no
+ *  production setting: the rows set it either side of TMUX_PANE_LOOKUP_MS (`PANE_BOUND_MS`). */
 function slowTmux(answerAfterMs: number | null) {
   const seen: { calls: string[]; signal?: AbortSignal; answer?: Promise<{ stdout: string }> } = {
     calls: [],
@@ -331,13 +333,11 @@ describe("defaultExec", () => {
 
   const makeDirectory = temporaryDirectories("dispatch-cwd");
 
-  // The 30 s limit is a hang guard, not a budget: the row waits for a real child to die, which it
-  // can do only once the abort's SIGKILL reaches it, and bun's unwritten 5,000 ms per-test default
-  // is a limit on that wait rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod
-  // it timed out at 5,000.89 ms, 1 whole-suite run of 20, where it costs 0.14 s idle and, under
-  // those loops, 0.31 s with this file alone. The child sleeps 120 s, four times the row's 30 s
-  // limit, so a kill that only sends SIGTERM leaves the row waiting on a child that outlives the
-  // limit, and the limit is what reports it.
+  // The row waits for a real child to die, which it can do only once the abort's SIGKILL reaches
+  // it. Measured in a 2-CPU pod: 0.14 s idle and, under 16 busy loops (8 x nproc), 0.31 s with this
+  // file alone; bun's unwritten 5,000 ms per-test default timed it out 1 whole-suite run of 20 under
+  // those loops. The child sleeps 120 s, past the guard of the command that runs this file, so a
+  // kill that only sends SIGTERM leaves it alive, and the wait for its death fails by name.
   it("kills a child that ignores SIGTERM when its signal aborts", async () => {
     const dir = makeDirectory();
     // The child writes `ready` once its trap is set and holds `alive` open until it dies, so
@@ -352,10 +352,12 @@ describe("defaultExec", () => {
       ["-c", `trap '' TERM; exec 3>"$1"; echo ready > "$0"; exec sleep 120`, ready, alive],
       { cwd: dir, signal: controller.signal }
     );
-    expect(await readFile(ready, "utf8")).toBe("ready\n");
+    expect(await settled("the child's trap and its ready line", readFile(ready, "utf8"))).toBe(
+      "ready\n"
+    );
     controller.abort();
     // The call rejects as soon as it is aborted, before the child is gone; `died` is the proof.
-    await expect(call).rejects.toThrow();
-    expect(await died).toBe("");
-  }, 30_000);
+    await expect(settled("the aborted call's rejection", call)).rejects.toThrow();
+    expect(await settled("the child's death, which closes alive", died)).toBe("");
+  });
 });

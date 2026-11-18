@@ -323,6 +323,7 @@ lock=$HOME/.local/state/legion/e2e/stage4b.lock
 [ "$run_label" = legsmoke ] || lock=$HOME/.local/state/legion/e2e/stage4b.$run_label.lock
 record=$work/sandboxes
 pg_container=legion-e2e4b-pg-$$
+pg_sockets= # its socket directory (start_postgres_container, lib/containers.sh); cleanup removes it
 session_db_container=legion-e2e4b-db-$$
 # Set once session_db_start has the session database accepting connections. No role pod, the kind
 # that keeps an Oh My Pi session, runs before then: the daemon launches each one, and it starts
@@ -1449,7 +1450,7 @@ advertise_host: $host
 port: $port_daemon
 worker_stream_port: $port_worker_stream
 daemon_url: http://$host:$port_daemon
-postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port_pg/legion?sslmode=disable
+postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@/legion?host=$pg_sockets&sslmode=disable
 state_dir: $state
 operator_token_file: $work/operator-token
 envoy_url: $handed_envoy_url
@@ -2935,6 +2936,7 @@ cleanup() {
   fi
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
   remove_run_container "$pg_container"
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets"
   remove_run_container "$session_db_container"
   rm -rf "$work"
   # The review App's private key must be gone, whatever else the teardown did: the lib's own check
@@ -3518,12 +3520,13 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 # The build's source is the run's recorded source, or the tree changed between the two.
 [ "$(sed -n 's/^source: //p' <<<"$built")" = "$(jq -r .revision "$evidence/run.json")" ] ||
   fail "the tree changed between prerequisites ($(jq -r .revision "$evidence/run.json")) and the build ($(sed -n 's/^source: //p' <<<"$built"))"
-docker run -d --name "$pg_container" --label "$run_container_label=$run_container_id" \
+# It publishes no port (lib/containers.sh): it listens on a unix socket in a directory of the
+# run's own, which the daemon on the devbox reads its store through.
+start_postgres_container "$pg_container" pg_sockets --label "$run_container_label=$run_container_id" \
   --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
-  -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
-port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
-until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
+  -- mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+until_true 60 "Postgres to accept connections on its socket" postgres_container_ready "$pg_container"
 # The run's session database (lib/session-db.sh's session_db_start), a second throwaway Postgres:
 # every pod's Oh My Pi keeps its session in it (session_store postgres: the daemon requires a store
 # that keeps sessions in a database), so a role's conversation outlives the issue pod whose disk

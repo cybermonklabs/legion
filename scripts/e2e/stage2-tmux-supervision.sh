@@ -92,6 +92,7 @@ ptoken=${project,,} # the daemon's project token: its tmux socket, its claim tok
 deadline_ptoken=${deadline_project,,}
 nats_container=legion-e2e2-nats-$$
 pg_container=legion-e2e2-pg-$$
+pg_sockets= # the run's own Postgres's socket directory (start_postgres_container); cleanup removes it
 state=$work/state
 omp_home=$work/omp-home
 profile_agent=$omp_home/.omp/profiles/$profile/agent
@@ -190,6 +191,7 @@ cleanup() {
   stop_pid "$listener_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets" || true
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
     rm -rf "$work" || true
@@ -400,17 +402,20 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
 . "$root/scripts/e2e/lib/leftovers.sh"
 refuse_leftovers legion-e2e2
+# The run's own Postgres and NATS publish no port (lib/containers.sh): Postgres listens on a unix
+# socket in a directory of the run's own, and NATS binds a loopback port the kernel chooses.
+# shellcheck source-path=SCRIPTDIR source=lib/containers.sh
+. "$root/scripts/e2e/lib/containers.sh"
 
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # tmpfs, not the image's anonymous volume: creating a volume is one more moving part the proof
   # does not need, and on a box whose volume subsystem stalls it hangs the run.
-  docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  start_postgres_container "$pg_container" pg_sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion \
-    -p 127.0.0.1::5432 mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
-  until_true 60 "postgres to accept connections over TCP" \
-    docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
-  LEGION_E2E_PG_DSN="postgres://legion:legion@127.0.0.1:$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')/legion"
+    -- mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+  until_true 60 "postgres to accept connections on its socket" postgres_container_ready "$pg_container"
+  LEGION_E2E_PG_DSN="postgres://legion:legion@/legion?host=$pg_sockets"
 fi
 
 # NATS and the Envoy listener on the host: the hub's nats-server with JetStream (lib/nats-image.sh),
@@ -418,9 +423,10 @@ fi
 # file (envoy_token_file).
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
-until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+start_nats_container "$nats_container" --cpus 1 --memory 512m -- "$nats_image" -js
+nats_port=
+until_true 60 "NATS to be ready" nats_container_ready "$nats_container" nats_port
+nats_url="nats://127.0.0.1:$nats_port"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e2-$$" NATS_URLS=$nats_url \

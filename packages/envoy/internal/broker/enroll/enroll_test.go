@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const testAudience = "broker"
@@ -227,17 +228,14 @@ func TestCreateIsIdempotentAndRefusesConflictingThumbprint(t *testing.T) {
 // recovery lookup waits for another deadlocks, and enough concurrent retries deadlock any pool.
 func TestIdempotentRetryNeedsOnlyOneConnection(t *testing.T) {
 	svc := newService(t, "pool_max_conns=1")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
 	in := Enrollment{Kind: "session", RuntimeID: "box-one-conn", Operator: str("ada@example.com"), Thumbprint: "tp-one-conn"}
 	first, err := svc.Create(ctx, cred, in)
 	if err != nil {
 		t.Fatalf("Create(first): %v", err)
 	}
-	retryCtx, retryCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer retryCancel()
-	again, err := svc.Create(retryCtx, cred, in)
+	again, err := svc.Create(ctx, cred, in)
 	if err != nil {
 		t.Fatalf("Create(retry) on a one-connection pool: %v", err)
 	}
@@ -456,8 +454,7 @@ func TestReplayReportsFreshOnceThenSeen(t *testing.T) {
 // seen, and a rollback forgets the jti.
 func TestReplayRecordsInTheTransactionItIsHanded(t *testing.T) {
 	svc := newService(t, "pool_max_conns=1")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	expires := time.Now().Add(time.Hour)
 	jti := uuid.New().String()
 

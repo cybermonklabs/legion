@@ -7,9 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -29,11 +33,10 @@ import (
 const settleCause = "the request may have reached the broker, but the helper did not get its result ("
 
 // wantSettled fails the row unless resp, the answer to what, is code saying the outcome is unknown
-// with settle's cause, given within before (elapsed is the time the call took): an answer from
-// brokerCall's timer, which comes at the bound plus 1 s and says the operation did not end, fails,
-// though it says that the outcome is unknown as well. The cause and the time are checked apart, so
-// a failing row reports each that is wrong.
-func wantSettled(t *testing.T, what string, resp Response, code string, elapsed, before time.Duration) {
+// with settle's cause: an answer from brokerCall's timer, which comes at the bound plus 1 s and says
+// the operation did not end, fails, though it says that the outcome is unknown as well. When the
+// answer came is the row's own to prove, on the server's clock (armBrokerCall).
+func wantSettled(t *testing.T, what string, resp Response, code string) {
 	t.Helper()
 	if resp.OK || resp.Code != code || !strings.Contains(resp.Error, "the outcome is unknown") {
 		t.Fatalf("%s: %+v; want %s saying the outcome is unknown", what, resp, code)
@@ -41,9 +44,58 @@ func wantSettled(t *testing.T, what string, resp Response, code string, elapsed,
 	if !strings.Contains(resp.Error, settleCause) || strings.Contains(resp.Error, "did not end in") {
 		t.Errorf("%s: error %q; want settle's cause %q, not the timer's \"did not end in\"", what, resp.Error, settleCause)
 	}
-	if elapsed >= before {
-		t.Errorf("%s: answered after %s; want settle's answer, within %s", what, elapsed, before)
+}
+
+// callReply is the reply a call sent in the background got, or the error that ended it.
+type callReply struct {
+	resp Response
+	err  error
+}
+
+// callInBackground sends req to the helper at sock on a goroutine of its own and answers a channel
+// that carries its reply, so the row can move the server's clock while the call waits. The
+// client's deadline is the shared wait's own, as rig.call's is.
+func callInBackground(t *testing.T, sock string, req Request) <-chan callReply {
+	t.Helper()
+	timeout := time.Duration(math.MaxInt64)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		timeout = time.Until(deadline)
 	}
+	replies := make(chan callReply, 1)
+	go func() {
+		resp, err := Call(sock, req, timeout)
+		replies <- callReply{resp: resp, err: err}
+	}()
+	return replies
+}
+
+// armBrokerCall waits for a broker-call op to arm its bound and brokerCall's timer on clock, the
+// server's, and requires each where brokerCall arms it: the end of the op's context at
+// BrokerCallBound from the clock's present, and the timer a second after that. It then
+// requires that no reply has come yet, so whatever answers the op comes once the row moves the
+// clock.
+func armBrokerCall(t *testing.T, clock *clocktest.Fake, replies <-chan callReply, what string) {
+	t.Helper()
+	now := clock.Now()
+	want := []time.Time{now.Add(BrokerCallBound), now.Add(BrokerCallBound + time.Second)}
+	if armed := clock.AwaitArmed(t, what+": the op's bound and brokerCall's timer", 2); !slices.EqualFunc(armed, want, time.Time.Equal) {
+		t.Fatalf("%s: the server armed %v; want the op's bound at %v and brokerCall's timer at %v", what, armed, want[0], want[1])
+	}
+	select {
+	case reply := <-replies:
+		t.Fatalf("%s: answered before the server's clock moved: %+v %v", what, reply.resp, reply.err)
+	default:
+	}
+}
+
+// replyOf waits for the reply on replies, and fails the row when the call ended in an error.
+func replyOf(t *testing.T, replies <-chan callReply, what string) Response {
+	t.Helper()
+	reply := testwait.Receive(t, what, replies)
+	if reply.err != nil {
+		t.Fatalf("%s: %v", what, reply.err)
+	}
+	return reply.resp
 }
 
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
@@ -88,10 +140,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 				tc.fail(r.fake)
 				r.fake.mu.Unlock()
 			}
-			resp, err := Call(r.sock, tc.req, BrokerCallWait)
-			if err != nil {
-				t.Fatalf("%s: %v", tc.req.Op, err)
-			}
+			resp := r.call(t, tc.req)
 			if resp.OK || resp.Code != tc.code {
 				t.Fatalf("%s: %+v; want %s", tc.req.Op, resp, tc.code)
 			}
@@ -120,29 +169,29 @@ func (s *heldSignIns) Refused(context.Context, string) error { return nil }
 
 // TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter: an enroll-session-key held on
 // a lock that does not watch the op's context is answered by the timer, ENROLL_OUTCOME_UNKNOWN,
-// at its bound plus 1 s, not left open. Once the lock is released the op goes on, but its context
-// ended at the bound, so it sends the broker nothing: when the helper answers, no request of the
-// op is in flight and none can start.
+// at its bound plus 1 s on the server's clock, not left open. Once the lock is released the op
+// goes on, but its context ended at the bound, so it sends the broker nothing: when the helper
+// answers, no request of the op is in flight and none can start.
 func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.T) {
 	var out syncBuffer
-	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(&out, nil)))
+	clock := clocktest.New(time.Now())
+	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(&out, nil)), func(s *Server) { s.Clock = clock })
 	r.login(t)
 	release, open := testGate(t)
 	r.srv.Broker.SignIns = &heldSignIns{release: release}
-	const bound = time.Second
-	r.srv.BrokerCallBound = bound
 
-	start := time.Now()
-	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, BrokerCallWait)
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("enroll-session-key: %v", err)
-	}
+	const what = "enroll-session-key held on a lock past its bound"
+	replies := callInBackground(t, r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"})
+	armBrokerCall(t, clock, replies, what)
+	// The op's context ends at the bound, which the lock does not watch, so what answers is the
+	// timer a second later.
+	clock.Advance(BrokerCallBound + time.Second)
+	resp := replyOf(t, replies, what)
 	if resp.OK || resp.Code != CodeEnrollUnknown || !strings.Contains(resp.Error, "the outcome is unknown") {
-		t.Fatalf("enroll-session-key held on a lock past its bound: %+v; want %s saying the outcome is unknown", resp, CodeEnrollUnknown)
+		t.Fatalf("%s: %+v; want %s saying the outcome is unknown", what, resp, CodeEnrollUnknown)
 	}
-	if elapsed < bound || elapsed >= 4*time.Second {
-		t.Fatalf("enroll-session-key held on a lock answered after %s; want the timer's answer, at the %s bound plus 1 s", elapsed, bound)
+	if !strings.Contains(resp.Error, "did not end in") {
+		t.Fatalf("%s: error %q; want the timer's answer, that the operation did not end in its bound", what, resp.Error)
 	}
 
 	open()
@@ -159,35 +208,36 @@ func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.
 
 // TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown: the broker holds the device
 // authorization until the request ends. The op's bound ends that request, which the broker sees,
-// and login answers LOGIN_FAILED saying the outcome is unknown, with settle's cause, at the bound
-// and before the bound plus 1 s, where brokerCall's timer would answer.
+// and login answers LOGIN_FAILED saying the outcome is unknown, with settle's cause, once the
+// server's clock reaches the bound and while brokerCall's timer, a second later, has not fired.
 func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testing.T) {
-	r := newRig(t, "")
+	r := newRigOn(t, "")
 	// A helper that left the request running would hold the fake's handler until its Close, which
 	// waits for it; closing the connections first lets this row fail rather than hang.
 	t.Cleanup(r.fake.srv.CloseClientConnections)
 	r.fake.mu.Lock()
 	r.fake.deviceAuthHold = true
 	r.fake.mu.Unlock()
-	const bound = time.Second
-	r.srv.BrokerCallBound = bound
 
-	start := time.Now()
-	resp, err := Call(r.sock, Request{Op: "login"}, BrokerCallWait)
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	wantSettled(t, "login past its bound", resp, CodeLoginFailed, elapsed, bound+time.Second)
-	if elapsed < bound {
-		t.Fatalf("login past its bound answered after %s; want about the %s bound", elapsed, bound)
-	}
+	const what = "login past its bound"
+	replies := callInBackground(t, r.sock, Request{Op: "login"})
+	armBrokerCall(t, r.clock, replies, what)
+	// The device authorization reaches the broker before the bound ends it, so the transport holds
+	// a connection for it when it ends, which settle reads as a request that may have reached the
+	// broker.
+	waitFor(t, func() bool {
+		r.fake.mu.Lock()
+		defer r.fake.mu.Unlock()
+		return r.fake.deviceAuthHeld == 1
+	})
+	r.clock.Advance(BrokerCallBound)
+	wantSettled(t, what, replyOf(t, replies, what), CodeLoginFailed)
 	ended := func() bool {
 		r.fake.mu.Lock()
 		defer r.fake.mu.Unlock()
 		return r.fake.deviceAuthEnded == 1
 	}
-	waitUpTo(t, 5*time.Second, ended, "the broker never saw the device authorization's request end; the bound must end it")
+	waitUpTo(t, ended, "the broker never saw the device authorization's request end; the bound must end it")
 }
 
 // TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns: the helper stops (the Serve context
@@ -220,11 +270,7 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 	})
 
 	r.cancel()
-	select {
-	case <-r.served:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Serve did not return within 10 s of its context ending")
-	}
+	testwait.Receive(t, "Serve to return once its context ended", r.served)
 	// Serve has returned, so the answer must already be on the connection: read what is there now,
 	// without waiting for more. A Serve that returned before the answer was written leaves nothing.
 	raw, err := conn.SyscallConn()
@@ -266,10 +312,12 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 // ops alone. A register whose wait_seconds is still running when the Serve context ends gives its
 // place in that wait back once its request is read (handle's release), because its wait does not
 // watch the context: the broker holds the session's enrollment, so the register would otherwise
-// hold Serve until its whole wait ran out. Serve returns within the stop's own time instead.
+// hold Serve until its whole wait ran out. That wait runs on the server's clock, which the row
+// never moves, so it ends only at the row's cleanup: a Serve that waited for it would not return.
 func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
 	const wait = 6 * time.Second
-	r := startRig(t, "")
+	r := newRigOn(t, "")
+	r.login(t)
 	gate, _ := testGate(t) // its cleanup opens the gate; the rig's cleanup ends the register's wait
 	r.fake.mu.Lock()
 	r.fake.enrollGate = gate
@@ -277,9 +325,7 @@ func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
 
-	go func() {
-		_, _ = Call(r.sock, Request{Op: "register", WaitSeconds: int(wait / time.Second)}, wait+10*time.Second)
-	}()
+	callInBackground(t, r.sock, Request{Op: "register", WaitSeconds: int(wait / time.Second)})
 	// The broker holds the session's enrollment, so the register is in its wait.
 	waitFor(t, func() bool {
 		r.fake.mu.Lock()
@@ -289,12 +335,8 @@ func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
 
 	stopped := time.Now()
 	r.cancel()
-	select {
-	case <-r.served:
-		t.Logf("Serve returned %s after its context ended, with a register still in its %s wait", time.Since(stopped), wait)
-	case <-time.After(wait / 2):
-		t.Fatalf("Serve did not return within %s of its context ending: the register still in its %s wait held the stop", wait/2, wait)
-	}
+	testwait.Receive(t, fmt.Sprintf("Serve to return with a register still in its %s wait", wait), r.served)
+	t.Logf("Serve returned %s after its context ended, with a register still in its %s wait", time.Since(stopped), wait)
 }
 
 // TestUnregisterAnswersBeforeItsRevokeEnds: unregister answers with what it decides, the session
@@ -324,7 +366,7 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 		defer r.fake.mu.Unlock()
 		return r.fake.revokeAttempts == 1
 	}
-	waitUpTo(t, 5*time.Second, held, "unregister answered, but its revoke never reached the broker")
+	waitUpTo(t, held, "unregister answered, but its revoke never reached the broker")
 	if _, deletes, _ := r.fake.snapshot(); len(deletes) != 0 {
 		t.Fatalf("a DELETE landed while the fake held every DELETE: %v", deletes)
 	}
@@ -334,7 +376,7 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 		_, deletes, _ := r.fake.snapshot()
 		return len(deletes) == 1
 	}
-	testwait.Holds(5*time.Second, testwait.Poll, revoked)
+	testwait.Eventually(t, "the revoke unregister fired off to land once the broker let it", revoked)
 	if _, deletes, _ := r.fake.snapshot(); len(deletes) != 1 || deletes[0] != reg.EnrollmentID {
 		t.Fatalf("the revoke after unregister deleted %v once the broker let it; want %s", deletes, reg.EnrollmentID)
 	}

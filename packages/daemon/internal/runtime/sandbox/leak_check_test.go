@@ -1,19 +1,26 @@
 package sandbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testLeakCheckTag is the pin a fake launcher's hello names when a test gives it one.
@@ -260,15 +267,32 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 
 // The push has its own bound under the start's: a launcher that takes the check and answers
 // nothing within it refuses the start with the sentence that names the bound, and no start is
-// sent.
+// sent. The bound runs on the runtime's clock (withClock), which the row moves past it only once
+// the first slice has reached the launcher and the hop's bound is armed on that clock, so a
+// loaded machine that is slow to carry the slice ends no hop the row did not end.
 func TestALeakCheckHopThatRunsPastItsBoundRefusesTheStart(t *testing.T) {
+	fake := clocktest.New(rigNow)
 	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withSilentLeakCheck(),
-		withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }))
+		withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }), withClock(fake))
 	const bound = 50 * time.Millisecond
 	g.r.launchers.leakCheckHop = bound
 	spec := workerSpec(t)
 	g.launcher(spec.Claim)
-	_, err := g.r.Spawn(g.ctx, spec)
+	launched := make(chan error, 1)
+	go func() {
+		_, err := g.r.Spawn(g.ctx, spec)
+		launched <- err
+	}()
+	testwait.Eventually(t, "the first slice of the leak check to reach the launcher", func() bool {
+		return countOf(g.sent(spec.Claim), shimwire.TypeLauncherLeakCheck) > 0
+	})
+	// The hop arms its bound before it sends the first slice, and nothing moves the fake but this
+	// row, so the bound stands at its whole length from where the fake stands.
+	if hopEnds, armed := fake.Now().Add(bound), fake.Armed(); !slices.Contains(armed, hopEnds) {
+		t.Fatalf("with a slice of the check at the launcher the runtime's clock holds %v armed, want the hop's %s bound at %v", armed, bound, hopEnds)
+	}
+	fake.Advance(bound)
+	err := testwait.Receive(t, "the launch to end once the hop ran past its bound", launched)
 	want := leakguard.Cause("the pod's launcher did not answer the install of "+testLeakCheckTag+" within 50ms", nil)
 	if cause := runtime.LeakCheckCause(err); cause != want {
 		t.Fatalf("the launch failed with %v carrying the cause %q, want %q", err, cause, want)
@@ -277,6 +301,82 @@ func TestALeakCheckHopThatRunsPastItsBoundRefusesTheStart(t *testing.T) {
 	if countOf(frames, shimwire.TypeLauncherStart) != 0 || countOf(frames, shimwire.TypeLauncherStop) != 0 {
 		t.Fatalf("the launcher was sent %v, want no start and no stop after the hop ran out", frameTypes(frames))
 	}
+}
+
+// lateHop is the runtime's clock with one difference: a hop's bound (WithTimeout) is a context
+// whose Deadline is the bound's end while the context itself ends only when the row calls end. It
+// is a context.WithDeadline read in the instant after its deadline and before its timer has run:
+// the order a scheduler may give the two things due at the bound's end, the write deadline a
+// request takes from that Deadline and the context's own timer.
+type lateHop struct {
+	clock.Clock
+
+	mu   sync.Mutex
+	ends []context.CancelFunc
+}
+
+func (c *lateHop) WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	c.mu.Lock()
+	c.ends = append(c.ends, cancel)
+	c.mu.Unlock()
+	return lateDeadline{Context: ctx, at: c.Now().Add(d)}, cancel
+}
+
+// end ends every hop the clock gave.
+func (c *lateHop) end() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, end := range c.ends {
+		end()
+	}
+}
+
+// lateDeadline is a context that reports at as its deadline and ends only when it is cancelled.
+type lateDeadline struct {
+	context.Context
+	at time.Time
+}
+
+func (c lateDeadline) Deadline() (time.Time, bool) { return c.at, true }
+
+// A hop whose bound ends while a slice is still being written is refused by the bound, whichever
+// of the two things due at the bound's end runs first: the connection's write deadline, which the
+// request takes from the hop's Deadline once less than apiTimeout of the hop is left, or the hop's
+// own timer. The row holds the second back (lateHop), so the write's timeout comes back while the
+// hop still reads as live: the order that refused a start with `write pipe: i/o timeout` under
+// load (dispatch://INFRA-3149, plan line L24). Its hop's bound is below apiTimeout, as what is
+// left of a production hop is when its last slices are written. It runs in a synctest bubble,
+// whose clock the pipe's deadline and the row share, against a launcher that sends its state and
+// never reads a slice.
+func TestALeakCheckSliceWhoseWriteOutlivesTheHopIsRefusedByTheBound(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		launchers := testLaunchers()
+		launchers.leakCheck = servedLeakCheck()
+		const bound = 50 * time.Millisecond
+		launchers.leakCheckHop = bound
+		late := &lateHop{Clock: clock.Real()}
+		launchers.timers = late
+		session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher", LeakCheckTag: testLeakCheckTag})
+		server, peer := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+		go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
+		if err := shimwire.NewWriter(peer).WriteFrame(shimwire.LauncherState{}); err != nil {
+			t.Fatal(err)
+		}
+		refused := make(chan error, 1)
+		go func() { refused <- launchers.serveLeakCheck(context.Background(), workerToken, "pod") }()
+		// Past the bound on the bubble's clock, and short of apiTimeout: the first slice's write
+		// has timed out on the hop's Deadline, and nothing has ended the hop yet.
+		time.Sleep(bound + time.Second)
+		synctest.Wait()
+		late.end()
+		err := <-refused
+		want := leakguard.Cause(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", testLeakCheckTag, bound), nil)
+		if cause := runtime.LeakCheckCause(err); cause != want {
+			t.Fatalf("the hop refused with %v carrying the cause %q, want %q: the write the hop's deadline ended is the bound's end", err, cause, want)
+		}
+	})
 }
 
 // A launcher that installed the check on this connection is pushed it no more: the next start

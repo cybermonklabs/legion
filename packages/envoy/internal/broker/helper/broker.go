@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -156,6 +157,12 @@ type Broker struct {
 	// was signed with (its login_hint) and the broker's refusal code, which are identifiers,
 	// never a proof, a token, a request object or key material. Nil logs nothing.
 	Log *slog.Logger
+	// Clock is the time the helper's own timers run on: the refresh loop's schedule, the
+	// expiry watch's warning and drop, and the bound Start waits on its first refresh. Nil is
+	// clock.Real; a test hands it a clocktest.Fake and moves it rather than waiting a timer
+	// out. The moments the helper signs proofs and records with stay the wall clock's, since
+	// the broker verifies them against its own.
+	Clock clock.Clock
 
 	cred    atomic.Pointer[machineCredential]
 	loginMu sync.Mutex                 // one login at a time
@@ -181,10 +188,6 @@ type Broker struct {
 	// only so a test can read login-status there, or know a drop is waiting on a refresh; no
 	// production caller sets them.
 	testClearHook, testBeforeDrop func()
-	// testAfter, when set, gives watchExpiry a test's channel in place of time.After for a
-	// credential it returns one for (nil keeps time.After), so a test fires an expiry's timers
-	// without waiting for them. No production caller sets it.
-	testAfter func(cred *machineCredential, d time.Duration) <-chan time.Time
 	// testWatchEnded, when set, runs as watchExpiry returns for cred, so a test knows a watch said
 	// all it will. No production caller sets it.
 	testWatchEnded func(cred *machineCredential)
@@ -680,7 +683,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	}
 	kept := f.credential()
 	b.credMu.Lock()
-	bounded, cancel := context.WithTimeout(ctx, b.startRefreshBoundOrDefault())
+	bounded, cancel := b.clock().WithTimeout(ctx, b.startRefreshBoundOrDefault())
 	next, refusal, err := b.redeem(bounded, kept)
 	cancel()
 	first := time.Duration(0)
@@ -753,7 +756,7 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 	}()
 	select {
 	case <-first:
-	case <-time.After(b.startRefreshBoundOrDefault()):
+	case <-b.clock().After(b.startRefreshBoundOrDefault()):
 	case <-ctx.Done():
 	}
 	return nil
@@ -885,7 +888,7 @@ func (b *Broker) nextRefresh(every time.Duration) time.Duration {
 	if cred == nil {
 		return every
 	}
-	return min(every, max(0, time.Until(cred.expiresAt)/2))
+	return min(every, max(0, b.until(cred.expiresAt)/2))
 }
 
 // refreshLoop refreshes the held machine login after first, then at nextRefresh after each
@@ -900,7 +903,7 @@ func (b *Broker) refreshLoop(ctx context.Context, first time.Duration, sched ret
 	case <-sig.reschedule:
 	default:
 	}
-	timer := time.NewTimer(first)
+	timer := b.clock().NewTimer(first)
 	defer timer.Stop()
 	var settle *machineCredential
 	for {
@@ -916,7 +919,7 @@ func (b *Broker) refreshLoop(ctx context.Context, first time.Duration, sched ret
 		case settle = <-sig.refused:
 			timer.Reset(0)
 			continue
-		case <-timer.C:
+		case <-timer.C():
 		}
 		var err error
 		if settle != nil {
@@ -1158,7 +1161,7 @@ func (b *Broker) watchExpiry(cred *machineCredential) {
 		return
 	}
 	select {
-	case <-b.after(cred, time.Until(cred.expiresAt)):
+	case <-b.clock().After(b.until(cred.expiresAt)):
 		b.dropOutsideRefresh(context.Background(), cred, dropExpired, "expires_at", cred.expiresAt.Format(time.RFC3339))
 	case <-cred.gone:
 	}
@@ -1173,7 +1176,7 @@ func (b *Broker) warnBeforeExpiry(cred *machineCredential) bool {
 		lead = 24 * time.Hour
 	}
 	select {
-	case <-b.after(cred, time.Until(cred.expiresAt.Add(-lead))):
+	case <-b.clock().After(b.until(cred.expiresAt.Add(-lead))):
 	case <-cred.gone:
 		return false
 	}
@@ -1181,7 +1184,7 @@ func (b *Broker) warnBeforeExpiry(cred *machineCredential) bool {
 		return false
 	}
 	b.logger().Warn(expiresSoonMsg,
-		"credential_id", cred.id, "expires_at", cred.expiresAt.Format(time.RFC3339), "in", time.Until(cred.expiresAt).Round(time.Second))
+		"credential_id", cred.id, "expires_at", cred.expiresAt.Format(time.RFC3339), "in", b.until(cred.expiresAt).Round(time.Second))
 	return true
 }
 
@@ -1196,14 +1199,18 @@ func (b *Broker) isGone(cred *machineCredential) bool {
 	}
 }
 
-// after is time.After(d), or testAfter's channel for cred when a test sets it.
-func (b *Broker) after(cred *machineCredential, d time.Duration) <-chan time.Time {
-	if b.testAfter != nil {
-		if ch := b.testAfter(cred, d); ch != nil {
-			return ch
-		}
+// clock is the time this helper's timers run on: Clock, or the wall clock when it is nil.
+func (b *Broker) clock() clock.Clock {
+	if b.Clock == nil {
+		return clock.Real()
 	}
-	return time.After(d)
+	return b.Clock
+}
+
+// until is how long there is until at by this helper's own clock, which is what every timer of
+// it is armed for: a test's fake answers its own reading, never the machine's.
+func (b *Broker) until(at time.Time) time.Duration {
+	return at.Sub(b.clock().Now())
 }
 
 // dropOutsideRefresh is drop for a caller that does not hold credMu (watchExpiry, clearOnInvalid):

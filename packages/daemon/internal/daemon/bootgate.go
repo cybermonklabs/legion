@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -126,6 +127,9 @@ type pluginGate struct {
 	// timeout is each probe attempt's budget, `slow_command_timeout_seconds`.
 	timeout time.Duration
 	retry   bootprobe.Retry
+	// clock is what each attempt's budget and the retry's waits between attempts run on; nil is the
+	// wall clock (timers). A test hands a fake and moves it past the budget of an attempt it hangs.
+	clock clock.Clock
 	// contract is the daemon API contract the plugin must declare: the daemon's own
 	// DaemonAPIVersion, or the one `legion probe-image` is asked for.
 	contract int
@@ -160,6 +164,15 @@ type pluginGate struct {
 	// gate's, which the image probe also is.
 	name string
 	log  *slog.Logger
+}
+
+// timers is the clock the gate's budgets and waits run on: its own, or the wall clock for a gate
+// built without one.
+func (g pluginGate) timers() clock.Clock {
+	if g.clock == nil {
+		return clock.Real()
+	}
+	return g.clock
 }
 
 // gateEnvironment is the environment a pane's Oh My Pi runs with, which the boot gate probes under:
@@ -522,7 +535,7 @@ func (g pluginGate) loadedFrom(ctx context.Context, lane pluginLane, version str
 	defer os.RemoveAll(dir)
 	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
 	var from loaded
-	err = bootprobe.Run(ctx, "pi-legion load", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
+	err = bootprobe.Run(ctx, g.timers(), "pi-legion load", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
 		outcome, passed := g.probeLoad(ctx, launch, probe, lane, version, check)
 		from = passed
 		return outcome
@@ -740,7 +753,7 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 	}
 	defer os.RemoveAll(dir)
 	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
-	return bootprobe.Run(ctx, "OMP pi.agents", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
+	return bootprobe.Run(ctx, g.timers(), "OMP pi.agents", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
 		r, err := g.run(ctx, `exec `+launch+` models --no-extensions --extension "$1" --json >/dev/null`, probe)
 		if err != nil {
 			return bootprobe.Outcome{Refusal: fmt.Errorf("boot gate: run the OMP pi.agents probe: %w", err)}
@@ -779,7 +792,7 @@ func (g pluginGate) verifySessionStorage(ctx context.Context) error {
 	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
 	script := "export " + sessionStorageVariable + "=" + sessionStorageProbeValue + "; exec " + launch +
 		" --mode rpc --no-session --no-extensions --no-skills --no-rules --no-lsp --no-tools </dev/null >/dev/null"
-	return bootprobe.Run(ctx, "OMP session storage setting", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
+	return bootprobe.Run(ctx, g.timers(), "OMP session storage setting", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
 		r, err := g.run(ctx, script)
 		if err != nil {
 			return bootprobe.Outcome{Refusal: fmt.Errorf("boot gate: run the OMP session storage probe: %w", err)}
@@ -906,9 +919,9 @@ func (r ran) killed(launch string, budget time.Duration) string {
 // boot-probes.ts). That group is a background one, except at the operator's terminal, where it is
 // the terminal's foreground job (terminalJob). It errs when the command could not be run at all,
 // when ctx ended, whose attempt is then not judged, and when the terminal's Ctrl-C ended the
-// attempt.
+// attempt. The budget runs on the gate's clock (timers).
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
-	attempt, cancel := context.WithTimeout(ctx, g.timeout)
+	attempt, cancel := g.timers().WithTimeout(ctx, g.timeout)
 	defer cancel()
 	job := foregroundOf(g.stdin, g.echo)
 	cmd := exec.CommandContext(attempt, "sh", append([]string{"-c", job.script(script), "sh"}, args...)...)

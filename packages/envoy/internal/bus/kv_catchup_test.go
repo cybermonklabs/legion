@@ -7,8 +7,28 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// stillClock is the clock a start's waits read in the rows below (ensureKeyValue), standing at one
+// moment until the row moves it: a wait on it sleeps for ever, so a start that answers while it
+// stands still waited for nothing.
+func stillClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
+}
+
+// ensuredOn starts ensureKeyValue on c on a goroutine of its own, and returns where its error
+// arrives.
+func ensuredOn(c *clocktest.Fake, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) <-chan error {
+	answered := make(chan error, 1)
+	go func() {
+		_, err := ensureKeyValue(c, conn, js, config, RequestTimeout)
+		answered <- err
+	}()
+	return answered
+}
 
 // catchupBucket is the bucket the rows below create on a cluster, one per row.
 const catchupBucket = "envoy_catchup_test"
@@ -92,33 +112,25 @@ func TestASecondStartOpensABucketAMemberHasNotAppliedYet(t *testing.T) {
 	}
 }
 
-// refusalWait is how long a refused create may take before this row calls it a wait rather than an
-// answer: a server's refusal is one round trip, and bucketAppliedDeadline is 10 s, so a refusal
-// that took this long waited for something.
-const refusalWait = 2 * time.Second
-
 // A create the server refuses is an answer, not a member that has not caught up, so it comes back
 // at once and nothing waits it out: a bucket asking for more copies than the cluster has members
 // is refused ("replicas > clusters size"), named with the setting that asked for them
-// (refusedSettings).
+// (refusedSettings). The start's clock stands still, so a refusal its wait took for a member that
+// is behind would sleep on it for ever.
 func TestARefusedCreateFailsAtOnceRatherThanWaitingOutTheDeadline(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
-	start := time.Now()
-	_, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{
-		Bucket:   catchupBucket,
-		Storage:  nats.FileStorage,
-		Replicas: 5,
-	})
-	waited := time.Since(start)
+	err := testwait.Receive(t, "the refused create's answer with the start's clock standing still",
+		ensuredOn(stillClock(), conn, js, &nats.KeyValueConfig{
+			Bucket:   catchupBucket,
+			Storage:  nats.FileStorage,
+			Replicas: 5,
+		}))
 	if err == nil {
 		t.Fatalf("ensure a bucket with 5 copies on a 3-member cluster succeeded, want a refusal")
 	}
 	if !strings.Contains(err.Error(), ReplicasEnvVar) {
 		t.Fatalf("the refusal = %v, want it to name %s", err, ReplicasEnvVar)
-	}
-	if waited >= refusalWait {
-		t.Fatalf("the refusal took %s, want it answered within %s rather than waited out", waited.Round(time.Millisecond), refusalWait)
 	}
 }
 
@@ -183,10 +195,9 @@ func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
 // A start that raises nothing waits for nothing: the common start, every start after the first,
 // comes up at the speed of the bucket it found. The copies here are already the deployment's, so
 // the raise leaves the bucket alone, and the stream reads answer as a cluster with a copy that
-// never catches up does, for more reads than any run could take. A wait that ran whether or not
-// the raise raised would therefore run out at bucketAppliedDeadline and fail the start; this row
-// asks only that the start answer well inside that, which is what "no wait" looks like from the
-// outside and what no count of requests can say.
+// never catches up does, for more reads than any run could take. The start's clock stands still,
+// so a wait that ran whether or not the raise raised would sleep on it for ever: the start
+// answering at all is what "no wait" looks like from the outside.
 func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -195,13 +206,8 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 		t.Fatalf("create the three-copy bucket: %v", err)
 	}
 	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30}
-	start := time.Now()
-	if _, err := EnsureKeyValue(conn, watcher, config); err != nil {
+	if err := testwait.Receive(t, "the start that raises nothing to answer with its clock standing still", ensuredOn(stillClock(), conn, watcher, config)); err != nil {
 		t.Fatalf("ensure the bucket a start raises nothing on: %v", err)
-	}
-	waited := time.Since(start)
-	if within := bucketAppliedDeadline / 2; waited >= within {
-		t.Fatalf("the start that raised nothing took %s, want it answered within %s: it waits for no copy", waited.Round(time.Millisecond), within)
 	}
 }
 
@@ -231,7 +237,10 @@ func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
 // A raise whose copies never report current fails the start at the deadline, naming the bucket's
 // stream, the copies it asked for and what the copy that was not current reported. It never hands
 // the caller the bucket anyway: a start that does not come up is better than one that reads a
-// stale "key not found" off a copy still catching up and asks GitHub for a redelivery it made.
+// stale "key not found" off a copy still catching up and asks GitHub for a redelivery it made. The
+// wait sleeps on the start's clock, which the row moves to just short of the deadline, where the
+// start is still waiting, and then to the end of the sleep that takes it past the deadline, where
+// it fails.
 func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -239,9 +248,35 @@ func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
 	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30}
-	start := time.Now()
-	_, err := EnsureKeyValue(conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
-	waited := time.Since(start)
+	clock := stillClock()
+	start := clock.Now()
+	answered := ensuredOn(clock, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
+	if slept := clock.AwaitArmed(t, "the raise's first sleep between reads of copies not current", 1)[0]; !slept.Equal(start.Add(bucketAppliedInterval)) {
+		t.Fatalf("the raise's first sleep ends at %s, want %s after the start", slept.Sub(start), bucketAppliedInterval)
+	}
+	short := start.Add(bucketAppliedDeadline - time.Nanosecond)
+	clock.Set(short)
+	last := clock.AwaitArmed(t, "the raise's sleep just short of its deadline", 1)[0]
+	if !last.Equal(short.Add(bucketAppliedInterval)) {
+		t.Fatalf("the raise just short of its deadline sleeps until %s after the start, want %s", last.Sub(start), bucketAppliedDeadline-time.Nanosecond+bucketAppliedInterval)
+	}
+	if len(answered) != 0 {
+		t.Fatalf("the raise answered %v just short of its %s deadline, want it still waiting", <-answered, bucketAppliedDeadline)
+	}
+	// The start fails on the read it takes once the clock is past the deadline, and names what that
+	// read reported. The watcher holds a copy back only in a read that names the stream's leader and
+	// its other copies; a read taken before the cluster has elected the raised stream's leader says
+	// only that it has none. The clock moves only at the row's word, so that read comes as fast as
+	// the row moves it, and the row first waits for the cluster to name them.
+	testwait.Until(t, "the cluster to name the raised stream's leader and its two other copies", func() (*nats.ClusterInfo, bool) {
+		info, err := js.StreamInfo("KV_" + catchupBucket)
+		if err != nil || info.Cluster == nil {
+			return nil, false
+		}
+		return info.Cluster, info.Cluster.Leader != "" && len(info.Cluster.Replicas) == 2
+	})
+	clock.Set(last)
+	err := testwait.Receive(t, "the raise to fail once its deadline has passed", answered)
 	if err == nil {
 		t.Fatal("the raise answered with a copy that never caught up, want it to fail the start")
 	}
@@ -249,8 +284,5 @@ func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the error = %v, want it to name %q", err, want)
 		}
-	}
-	if waited < bucketAppliedDeadline {
-		t.Fatalf("the raise failed after %s, want it to wait out %s first", waited.Round(time.Millisecond), bucketAppliedDeadline)
 	}
 }

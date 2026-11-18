@@ -13,10 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeRoster is the live-session list a route-status test's listener answers: session id to
@@ -415,7 +418,11 @@ func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(listener.Close)
-	return &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
+	return &server{
+		deps:     Deps{Envoy: envoy.New(listener.URL)},
+		lifetime: context.Background(),
+		clock:    clock.Real(),
+	}
 }
 
 // A session past its live window still holds its role and still receives: what is sent to it is
@@ -599,8 +606,8 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 
 // secondRouteStatusServer is a second server process beside served: the same database and the
 // same listener, but a pool of its own (storetest.SecondProcess), a roster cache of its own with
-// served's TTLs and fetch bound, and its own single-flight fetch, so the two share only what
-// Postgres holds, as two envoy-dispatch processes do.
+// served's TTLs, and its own single-flight fetch, so the two share only what Postgres holds, as
+// two envoy-dispatch processes do.
 func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *server) {
 	t.Helper()
 	deps := served.deps
@@ -609,7 +616,6 @@ func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *serve
 	other := register(mux, served.lifetime, deps)
 	t.Cleanup(func() { waitBackgroundOf(t, other) })
 	other.rosters.ttl, other.rosters.silenceTTL = served.rosters.ttl, served.rosters.silenceTTL
-	other.rosters.timeout = served.rosters.timeout
 	return mux, other
 }
 
@@ -715,8 +721,11 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	// Release before the close, which waits for every request in flight to finish.
 	t.Cleanup(listener.Close)
 	t.Cleanup(release)
-	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Minute})
-	first.rosters.ttl, first.rosters.timeout = time.Minute, time.Minute
+	// The server's clock stands still, so no window of the listener client's ends the first
+	// fetch while the test holds it; the answered TTL is lengthened to a minute, so the reads
+	// below stay inside the stored answer however slow the machine.
+	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.New(rosterTestStart)})
+	first.rosters.ttl = time.Minute
 	_, second := secondRouteStatusServer(t, first)
 
 	older := make(chan routeRoster, 1)
@@ -726,13 +735,8 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 		t.Fatalf("the second server's own fetch reads %s, want live ses-sre", got)
 	}
 	release()
-	select {
-	case roster := <-older:
-		if got := sreReach(roster); got != "live ses-sre" {
-			t.Fatalf("the read waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the read waiting on the older fetch never returned")
+	if got := sreReach(testwait.Receive(t, "the read waiting on the older fetch to return", older)); got != "live ses-sre" {
+		t.Fatalf("the read waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
 	}
 	if got := sreReach(readRoster(t, first, context.Background())); got != "live ses-sre" {
 		t.Fatalf("the first server's next read reads %s, want the newer stored live ses-sre", got)

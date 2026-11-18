@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -49,8 +50,9 @@ const CacheTokenFileEnv = "LEGION_REPOSITORY_CACHE_TOKEN_FILE"
 // <Root>/<owner>/<repo>.git, workspace.FeedRepository's layout), the provisioning token's file, the
 // file holding the bearer token its clients present (read again for every request, so a token the
 // Secret's projection rewrote is the one taken), where each fetch's one-shot credential goes (the
-// container's TMPDIR), how long between fetches, the address it serves on, its log, and the runner
-// its git runs under.
+// container's TMPDIR), how long between fetches, the address it serves on, its log, the runner
+// its git runs under, and the clock its refresh waits on and its fetch and repack times read (nil
+// is clock.Real()).
 type Options struct {
 	Repo           ghrepo.Repository
 	Root           string
@@ -61,6 +63,7 @@ type Options struct {
 	Listen         string
 	Log            func(line string)
 	Run            workspace.Runner
+	Clock          clock.Clock
 }
 
 // Health is what GET /healthz answers: whether the cache has a clone to serve, its repository, the
@@ -179,15 +182,18 @@ func Serve(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	ticker := time.NewTicker(opts.Refresh)
-	defer ticker.Stop()
+	// The next refresh is armed as the last one's turn comes, before it runs, so a refresh that
+	// takes longer than Refresh is followed by the next at once, as a ticker's would be.
+	next := c.opts.Clock.NewTimer(opts.Refresh)
+	defer next.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case err := <-served:
 			return fmt.Errorf("serve %s: %w", opts.Repo, err)
-		case <-ticker.C:
+		case <-next.C():
+			next.Reset(opts.Refresh)
 			if err := c.refresh(ctx); err != nil && ctx.Err() == nil {
 				opts.Log("fetch failed; serving the clone as it was: " + oneLine(err))
 			}
@@ -235,8 +241,11 @@ type cache struct {
 	inFlight   atomic.Int64
 }
 
-// newCache is the state Serve keeps for opts' clone at dir.
+// newCache is the state Serve keeps for opts' clone at dir, on opts' clock or the real one.
 func newCache(opts Options, dir string) *cache {
+	if opts.Clock == nil {
+		opts.Clock = clock.Real()
+	}
 	return &cache{opts: opts, dir: dir, streams: make(chan struct{}, maxStreams)}
 }
 
@@ -322,11 +331,11 @@ func (c *cache) fetch(ctx context.Context) (time.Time, error) {
 	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
-		Log:   c.opts.Log, Clock: workspace.WallClock{}, Bound: bound,
+		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound,
 	}); err != nil {
 		return time.Time{}, err
 	}
-	fetched := time.Now()
+	fetched := c.opts.Clock.Now()
 	return fetched, c.publishLocked(ctx, fetched)
 }
 

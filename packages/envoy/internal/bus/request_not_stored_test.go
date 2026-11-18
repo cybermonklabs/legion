@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role forward is a window's Request to the holder's agent subject, under the forward's
@@ -69,16 +70,10 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		}
 		return info.State.Subjects[subject]
 	}
-	// answer waits for outcome's answer, far longer than any request's own timeout here.
+	// answer waits for outcome's answer.
 	answer := func(outcome <-chan error) error {
 		t.Helper()
-		select {
-		case err := <-outcome:
-			return err
-		case <-time.After(30 * time.Second):
-			t.Fatal("no answer within 30 s")
-			return nil
-		}
+		return testwait.Receive(t, "the answer to the forward", outcome)
 	}
 	// refused fills the stream, forwards item to holder under opts, which the full stream refuses
 	// with an error acknowledgement that settles the forward as ErrStreamFull at once, and purges
@@ -100,7 +95,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 
 	holder := contracts.LegacyAgentSubject("ses_forward_stored")
 	item := forward("stored")
-	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder), Timeout: 2 * time.Second}
+	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder)}
 	refused(1, holder, item, opts)
 	if err := answer(client.WindowUntil(nil).Request(holder, item, opts)); err != nil {
 		t.Fatalf("the forward retried once the stream had room = %v, want nil", err)
@@ -120,13 +115,18 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 
 	fencedHolder := contracts.LegacyAgentSubject("ses_forward_fenced")
 	fenced := forward("fenced")
-	fencedOpts := RequestOptions{MsgID: ForwardMsgID(fenced.DedupeKey, fencedHolder), Timeout: 5 * time.Second}
+	fencedOpts := RequestOptions{MsgID: ForwardMsgID(fenced.DedupeKey, fencedHolder)}
 	fencedWindow := client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
 	if err := answer(fencedWindow.Request(fencedHolder, fenced, fencedOpts)); !errors.Is(err, ErrWindowDeadline) {
 		t.Fatalf("a forward through a window whose deadline has passed = %v, want ErrWindowDeadline", err)
 	}
-	time.Sleep(500 * time.Millisecond)
-	if n := held(fencedHolder); n != 0 {
-		t.Fatalf("the stream holds %d copies on %s of the forward the window's deadline fenced, want none", n, fencedHolder)
+	// A forward the live window sends afterwards is stored, and the stream holds that one copy
+	// alone: the fenced forward wrote nothing before it and nothing after it.
+	live := forward("after-the-fence")
+	if err := answer(client.WindowUntil(nil).Request(fencedHolder, live, RequestOptions{MsgID: ForwardMsgID(live.DedupeKey, fencedHolder)})); err != nil {
+		t.Fatalf("the forward after the fenced one = %v, want nil", err)
+	}
+	if n := held(fencedHolder); n != 1 {
+		t.Fatalf("the stream holds %d copies on %s, want only the forward sent after the fenced one", n, fencedHolder)
 	}
 }

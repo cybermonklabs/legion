@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import * as Y from "yjs";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
@@ -118,14 +118,21 @@ test("restoreRows reads every client's rows for the document, each with its key,
   const first = await open(artifact, 11);
   const second = await open(artifact, 12);
   const other = await open(artifactId(), 11);
-  const before = Date.now();
+  // The clock is held at a moment of the row's own while the edits are recorded, so each row
+  // must carry that very moment as the time it was written.
+  const recordedAt = Date.UTC(2026, 10, 14, 15, 30, 12, 345);
   const firstUpdates = edits(11, ["one ", "two "]);
   const secondUpdate = edit(12, "three");
-  await Promise.all([
-    ...firstUpdates.map((update) => first.record(update).written),
-    second.record(secondUpdate).written,
-    other.record(edit(11, "elsewhere")).written,
-  ]);
+  setSystemTime(recordedAt);
+  try {
+    await Promise.all([
+      ...firstUpdates.map((update) => first.record(update).written),
+      second.record(secondUpdate).written,
+      other.record(edit(11, "elsewhere")).written,
+    ]);
+  } finally {
+    setSystemTime();
+  }
 
   const rows = await first.restoreRows();
 
@@ -135,10 +142,7 @@ test("restoreRows reads every client's rows for the document, each with its key,
     [artifact, 12, 1],
   ]);
   expect(rows.map((row) => row.update)).toEqual([...firstUpdates, secondUpdate]);
-  for (const row of rows) {
-    expect(row.at).toBeGreaterThanOrEqual(before);
-    expect(row.at).toBeLessThanOrEqual(Date.now());
-  }
+  expect(rows.map((row) => row.at)).toEqual([recordedAt, recordedAt, recordedAt]);
 });
 
 test("restoreRows of a document with no rows reads none", async () => {

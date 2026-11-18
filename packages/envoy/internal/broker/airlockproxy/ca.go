@@ -19,6 +19,8 @@ import (
 	"math/big"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // leafLifetime is how long one host's leaf lasts, leafBackdate how far before now it starts, and
@@ -53,9 +55,9 @@ const leafCacheSize = 1024
 type Authority struct {
 	cert *x509.Certificate
 	key  crypto.Signer
-	// now is the clock the leaves are signed and renewed by; a test drives it rather than
-	// waiting a day out. NewAuthority leaves it time.Now.
-	now func() time.Time
+	// clock is the time the leaves are signed and renewed by; a test moves a clocktest.Fake
+	// rather than waiting a day out. NewAuthority leaves it clock.Real.
+	clock clock.Clock
 
 	mu     sync.Mutex
 	leaves map[string]heldLeaf
@@ -103,7 +105,7 @@ func NewAuthority(certFile, keyFile string) (*Authority, error) {
 	if !ok {
 		return nil, fmt.Errorf("airlock proxy certificate authority %s: the key is of a kind this proxy cannot sign with (%T)", keyFile, pair.PrivateKey)
 	}
-	return &Authority{cert: cert, key: key, now: time.Now, leaves: map[string]heldLeaf{}}, nil
+	return &Authority{cert: cert, key: key, clock: clock.Real(), leaves: map[string]heldLeaf{}}, nil
 }
 
 // Certificate is the authority's own certificate, which a test and a caller that reports the
@@ -124,7 +126,7 @@ func (a *Authority) Certificate() *x509.Certificate { return a.cert }
 func (a *Authority) leaf(host string) (*tls.Certificate, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := a.now()
+	now := a.clock.Now()
 	held, kept := a.leaves[host]
 	if kept && now.Add(leafRenewBefore).Before(held.notAfter) {
 		return held.certificate, nil

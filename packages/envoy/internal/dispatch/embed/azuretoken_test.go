@@ -13,13 +13,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeEntra answers Entra's token endpoint with "token-<n>" for its n-th exchange and records
-// every form it received. expiresIn is sent verbatim as expires_in's JSON value.
+// every form it received. expiresIn is sent verbatim as expires_in's JSON value. gate, when set,
+// holds each exchange inside the handler until the test closes it, which is how a test keeps an
+// exchange in flight while it acts on the callers queued behind it; nil answers at once.
 type fakeEntra struct {
 	expiresIn string
-	delay     time.Duration
+	gate      chan struct{}
 
 	hits  atomic.Int32
 	mu    sync.Mutex
@@ -34,7 +38,13 @@ func (f *fakeEntra) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.forms = append(f.forms, r.PostForm)
 	f.paths = append(f.paths, r.Method+" "+r.URL.Path+" "+r.Header.Get("Content-Type"))
 	f.mu.Unlock()
-	time.Sleep(f.delay)
+	if f.gate != nil {
+		select {
+		case <-f.gate:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = fmt.Fprintf(w, `{"token_type":"Bearer","expires_in":%s,"access_token":"token-%d"}`, f.expiresIn, n)
 }
@@ -186,7 +196,8 @@ func TestEntraTokenSourceRereadsTheTokenFileOnEveryExchange(t *testing.T) {
 // TestEntraTokenSourceRunsOneExchangeForConcurrentCallers holds the one exchange open while every
 // caller arrives: they wait for it and share its token rather than each signing in.
 func TestEntraTokenSourceRunsOneExchangeForConcurrentCallers(t *testing.T) {
-	fake := &fakeEntra{expiresIn: "3600", delay: 100 * time.Millisecond}
+	gate := make(chan struct{})
+	fake := &fakeEntra{expiresIn: "3600", gate: gate}
 	source, _, _ := testEntra(t, fake, "assertion")
 	const callers = 16
 	tokens := make([]string, callers)
@@ -195,6 +206,10 @@ func TestEntraTokenSourceRunsOneExchangeForConcurrentCallers(t *testing.T) {
 	for i := range callers {
 		wg.Go(func() { tokens[i], errs[i] = source.Token(context.Background()) })
 	}
+	// The one exchange is held inside the fake while the other callers arrive, so every one of
+	// them meets an exchange in flight rather than a race that may or may not overlap.
+	testwait.Eventually(t, "the first caller's exchange to reach Entra", func() bool { return fake.hits.Load() > 0 })
+	close(gate)
 	wg.Wait()
 	for i := range callers {
 		if errs[i] != nil || tokens[i] != "token-1" {
@@ -206,18 +221,33 @@ func TestEntraTokenSourceRunsOneExchangeForConcurrentCallers(t *testing.T) {
 	}
 }
 
+// A caller whose context ends while another caller's exchange is in flight returns its context's
+// error rather than waiting for that exchange: the exchange below is held inside the fake, so
+// the second caller cannot take the source's one slot, and the cancel is the only thing that can
+// end its wait.
 func TestEntraTokenSourceStopsWaitingWhenItsContextEnds(t *testing.T) {
-	fake := &fakeEntra{expiresIn: "3600", delay: 300 * time.Millisecond}
+	gate := make(chan struct{})
+	fake := &fakeEntra{expiresIn: "3600", gate: gate}
 	source, _, _ := testEntra(t, fake, "assertion")
-	go func() { _, _ = source.Token(context.Background()) }()
-	for fake.hits.Load() == 0 {
-		time.Sleep(time.Millisecond)
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		_, _ = source.Token(context.Background())
+	}()
+	testwait.Eventually(t, "the first caller's exchange to reach Entra", func() bool { return fake.hits.Load() > 0 })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queued := make(chan error, 1)
+	go func() {
+		_, err := source.Token(ctx)
+		queued <- err
+	}()
+	cancel()
+	if err := testwait.Receive(t, "the queued caller to return once its context ended", queued); !errors.Is(err, context.Canceled) {
+		t.Errorf("Token while another exchange runs, context ending = %v, want context.Canceled", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err := source.Token(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Token while another exchange runs, context ending = %v, want context.DeadlineExceeded", err)
-	}
+	close(gate)
+	testwait.Receive(t, "the first caller's exchange to finish", first)
 }
 
 // TestEntraFailuresArePlainErrors: an Entra refusal, even a 429, names the status and Entra's

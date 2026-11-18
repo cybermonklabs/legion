@@ -32,7 +32,11 @@ env:
 jobs:
   envoy-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 288 s (the listener image's build 195 s among them), 6 s of its clock
+    # over them, the smoke test's longest 56 s plus its 5 minutes, and the live tests' longest
+    # 372 s plus their 15 minutes: 1922 s, or 33 minutes.
+    timeout-minutes: 35
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
@@ -127,9 +131,10 @@ jobs:
           docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l
           /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
       # 5m bounds only what the test does: pull NATS, start both containers behind the test's
-      # own 60 s health wait, and assert. This job has measured 1.82 s, 3.16 s and 1.88 s (the
-      # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
-      # 80, so the bound is deliberate headroom, not a build budget.
+      # own 60 s health wait, and assert. Over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 the package took at most 16.133 s (run 43673491600), and 2.2–20.7 s across
+      # four runs on a devbox at load average 80, so the bound is deliberate headroom, not a
+      # build budget.
       - name: Container smoke test (testcontainers)
         run: go test -tags smoke -v -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
@@ -165,6 +170,8 @@ jobs:
       # go commands.
       - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
+      # 15m against at most 145.791 s over this job's 20 newest green merge-group runs up to
+      # 2026-11-15 (run 43509904983).
       - name: Live tests of envoy-infra's host:Listener
         run: go test -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra

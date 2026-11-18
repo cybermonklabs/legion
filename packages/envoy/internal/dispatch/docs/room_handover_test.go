@@ -71,7 +71,7 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 			service.failRoom(artifactID, errors.New("the room failed"))
 			// The eviction runs on its own goroutine; the record it hands over carries the
 			// failure, so the service holding none is the hand-over.
-			waitFor(t, 10*time.Second, "the failed room's eviction to settle its record", func() bool {
+			waitFor(t, "the failed room's eviction to settle its record", func() bool {
 				return service.roomFailure(artifactID) == nil
 			})
 		}},
@@ -164,7 +164,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 				return
 			}
 			connectPeer(t, server.URL, artifactID, "bob")
-			waitFor(t, 10*time.Second, "the browser's room to load onto the record the close is settling", func() bool {
+			waitFor(t, "the browser's room to load onto the record the close is settling", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
 			})
 		}

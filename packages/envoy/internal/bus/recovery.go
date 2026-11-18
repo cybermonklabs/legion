@@ -230,8 +230,8 @@ func (c *Client) AddDrainHook(hook func(ctx context.Context)) {
 // deleted by its inactive threshold.
 var ErrConnectionLost = errors.New("bus: the connection was lost during the drain")
 
-// runDrainHooks runs the drain hooks one after another on conn, each bounded by deadline and by
-// conn staying connected.
+// runDrainHooks runs the drain hooks one after another on conn, each bounded by deadline, on the
+// client's clock (WithClock), and by conn staying connected.
 func (c *Client) runDrainHooks(conn *nats.Conn, deadline time.Time) {
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.drainHooks)
@@ -241,7 +241,7 @@ func (c *Client) runDrainHooks(conn *nats.Conn, deadline time.Time) {
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	ctx, cancelDeadline := context.WithDeadline(ctx, deadline)
+	ctx, cancelDeadline := c.timers().WithDeadline(ctx, deadline)
 	defer cancelDeadline()
 	lost := conn.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CLOSED)
 	defer conn.RemoveStatusListener(lost)

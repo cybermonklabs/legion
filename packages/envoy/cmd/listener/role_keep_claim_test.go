@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The case of two drains at once - each kept copy reaches exactly one holder - is
@@ -49,8 +51,7 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 	}
 
 	entry := session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)
 
 	var attempted []string
@@ -126,8 +127,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	entry := session.SessionEntry{MachineID: "test-machine", Port: 1}
 	subject := contracts.LegacyAgentSubject(holder)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)
 	var handed []string
 	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
@@ -146,7 +146,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		}
 	}
 
-	dying, cancelDying := context.WithTimeout(ctx, 60*time.Second)
+	dying, cancelDying := context.WithCancel(ctx)
 	defer cancelDying()
 	lost := harness.config
 	// The listener ends here: its forward is published and stored, and the confirm it would
@@ -207,8 +207,7 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	stored, err := harness.client.LastStoredMessage(ctx, bus.KeptRoleSubject(role))
 	if err != nil {
 		t.Fatalf("read role %s's kept lane: %v", role, err)
@@ -229,15 +228,32 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 		return nil
 	})
 	// The handover leaves the lane to the drain holding the claim and waits
-	// bus.KeptRoleClaimWindow to walk it again; this context ends it there, since the lane it
+	// bus.KeptRoleClaimWindow to walk it again. That wait runs on the fake clock below, so this
+	// test sees the handover park on that bound and ends the handover there, since the lane it
 	// left alone is the point.
-	heldCtx, cancelHeld := context.WithTimeout(ctx, 3*time.Second)
-	defer cancelHeld()
-	if err := drainKeptRole(heldCtx, cfg, role, time.Now); err != nil {
+	stoodStill := time.Now()
+	held := clocktest.New(stoodStill)
+	cfg.clock = held
+	heldCtx, endTheHeldDrain := context.WithCancel(ctx)
+	defer endTheHeldDrain()
+	drained := make(chan error, 1)
+	go func() { drained <- drainKeptRole(heldCtx, cfg, role, time.Now) }()
+	awaitArmed(t, held, "the handover's wait for the claim window to pass before it walks the lane again", armedAt(stoodStill.Add(bus.KeptRoleClaimWindow)))
+	endTheHeldDrain()
+	if err := testwait.Receive(t, "the handover that found the claim outstanding", drained); err != nil {
 		t.Fatalf("the drain that found the claim outstanding: %v", err)
 	}
 	if len(handed) != 0 {
 		t.Fatalf("a drain forwarded %v while another drain's claim of that copy could still be forwarding it; a kept copy reaches exactly one holder", handed)
+	}
+	// A walk writes the role's cursor before it forwards a copy or passes one over, so a cursor
+	// still carrying the claim this test wrote is the lane left whole for the drain holding it.
+	head, err := harness.client.LastStoredMessage(ctx, bus.KeptRoleCursorSubject(role))
+	if err != nil {
+		t.Fatalf("read role %s's drain cursor: %v", role, err)
+	}
+	if string(head.Data) != string(claim) {
+		t.Fatalf("role %s's drain cursor reads %s, want the claim %s a drain that left the lane alone leaves standing", role, head.Data, claim)
 	}
 
 	// Past bus.KeptRoleClaimWindow - which is roleKeepDrainWindow, the whole of a drain's life -

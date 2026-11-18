@@ -422,11 +422,20 @@ const C1_INTRODUCER = "\ufffe";
 const OPENER = "\ufdd0";
 
 /** `cleanDetail`'s readings of held text after the first, in order: the daemon's `heldReadings`,
- * whose second takes no `.` as an intermediate, since it separates a JWT's segments. */
-const HELD_READINGS: readonly (readonly [RegExp, string])[] = [
-  [/(?:\uffff\[|\ufffe)[0-?]*[!-)+,/-]*/g, OPENER],
-  [/\ufdd0[@-~]?/g, HELD],
-  [/\uffff/g, " "],
+ * whose second takes no `.` as an intermediate, since it separates a JWT's segments. Each is named
+ * for the analyzer rows of `capability-report.test.ts` (`CLEAN_DETAIL_PATTERNS`). */
+const HELD_READINGS: readonly {
+  readonly name: string;
+  readonly pattern: RegExp;
+  readonly replacement: string;
+}[] = [
+  {
+    name: "introducer-as-opener",
+    pattern: /(?:\uffff\[|\ufffe)[0-?]*[!-)+,/-]*/g,
+    replacement: OPENER,
+  },
+  { name: "opener-as-held", pattern: /\ufdd0[@-~]?/g, replacement: HELD },
+  { name: "held-as-space", pattern: /\uffff/g, replacement: " " },
 ];
 
 /** `C1_INTRODUCER`, `OPENER`, held alone, or a held escape with the `[`, parameters and final byte
@@ -467,6 +476,165 @@ function truncateUtf8(text: string, max: number): string {
   return text.slice(0, end);
 }
 
+/** One credential shape `cleanDetail` replaces: the shared fixture's name for it (`pattern` in
+ * `capability-redaction.json`), every regular expression it runs, by name, and the text with every
+ * credential of that shape redacted. */
+export interface CredentialRule {
+  readonly name: string;
+  readonly patterns: Readonly<Record<string, RegExp>>;
+  readonly redact: (text: string) => string;
+}
+
+/** The rule that replaces every match of `pattern` with `replacement`. */
+function replacing(name: string, pattern: RegExp, replacement: string): CredentialRule {
+  return {
+    name,
+    patterns: { [name]: pattern },
+    redact: (text) => text.replace(pattern, replacement),
+  };
+}
+
+/** The userinfo rule's pattern: a scheme, `://` and a userinfo up to its `@`; or else the whole run
+ * of scheme characters a search starts in, which `redactUserinfo` gives back as it is. That second
+ * branch is what starts the rule only where a run of scheme characters starts: the next search
+ * begins after the run, never inside it, so no run is read once per character in it. It takes the
+ * place of a look-behind for a scheme character, which recheck's automaton checker cannot read. */
+const URL_USERINFO = /([0-9+.-]*[a-z][a-z0-9+.-]*:\/\/)[^ /?#]+@|[a-z0-9+.-]+/gi;
+
+/** `text` with every URL's userinfo replaced by `***`, its scheme kept. */
+function redactUserinfo(text: string): string {
+  return text.replace(URL_USERINFO, (match, scheme: string | undefined) =>
+    scheme === undefined ? match : `${scheme}***@`
+  );
+}
+
+/** A JWT's first segment and the dot that ends it, from each of its three starts, each read only
+ * at the `eyJ` it starts on (`jwtStartAt` says which, from the text before it): a first segment
+ * that runs across a `JWT_FIRST_HELD_SEQUENCE`; one right after held, which crosses no held
+ * character and no opener, only a C1 introducer; and one right after a held `[`, its parameters
+ * and an optional final byte or `\uXXXX`, which holds a C1 introducer and crosses nothing else
+ * held. */
+const JWT_FIRST_UNHELD = new RegExp(
+  String.raw`eyJ(?:[A-Za-z0-9_-]|${JWT_FIRST_HELD_SEQUENCE}){8,}\.`,
+  "y"
+);
+const JWT_FIRST_AFTER_HELD = /eyJ(?:[A-Za-z0-9_-]|\ufffe){8,}\./y;
+const JWT_FIRST_AFTER_SEQUENCE = /eyJ[A-Za-z0-9_-]*\ufffe(?:[A-Za-z0-9_-]|\ufffe)*\./y;
+
+/** A JWT's second segment and the dot that ends it, and its third segment. No segment reads a
+ * dot, so each ends at the one dot that can follow it, and reading the three one after another
+ * matches what one pattern of all three would. */
+const JWT_SECOND = new RegExp(String.raw`(?:[A-Za-z0-9_-]|${HELD_SEQUENCE}){8,}\.`, "y");
+const JWT_THIRD = new RegExp(`(?:[A-Za-z0-9_-]|${HELD_SEQUENCE})*`, "y");
+
+/** Whether `code` is a hexadecimal digit, `0`–`9`, `A`–`F` or `a`–`f`. */
+function isHexDigit(code: number): boolean {
+  return (
+    (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x41 && code <= 0x46) ||
+    (code >= 0x61 && code <= 0x66)
+  );
+}
+
+/** Whether `code` is a character a JWT's first segment reads as its own: a base64url character,
+ * held or a C1 introducer. */
+function isJwtValue(code: number): boolean {
+  return (
+    (code >= 0x41 && code <= 0x5a) ||
+    (code >= 0x61 && code <= 0x7a) ||
+    (code >= 0x30 && code <= 0x39) ||
+    code === 0x5f ||
+    code === 0x2d ||
+    code === 0xfffe ||
+    code === 0xffff
+  );
+}
+
+/** Whether a `\uXXXX` escape ends at `end` in `text`. */
+function escapeEndsAt(text: string, end: number): boolean {
+  if (end < 6 || text.charCodeAt(end - 6) !== 0x5c || text.charCodeAt(end - 5) !== 0x75) {
+    return false;
+  }
+  for (let at = end - 4; at < end; at++) if (!isHexDigit(text.charCodeAt(at))) return false;
+  return true;
+}
+
+/** Whether a percent escape (`%` and two hexadecimal digits) ends at `end` in `text`. */
+function percentEndsAt(text: string, end: number): boolean {
+  return (
+    end >= 3 &&
+    text.charCodeAt(end - 3) === 0x25 &&
+    isHexDigit(text.charCodeAt(end - 2)) &&
+    isHexDigit(text.charCodeAt(end - 1))
+  );
+}
+
+/** Whether a held `[` and its parameters (`0`–`?`) end at `end` in `text`. A `[` is no parameter,
+ * so the parameters are the whole run of them before `end`. */
+function parametersEndAt(text: string, end: number): boolean {
+  let at = end;
+  while (at > 0 && text.charCodeAt(at - 1) >= 0x30 && text.charCodeAt(at - 1) <= 0x3f) at--;
+  return at >= 2 && text.charCodeAt(at - 1) === 0x5b && text.charCodeAt(at - 2) === 0xffff;
+}
+
+/** Whether a held `[` and its parameters, then a final byte (`@`–`~`), a `\uXXXX` escape or
+ * nothing, end at `end` in `text`. */
+function sequenceEndsAt(text: string, end: number): boolean {
+  if (parametersEndAt(text, end)) return true;
+  const last = end > 0 ? text.charCodeAt(end - 1) : -1;
+  if (last >= 0x40 && last <= 0x7e && parametersEndAt(text, end - 1)) return true;
+  return escapeEndsAt(text, end) && parametersEndAt(text, end - 6);
+}
+
+/** The JWT rule's first segment that may read the `eyJ` at `at` in `text`, as the text before it
+ * allows, or undefined where none may. At most one does: after a held `[` and its parameters
+ * (`sequenceEndsAt`), only `JWT_FIRST_AFTER_SEQUENCE`; right after held, only
+ * `JWT_FIRST_AFTER_HELD`; and `JWT_FIRST_UNHELD` after neither, where no value character stands
+ * right before `eyJ` or a percent or `\uXXXX` escape ends there. */
+function jwtStartAt(text: string, at: number): RegExp | undefined {
+  if (sequenceEndsAt(text, at)) return JWT_FIRST_AFTER_SEQUENCE;
+  const before = at > 0 ? text.charCodeAt(at - 1) : -1;
+  if (before === 0xffff) return JWT_FIRST_AFTER_HELD;
+  if (!isJwtValue(before) || percentEndsAt(text, at) || escapeEndsAt(text, at)) {
+    return JWT_FIRST_UNHELD;
+  }
+  return undefined;
+}
+
+/** Where the sticky `pattern`, read at `at` in `text`, ends, or -1 where it does not match there. */
+function matchEnd(pattern: RegExp, text: string, at: number): number {
+  pattern.lastIndex = at;
+  return pattern.test(text) ? pattern.lastIndex : -1;
+}
+
+/** Where the JWT that starts at `at` in `text` ends, or -1 where none starts there. */
+function jwtEnd(text: string, at: number): number {
+  const first = jwtStartAt(text, at);
+  if (first === undefined) return -1;
+  const afterFirst = matchEnd(first, text, at);
+  if (afterFirst === -1) return -1;
+  const afterSecond = matchEnd(JWT_SECOND, text, afterFirst);
+  return afterSecond === -1 ? -1 : matchEnd(JWT_THIRD, text, afterSecond);
+}
+
+/** `text` with every JWT replaced by `***`, searched as a global regular expression is: at each
+ * `eyJ` from where the last JWT ended, from the one start the text before it allows. */
+function redactJwts(text: string): string {
+  let redacted = "";
+  let kept = 0;
+  for (let at = text.indexOf("eyJ"); at !== -1; ) {
+    const end = jwtEnd(text, at);
+    if (end === -1) {
+      at = text.indexOf("eyJ", at + 1);
+      continue;
+    }
+    redacted += `${text.slice(kept, at)}***`;
+    kept = end;
+    at = text.indexOf("eyJ", end);
+  }
+  return `${redacted}${text.slice(kept)}`;
+}
+
 /** The value of the API-key and bare bearer rules, as the daemon's `labeledWord`, whose comment
  * explains it: the word after the label up to the next space or quote, held markers included,
  * whatever its shape, except a trailing run of backslashes, closing brackets and the punctuation
@@ -493,84 +661,148 @@ const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\
  * userinfo rule starts only where a run of scheme characters starts. After an API-key label or a
  * bare `Bearer`, the word up to the next space or quote is masked (`LABELED_WORD`, which says what
  * it leaves outside), whatever its shape, so a URL there reads `Bearer ***` with or without a
- * userinfo. The JWT rule starts nowhere its first segment's class
- * could have run on from: not after held, a C1 introducer or a value character, and not after a
- * held `[` and its parameters, followed by any final byte or by a `\uXXXX` escape whose backslash
- * is that final byte. Its one lookbehind for the held prefix reads like the daemon's rule, which
- * matches that prefix with `eyJ` and gives it back. It may start after an opener, which its first
- * segment does not run across, and right after a percent or `\u` escape that no held sequence
- * closes. It may also start right after held when its first segment crosses no held character and
- * no opener, only a C1 introducer, and right after a held `[`, its parameters and an optional final
- * byte or `\uXXXX` when its first segment holds a C1 introducer and crosses nothing else held, as
- * the daemon's comment explains. These segments stop at the next held character, and a first
- * segment ends at its one dot, so no start reads another's run: JavaScriptCore backtracks, where
- * the daemon's RE2 does not, and a start inside a run its first segment reads through would read
- * that run once per start.
+ * userinfo. The JWT rule starts nowhere its first segment's class could have run on from: not
+ * after held, a C1 introducer or a value character, and not after a held `[` and its parameters,
+ * followed by any final byte or by a `\uXXXX` escape whose backslash is that final byte. It may
+ * start after an opener, which its first segment does not run across, and right after a percent or
+ * `\u` escape that no held sequence closes. It may also start right after held when its first
+ * segment crosses no held character and no opener, only a C1 introducer, and right after a held
+ * `[`, its parameters and an optional final byte or `\uXXXX` when its first segment holds a C1
+ * introducer and crosses nothing else held, as the daemon's comment explains. These segments stop
+ * at the next held character, and a first segment ends at its one dot, so no start reads another's
+ * run: JavaScriptCore backtracks, where the daemon's RE2 does not, and a start inside a run its
+ * first segment reads through would read that run once per start. The two rules that look at the
+ * text before a start read it in code (`redactUserinfo`, `redactJwts`) rather than in a
+ * look-behind, so recheck's automaton checker reads every pattern here
+ * (`capability-report.test.ts`).
  */
-const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
-  [/(?<![a-z0-9+.-])([0-9+.-]*[a-z][a-z0-9+.-]*:\/\/)[^ /?#]+@/gi, "$1***@"],
-  [
+export const CREDENTIAL_RULES: readonly CredentialRule[] = [
+  { name: "url-userinfo", patterns: { "url-userinfo": URL_USERINFO }, redact: redactUserinfo },
+  replacing(
+    "query-credential",
     /([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+/gi,
-    "$1***",
-  ],
-  [
+    "$1***"
+  ),
+  replacing(
+    "connection-string-password",
     /\b(password[ \ufffe\uffff]*=[ \ufffe\uffff]*)(?:(')(?:[^'\\]|\\.)*('?)|[^ &#"'<>]+)/gi,
-    "$1$2***$3",
-  ],
-  [
+    "$1$2***$3"
+  ),
+  replacing(
+    "authorization-header",
     /(authorization\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*)(?:(\\["'](?:(?:bearer|basic|token|digest)[ \ufffe\uffff]+)?)[^"'\\]+|(["'](?:(?:bearer|basic|token|digest)[ \ufffe\uffff]+)?)(?:[^"'\\]|\\.)+|(\[?(?:(?:bearer|basic|token|digest)[ \ufffe\uffff]+)?)[^)\]}>]+)/gi,
-    "$1$2$3$4***",
-  ],
-  [
+    "$1$2$3$4***"
+  ),
+  replacing(
+    "api-key-header",
     new RegExp(
       String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)${LABELED_WORD}`,
       "gi"
     ),
-    "$1***",
-  ],
-  [
+    "$1***"
+  ),
+  replacing(
+    "json-member",
     /(\\?["'](?:api_key|access_token)\\?["'][ \ufffe\uffff]*:[ \ufffe\uffff]*\\?["'])[^"'\\]+/gi,
-    "$1***",
-  ],
-  [new RegExp(String.raw`\b(bearer[ \ufffe\uffff]+)${LABELED_WORD}`, "gi"), "$1***"],
-  [
+    "$1***"
+  ),
+  replacing(
+    "bearer",
+    new RegExp(String.raw`\b(bearer[ \ufffe\uffff]+)${LABELED_WORD}`, "gi"),
+    "$1***"
+  ),
+  replacing(
+    "github-token",
     new RegExp(String.raw`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|${HELD_SEQUENCE}){20,}`, "g"),
-    "$1***",
-  ],
-  [
-    new RegExp(
-      String.raw`(?:(?=eyJ)(?<!\uffff\[[0-?]*(?:[@-~]?|\\u[0-9A-Fa-f]{4}))(?:(?<![A-Za-z0-9_\ufffe\uffff-])|(?<=%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}))eyJ(?:[A-Za-z0-9_-]|${JWT_FIRST_HELD_SEQUENCE}){8,}|(?<=\uffff)eyJ(?:[A-Za-z0-9_-]|\ufffe){8,}|(?=eyJ)(?<=\uffff\[[0-?]*(?:[@-~]|\\u[0-9A-Fa-f]{4})?)eyJ[A-Za-z0-9_-]*\ufffe(?:[A-Za-z0-9_-]|\ufffe)*)\.(?:[A-Za-z0-9_-]|${HELD_SEQUENCE}){8,}\.(?:[A-Za-z0-9_-]|${HELD_SEQUENCE})*`,
-      "g"
-    ),
-    "***",
-  ],
-  [
+    "$1***"
+  ),
+  {
+    name: "jwt",
+    patterns: {
+      "jwt-first-unheld": JWT_FIRST_UNHELD,
+      "jwt-first-after-held": JWT_FIRST_AFTER_HELD,
+      "jwt-first-after-sequence": JWT_FIRST_AFTER_SEQUENCE,
+      "jwt-second": JWT_SECOND,
+      "jwt-third": JWT_THIRD,
+    },
+    redact: redactJwts,
+  },
+  replacing(
+    "prefixed-token",
     new RegExp(
       String.raw`\b(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\.|xox[a-z]-|glpat-|npm_)(?:[A-Za-z0-9_-]|${HELD_SEQUENCE}){20,}`,
       "g"
     ),
-    "$1***",
-  ],
-  [new RegExp(String.raw`\b(AIza)(?:[A-Za-z0-9_-]|${HELD_SEQUENCE}){35,}`, "g"), "$1***"],
-  [new RegExp(String.raw`\b(AKIA|ASIA)(?:(?:${HELD_SEQUENCE})*[A-Z0-9]){16}\b`, "g"), "$1***"],
+    "$1***"
+  ),
+  replacing(
+    "google-api-key",
+    new RegExp(String.raw`\b(AIza)(?:[A-Za-z0-9_-]|${HELD_SEQUENCE}){35,}`, "g"),
+    "$1***"
+  ),
+  replacing(
+    "aws-access-key-id",
+    new RegExp(String.raw`\b(AKIA|ASIA)(?:(?:${HELD_SEQUENCE})*[A-Z0-9]){16}\b`, "g"),
+    "$1***"
+  ),
 ];
+
+/** Every regular expression `cleanDetail` runs, by name: each rule's and each held reading's. The
+ * analyzer rows of `capability-report.test.ts` read each one; its trailing-space trim runs none
+ * (`withoutTrailingSpaces`). */
+export const CLEAN_DETAIL_PATTERNS: Readonly<Record<string, RegExp>> = Object.fromEntries([
+  ...CREDENTIAL_RULES.flatMap((rule) => Object.entries(rule.patterns)),
+  ...HELD_READINGS.map(({ name, pattern }) => [name, pattern] as const),
+]);
 
 /** The most passes `redactCredentials` makes: the daemon's `maxRedactionPasses`. */
 const MAX_REDACTION_PASSES = 8;
+
+/**
+ * The work `cleanDetail` has done in this process, counted where it is spent, so a test holds it
+ * to the length of the detail rather than to the time it took: each character a rule's pass is
+ * handed (`redactCredentials`), and each character its trailing-space trim is handed
+ * (`withoutTrailingSpaces`). A step a regular expression takes inside one pass is not counted,
+ * because JavaScriptCore counts none; recheck's reading of each pattern is what holds a pass
+ * linear (`capability-report.test.ts`).
+ */
+let ruleCharactersHanded = 0;
+let trimCharactersHanded = 0;
+
+/** How many characters the passes of `CREDENTIAL_RULES` have been handed in this process. */
+export function credentialRuleCharacters(): number {
+  return ruleCharactersHanded;
+}
+
+/** How many characters `cleanDetail`'s trailing-space trim has been handed in this process. */
+export function trailingSpaceTrimCharacters(): number {
+  return trimCharactersHanded;
+}
 
 /** `text` with every `CREDENTIAL_RULES` match replaced, rule by rule, pass after pass until a pass
  * changes nothing (at most `MAX_REDACTION_PASSES`), as the daemon's `redactCredentials` does. */
 function redactCredentials(text: string): string {
   let line = text;
   for (let pass = 0; pass < MAX_REDACTION_PASSES; pass++) {
-    const next = CREDENTIAL_RULES.reduce(
-      (redacted, [pattern, replacement]) => redacted.replace(pattern, replacement),
-      line
-    );
+    let next = line;
+    for (const rule of CREDENTIAL_RULES) {
+      ruleCharactersHanded += next.length;
+      next = rule.redact(next);
+    }
     if (next === line) break;
     line = next;
   }
   return line;
+}
+
+/** `text` without its trailing spaces: the daemon's `strings.TrimRight(cut, " ")`. It reads back
+ * from the end once, where the pattern `/ +$/` it replaces starts a scan at every space of a run,
+ * which recheck reads as quadratic. */
+function withoutTrailingSpaces(text: string): string {
+  trimCharactersHanded += text.length;
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0x20) end--;
+  return text.slice(0, end);
 }
 
 /** `text` without its last code point, a surrogate pair's two halves together. */
@@ -608,7 +840,7 @@ export function cleanDetail(text: string): string {
   }
   let redacted = redactCredentials(marked);
   if (marked.includes(HELD) || marked.includes(C1_INTRODUCER)) {
-    for (const [pattern, replacement] of HELD_READINGS) {
+    for (const { pattern, replacement } of HELD_READINGS) {
       const read = redacted.replace(pattern, replacement);
       if (read !== redacted) redacted = redactCredentials(read);
     }
@@ -617,7 +849,7 @@ export function cleanDetail(text: string): string {
     .split(" ")
     .filter((field) => field !== "")
     .join(" ");
-  let cut = truncateUtf8(line, MAX_DETAIL_BYTES).replace(/ +$/, "");
+  let cut = withoutTrailingSpaces(truncateUtf8(line, MAX_DETAIL_BYTES));
   if (cut.length < line.length) {
     while (redactCredentials(cut) !== cut) {
       const space = cut.lastIndexOf(" ");

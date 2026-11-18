@@ -1,82 +1,67 @@
-// Package testnats serves daemon tests one JetStream server per test binary, started on first use
-// and removed by Main. Each test gets it empty and to itself, and a test that leaves a client
-// connected to it is the test that fails, at its own cleanup (leakcheck.go). A test takes
-// its own client from Connect, which names it after the test and closes it when the test ends.
+// Package testnats runs a NATS server with JetStream for a daemon test in the test process itself:
+// one server for each test, started by the test's first URL or JetStream call and shut down when
+// that test ends. A second call in the same test gets the same server, and a subtest, being a test
+// of its own, gets its own. Every server here is the nats-server this binary links in
+// (github.com/nats-io/nats-server/v2, the version the GCP hub runs), on loopback, at a port it
+// picks, with its store under the test's own temporary directory. So a test needs no container
+// runtime and no server named in its environment, and nothing of one test reaches another: no
+// stream, consumer or message of an earlier test is on a later test's server, and no publish an
+// earlier test left in flight lands there, because no server outlives the test that started it.
+// Main fails the run when one does. R1 of "The design of this repository's tests" in
+// docs/testing.md says why, and its "A Go test that opens a NATS client" says the rest.
 //
-// One container per package, not per test: testcontainers keeps its Ryuk reaper only while a
-// container of the process is connected, and a reaper left idle past its timeout removes itself,
-// so a later test's start, finding it removing, fails ("unexpected container status removing"). A
-// per-test container left such a gap whenever the tests between two NATS tests outlasted the
-// timeout, as a loaded Docker host makes them.
+// The end of the test's server is its leak check (leakcheck.go): a client still connected to the
+// server when the test ends fails that test, by name and CID.
 //
-// A host with no Docker, such as a Sandbox pod, runs a nats-server of its own with JetStream and
-// its monitoring endpoint, and names it in LEGION_TEST_NATS_URL (its client URL) and
-// LEGION_TEST_NATS_MONITOR_URL (the monitoring endpoint's base URL). With both set, URL serves that
-// server, emptied for each test exactly as the container is, starts no container, and Main removes
-// nothing; one set without the other fails the test, since a half-named server is a mistake rather
-// than a reason to fall back to Docker. The reset holds the server for one test of one test binary
-// at a time, waits for every client connection to it to end, and empties each stream before it
-// deletes it, so the server is the tests' alone and the packages using it run one after another
-// (go test -p 1). The leak check at the end of each test depends on that rule too: with one
-// binary on the server, every connection it holds is this binary's, so one that appeared while a
-// test held the server is that test's own.
+// The server URL starts admits only a client that carries the test's credential, a token the URL
+// carries as its user, so no client of another process stays connected to it. Such a client can
+// reach the server, because the kernel may give the server a port that another process still
+// dials. Before the token, one did (an Envoy client's reconnect, dispatch://INFRA-3149), and the
+// leak check waited on it until the test binary's deadline.
+//
+// StartNkeyAuthorized and StartNkeyAuthorizedUsers start in-process servers of their own that admit
+// only nkey users. StartImage and StartOpenImage (image.go) are the two helpers that run a
+// container, for the tests whose subject is a published NATS image itself.
+//
+// Envoy's tests have a rig of their own, packages/envoy/internal/testnats, which runs its servers
+// in the test process too (its start, launch and serverOptions are what start here follows). The
+// two are copies rather than one package because Go's internal rule keeps this module from
+// importing Envoy's internal packages, so a change to how a server is started or configured
+// belongs in both.
 package testnats
 
 import (
-	"context"
-	"encoding/json"
+	"crypto/rand"
 	"errors"
 	"fmt"
-	"net/http"
+	"maps"
+	"math"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/testcontainers/testcontainers-go"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
-)
 
-// Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
-// copy of nats:2.15.1-alpine (.github/ci-images.yaml), the server the hub runs. The daemon refuses
-// a server that can skip a message on a consumer filtering on a wildcard and a literal at the same
-// token (envoy's natsversion.Refusal, intake.OpenConsumers), which nats:2.10 is.
-const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
-
-// SkippingImage is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml),
-// whose v2.10.29 is such a server: the one test that shows the daemon refusing it starts it.
-const SkippingImage = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
-
-// readinessTimeout bounds the wait for the JetStream API once the container runs. The container
-// start is not bounded by it: how long Docker takes to create a container is the daemon's load.
-const readinessTimeout = 30 * time.Second
-
-// externalURLEnv and externalMonitorEnv name a running NATS server for URL to serve in place of a
-// container (the package comment): its client URL, and its monitoring endpoint's base URL, which
-// the reset reads for the client connections it waits out.
-const (
-	externalURLEnv     = "LEGION_TEST_NATS_URL"
-	externalMonitorEnv = "LEGION_TEST_NATS_MONITOR_URL"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 var (
-	// held is locked by the test using the server, from URL until the test's cleanups have run, so
-	// no two tests share its state. holder names that test, so that a second take by it or by one
-	// of its subtests, which would wait on itself, fails instead.
-	held     sync.Mutex
-	holderMu sync.Mutex
-	holder   string
+	// mainRuns records that the test binary's TestMain went through Main, which fails a run that
+	// leaves a server of this package running.
+	mainRuns bool
 
-	mainRuns   bool
-	startOnce  sync.Once
-	shared     *tcnats.NATSContainer
-	serverURL  string
-	monitorURL string
-	startErr   error
+	// serversMu guards the two records below, which parallel tests share.
+	serversMu sync.Mutex
+	// ofTest is the server URL started for each test still running, by the test's name.
+	ofTest = map[string]*server{}
+	// running is every server this process started and has not shut down, for Main.
+	running = map[*server]struct{}{}
 )
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
@@ -90,213 +75,156 @@ func init() {
 	}
 }
 
-// Main runs the package's tests, then removes the NATS container if a test started one, and
-// returns the exit code; a run on an external server (external) started none and removes nothing.
-// A package whose tests use URL or JetStream calls it from TestMain: os.Exit(testnats.Main(m)).
+// Main runs the package's tests and returns the exit code, which is 1 when a server this package
+// started is still running after the last test. Every server is shut down by a cleanup of the test
+// that started it, so one still running is one whose test never ran that cleanup (a stand-in for t
+// that drops its cleanups, or a call after the test ended); Main names each on stderr by its URL
+// and the test that started it, then shuts it down. A package whose tests start a server calls it
+// from TestMain: os.Exit(testnats.Main(m)).
 func Main(m *testing.M) int {
 	mainRuns = true
 	code := m.Run()
-	if shared != nil {
-		if err := testcontainers.TerminateContainer(shared); err != nil {
-			fmt.Fprintf(os.Stderr, "remove the package's NATS container: %v\n", err)
-			if code == 0 {
-				code = 1
-			}
-		}
+	serversMu.Lock()
+	left := slices.SortedFunc(maps.Keys(running), func(a, b *server) int { return strings.Compare(a.test, b.test) })
+	serversMu.Unlock()
+	for _, s := range left {
+		fmt.Fprintf(os.Stderr, "testnats: the NATS server at %s that %s started is still running after the last test\n", s.url, s.test)
+		s.stop()
+	}
+	if len(left) > 0 {
+		return 1
 	}
 	return code
 }
 
-// URL returns the package's NATS server with no stream on it, so none of a previous test's
-// streams, consumers or messages, and holds it for t until t ends. The server is the external one
-// LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name when both are set (external), and
-// otherwise the package's container, started on first use. The reset waits for the server
-// to report no client connection first: a previous test that published without waiting for acks
-// leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset then purges each stream and deletes it, so a test creates its own there and finds it
-// empty with CreateStream: a deleted stream's store can outlive the delete that answered, and a
-// purged one carries no message into the next test, though it does carry its sequence. The purge,
-// below, states the mechanism and names the source lines; the comments elsewhere in this package
-// point to it rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
-// which fails t at its end for a client connection t left open on the server.
+// URL returns the client URL of t's own NATS server, which has JetStream, starting it on t's first
+// call; every later call in t returns the same server. The server holds nothing of another test's,
+// so a test creates the streams it needs with CreateStream. When t ends, after every cleanup t
+// registered after its first call, the server runs the leak check (leakcheck.go) and shuts down.
+//
+// The server admits only a client that carries a token of its own, which the URL carries as its
+// user (nats://<token>@127.0.0.1:<port>). nats.go sends a URL's user as the token at CONNECT, so
+// every client that dials the URL carries it: the fixture's, the daemon's, a child process's, and
+// a raw nats.Connect. A client of another process carries none. The server refuses it at CONNECT
+// (Authorization Violation) and closes it, and one that sends no CONNECT at all is closed when the
+// server's auth timeout ends. So such a client is never one of the connections the leak check
+// waits on.
 func URL(t testing.TB) string {
 	t.Helper()
+	if s := serverOf(t); s != nil {
+		return s.client
+	}
+	token := rand.Text()
+	s := start(t, &natsserver.Options{Authorization: token}, true)
+	s.client = "nats://" + token + "@" + strings.TrimPrefix(s.url, "nats://")
+	serversMu.Lock()
+	ofTest[t.Name()] = s
+	serversMu.Unlock()
+	return s.client
+}
+
+// serverOf is the server URL started for t, nil before t's first call.
+func serverOf(t testing.TB) *server {
+	serversMu.Lock()
+	defer serversMu.Unlock()
+	return ofTest[t.Name()]
+}
+
+// server is one nats-server running in this process, started for test.
+type server struct {
+	srv *natsserver.Server
+	// url is the server's own address, with no credential.
+	url string
+	// client is the URL a test's clients dial: url with the token, for a server URL started.
+	client string
+	test   string
+	log    *logCapture
+}
+
+// unbounded is the readiness wait under -timeout 0, where the test binary has no deadline.
+const unbounded = time.Duration(math.MaxInt64)
+
+// start runs a nats-server in this process on opts with JetStream, on loopback at a port the server
+// picks, with no monitoring port, no signal handlers and its store in a directory of t's own, and
+// returns it once it accepts connections. It is the one place a server of this package is made.
+//
+// It takes the store directory first and registers the server's stop next, before the server
+// starts. Cleanups run the last registered first, so the stop runs after every cleanup t registers
+// later (the close of a test's own clients, the stop of a daemon or a child process dialled to the
+// server) and before the removal of the store under it. With check set, the stop runs the leak
+// check first (leakcheck.go). The wait for connections is the one every wait of the daemon's tests
+// has: what is left before the test binary's deadline less testwait's margin (testwait.Context),
+// and no bound under -timeout 0.
+func start(t testing.TB, opts *natsserver.Options, check bool) *server {
+	t.Helper()
 	if !mainRuns {
-		t.Fatal("testnats: the package's TestMain must return testnats.Main(m), which removes the shared NATS container")
+		t.Fatal("testnats: the package's TestMain must return testnats.Main(m), which fails a run that leaves a NATS server of this package running")
 	}
-	take(t)
-	startOnce.Do(func() {
-		serverURL, monitorURL, startErr = external()
-		if startErr != nil || serverURL != "" {
-			return
-		}
-		started, err := start(Image)
-		if err != nil {
-			startErr = err
-			return
-		}
-		shared = started
-		serverURL, startErr = started.ConnectionString(context.Background())
-		if startErr == nil {
-			monitorURL, startErr = monitor(started)
-		}
-	})
-	if startErr != nil {
-		t.Fatalf("start NATS JetStream: %v", startErr)
-	}
-	drained(t)
-	fixtureOpenedNone()
-	conn, js := connect(t)
-	defer conn.Close()
-	names := js.StreamNames(t.Context())
-	var streams []string
-	for name := range names.Name() {
-		streams = append(streams, name)
-	}
-	if err := names.Err(); err != nil {
-		t.Fatalf("list the NATS server's streams: %v", err)
-	}
-	for _, name := range streams {
-		// Purge before the delete, so the store this delete leaves behind holds no message.
-		//
-		// nats-server does a stream delete's store work before it answers, and the work itself is
-		// what can leave the store behind (v2.10.22: jetstream_api.go:2915-2921 answers only after
-		// mset.delete(), which calls store.Delete() inline and ignores its error,
-		// stream.go:5234-5237). fileStore.Delete closes the stream's message blocks without
-		// removing them and renames streams/<name> to streams/.<name>
-		// (filestore.go:7769-7773, 7793-7797); only the removal of that .<name> runs in a
-		// goroutine (:7800-7817). So when an earlier delete of the same name is still removing
-		// its .<name>, this delete's rename fails onto that directory, the error is dropped, and
-		// streams/<name> stays where it is with its blocks, until the next create of that name
-		// loads it again. The test that create belongs to is then handed a stream whose own
-		// Created is new, holding the previous test's messages at their own stored times, with
-		// the account read below reporting no stream in between, and it counts them as its own.
-		//
-		// A purged store's blocks hold no message, so the store that comes back after a failed
-		// rename carries none. It carries its sequence: a purge sets FirstSeq to LastSeq+1 and
-		// writes that state (filestore.go:6918, 6980-6991), so the next test's first message need
-		// not be at sequence 1. Nothing asserts a sequence, and nothing should: the rename fails
-		// just as often after the purge, so a sequence check would bring the random failures back
-		// by another door.
-		//
-		// Measured in an issue pod on 2026-11-10 (dispatch://INFRA-2583), against nats-server
-		// 2.10.22, of the 2.10 line this package's image is (the image reports v2.10.29 now), one
-		// round being create, publish 12, delete, create again, read. Under a load of four busy
-		// loops on its two CPUs, 9 of 10,000 rounds of delete-then-create came back holding all 12
-		// messages, and 0 of 10,000 rounds that purged first did. A run that also read the store
-		// directory immediately before each delete found the rename collision itself: of 6,000
-		// rounds, 28 met a .<name> the previous delete had not finished removing, and all 19 of the
-		// rounds that recovered anything were among those 28. The purge is a lookup of the stream
-		// and one purge request per stream, and the server answers the purge when the store is
-		// empty.
-		stream, err := js.Stream(t.Context(), name)
-		if err != nil {
-			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
-		}
-		if err := stream.Purge(t.Context()); err != nil {
-			t.Fatalf("purge the NATS server's stream %s: %v", name, err)
-		}
-		if err := js.DeleteStream(t.Context(), name); err != nil {
-			t.Fatalf("empty the NATS server of stream %s: %v", name, err)
-		}
-	}
-	info, err := js.AccountInfo(t.Context())
+	opts.Host = "127.0.0.1"
+	opts.Port = -1
+	opts.HTTPPort = 0
+	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
+	opts.NoSigs = true
+	srv, err := natsserver.NewServer(opts)
 	if err != nil {
-		t.Fatalf("read the NATS server's account after emptying it: %v", err)
+		t.Fatalf("testnats: create the NATS server of %s: %v", t.Name(), err)
 	}
-	if info.Streams != 0 {
-		t.Fatalf("the NATS server still holds %d streams after emptying it", info.Streams)
-	}
-	armLeakCheck(t)
-	return serverURL
-}
-
-// external is the running server LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name: its
-// client URL and its monitoring endpoint's base URL, without a trailing slash, as the reset appends
-// /connz to it. Neither set is no external server, both empty; one set without the other is an
-// error naming both.
-func external() (string, string, error) {
-	server, monitoring := os.Getenv(externalURLEnv), os.Getenv(externalMonitorEnv)
-	if (server == "") != (monitoring == "") {
-		return "", "", fmt.Errorf("set both %s and %s to use a running NATS server, or neither to start a container (%s is %q, %s is %q)",
-			externalURLEnv, externalMonitorEnv, externalURLEnv, server, externalMonitorEnv, monitoring)
-	}
-	return server, strings.TrimSuffix(monitoring, "/"), nil
-}
-
-// take holds the shared server for t until t ends, refusing a take by the test already holding it
-// or by one of its subtests, which would wait for itself for the whole test binary's timeout.
-func take(t testing.TB) {
-	t.Helper()
-	holderMu.Lock()
-	current := holder
-	holderMu.Unlock()
-	if current != "" && (t.Name() == current || strings.HasPrefix(t.Name(), current+"/")) {
-		t.Fatalf("testnats: %s already holds the shared NATS server, so %s would wait for itself: take it once per test, through URL or JetStream", current, t.Name())
-	}
-	held.Lock()
-	holderMu.Lock()
-	holder = t.Name()
-	holderMu.Unlock()
+	s := &server{srv: srv, test: t.Name(), log: &logCapture{}}
 	t.Cleanup(func() {
-		holderMu.Lock()
-		holder = ""
-		holderMu.Unlock()
-		held.Unlock()
+		defer s.stop()
+		if check {
+			s.leakCheck(t)
+		}
 	})
+	srv.SetLoggerV2(s.log, false, false, false)
+	serversMu.Lock()
+	running[s] = struct{}{}
+	serversMu.Unlock()
+	go srv.Start()
+	within := unbounded
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		within = time.Until(deadline)
+	}
+	if !srv.ReadyForConnections(within) {
+		t.Fatalf("testnats: the NATS server of %s did not accept connections within %s, what was left before the test binary's deadline less testwait's margin; its log:\n%s",
+			t.Name(), within, s.log)
+	}
+	s.url = srv.ClientURL()
+	return s
 }
 
-// drained waits, within readinessTimeout, for the server's monitoring endpoint to report no client
-// connection, and fails naming the connections left when it does not. Connections the last test's
-// own leak check reported and could not close are not waited out at all: nothing will close them,
-// so this test is failed at once, naming the test that left them (leakcheck.go).
-func drained(t testing.TB) {
-	t.Helper()
-	deadline := time.Now().Add(readinessTimeout)
-	for {
-		connections, err := readConnections()
-		if err == nil && len(connections) == 0 {
-			return
-		}
-		if err == nil {
-			if leaker, all := leftByTheLastTest(connections); all {
-				t.Fatalf("the NATS server holds %d client connections %v, every one of them left open by %s, which could not close them",
-					len(connections), connections, leaker)
-			}
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				t.Fatalf("read the NATS server's connections before emptying it: %v", err)
-			}
-			if leaker, _ := leftByTheLastTest(connections); leaker != "" {
-				t.Fatalf("the NATS server still has %d client connections %v from a previous test after %s, and %s left connections of its own it could not close",
-					len(connections), connections, readinessTimeout, leaker)
-			}
-			t.Fatalf("the NATS server still has %d client connections %v from a previous test after %s", len(connections), connections, readinessTimeout)
-		}
-		time.Sleep(50 * time.Millisecond)
+// stop shuts the server down and returns once it has, so the store the test's temporary directory
+// removes next is one nothing writes. Stopping a stopped server does nothing.
+func (s *server) stop() {
+	s.srv.Shutdown()
+	s.srv.WaitForShutdown()
+	serversMu.Lock()
+	defer serversMu.Unlock()
+	delete(running, s)
+	if ofTest[s.test] == s {
+		delete(ofTest, s.test)
 	}
 }
 
-// Connections is what the server itself says its open client connections are, each by id and
-// name, as the drain reads them; it fails t when the monitoring endpoint cannot be read. A test
-// of what a process leaves behind on the shared server reads the server's own account rather
-// than the connections it can see from inside its own process, since a connection the process
-// has forgotten is exactly what such a test is looking for.
+// Connections is what t's own server says its open client connections are, each by CID and name,
+// read from the server object itself (Server.Connz); it fails t when t has no server of its own. A
+// test of what a process leaves behind reads the server's own account rather than the connections
+// it can see from inside its own process, since a connection the process has forgotten is exactly
+// what such a test is looking for.
 func Connections(t testing.TB) []Connection {
 	t.Helper()
-	connections, err := readConnections()
-	if err != nil {
-		t.Fatalf("read the NATS server's connections: %v", err)
+	s := serverOf(t)
+	if s == nil {
+		t.Fatalf("testnats: %s has no NATS server of its own to read: URL or JetStream starts one", t.Name())
 	}
-	return connections
+	return s.connections(t)
 }
 
 // Connection is one client connection the server holds: the id it gave it, and the name the
 // client gave itself (nats.Name), empty for a client that gave none — a raw nats.Connect or a
-// child process's, which is the connection this package's leak check exists to catch. The CID is
-// what a check compares, since the server never reuses one within its run, and the String is what
-// a report prints.
+// child process's. The CID is what a check compares, since the server never reuses one within its
+// run, and the String is what a report prints.
 type Connection struct {
 	CID  uint64
 	Name string
@@ -304,83 +232,57 @@ type Connection struct {
 
 func (c Connection) String() string { return fmt.Sprintf("%d %q", c.CID, c.Name) }
 
-// monitorClient bounds each monitoring request, so one the server never answers cannot outlast the
-// drain's own bound.
-var monitorClient = &http.Client{Timeout: 5 * time.Second}
-
-// readConnections is the one question this fixture asks the server — which clients it holds —
-// and every caller inside the package asks it here: the drain, Connections and the leak check's
-// arm and settle. clientConnections, reading the monitoring endpoint's /connz, is its one
-// implementation here. Two rows of this package's own tests replace it with a reader that fails,
-// which is how a failing read is driven without waiting on anything:
-// TestAFailedReadAfterTheCloseKeepsTheRecord, where the read fails only once the leak check has
-// closed the fixture's clients, and TestACheckWhoseEveryReadFailsLeavesNoEarlierTestsName, where
-// every read fails.
-var readConnections = clientConnections
-
-// clientConnections lists the server's open client connections, each by id and name, by reading
-// the monitoring endpoint's /connz. It is readConnections' one implementation here, and the one
-// function to re-point: a server running inside the test process answers the same question from
-// the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
-// rewrite.
-func clientConnections() ([]Connection, error) {
-	response, err := monitorClient.Get(monitorURL + "/connz")
+// connections lists the server's open client connections, every one of them: Connz's own default
+// is the first 1024.
+func (s *server) connections(t testing.TB) []Connection {
+	t.Helper()
+	connz, err := s.srv.Connz(&natsserver.ConnzOptions{Limit: math.MaxInt})
 	if err != nil {
-		return nil, err
+		t.Fatalf("testnats: read the client connections of the NATS server of %s: %v", s.test, err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitorURL, response.Status)
+	open := make([]Connection, 0, len(connz.Conns))
+	for _, c := range connz.Conns {
+		open = append(open, Connection{CID: c.Cid, Name: c.Name})
 	}
-	var connz struct {
-		Connections []struct {
-			CID  uint64 `json:"cid"`
-			Name string `json:"name"`
-		} `json:"connections"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
-		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
-	}
-	connections := make([]Connection, 0, len(connz.Connections))
-	for _, c := range connz.Connections {
-		connections = append(connections, Connection{CID: c.CID, Name: c.Name})
-	}
-	return connections, nil
+	return open
 }
 
-// monitor returns the base URL of a container's NATS monitoring endpoint.
-func monitor(container *tcnats.NATSContainer) (string, error) {
-	ctx := context.Background()
-	host, err := container.Host(ctx)
-	if err != nil {
-		return "", err
-	}
-	port, err := container.MappedPort(ctx, "8222/tcp")
-	if err != nil {
-		return "", err
-	}
-	return "http://" + host + ":" + port.Port(), nil
-}
-
-// JetStream returns a JetStream client of the package's NATS server, as URL gives it to t.
+// JetStream returns a JetStream client of the server URL gives t, on a client Connect opens for t,
+// its requests bounded as RequestTimeout bounds them.
 func JetStream(t testing.TB) jetstream.JetStream {
 	t.Helper()
-	URL(t)
-	conn, js := connect(t)
-	t.Cleanup(conn.Close)
+	js, err := jetstream.New(Connect(t, URL(t)), RequestTimeout(t))
+	if err != nil {
+		t.Fatalf("testnats: open JetStream on the NATS server of %s: %v", t.Name(), err)
+	}
 	return js
 }
 
-// Connect is the client a test of the shared server takes: it dials url, the URL that server
-// gave t, named t.Name(), and closes it when t ends. A test takes its client from here rather
-// than dialling itself because the name is what the leak check prints when a connection outlives
-// the test that opened it, and because the fixture closes what it opened, so the test owes that
-// close to nobody. The fixture gives the client its name and its close and leaves the dial's own
-// budget to nats.go's default or to a caller that passes one: of the fifteen sites that moved to
-// this helper ten dialled with nats.Timeout(time.Second) and five dialled with no timeout at all,
-// which is nats.go's two-second default, so a second of the fixture's own would shorten those
-// five. The caller's own options come after the fixture's, so a caller wanting another name or a
-// timeout passes one and wins.
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answered late on a loaded machine failed the test with "context
+// deadline exceeded" (TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent, with the
+// server's CONSUMER.INFO answer held 6 s). With this option such a request is bounded by what is
+// left of the test binary's deadline less testwait's margin, and with no deadline (-timeout 0) by
+// no bound a test can reach, so a late answer costs the test time and not its result.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	if end, bounded := testwait.Context(t).Deadline(); bounded {
+		return jetstream.WithDefaultTimeout(max(time.Until(end), time.Millisecond))
+	}
+	return jetstream.WithDefaultTimeout(time.Duration(math.MaxInt64))
+}
+
+// Connect is the client a test takes of a server: it dials url, named t.Name(), and closes it when
+// t ends. A test takes its client from here rather than dialling itself because the name is what
+// the leak check prints when a connection outlives the test that opened it, and because the
+// fixture closes what it opened, so the test owes that close to nobody. The fixture gives the
+// client its name and its close and leaves the dial's own budget to nats.go's default or to a
+// caller that passes one: of the fifteen sites that moved to this helper ten dialled with
+// nats.Timeout(time.Second) and five dialled with no timeout at all, which is nats.go's two-second
+// default, so a second of the fixture's own would shorten those five. The caller's own options come
+// after the fixture's, so a caller wanting another name or a timeout passes one and wins.
 func Connect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
 	t.Helper()
 	conn, err := nats.Connect(url, append([]nats.Option{nats.Name(t.Name())}, options...)...)
@@ -393,36 +295,50 @@ func Connect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,
-// under the stream-create error code; CreateStream retries that answer for up to createTimeout.
+// under the stream-create error code; CreateStream retries that answer.
 const (
 	streamStoreFailed     = "error creating store for stream"
 	streamCreateErrorCode = jetstream.ErrorCode(10049)
-	createTimeout         = 10 * time.Second
 )
 
-// CreateStream creates the stream config describes on js, a client of the server URL has emptied
-// for t, and returns it.
+// CreateStream creates the stream config describes on js and returns it. js may be a client of any
+// server: the server URL gives t, or one a test names itself, such as the server an end-to-end
+// script runs (internal/daemon's live_proof_test.go).
 //
 // nats-server answers a stream delete before it is done with the account's directories: a
 // goroutine of its own then removes the account's streams directory, which it can only do once
 // that directory is empty, so only when the deleted stream was the account's last (stream.go,
-// stop, v2.10 through v2.15). URL's reset deletes every stream, so its last delete always empties
-// the account, and the test's first create can arrive before that goroutine has run. Such a create
+// stop, v2.10 through v2.15). A create that arrives on that account before the goroutine has run
 // can lose the directory between making it and making its stream's own inside it: the server logs
 // "could not create storage directory - mkdir .../streams/<stream>: no such file or directory" and
-// answers the create "error creating store for stream". No API says when the goroutine has run, so
-// the create is retried on exactly that answer, every 50 ms; any other error fails the test at
-// once.
+// answers the create "error creating store for stream". A test that deletes its last stream and
+// creates another, and every test on a server an end-to-end script shares among its drivers, can
+// meet that answer. No API says when the goroutine has run, so the create is asked again on exactly
+// that answer, through the shared wait; any other error fails the test at once.
 //
-// The stream the create answers is read once and must be empty; the purge in URL says how a
-// create can come back holding an earlier stream's store. A stream handed to a test holding an
-// earlier test's messages makes that test count them as its own, so the failure names them here,
-// instead of surfacing as a count the test reads later: in the failure this guard was written
-// for, the row took its stream at consumer_lag_test.go:30 and read the count at :50.
+// The stream the create answers is read once and must be empty. A stream handed to a test holding
+// an earlier stream's messages makes that test count them as its own, so the failure names them
+// here, instead of surfacing as a count the test reads later: in the failure this guard was
+// written for, the row took its stream at consumer_lag_test.go:30 and read the count at :50. A
+// create can come back holding an earlier stream's store when a stream of that name was deleted
+// shortly before on the same server. nats-server does a stream delete's store work before it
+// answers, and that work is what can leave the store behind (v2.10.22: jetstream_api.go:2915-2921
+// answers only after mset.delete(), which calls store.Delete() inline and ignores its error,
+// stream.go:5234-5237). fileStore.Delete closes the stream's message blocks without removing them
+// and renames streams/<name> to streams/.<name> (filestore.go:7769-7773, 7793-7797); only the
+// removal of that .<name> runs in a goroutine (:7800-7817). So when an earlier delete of the same
+// name is still removing its .<name>, the next delete's rename fails onto that directory, the error
+// is dropped, and streams/<name> stays where it is with its blocks, until the next create of that
+// name loads it again, with its own Created new and the earlier messages at their stored times.
+// Measured in an issue pod on 2026-11-10 (dispatch://INFRA-2583) against nats-server 2.10.22, under
+// a load of four busy loops on two CPUs: 9 of 10,000 rounds of create, publish 12, delete, create
+// again came back holding all 12 messages. On a server of the test's own only the test's own
+// deletes can do that; on a server an end-to-end script runs, every driver of the script's run
+// creates ENVOY_NOTIFICATIONS on the one server.
 func CreateStream(t testing.TB, js jetstream.JetStream, config jetstream.StreamConfig) jetstream.Stream {
 	t.Helper()
 	var stream jetstream.Stream
-	err := retryStreamStoreFailure(func() error {
+	err := retryStreamStoreFailure(t, func() error {
 		var err error
 		stream, err = js.CreateStream(t.Context(), config)
 		return err
@@ -480,51 +396,28 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	if err := consumers.Err(); err != nil {
 		held = append(held, fmt.Sprintf("list its consumers: %v", err))
 	}
-	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in URL says how that happens)",
+	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; CreateStream's comment says how that happens)",
 		name, strings.Join(held, "; "))
 }
 
-// retryStreamStoreFailure runs create again while it fails with the server's stream store
-// failure, for up to createTimeout, and returns its last error.
-func retryStreamStoreFailure(create func() error) error {
-	deadline := time.Now().Add(createTimeout)
-	for {
+// retryStreamStoreFailure runs create again while it fails with the server's stream store failure,
+// waiting through the shared wait (testwait.Until), and returns its first other answer.
+func retryStreamStoreFailure(t testing.TB, create func() error) error {
+	t.Helper()
+	return testwait.Until(t, "a stream create the NATS server answers with other than its stream store failure", func() (error, bool) {
 		err := create()
 		var apiErr *jetstream.APIError
 		storeFailed := errors.As(err, &apiErr) && apiErr.ErrorCode == streamCreateErrorCode && apiErr.Description == streamStoreFailed
-		if !storeFailed || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return err, !storeFailed
+	})
 }
 
-// limits caps a NATS test container at one CPU and 512 MiB, as every container the repository's
-// tests and proofs start is capped on a shared host: a test server holds a few small streams.
-var limits = testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
-	hostConfig.NanoCPUs = 1_000_000_000
-	hostConfig.Memory = 512 << 20
-})
-
-// start runs a NATS container, with its monitoring endpoint on 8222. A container Docker created and never saw ready (a readiness wait
-// that timed out under load) comes back beside the error, and is removed before start returns:
-// no test's end would remove a container the package shares.
-func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
-	options = append([]testcontainers.ContainerCustomizer{tcnats.WithArgument("http_port", "8222"), limits}, options...)
-	started, err := tcnats.Run(context.Background(), image, options...)
-	if err != nil {
-		return started, errors.Join(err, testcontainers.TerminateContainer(started))
-	}
-	return started, nil
-}
-
-// StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
-// authenticating as the nkey user whose public key is user, removed when t ends, and returns its
-// client URL once the server answers there (answering).
+// StartNkeyAuthorized starts a NATS server with JetStream of t's own in this process that admits
+// only the nkey user whose public key is user, shut down when t ends, and returns its client URL
+// once the server refuses a client with no credential (answering).
 func StartNkeyAuthorized(t testing.TB, user string) string {
 	t.Helper()
-	_, url := StartNkeyAuthorizedUsers(t, Image, NkeyUser{Public: user})
-	return url
+	return StartNkeyAuthorizedUsers(t, NkeyUser{Public: user})
 }
 
 // NkeyUser is one nkey user a server admits: its public key, and the server's permissions block for
@@ -534,10 +427,27 @@ type NkeyUser struct {
 	Permissions string
 }
 
-// StartNkeyAuthorizedUsers is StartNkeyAuthorized for a server of image admitting users alone,
-// each with its permissions. It returns the container, for a test that reads the server's log.
-func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*tcnats.NATSContainer, string) {
+// StartNkeyAuthorizedUsers is StartNkeyAuthorized for a server admitting users alone, each with its
+// permissions. The configuration is the one StartImage gives a container, read as nats-server reads
+// its configuration file.
+func StartNkeyAuthorizedUsers(t testing.TB, users ...NkeyUser) string {
 	t.Helper()
+	path := filepath.Join(t.TempDir(), "nats.conf")
+	if err := os.WriteFile(path, []byte(nkeyConfig(users)), 0o600); err != nil {
+		t.Fatalf("write the nkey-authorized NATS configuration: %v", err)
+	}
+	opts, err := natsserver.ProcessConfigFile(path)
+	if err != nil {
+		t.Fatalf("read the nkey-authorized NATS configuration: %v", err)
+	}
+	s := start(t, opts, false)
+	answering(t, s.url)
+	return s.url
+}
+
+// nkeyConfig is the whole configuration of a server with JetStream admitting users alone, each with
+// its permissions.
+func nkeyConfig(users []NkeyUser) string {
 	entries := make([]string, 0, len(users))
 	for _, user := range users {
 		entry := fmt.Sprintf("{ nkey: %q", user.Public)
@@ -546,111 +456,50 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 		}
 		entries = append(entries, entry+" }")
 	}
-	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ %s ]\n}\n", strings.Join(entries, ", "))
-	container, err := start(image, tcnats.WithConfigFile(strings.NewReader(config)))
-	if err != nil {
-		t.Fatalf("start nkey-authorized NATS: %v", err)
-	}
-	testcontainers.CleanupContainer(t, container)
-	url, err := container.ConnectionString(context.Background())
-	if err != nil {
-		t.Fatalf("NATS connection string: %v", err)
-	}
-	answering(t, url)
-	return container, url
-}
-
-// StartImage runs a NATS container of image of its own, with JetStream and no users (the NATS
-// module's own -js), removed when t ends, and returns its client URL once its JetStream API
-// answers. It is for a test of the server itself, such as one the daemon refuses (SkippingImage);
-// every other test shares the package's server through URL.
-func StartImage(t testing.TB, image string) string {
-	t.Helper()
-	container, err := start(image)
-	if err != nil {
-		t.Fatalf("start NATS of %s: %v", image, err)
-	}
-	testcontainers.CleanupContainer(t, container)
-	url, err := container.ConnectionString(context.Background())
-	if err != nil {
-		t.Fatalf("NATS connection string: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
-	defer cancel()
-	for {
-		conn, _, err := ready(ctx, url, t.Name())
-		if err == nil {
-			conn.Close()
-			return url
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for NATS at %s to answer within %s: %v", url, readinessTimeout, err)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+	return fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ %s ]\n}\n", strings.Join(entries, ", "))
 }
 
 // answering returns once the server at url refuses a connection with no credential with its own
-// authorization violation: the proof it speaks the client protocol and enforces its nkey users. The
-// log line the container's start waits for can come before a connection there is served, and until
-// then a dial ends in EOF or a refusal that says nothing about the server's users. A server that
-// admits the connection enforces no users, and every refusal a test expects would pass for the wrong
+// authorization violation: the proof it speaks the client protocol and enforces its nkey users. A
+// container's port can answer before the server inside it serves a connection, and until then a
+// dial ends in EOF or a refusal that says nothing about the server's users. A server that admits
+// the connection enforces no users, and every refusal a test expects would pass for the wrong
 // reason, so that fails the test.
 func answering(t testing.TB, url string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
-	defer cancel()
-	for {
-		conn, err := nats.Connect(url, nats.Timeout(time.Second), nats.NoReconnect())
+	testwait.Until(t, fmt.Sprintf("the NATS server at %s to refuse a client with no credential with its authorization violation", url), func() (error, bool) {
+		conn, err := nats.Connect(url, nats.NoReconnect())
 		if err == nil {
 			conn.Close()
 			t.Fatalf("NATS at %s admitted a client with no credential: it enforces no nkey users", url)
 		}
-		if errors.Is(err, nats.ErrAuthorization) {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for NATS at %s to answer within %s: %v", url, readinessTimeout, err)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+		return err, errors.Is(err, nats.ErrAuthorization)
+	})
 }
 
-// connect returns a connection to the server once its JetStream API answers. The connection
-// carries t's name, as a test's own client does, and is the fixture's to close: the reset's
-// client and a test's client are alike the fixture's (leakcheck.go).
-func connect(t testing.TB) (*nats.Conn, jetstream.JetStream) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
-	defer cancel()
-	for {
-		conn, js, err := ready(ctx, serverURL, t.Name())
-		if err == nil {
-			fixtureOpened(conn)
-			return conn, js
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for NATS JetStream readiness: %v", err)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+// logCapture is a server's logger: it keeps every line the server logs, for the failure of a
+// server that never accepted connections.
+type logCapture struct {
+	mu   sync.Mutex
+	text strings.Builder
 }
 
-func ready(ctx context.Context, url, name string) (*nats.Conn, jetstream.JetStream, error) {
-	conn, err := nats.Connect(url, nats.Name(name), nats.Timeout(time.Second))
-	if err != nil {
-		return nil, nil, err
-	}
-	js, err := jetstream.New(conn)
-	if err == nil {
-		_, err = js.AccountInfo(ctx)
-	}
-	if err != nil {
-		conn.Close()
-		return nil, nil, err
-	}
-	return conn, js, nil
+func (c *logCapture) write(level, format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Fprintf(&c.text, "[%s] %s\n", level, line)
+}
+
+func (c *logCapture) Noticef(format string, args ...any) { c.write("INF", format, args...) }
+func (c *logCapture) Warnf(format string, args ...any)   { c.write("WRN", format, args...) }
+func (c *logCapture) Errorf(format string, args ...any)  { c.write("ERR", format, args...) }
+func (c *logCapture) Fatalf(format string, args ...any)  { c.write("FTL", format, args...) }
+func (c *logCapture) Debugf(format string, args ...any)  { c.write("DBG", format, args...) }
+func (c *logCapture) Tracef(format string, args ...any)  { c.write("TRC", format, args...) }
+
+func (c *logCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.text.String()
 }

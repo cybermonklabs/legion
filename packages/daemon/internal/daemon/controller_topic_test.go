@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A planner whose launches run out holds its issue: the architect's role topic takes the held and
@@ -44,6 +43,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")})
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	obs := observing(&o)
 	d := startDaemon(t, cfg, o)
 
 	token, err := claim.ProjectToken(cfg.Project)
@@ -98,13 +98,18 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		t.Fatalf("spawn the planner = %d %s, want its one launch refused", status, body)
 	}
 
-	testwait.Eventually(t, "every notice row finished and the controller's held notice taken", func() bool {
-		var rows int
-		if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
-			t.Fatalf("count the issue's outbox rows: %v", err)
-		}
-		return rows == 0 && len(listener.acceptedOn(controllerTopic)) == 1
-	})
+	// The architect's two notices and the controller's one, which finishes only once the
+	// listener takes it after its two refusals.
+	obs.settled(t, rowOf{issue: issue, kind: record.OutboxKindNotice, outcome: settledFinished},
+		rowOf{issue: issue, kind: record.OutboxKindNotice, outcome: settledFinished},
+		rowOf{issue: issue, kind: record.OutboxKindControllerNotice, outcome: settledFinished})
+	var rows int
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
+		t.Fatalf("count the issue's outbox rows: %v", err)
+	}
+	if taken := listener.acceptedOn(controllerTopic); rows != 0 || len(taken) != 1 {
+		t.Fatalf("once every notice row finished: %d rows left and the controller's topic took %+v, want no row and the held notice", rows, taken)
+	}
 	onArchitect := listener.acceptedOn(architectTopic)
 	if len(onArchitect) != 2 || onArchitect[0].Message != "held on "+issue || onArchitect[1].Message != "worker-died on "+issue {
 		t.Fatalf("the architect's role topic took %+v, want held then worker-died, once each", onArchitect)

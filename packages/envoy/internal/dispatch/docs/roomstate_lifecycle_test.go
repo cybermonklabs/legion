@@ -9,7 +9,9 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every condition unusedLocked names keeps an otherwise detached document state until that holder
@@ -94,9 +96,26 @@ func TestLiveWriterKeepsOneWriterSlotAfterItsRoomHasGone(t *testing.T) {
 		t.Fatalf("take the first writer slot: %v", err)
 	}
 	defer service.finishLiveWrite(first)
-	wait, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// The second transaction's wait ends on a fake clock, which the test moves past its deadline
+	// once that transaction is waiting in openLiveWrite for the first one's slot.
+	waitClock := clocktest.New(time.Now())
+	wait, cancel := waitClock.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := service.openLiveWrite(wait, &Ledger{}, id); !errors.Is(err, context.DeadlineExceeded) {
+	second := make(chan error, 1)
+	go func() {
+		_, err := service.openLiveWrite(wait, &Ledger{}, id)
+		second <- err
+	}()
+	waitFor(t, "the second transaction to wait for the first one's writer slot", func() bool {
+		select {
+		case err := <-second:
+			t.Fatalf("take a second writer slot while the first is open: %v, want it to wait until its context ends", err)
+		default:
+		}
+		return goroutinesIn("(*Service).openLiveWrite(", "TestLiveWriterKeepsOneWriterSlotAfterItsRoomHasGone") > 0
+	})
+	waitClock.Advance(100 * time.Millisecond)
+	if err := testwait.Receive(t, "the second transaction's wait to end with its context", second); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("take a second writer slot while the first is open: %v, want context deadline exceeded", err)
 	}
 }

@@ -120,8 +120,15 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // it ends too, leaving nothing queued or armed behind it. A failed read ends the climb: the
 // issue's next event, its next handoff and the daemon's next start all read again.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) {
+	reads := newPassTimer(w.timers(), w.passes, passMergeState, mergeStateLadderWait)
+	defer reads.stop()
 	for read := 1; ; read++ {
 		state, err := w.readMergeState(ctx, issue)
+		// Each read is a pass of the ladders' loop, numbered across every ladder, which run on
+		// goroutines of their own; production, which observes nothing, numbers none.
+		if w.observe != nil {
+			w.observe(observedPass{loop: passMergeState, pass: w.mergeStatePasses.Add(1)})
+		}
 		if err != nil {
 			if ctx.Err() == nil {
 				w.log.Warn("read GitHub's merge state for an issue whose approval waits on it; the record stands as it was until the next read",
@@ -132,22 +139,16 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) {
 		if state != record.MergeStateUnknown || read >= mergeStateLadderReads {
 			return
 		}
-		select {
-		case <-ctx.Done():
+		if !reads.next(ctx) {
 			return
-		case <-time.After(w.mergeStateWait()):
 		}
 	}
 }
 
 // mergeStateWait is how long the ladder waits between reads of a head GitHub is still computing
 // the merge state of, and how long the outbox's merge-queue read waits after a failed read
-// (mergeQueueRead, which attach hands this wait): mergeStateLadderWait, which a test shortens
-// through the runtime's own field.
+// (mergeQueueRead, which attach hands this wait): mergeStateLadderWait, the one wait both make.
 func (w *workflowRuntime) mergeStateWait() time.Duration {
-	if w.mergeStateRetry > 0 {
-		return w.mergeStateRetry
-	}
 	return mergeStateLadderWait
 }
 

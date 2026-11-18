@@ -608,7 +608,7 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
     // and Enter still opens the row the reader is looking at. The clock crosses the 500 ms
     // pause here deliberately: this row is about what firing it does.
     await tick(500);
-    await waitFor(() => expect(search.mock.calls).toHaveLength(2), { timeout: 3000 });
+    await waitFor(() => expect(search.mock.calls).toHaveLength(2));
     expect(search.mock.calls[1]?.[0]).toBe("astrolabe");
     expect(search.mock.calls[1]?.[1]).toEqual({});
     await waitFor(() => expect(optionIds()).toEqual([optionId(second), optionId(first)]));
@@ -638,7 +638,7 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
     // head would be a row they never chose, and the next Enter would open it. The clock
     // crosses the 500 ms pause here deliberately: this row is about what firing it does.
     await tick(500);
-    await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
+    await waitFor(() => expect(optionIds()).toEqual([optionId(first)]));
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/");

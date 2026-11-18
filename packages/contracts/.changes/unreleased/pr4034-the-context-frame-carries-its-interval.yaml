@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The agent stream's `context` frame may carry `interval`, the number of the publisher's interval
+  the reading went out in, `at`, when it went out, and `readAt`, when the reading was taken. All
+  three are optional.

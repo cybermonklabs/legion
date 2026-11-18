@@ -43,7 +43,7 @@ func consumerCapFixture(t *testing.T) (string, nats.JetStreamContext) {
 	uri := testnats.URL(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -78,9 +78,9 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 			t.Fatalf("the deployed stream's consumer cap = %d, want the -1 or 0 a server answers for a stream deployed without one", deployed)
 		}
 
-		// The start runs with no keeper period of its own, so the keeper's first pass is a
-		// defaultKeepInterval away, 30 seconds, and the cap read below is the start's own write.
-		client, err := ConnectOwningStream([]string{uri})
+		// The client's clock stands still, so its keeper makes no pass, and the cap read below is
+		// the start's own write.
+		client, err := ConnectOwningStream([]string{uri}, keeperClock().option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -96,7 +96,8 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 		if deployed := deployStreamWithCap(t, js, streamMaxConsumers); deployed != streamMaxConsumers {
 			t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, streamMaxConsumers)
 		}
-		client, err := ConnectOwningStream([]string{uri}, WithKeepInterval(testKeepInterval))
+		clock := keeperClock()
+		client, err := ConnectOwningStream([]string{uri}, clock.option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -113,7 +114,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 		if down.Config.MaxConsumers != streamMaxConsumers/2 {
 			t.Fatalf("the stream's consumer cap after the operator lowered it = %d, want %d", down.Config.MaxConsumers, streamMaxConsumers/2)
 		}
-		awaitKept(t, js, Stream, "the consumer cap over a stream the operator lowered", func(info *nats.StreamInfo) bool {
+		awaitKept(t, clock, 1, js, Stream, "the consumer cap over a stream the operator lowered", func(info *nats.StreamInfo) bool {
 			return info.Config.MaxConsumers == streamMaxConsumers
 		})
 	})
@@ -123,7 +124,8 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 		if deployed := deployStreamWithCap(t, js, streamMaxConsumers); deployed != streamMaxConsumers {
 			t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, streamMaxConsumers)
 		}
-		client, err := ConnectOwningStream([]string{uri}, WithKeepInterval(testKeepInterval))
+		clock := keeperClock()
+		client, err := ConnectOwningStream([]string{uri}, clock.option())
 		if err != nil {
 			t.Fatalf("start owning the stream: %v", err)
 		}
@@ -143,7 +145,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 		if off.Config.MaxConsumers != -1 {
 			t.Fatalf("the stream's consumer cap after the operator unset it = %d, want the -1 this server answers for a stream with no cap", off.Config.MaxConsumers)
 		}
-		awaitKept(t, js, Stream, "the consumer cap over a stream the operator uncapped", func(info *nats.StreamInfo) bool {
+		awaitKept(t, clock, 1, js, Stream, "the consumer cap over a stream the operator uncapped", func(info *nats.StreamInfo) bool {
 			return info.Config.MaxConsumers == streamMaxConsumers
 		})
 	})

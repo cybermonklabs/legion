@@ -2,11 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"log"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestHoldSegmentation(t *testing.T) {
@@ -39,8 +40,7 @@ func TestHoldSegmentation(t *testing.T) {
 // read, and its table row shows "-" with the mark "(1 failed read)".
 func TestLockProbeCountsAFailedConnect(t *testing.T) {
 	var logged bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	now := time.Now()
 	lp := &lockProbe{}
 	lp.loop(ctx, unreachablePG, now, now, log.New(&logged, "", 0))

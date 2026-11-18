@@ -1,10 +1,11 @@
 package goroutinetest_test
 
 import (
+	"fmt"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A test that waits for a goroutine to return passes at once, checking nothing, if Live never finds
@@ -24,11 +25,7 @@ func TestLiveFollowsAGoroutineUntilItReturns(t *testing.T) {
 	}
 	close(release)
 	<-returned
-	deadline := time.Now().Add(5 * time.Second)
-	for goroutinetest.Live(id) {
-		if time.Now().After(deadline) {
-			t.Fatalf("goroutine %d returned 5 s ago, and Live still reports it running", id)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, fmt.Sprintf("Live to lose goroutine %d, which has returned", id), func() bool {
+		return !goroutinetest.Live(id)
+	})
 }

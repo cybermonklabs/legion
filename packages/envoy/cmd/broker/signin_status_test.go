@@ -64,13 +64,11 @@ func fetchSignInStatus(t *testing.T, base string) (signInStatus, string) {
 func awaitClientCheck(t *testing.T, base string) (signInStatus, string) {
 	t.Helper()
 	var status signInStatus
-	var body string
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		status, body = fetchSignInStatus(t, base)
-		return status.ClientCheck != nil
-	}) {
-		t.Fatalf("the broker took no client check within %s: %s", awaitTimeout, body)
-	}
+	body := testwait.Until(t, "the broker's boot pass of its client check", func() (string, bool) {
+		var read string
+		status, read = fetchSignInStatus(t, base)
+		return read, status.ClientCheck != nil
+	})
 	return status, body
 }
 
@@ -284,7 +282,7 @@ func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
 	// And after a restart: both processes gone, a third started on the same database.
 	for _, process := range []*brokerProcess{first, second} {
 		process.Terminate(t)
-		if err := process.AwaitExit(t, stopTimeout); err != nil {
+		if err := process.AwaitExit(t); err != nil {
 			t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 		}
 	}

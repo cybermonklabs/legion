@@ -26,6 +26,9 @@ on:
 jobs:
   test-fixtures:
     runs-on: ubuntu-24.04
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 34 s, 7 s of its clock over them, and its test step's longest, 1 s,
+    # plus the package script's guard of 10 s: 52 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

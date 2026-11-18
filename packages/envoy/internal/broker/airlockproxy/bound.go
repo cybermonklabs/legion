@@ -156,13 +156,13 @@ func (s *Server) valuesFor(ctx context.Context, grantID string) (map[string]requ
 	// The common path, checked before the single-flight lock: the grant's values are held and
 	// still usable, so every parallel request of one grant answers from them at once. Taking
 	// read first would put them all in a queue behind a read that is not going to happen.
-	if values, _, fresh := held.held(s.now(), version, s.keepValues); fresh {
+	if values, _, fresh := held.held(s.clock.Now(), version, s.keepValues); fresh {
 		return values, nil
 	}
 
 	held.read.Lock()
 	defer held.read.Unlock()
-	values, drops, fresh := held.held(s.now(), version, s.keepValues)
+	values, drops, fresh := held.held(s.clock.Now(), version, s.keepValues)
 	if fresh {
 		return values, nil
 	}
@@ -646,19 +646,20 @@ func (c *cutCall) Error() string { return c.why }
 // watchCarried ends a carried call once the grant behind it stops carrying it, and it is the
 // whole of what holds such a call to its grant once it has started: no request is read on it
 // again, and the idle limit bounds nothing on a call whose service keeps sending. So the read
-// every request makes for itself runs here instead, on the watch interval, until the call's own
-// context ends, which ServeHTTP's return does. A call shorter than one interval is read no
-// second time. message is the line the end logs and end is how the call is ended: the cancel of
-// its context, or the cut of a joined connection.
+// every request makes for itself runs here instead, on the watch interval of the server's clock,
+// until the call's own context ends, which ServeHTTP's return does. A call shorter than one
+// interval is read no second time. message is the line the end logs and end is how the call is
+// ended: the cancel of its context, or the cut of a joined connection.
 func (s *Server) watchCarried(ctx context.Context, info connInfo, r *http.Request, chosen pair, id, message string, end func(*cutCall)) {
-	ticker := time.NewTicker(s.watch)
-	defer ticker.Stop()
+	timer := s.clock.NewTimer(s.watch)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C():
 		}
+		timer.Reset(s.watch)
 		why := s.carryRefusal(ctx, info, chosen)
 		if why == nil {
 			continue
@@ -704,7 +705,7 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // grantRefusal logs one: a read that failed says nothing about the grant, and a database failover
 // must cut no WebSocket and no stream the airlock carries.
 func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *cutCall {
-	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
+	if expires := info.grant.Expires; expires != nil && !s.clock.Now().Before(*expires) {
 		return &cutCall{http.StatusProxyAuthRequired, codeGrantNotLive, "this grant expired while the proxy carried this call"}
 	}
 	grant, err := s.grants.AirlockConnection(ctx, info.password)

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // applyRoleClaim applies one record as the role claim watcher delivers it (roleCache.Apply), the
@@ -106,7 +108,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 	logs := captureRegistryLogs(t)
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -121,7 +123,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -144,24 +146,25 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 		}
 	}
 	putRoleClaim(t, rawRoles, "reviewer", "ses_a")
-	waitFor(t, 5*time.Second, held("ses_a", "restored", "reviewer"))
+	waitFor(t, "RolesHeldBy(ses_a) to answer [restored reviewer]", held("ses_a", "restored", "reviewer"))
 
 	putRoleClaim(t, rawRoles, "reviewer", "ses_b")
-	waitFor(t, 5*time.Second, held("ses_b", "reviewer"))
-	waitFor(t, 5*time.Second, held("ses_a", "restored"))
+	waitFor(t, "RolesHeldBy(ses_b) to answer [reviewer]", held("ses_b", "reviewer"))
+	waitFor(t, "RolesHeldBy(ses_a) to answer [restored]", held("ses_a", "restored"))
 
 	if err := rawRoles.Delete("reviewer"); err != nil {
 		t.Fatalf("delete reviewer's claim: %v", err)
 	}
-	waitFor(t, 5*time.Second, held("ses_b"))
+	waitFor(t, "RolesHeldBy(ses_b) to answer no role once reviewer's claim is deleted", held("ses_b"))
 
 	if _, err := rawRoles.Put("restored", []byte(`{"holder_session_id":""}`)); err != nil {
 		t.Fatalf("store a claim naming no holder: %v", err)
 	}
-	waitFor(t, 5*time.Second, held("ses_a"))
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, "RolesHeldBy(ses_a) to answer no role once restored's claim names no holder", held("ses_a"))
+	waitFor(t, "the log to say the role claim watcher found a claim it cannot read", func() bool {
 		return strings.Contains(logs.String(), "role claim watcher found a claim it cannot read")
 	})
+
 	if n := strings.Count(logs.String(), "role claim watcher found a claim it cannot read"); n != 1 {
 		t.Fatalf("one undecodable claim logged %d times, want once:\n%s", n, logs.String())
 	}
@@ -179,9 +182,10 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 		}
 	}})
 	reg.roleWatcher.Start()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, "the gated role claim view to be servable", func() bool {
 		return servableView(reg)
 	})
+
 	claimRoleAs(t, reg, "ses_c", "m1", "planner", roleClaimInstance)
 	if got := heldRoles(t, reg, "ses_c"); !slices.Equal(got, []string{"planner"}) {
 		t.Fatalf("a claim this registry wrote is not in its view as the write answers: %v", got)
@@ -206,7 +210,7 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -214,17 +218,18 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 	if _, err := reg.RolesHeldBy("ses_a"); err != nil {
 		t.Fatalf("a ready view refused: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
 	if err := js.DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, "RolesHeldBy(ses_a) to refuse with ErrRoleViewNotReady once the role bucket is gone", func() bool {
 		_, err := reg.RolesHeldBy("ses_a")
 		return errors.Is(err, ErrRoleViewNotReady)
 	})
+
 	if reg.WatchErr() == nil {
 		t.Fatal("the registry reports no watcher error while its role claim view cannot answer")
 	}
@@ -240,32 +245,31 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []string) int {
 	t.Helper()
 	refusals := 0
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("RolesHeldBy(%s) to answer %v", sessionID, want), func() (int, bool) {
 		roles, err := reg.RolesHeldBy(sessionID)
 		switch {
 		case err == nil && slices.Equal(roles, want):
-			return refusals
+			return refusals, true
 		case err == nil:
 			t.Fatalf("RolesHeldBy(%s) answered %v, want %v or ErrRoleViewNotReady: a holder reported without its role", sessionID, roles, want)
 		case !errors.Is(err, ErrRoleViewNotReady):
 			t.Fatalf("RolesHeldBy(%s) refused with %v, want ErrRoleViewNotReady", sessionID, err)
-		case time.Now().After(deadline):
-			t.Fatalf("RolesHeldBy(%s) still refuses after 30 s: %v", sessionID, err)
 		}
 		refusals++
-		time.Sleep(5 * time.Millisecond)
-	}
+		return refusals, false
+	})
+	return refusals
 }
 
 // waitForHeld waits until the view answers that sessionID holds exactly want, so a test that then
 // starts the view again knows the claims reached it before it did.
 func waitForHeld(t *testing.T, reg *Registry, sessionID string, want ...string) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, fmt.Sprintf("RolesHeldBy(%s) to answer %v", sessionID, want), func() bool {
 		roles, err := reg.RolesHeldBy(sessionID)
 		return err == nil && slices.Equal(roles, want)
 	})
+
 }
 
 // restartRoleViewTimingOutAfter puts the role claim view where a listener start leaves it when a
@@ -301,7 +305,7 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -317,7 +321,7 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 	waitForHeld(t, reg, "ses_holder", "planner", "reviewer")
 
 	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1)
-	waitFor(t, 5*time.Second, reg.roleWatcher.Ready)
+	waitFor(t, "the restarted role claim view's first scan to end at its idle bound", reg.roleWatcher.Ready)
 	if roles, err := reg.RolesHeldBy("ses_holder"); !errors.Is(err, ErrRoleViewNotReady) {
 		t.Fatalf("after a first scan the idle timer ended, RolesHeldBy(ses_holder) = %v, %v; want ErrRoleViewNotReady", roles, err)
 	}
@@ -350,7 +354,7 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	if _, err := reg.SetRole("ses_holder", "m1", "planner", false); err != nil {
 		t.Fatalf("claim planner: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -362,7 +366,7 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 
 	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
@@ -395,7 +399,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	if _, err := reg.SetRole("ses_holder", "m1", "reviewer", false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -405,7 +409,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	}
 	putRoleClaim(t, old, "planner", "ses_holder")
 	oldArchitect := putRoleClaim(t, old, "architect", "ses_other")
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, "RolesHeldBy to answer [planner reviewer] for ses_holder and [architect] for ses_other", func() bool {
 		holder, errHolder := reg.RolesHeldBy("ses_holder")
 		other, errOther := reg.RolesHeldBy("ses_other")
 		return errHolder == nil && errOther == nil &&
@@ -435,7 +439,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	reg.roleWatcher.Stop()
 	reg.roleWatcher = kvwatch.New("role claims", reg.roles(), cache)
 	reg.roleWatcher.Start()
-	waitFor(t, 5*time.Second, reg.roleWatcher.Ready)
+	waitFor(t, "the gated role claim view's first scan to end", reg.roleWatcher.Ready)
 	heldOnceComplete(t, reg, "ses_holder", []string{"planner", "reviewer"})
 
 	if err := js.DeleteKeyValue(bus.RoleClaimBucket); err != nil {
@@ -449,11 +453,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the refill never reached the holder's claim")
-	}
+	testwait.Receive(t, "the refill to reach the holder's claim", held)
 	// The copy keeps every holder through the read and removes what the read found no evidence of
 	// only once it completes (roleCache), so a read of it while the refill is short of the
 	// holder's claim answers the copy the view had, never a part of the new bucket.
@@ -461,7 +461,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 		t.Fatalf("with the refill short of the holder's claim, ses_holder holds %v, want the copy it had, [planner reviewer]", got)
 	}
 	release()
-	waitFor(t, 30*time.Second, reg.roleWatcher.Following)
+	waitFor(t, "the released refill to complete, so the view follows the recreated bucket", reg.roleWatcher.Following)
 	if got := heldRoles(t, reg, "ses_holder"); !slices.Equal(got, []string{"reviewer"}) {
 		t.Fatalf("after the refill ses_holder holds %v, want [reviewer]: a claim only the old bucket had outlived the reset", got)
 	}
@@ -515,7 +515,11 @@ func TestAClaimWhoseRequestEndsDuringItsCleanupSucceedsAndLogsNoFailure(t *testi
 		t.Fatalf("a claim that landed returned %v when its request ended during the cleanup, want success", err)
 	}
 	assertRoleHolder(t, reg, role, newSession)
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the cut-short cleanup's INFO line rather than sleeping for it; once it is logged the
+	// cleanup is done, so the WARN-absence below reads a settled log.
+	waitFor(t, "the cut-short cleanup to log that the request ended first", func() bool {
+		return strings.Contains(logs.String(), "the request ended first")
+	})
 	out := logs.String()
 	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "the request ended first") {
 		t.Fatalf("the cut-short cleanup was not logged at INFO:\n%s", out)

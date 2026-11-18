@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import type { LegionState } from "@legion/contracts/legion-api";
 import { createPhaseReminder } from "./phase-reminder";
 import {
@@ -107,27 +107,34 @@ test("a WAITING reply moves the reported wake out by the waiting limit", async (
   expect(reminder.phaseWake().nextReminderAt).toBeNull();
 
   // The next settle arms the ordinary reminder; a WAITING reply arms the waiting one instead.
-  const beforeOrdinary = Date.now();
-  await reminder.settle({ kind: "settle", lastAssistantText: "Still pushing." });
-  const ordinary = reminder.phaseWake();
-  const beforeWaiting = Date.now();
-  await reminder.settle({ kind: "settle", lastAssistantText: "WAITING on CI to finish the run." });
-  const waiting = reminder.phaseWake();
+  // Each wake is stamped on `Date.now()`, held here at one moment so each is read exactly.
+  const settledAt = Date.now();
+  setSystemTime(new Date(settledAt));
+  let ordinaryAt: unknown;
+  let waitingAt: unknown;
+  try {
+    await reminder.settle({ kind: "settle", lastAssistantText: "Still pushing." });
+    ordinaryAt = reminder.phaseWake().nextReminderAt;
+    await reminder.settle({
+      kind: "settle",
+      lastAssistantText: "WAITING on CI to finish the run.",
+    });
+    waitingAt = reminder.phaseWake().nextReminderAt;
+  } finally {
+    setSystemTime();
+  }
 
   expect(timers.map((timer) => timer.delayMs)).toEqual([
     DEFAULT_STALL_LIMITS.reminderMs,
     DEFAULT_STALL_LIMITS.waitingMs,
   ]);
-  expect(ordinary.nextReminderAt, "the ordinary settle armed a reminder").not.toBeNull();
-  expect(waiting.nextReminderAt, "the WAITING settle armed one too").not.toBeNull();
-  const ordinaryAt = Date.parse(String(ordinary.nextReminderAt));
-  const waitingAt = Date.parse(String(waiting.nextReminderAt));
-  expect(ordinaryAt).toBeGreaterThanOrEqual(beforeOrdinary + DEFAULT_STALL_LIMITS.reminderMs);
-  expect(waitingAt).toBeGreaterThanOrEqual(beforeWaiting + DEFAULT_STALL_LIMITS.waitingMs);
+  expect(ordinaryAt, "the ordinary settle armed a reminder").not.toBeNull();
+  expect(waitingAt, "the WAITING settle armed one too").not.toBeNull();
+  expect(Date.parse(String(ordinaryAt))).toBe(settledAt + DEFAULT_STALL_LIMITS.reminderMs);
   expect(
-    waitingAt - ordinaryAt,
-    "the wait buys the difference between the two limits"
-  ).toBeGreaterThanOrEqual(DEFAULT_STALL_LIMITS.waitingMs - DEFAULT_STALL_LIMITS.reminderMs);
+    Date.parse(String(waitingAt)),
+    "the wait buys the waiting limit instead of the ordinary one"
+  ).toBe(settledAt + DEFAULT_STALL_LIMITS.waitingMs);
 
   // A closed phase reports no wake at all, whatever timer is still armed on the host.
   reminder.apply({ kind: "phase-closed" });

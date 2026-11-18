@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errClaimReadFailed and errClaimWriteFailed are the answers a countedKeyValue that fails gives a
@@ -268,12 +269,12 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 	stopInterestCache(rig.reg)
 
 	// Another listener grants the role: the claim and the lane topic in the bucket's row.
-	other, err := Open(rig.conn, WithReplicas(1), WithClock(rig.clock.Now))
+	other, err := Open(rig.conn, WithReplicas(1), WithClock(rig.clock))
 	if err != nil {
 		t.Fatalf("open the other listener's registry: %v", err)
 	}
 	t.Cleanup(other.StopWatch)
-	ready, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ready, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	if err := other.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("WaitForCacheReady on the other listener's registry: %v", err)

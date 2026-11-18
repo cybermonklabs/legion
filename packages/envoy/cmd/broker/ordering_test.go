@@ -10,13 +10,14 @@
 // pins is one Postgres itself decides. Each row's comment names the one edit to boot.go that turns
 // that row red, which is how each of the twelve is measured.
 //
-// No row waits on the clock to decide an order: the sequences call each collaborator on one
-// goroutine, so a step recorded as it runs is the order itself, and the one row that does read a
-// duration to decide anything (the drain) reads it one way only - a timer never fires early,
-// however loaded the machine is. The two durations beside it are hang guards, read only where a
-// wait on an event would otherwise hang: the bound the other boot rows hand boot for a wait that
-// is already over when it begins (bootListenWait), and the one the catch-up row hands it for a
-// wait that is real but reachable by nothing a Postgres that answers at all does (listenHangGuard).
+// No row waits on the machine's clock to decide an order: the sequences call each collaborator
+// on one goroutine, so a step recorded as it runs is the order itself, and the one row that
+// does order a step against a duration (the drain) holds that duration on a fake clock of its
+// own and moves it. The two durations beside it are hang guards, read only where a wait on an
+// event would otherwise hang: the bound the other boot rows hand boot for a wait that is
+// already over when it begins (bootListenWait), and the one the catch-up row hands it for a
+// wait that is real but reachable by nothing a Postgres that answers at all does
+// (listenHangGuard).
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +37,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/reread"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The steps the rows below record, written as an operator reads them in a failure message.
@@ -317,32 +321,42 @@ func TestBootBindsOnlyAfterTheCatchUp(t *testing.T) {
 // broker fails readiness and goes on answering. A shutdown taken at the signal would cut those
 // callers off.
 //
+// The drain is timed on a fake clock this row holds: the shutdown has not run while the drain's
+// deadline is armed and unreached, and runs once the fake is moved past it. So the order is read
+// from the clock the code waits on rather than from how long the machine took.
+//
 // The named revert: call Shutdown at the first signal, before the drain.
 func TestStopDrainsBeforeShutdown(t *testing.T) {
-	var shutdownRan bool
-	var shutdownAfter time.Duration
-	began := time.Now()
-	stop(t.Context(), brokerStop{
-		Drain:    stopDrain,
-		DrainNow: make(chan struct{}), // no second signal: this row is about the whole drain
-		Draining: func(bool) {},
-		Shutdown: func(context.Context) error {
-			shutdownRan, shutdownAfter = true, time.Since(began)
-			return nil
-		},
-		EndServing: func() {},
-		CloseStore: func() {},
-		Log:        orderingLog(),
-	})
-	if !shutdownRan {
-		t.Fatal("the stop never shut the server down: the requests in flight at the signal were neither answered nor refused")
+	var shutdownRan atomic.Bool
+	fake := clocktest.New(time.Now())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stop(t.Context(), brokerStop{
+			Drain:    stopDrain,
+			Clock:    fake,
+			DrainNow: make(chan struct{}), // no second signal: this row is about the whole drain
+			Draining: func(bool) {},
+			Shutdown: func(context.Context) error {
+				shutdownRan.Store(true)
+				return nil
+			},
+			EndServing: func() {},
+			CloseStore: func() {},
+			Log:        orderingLog(),
+		})
+	}()
+	armed := fake.AwaitArmed(t, "the stop's drain", 1)
+	if want := fake.Now().Add(stopDrain); !armed[0].Equal(want) {
+		t.Fatalf("the stop armed %s, want its %v drain at %s", armed[0], stopDrain, want)
 	}
-	// One-sided on purpose: a Go timer fires at or after its deadline and never before it, so a
-	// slow machine can only make this longer. A shutdown that reads as earlier than the drain
-	// can only be a shutdown that did not wait for it.
-	if shutdownAfter < stopDrain {
-		t.Fatalf("the broker shut down %v after the signal, before its %v drain had run out; want the shutdown only once the drain has. A pod that shuts down at the signal cuts the callers the kubelet is still routing to it, which is exactly what the drain is for",
-			shutdownAfter, stopDrain)
+	if shutdownRan.Load() {
+		t.Fatalf("the stop shut the server down with its %v drain still armed; want the shutdown only once the drain has run out. A pod that shuts down at the signal cuts the callers the kubelet is still routing to it, which is exactly what the drain is for", stopDrain)
+	}
+	fake.Advance(stopDrain)
+	testwait.Receive(t, "the stop to return once its drain ran out", stopped)
+	if !shutdownRan.Load() {
+		t.Fatal("the stop never shut the server down: the requests in flight at the signal were neither answered nor refused")
 	}
 }
 
@@ -673,8 +687,8 @@ func TestBootRefusesWithNoMetricsPort(t *testing.T) {
 // TestStopDrainsTheMetricsPortBesideTheAPI pins the metrics port's drain: it closes out of the
 // one shutdown budget beside the API rather than after it, and before the work that outlived the
 // drain stops. The API's fake shutdown here returns only once the metrics port's has begun, so a
-// stop that drained the metrics port after the API's is caught by the hang guard rather than
-// read as an order.
+// stop that drained the metrics port after the API's is caught by the shared wait for that
+// beginning, which names it, rather than read as an order.
 //
 // The named revert: drop ShutdownMetrics from stop, or call it after Shutdown has returned.
 func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
@@ -686,11 +700,7 @@ func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
 		Draining: func(bool) {},
 		Shutdown: func(context.Context) error {
 			ran.record(theShutdownBegan)
-			select {
-			case <-metricsBegan:
-			case <-time.After(bootListenWait):
-				t.Errorf("the API's shutdown waited %s and the metrics port's never began beside it: a stop that drains the ports one after another hands the second whatever the first left of the budget", bootListenWait)
-			}
+			testwait.Receive(t, "the metrics port's shutdown to begin beside the API's: a stop that drains the ports one after another hands the second whatever the first left of the budget", metricsBegan)
 			ran.record(theShutdownReturned)
 			return nil
 		},

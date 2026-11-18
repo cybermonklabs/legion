@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 var controllerToken = claim.ControllerToken(testProject)
@@ -565,11 +567,7 @@ func TestTheOrphanSweepReadsTheControllersClaimAgainUnderThePodsLaunchTurn(t *te
 	}
 	swept := make(chan error, 1)
 	go func() { swept <- g.r.ReconcileOrphans(g.ctx, nil, 0) }()
-	select {
-	case <-store.answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the sweep never read the controller's claim")
-	}
+	testwait.Receive(t, "the sweep to read the controller's claim", store.answered)
 	store.admit(controllerToken)
 	held()
 	if err := <-swept; err != nil {
@@ -596,32 +594,37 @@ func (s *answeringStore) ClaimUnretired(ctx context.Context, token claim.Token) 
 
 // Releasing the controller deletes its Sandbox under the pod's launch turn, as every relaunch, issue
 // suspension and orphan delete of a pod runs under it: while a relaunch holds the turn, the release
-// waits, and the Sandbox is deleted once the turn is given back.
+// waits, and the Sandbox is deleted once the turn is given back. The rig runs in a synctest
+// bubble, so the release is read once every goroutine of it has blocked (synctest.Wait): one
+// that did not wait for the turn has returned by then.
 func TestReleasingTheControllerWaitsForItsPodsLaunchTurn(t *testing.T) {
-	g := newRig(t, nil)
-	loc := g.spawn(controllerSpec(t))
-	name := loc.Sandbox.Name
-	held, err := g.r.lockPod(g.ctx, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	released := make(chan error, 1)
-	go func() { released <- g.r.Release(g.ctx, runtime.Known{Claim: controllerToken, Locator: &loc}) }()
-	select {
-	case err := <-released:
-		t.Fatalf("Release returned (%v) while the pod's launch turn was held", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-	if g.sandbox(name) == nil {
-		t.Fatal("the controller's Sandbox was deleted while its pod's launch turn was held")
-	}
-	held()
-	if err := <-released; err != nil {
-		t.Fatalf("Release once the turn was given back: %v", err)
-	}
-	if s := g.sandbox(name); s != nil {
-		t.Fatalf("the released controller's Sandbox %s is still there", s.Name)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, nil)
+		loc := g.spawn(controllerSpec(t))
+		name := loc.Sandbox.Name
+		held, err := g.r.lockPod(g.ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		released := make(chan error, 1)
+		go func() { released <- g.r.Release(g.ctx, runtime.Known{Claim: controllerToken, Locator: &loc}) }()
+		synctest.Wait()
+		select {
+		case err := <-released:
+			t.Fatalf("Release returned (%v) while the pod's launch turn was held", err)
+		default:
+		}
+		if g.sandbox(name) == nil {
+			t.Fatal("the controller's Sandbox was deleted while its pod's launch turn was held")
+		}
+		held()
+		if err := <-released; err != nil {
+			t.Fatalf("Release once the turn was given back: %v", err)
+		}
+		if s := g.sandbox(name); s != nil {
+			t.Fatalf("the released controller's Sandbox %s is still there", s.Name)
+		}
+	})
 }
 
 // The controller's Sandbox is deleted only as the decision to delete it read it: the orphan sweep

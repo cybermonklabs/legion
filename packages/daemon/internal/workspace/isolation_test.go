@@ -14,10 +14,10 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Every agent of a tree writes the shared clone, so everything below is what a tree agent can plant
@@ -814,22 +814,13 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done := make(chan error, 1)
-	go func() {
+	answered := inFlight(func() error {
 		_, err := RunCheckedIn(context.Background(), run, ws, []string{"jj", "log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "commit_id"})
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "is a fifo") {
-			t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
-		}
-	case <-time.After(20 * time.Second):
-		// Release the blocked reader so the test process can finish, then fail.
-		if writer, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
-			writer.Close()
-		}
-		t.Fatal("the runner blocked reading a FIFO at .jj/repo for 20 s")
+		return err
+	})
+	// A runner that read the FIFO would block in its open, never answer, and fail this wait.
+	if err := testwait.Receive(t, "the runner to refuse a FIFO at .jj/repo rather than read it", answered); err == nil || !strings.Contains(err.Error(), "is a fifo") {
+		t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
 	}
 }
 
@@ -850,18 +841,12 @@ func TestWorkspaceRepositoryRefusesAPointerLargerThanAnyPath(t *testing.T) {
 		target string
 		err    error
 	}
-	done := make(chan answer, 1)
-	go func() {
+	got := testwait.Receive(t, "workspaceRepository to answer a .jj/repo larger than any path", inFlight(func() answer {
 		target, err := workspaceRepository(jjDir)
-		done <- answer{target, err}
-	}()
-	select {
-	case got := <-done:
-		want := repo + " is larger than 4096 bytes"
-		if got.err == nil || got.err.Error() != want {
-			t.Fatalf("workspaceRepository of a %d-byte .jj/repo = (%d-byte path, %v), want the refusal %q", gitdirLimit, len(got.target), got.err, want)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("workspaceRepository was still reading %s after 20s", repo)
+		return answer{target, err}
+	}))
+	want := repo + " is larger than 4096 bytes"
+	if got.err == nil || got.err.Error() != want {
+		t.Fatalf("workspaceRepository of a %d-byte .jj/repo = (%d-byte path, %v), want the refusal %q", gitdirLimit, len(got.target), got.err, want)
 	}
 }

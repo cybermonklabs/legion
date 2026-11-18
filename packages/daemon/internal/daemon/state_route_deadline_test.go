@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,27 +18,57 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// heldState is a state projection that does not finish while it is held: its read waits for the
-// context it was given to end and reports that ending, which is what the daemon's own projection
-// does when a query of it is cut short, and what the production failure looked like from the
-// route — a read inside an open transaction that never came back. Released, it answers an empty
-// state, which is all the second read of the test needs. api.StateSource is an interface, so the
-// route takes this in the daemon's own source's place (daemon.go's source).
+// heldState is a state projection that does not finish while it is held: its read hands the test
+// the context it was given (reading), waits for that context to end and reports that ending,
+// which is what the daemon's own projection does when a query of it is cut short, and what the
+// production failure looked like from the route — a read inside an open transaction that never
+// came back. Released, it answers an empty state, which is all the second read of the test needs.
+// api.StateSource is an interface, so the route takes this in the daemon's own source's place
+// (daemon.go's source).
 type heldState struct {
-	held atomic.Bool
+	held    atomic.Bool
+	reading chan context.Context
 }
 
 func (s *heldState) State(ctx context.Context, _ pgx.Tx) (api.State, []supervise.Claim, error) {
 	if !s.held.Load() {
 		return api.State{}, nil, nil
 	}
+	s.reading <- ctx
 	<-ctx.Done()
 	return api.State{}, nil, ctx.Err()
+}
+
+// stateRouteReadBound is the daemon's own bound on a state read (api's stateReadBound), which
+// the route arms on its clock as the read begins.
+const stateRouteReadBound = time.Minute
+
+// stateAnswer is what a GET of the state route answered.
+type stateAnswer struct {
+	status int
+	body   string
+	err    error
+}
+
+// getState is a GET of the state route at base on ctx.
+func getState(ctx context.Context, base string) stateAnswer {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/legion/v1/state", nil)
+	if err != nil {
+		return stateAnswer{err: err}
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return stateAnswer{err: err}
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	return stateAnswer{status: response.StatusCode, body: strings.TrimSpace(string(body)), err: err}
 }
 
 // backendIdleInTransaction and backendWaitingOnALock are the two conditions this package's tests
@@ -73,19 +104,14 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 // a failure while it is still connected, the transaction is ended rather than left open, and the
 // connection goes back to the pool for the next caller.
 //
-// Without the route's deadline this same test hangs: the only thing that would end the read is
-// the client giving up, so nothing answers and the test fails when its client runs out of
-// patience. That is the measured failure — 32 connections of the production pool held by reads
-// nobody ended — in one request.
+// The route's bound runs on a fake clock the test moves (api.Options.Clock), at the daemon's own
+// minute: the route arms it as the read begins, the held read's context is still live just short
+// of it, and the fake reaching it is what answers the client. Without the route's deadline no
+// bound is armed and the test fails as the read reaches the held projection; with only the
+// client's to end it, the read would hold its connection as long as the client held its socket.
+// That is the measured failure — 32 connections of the production pool held by reads nobody
+// ended — in one request.
 func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
-	// The route's bound as this test sets it (api.Options.StateReadBound), seconds rather than
-	// the daemon's own 60, which is what api's default pins. Nothing in this test is slow but
-	// the hold, so two seconds cuts nothing legitimate here.
-	const bound = 2 * time.Second
-	// The client waits far longer than that, because what this measures is the route answering
-	// of its own accord: a client that gave up first would prove nothing at all.
-	const clientPatience = 20 * time.Second
-
 	// A database of this test's own and a pool of its own on it, to watch the daemon's
 	// connections from outside; the daemon's store is opened on that database with one
 	// connection, the application name the census selects on, and a health check that never
@@ -98,31 +124,37 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	}
 	t.Cleanup(st.Close)
 
-	state := &heldState{}
+	state := &heldState{reading: make(chan context.Context, 1)}
 	state.held.Store(true)
+	clk := clocktest.New(time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC))
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
+		State: state, StateTransactions: st, Clock: clk, Log: quietLogger(),
 	}).Handler
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	client := &http.Client{Timeout: clientPatience}
 
-	started := time.Now()
-	response, err := client.Get(server.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("the held state read did not answer within the client's %s: %v", clientPatience, err)
+	// The client waits on the test's own bound only, because what this proves is the route
+	// answering of its own accord: a client that gave up first would prove nothing at all.
+	ctx := testwait.Context(t)
+	started := clk.Now()
+	answered := make(chan stateAnswer, 1)
+	go func() { answered <- getState(ctx, server.URL) }()
+	held := testwait.Receive(t, "the state read to reach the held projection", state.reading)
+	if armed, want := clk.Armed(), started.Add(stateRouteReadBound); !slices.Equal(armed, []time.Time{want}) {
+		t.Fatalf("the route armed %v for the held read, want its own bound alone, at %s", armed, want)
 	}
-	body, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil {
-		t.Fatalf("read what the held state read answered: %v", err)
+	clk.Advance(stateRouteReadBound - time.Millisecond)
+	if err := held.Err(); err != nil {
+		t.Fatalf("the held read's context ended %s into the read, short of the route's %s bound: %v",
+			stateRouteReadBound-time.Millisecond, stateRouteReadBound, err)
 	}
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("the held state read answered %d (%s), want 500 at the route's own deadline",
-			response.StatusCode, strings.TrimSpace(string(body)))
+	clk.Advance(time.Millisecond)
+	got := testwait.Receive(t, "the held state read's answer once the route's bound passed", answered)
+	if got.err != nil {
+		t.Fatalf("the held state read: %v", got.err)
 	}
-	if took := time.Since(started); took < bound {
-		t.Fatalf("the held state read answered after %s, want it held to the route's %s bound", took, bound)
+	if got.status != http.StatusInternalServerError {
+		t.Fatalf("the held state read answered %d (%s), want 500 at the route's own deadline", got.status, got.body)
 	}
 
 	// The transaction is ended, not merely abandoned by a handler that returned: no backend of
@@ -134,17 +166,12 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	// And the connection is back: the daemon's pool has exactly one, so a read that is served at
 	// all is served on the connection the held read gave up.
 	state.held.Store(false)
-	next, err := client.Get(server.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("the read after the held one: %v", err)
+	next := getState(ctx, server.URL)
+	if next.err != nil {
+		t.Fatalf("the read after the held one: %v", next.err)
 	}
-	served, err := io.ReadAll(next.Body)
-	next.Body.Close()
-	if err != nil {
-		t.Fatalf("read what the next state read answered: %v", err)
-	}
-	if next.StatusCode != http.StatusOK {
+	if next.status != http.StatusOK {
 		t.Fatalf("the read after the held one answered %d (%s), want the connection back and the state served",
-			next.StatusCode, strings.TrimSpace(string(served)))
+			next.status, next.body)
 	}
 }

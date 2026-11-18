@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 type fakeTLSClient struct {
@@ -257,6 +262,7 @@ func TestTLSCommandPastTheProbeDeadlineIsUnavailableAndFailsTheProbe(t *testing.
 	tlsSites = []tlsSite{emSignTLSSite, aaaTLSSite}
 	t.Cleanup(func() { tlsSites = originalSites })
 
+	reached := filepath.Join(t.TempDir(), "reached")
 	client := tlsCommandClient{
 		clientName: "curl",
 		timeout:    tlsDefaultProbeTimeout,
@@ -264,23 +270,42 @@ func TestTLSCommandPastTheProbeDeadlineIsUnavailableAndFailsTheProbe(t *testing.
 			if site.name == emSignTLSSite.name {
 				return "sh", []string{"-c", "echo certificate verify failed >&2; exit 1"}, nil
 			}
-			return "sh", []string{"-c", "exec sleep 1"}, nil
+			// The second site's probe runs until the deadline below ends it.
+			return "sh", []string{"-c", `: >"$1"; exec sleep 300`, "sh", reached}, nil
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// The probe's deadline is on a fake clock, which the test moves past it once the second
+	// site's command is running: a probe that read no deadline would wait out that sleep.
+	clock := clocktest.New(time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC))
+	ctx, cancel := clock.WithTimeout(context.Background(), tlsDefaultProbeTimeout)
 	defer cancel()
 
-	observations, err := probeTLSClients(ctx, []tlsClient{client})
-	if len(observations) != 2 {
-		t.Fatalf("probeTLSClients() returned %d observations, want the client to reach both sites", len(observations))
+	type probed struct {
+		observations []tlsObservation
+		err          error
 	}
-	if got := observations[1]; got.status != tlsNetworkUnavailable || got.detail != "probe deadline" {
-		t.Fatalf("AAA outcome = %+v, want unavailable (probe deadline)", got.tlsOutcome)
+	answered := inFlight(func() probed {
+		observations, err := probeTLSClients(ctx, []tlsClient{client})
+		return probed{observations, err}
+	})
+	testwait.Eventually(t, "the second site's probe to be running", func() bool {
+		_, err := os.Stat(reached)
+		return err == nil
+	})
+	clock.Advance(tlsDefaultProbeTimeout)
+	got := testwait.Receive(t, "the probe to answer once its deadline passed", answered)
+
+	if len(got.observations) != 2 {
+		t.Fatalf("probeTLSClients() returned %d observations, want the client to reach both sites", len(got.observations))
 	}
-	if err == nil || !strings.Contains(err.Error(), "curl cannot verify refusal of the AAA chain: probe deadline") {
-		t.Fatalf("probeTLSClients() = %v, want the deadline to name curl and AAA", err)
+	if seen := got.observations[1]; seen.status != tlsNetworkUnavailable || seen.detail != "probe deadline" {
+		t.Fatalf("AAA outcome = %+v, want unavailable (probe deadline)", seen.tlsOutcome)
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "curl cannot verify refusal of the AAA chain: probe deadline") {
+		t.Fatalf("probeTLSClients() = %v, want the deadline to name curl and AAA", got.err)
 	}
 }
+
 func TestTLSPositiveControlsLineNamesEverySite(t *testing.T) {
 	sites := []tlsSite{{name: "first"}, {name: "second"}, {name: "third"}}
 	const want = "probe-image: TLS positive controls: first, second and third chains verified"

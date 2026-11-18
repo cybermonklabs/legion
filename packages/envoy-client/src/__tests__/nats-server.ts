@@ -1,6 +1,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 
 /**
  * The NATS server image the tests run; CI pulls it before the tests.
@@ -73,8 +74,8 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
     await docker(
       "run",
       "-d",
-      // A container that dies on its own is gone with it, so the readiness loop's `docker logs`
-      // fails at once instead of spinning to its timeout (docs/testing.md).
+      // A container that dies on its own is gone with it, so the readiness wait's `docker logs`
+      // fails at once instead of waiting out the row (docs/testing.md).
       "--rm",
       "--name",
       name,
@@ -92,12 +93,10 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "-c",
       "/etc/nats/test.conf"
     );
-    const deadline = Date.now() + 90_000;
     // nats-server logs to stderr.
-    while (!(await docker("logs", name)).stderr.includes("Server is ready")) {
-      if (Date.now() > deadline) throw new Error(`NATS container ${name} never became ready`);
-      await Bun.sleep(100);
-    }
+    await until(`NATS container ${name} to log that it is ready`, async () =>
+      (await docker("logs", name)).stderr.includes("Server is ready")
+    );
     const port = (await docker("port", name, "4222/tcp")).stdout.split("\n")[0];
     return { url: `nats://${port}`, stop };
   } catch (error) {

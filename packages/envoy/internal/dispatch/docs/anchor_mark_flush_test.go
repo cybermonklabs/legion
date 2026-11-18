@@ -3,10 +3,12 @@ package docs
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment anchored to a mark the document already holds (api/anchors.go, resolveAnchor's
@@ -109,12 +111,39 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 		t.Fatalf("the store holds bob's edit %q while its append is held, so nothing here is tested", stored)
 	}
 
-	const held = 200 * time.Millisecond
-	released := time.AfterFunc(held, pair.gateB.release)
-	defer released.Stop()
-	started := time.Now()
-	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinBeforeTheVersion)
-	waited := time.Since(started)
+	// The anchor runs on a goroutine of its own, and the test lets task B's append go only once
+	// task B is answering the anchor's flush by waiting for that append (answeringAFlush). An
+	// anchor that never waits for the other process's room returns while the append is still
+	// held; the anchor records whether the release came before it returned.
+	type anchorResult struct {
+		anchored     Anchored
+		snapshot     VersionResult
+		err          error
+		afterRelease bool
+	}
+	var released atomic.Bool
+	result := make(chan anchorResult, 1)
+	go func() {
+		anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinBeforeTheVersion)
+		result <- anchorResult{anchored: anchored, snapshot: snapshot, err: err, afterRelease: released.Load()}
+	}()
+	var early *anchorResult
+	waitFor(t, "task B to answer the anchor's flush by waiting for its held append, or the anchor to return", func() bool {
+		select {
+		case returned := <-result:
+			early = &returned
+			return true
+		default:
+		}
+		return answeringAFlush(pair)
+	})
+	if early != nil {
+		t.Fatalf("the anchor returned (%v) while task B's append was held and before task B answered its flush: it never waited for the other process's room", early.err)
+	}
+	released.Store(true)
+	pair.gateB.release()
+	returned := testwait.Receive(t, "the anchor to return once task B's held append was let go", result)
+	anchored, snapshot, err := returned.anchored, returned.snapshot, returned.err
 
 	if err != nil {
 		t.Fatalf("a comment anchored to a mark the document already holds: %v", err)
@@ -122,8 +151,8 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 	if strings.Contains(logs.String(), skippedFlush) {
 		t.Fatalf("the anchor asked for a flush while holding the document's advisory lock: %s", logs.String())
 	}
-	if waited < held-20*time.Millisecond {
-		t.Fatalf("the anchor returned after %v, before task B's held append was let go at %v: it never waited for the other process's room", waited, held)
+	if !returned.afterRelease {
+		t.Fatal("the anchor returned before task B's held append was let go: it never waited for the other process's room")
 	}
 	if stored := storedMarkdown(t, pair.database, pair.artifactID); !strings.Contains(stored, "by bob") {
 		t.Fatalf("the store reads %q once the anchor's flush was answered, without bob's edit", stored)
@@ -144,6 +173,22 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 	}); err != nil {
 		t.Fatalf("the mark the pinned version names, read again: %v", err)
 	}
+}
+
+// answeringAFlush reports whether task A waits on a room query of its own and task B is
+// answering one by waiting for its room's appends (askRoomAppends counts the query among the
+// room's append waiters): in the test above, the anchor's flush held at task B's gate.
+func answeringAFlush(pair processPair) bool {
+	queries := pair.taskA.roomQueries
+	queries.mu.Lock()
+	asking := len(queries.pending) > 0
+	queries.mu.Unlock()
+	state := pair.taskB.lockExistingState(pair.artifactID)
+	if state == nil {
+		return false
+	}
+	defer pair.taskB.unlockState(pair.artifactID, state)
+	return asking && state.appendWaiters > 0
 }
 
 // A closed issue takes the same comment (WithCommentMarks), and the same order holds: its version

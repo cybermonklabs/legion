@@ -51,10 +51,18 @@ function target(argv: readonly string[]): URL {
 const url = target(process.argv.slice(2));
 const host = url.hostname.replace(/^\[(.*)\]$/u, "$1");
 
-const deadline = setTimeout(
-  () => fail(`${url.origin} sent no SETTINGS within ${DEADLINE_MS / 1_000}s`, 2),
-  DEADLINE_MS
-);
+// The line the deadline prints is the probe's own record of its wait: the delay the timer was
+// armed with and how long after arming it fired, read from this process's monotonic clock in whole
+// milliseconds. Only this timer writes that part, so a reader can tell the deadline's own exit
+// from any other path that might say the same first words.
+const armedAt = performance.now();
+const deadline = setTimeout(() => {
+  const fired = Math.floor(performance.now() - armedAt);
+  fail(
+    `${url.origin} sent no SETTINGS within ${DEADLINE_MS / 1_000}s (the deadline timer, armed for ${DEADLINE_MS} ms, fired ${fired} ms after it was armed)`,
+    2
+  );
+}, DEADLINE_MS);
 const answer = Promise.withResolvers<Answer>();
 const socket = tls.connect({
   ALPNProtocols: ["h2", "http/1.1"],

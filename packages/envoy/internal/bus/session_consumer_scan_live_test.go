@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsversion"
 )
 
@@ -51,7 +51,7 @@ func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTr
 	t.Run("stored while the session was released", func(t *testing.T) {
 		owner, consumers := liveSessionConsumers(t, testnats.HubImage)
 		pull, own := releasedAndRegisteredAgain(t, owner, consumers)
-		requireHandedOver(t, pull, own)
+		requireHandedOver(t, consumers, pull, scanSession, own)
 	})
 	t.Run("sent while the pull waits", func(t *testing.T) {
 		owner, consumers := liveSessionConsumers(t, testnats.HubImage)
@@ -64,11 +64,15 @@ func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTr
 			t.Fatalf("restart the consumer of %s at its floor: %v", scanSession, err)
 		}
 		pull := pullSession(t, consumers, scanSession)
-		// The pull request reaches the server and the consumer reads to the stream's end before
-		// the traffic is stored: nothing is handed over meanwhile.
-		requireNoMessage(t, pull, liveQuietWindow)
+		// The pull request reaches the server, which then counts it waiting, and the consumer
+		// reads to the stream's end before the traffic is stored: nothing is handed over meanwhile.
+		testwait.Eventually(t, "the pull of "+scanSession+" to wait at the server", func() bool {
+			info, err := consumers.Info(ctx, scanSession)
+			return err == nil && info.NumWaiting > 0
+		})
+		requireNoMessage(t, consumers, pull, scanSession)
 		publishOthers(t, owner, otherSessionsTraffic)
-		requireHandedOver(t, pull, publishOwn(t, owner, scanSession))
+		requireHandedOver(t, consumers, pull, scanSession, publishOwn(t, owner, scanSession))
 	})
 }
 
@@ -164,9 +168,6 @@ func releasedAndRegisteredAgain(t *testing.T, owner *Client, consumers *SessionC
 	return register(), own
 }
 
-// liveQuietWindow is how long a case waits to see that a pull hands over nothing.
-const liveQuietWindow = 500 * time.Millisecond
-
 // liveSessionConsumers starts image, owns the stream on it and connects SessionConsumers beside
 // the owner, both closed when the test ends.
 func liveSessionConsumers(t *testing.T, image string) (*Client, *SessionConsumers) {
@@ -210,8 +211,10 @@ func publishOwn(t *testing.T, owner *Client, session string) []ownMessage {
 	return own
 }
 
-// requireHandedOver requires pull to hand over want, in order, and nothing after it.
-func requireHandedOver(t *testing.T, pull *SessionPull, want []ownMessage) {
+// requireHandedOver requires pull to hand over want, in order, and nothing after it: once the
+// last of want is acknowledged, session's consumer holds nothing more to deliver and the pull
+// holds nothing it has not handed over (requireNoMessage).
+func requireHandedOver(t *testing.T, consumers *SessionConsumers, pull *SessionPull, session string, want []ownMessage) {
 	t.Helper()
 	for _, message := range want {
 		got := next(t, pull)
@@ -222,5 +225,5 @@ func requireHandedOver(t *testing.T, pull *SessionPull, want []ownMessage) {
 			t.Fatalf("ack %d: %v", got.StreamSeq, err)
 		}
 	}
-	requireNoMessage(t, pull, liveQuietWindow)
+	requireNoMessage(t, consumers, pull, session)
 }

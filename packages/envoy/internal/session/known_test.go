@@ -3,8 +3,10 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -198,6 +202,13 @@ func knownBucketGrant() []string {
 // writes and reads from then on. The denial is the server's own: the user's publish grant names
 // none of the bucket's subjects, so the request is dropped as a denied JetStream request is in
 // production, and the attempt costs the whole wait rather than ending on a refusal.
+//
+// The background repair's waits run on a fake the row moves (withKnownSessionTimers), so the open
+// is read to have made its one attempt - one request the server refused, counted up to a marker
+// refused after it - and to have handed the rest to the repair, whose first wait is armed when it
+// returns; the attempt after the grant is made when the row fires that wait. How long the one
+// attempt took is nats.go's own request wait (nats.MaxWait), which no clock of ours reaches, so
+// that reading is a service level for benchtime's timing lane alone.
 func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
@@ -208,14 +219,24 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	t.Cleanup(conn.Close)
 	logs := &lockedWriter{}
 	logged := logs.String
+	// Every request the store sends on this connection is one the server refuses, and each
+	// refusal comes back as one permissions violation, in the order the requests went out.
+	var refusedMu sync.Mutex
+	var refused []string
+	conn.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if errors.Is(err, nats.ErrPermissionViolation) {
+			refusedMu.Lock()
+			refused = append(refused, err.Error())
+			refusedMu.Unlock()
+		}
+	})
 
+	timers := clocktest.New(time.Now())
 	started := time.Now()
 	known, err := OpenKnownSessions(conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
-		// The production schedule's first wait is a second and its cap five minutes, which a
-		// test would spend waiting; every attempt it makes is the same.
-		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
+		withKnownSessionTimers(timers))
 	opening := time.Since(started)
 	if err != nil {
 		t.Fatalf("open the store over a bucket its user may not open: %v", err)
@@ -224,20 +245,41 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 		t.Fatal("no store over a bucket its user may not open; the listener has nothing to answer reads with")
 	}
 	t.Cleanup(known.StopWatch)
-	if opening > 2*knownBucketOpenWait {
+	if armed, want := timers.AwaitArmed(t, "the repair the failed open hands the bucket to", 1), timers.Now().Add(knownBucketRetryFirst); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("after the open over a denied bucket the store armed %v, want the repair's first wait alone, at %s", armed, want)
+	}
+	// The open's one attempt is one request, and one wait: a marker published after the open
+	// returned is refused after every request the open made, so once its refusal has come the
+	// refusals before it are the open's, all of them.
+	const marker = "marker.after.the.open"
+	if err := conn.Publish(marker, nil); err != nil {
+		t.Fatalf("publish the marker: %v", err)
+	}
+	openRefusals := testwait.Until(t, "the server to refuse the marker published after the open", func() ([]string, bool) {
+		refusedMu.Lock()
+		defer refusedMu.Unlock()
+		for i, refusal := range refused {
+			if strings.Contains(refusal, marker) {
+				return slices.Clone(refused[:i]), true
+			}
+		}
+		return slices.Clone(refused), false
+	})
+	if len(openRefusals) != 1 {
+		t.Fatalf("the open over a denied bucket sent %d requests the server refused, want the one its attempt makes: the listener's start waits on each (%v)", len(openRefusals), openRefusals)
+	}
+	if os.Getenv(benchtime.TimingEnv) != "" && opening > 2*knownBucketOpenWait {
 		t.Fatalf("the open took %s, want it bounded by the %s one attempt waits: the listener's start waits here before it opens /v1",
 			opening, knownBucketOpenWait)
 	}
 	t.Logf("the open over a denied bucket took %s", opening)
 
-	waited := time.Now()
-	readyCtx, cancelReady := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancelReady()
-	if err := known.WaitForCacheReady(readyCtx); err != nil {
-		t.Fatalf("WaitForCacheReady over a bucket that is not open: %v, want nil", err)
-	}
-	if elapsed := time.Since(waited); elapsed > time.Second {
-		t.Fatalf("the cache gate waited %s on a bucket that is not open, want it to wait for nothing", elapsed)
+	// A context already done is the proof that the gate waits for nothing: a gate that waited for
+	// a cache to fill would answer that context's error.
+	done, cancelDone := context.WithCancel(context.Background())
+	cancelDone()
+	if err := known.WaitForCacheReady(done); err != nil {
+		t.Fatalf("WaitForCacheReady over a bucket that is not open, on a context already done: %v, want nil: the gate waits for nothing", err)
 	}
 
 	const denied = "ses_denied_bucket"
@@ -257,18 +299,13 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 
 	grant.Grant(t, knownBucketGrant()...)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for !known.Opened() && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !known.Opened() {
-		t.Fatalf("the store did not open the bucket within 30s of the grant:\n%s", logged())
-	}
+	repairUntil(t, timers, "the store to open the bucket once the grant arrived", known.Opened)
 	// Opened is the watcher's first pass delivered, and the line is written by the goroutine that
 	// waited for it, so the two are not ordered: wait for the line before counting it.
-	for !strings.Contains(logged(), "the known-session bucket is open") && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "the store to log that the bucket is open", func() (string, bool) {
+		text := logged()
+		return text, strings.Contains(text, "the known-session bucket is open")
+	})
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: denied, Topics: []string{topic}}); err != nil {
 		t.Fatalf("record once the grant arrived: %v", err)
 	}
@@ -330,9 +367,10 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 
 	// The grant goes away, as it is away on every listener started before it is applied.
 	grant.Grant(t, "nothing.this.store.uses")
+	timers := clocktest.New(time.Now())
 	known, err := OpenKnownSessions(conn,
 		WithKnownSessionReplicas(1),
-		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
+		withKnownSessionTimers(timers))
 	if err != nil {
 		t.Fatalf("open the store over a bucket its user may not open: %v", err)
 	}
@@ -342,13 +380,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	deadline := time.Now().Add(60 * time.Second)
-	for !known.Opened() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if !known.Opened() {
-		t.Fatal("the store did not open the bucket within 60s of the grant")
-	}
+	repairUntil(t, timers, "the store to open the bucket once the grant arrived", known.Opened)
 	if answered := len(matchedIDs(known, topic)); answered != records {
 		t.Fatalf("the store answered %d of the %d records the bucket holds at the moment it reported its bucket open; until its cache is filled a send to each of the other sessions is refused 404 no live session and a publish counts them for nothing",
 			answered, records)
@@ -441,13 +473,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 	known.startWatch(bus.NewKeyValue(raw.Legacy(), &stallingFirstWatch{KeyValue: raw.WatchHandle(), after: 1}, raw.Streams()))
 	watcher := known.watch()
 
-	deadline := time.Now().Add(30 * time.Second)
-	for !watcher.Ready() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !watcher.Ready() {
-		t.Fatal("the cache never became ready, so this test says nothing about a scan the idle timer ended")
-	}
+	testwait.Eventually(t, "the cache to become ready, so this test says something about a scan the idle timer ended", watcher.Ready)
 	if known.Opened() {
 		t.Fatal("the store reports its bucket open over a first scan the idle timer ended: a publish would count its recipients against the one record that scan delivered")
 	}
@@ -455,12 +481,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 		t.Fatalf("the store answered %v over a first scan the idle timer ended, want nothing until a read completes", got)
 	}
 
-	for !known.Opened() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !known.Opened() {
-		t.Fatal("the store never reported its bucket open: nothing completed a read after the idle timer ended the first")
-	}
+	testwait.Eventually(t, "the store to report its bucket open once a read completed after the idle timer ended the first", known.Opened)
 	if got := matchedIDs(known, topic); !slices.Equal(got, ids) {
 		t.Fatalf("the store answered %v at the moment it reported its bucket open, want every record the bucket holds, %v", got, ids)
 	}
@@ -470,10 +491,10 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 // takes away and gives back (testnats.NkeyGrant): while it is away every request the store makes
 // is dropped by the server, so a move to a recovered connection fails as it fails against a
 // cluster that refuses this listener - a grant rolled back, or a bucket deleted under its
-// watcher - and succeeds again once it is back. The retry's waits are the test's, since the
-// production schedule's first wait is a second and its cap five minutes; extra adds options of
-// the test's own.
-func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSessionsOption) (*KnownSessions, *nats.Conn, *testnats.NkeyGrant, func() string) {
+// watcher - and succeeds again once it is back. The retry's waits run on the fake it answers
+// (withKnownSessionTimers), which the test moves (repairUntil); extra adds options of the test's
+// own.
+func knownOverGrant(t *testing.T, extra ...KnownSessionsOption) (*KnownSessions, *nats.Conn, *testnats.NkeyGrant, func() string, *clocktest.Fake) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, knownBucketGrant()...)
@@ -483,10 +504,11 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 	}
 	t.Cleanup(conn.Close)
 	logs := &lockedWriter{}
+	timers := clocktest.New(time.Now())
 	options := append([]KnownSessionsOption{
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
-		withKnownSessionRetry(first, longest),
+		withKnownSessionTimers(timers),
 	}, extra...)
 	known, err := OpenKnownSessions(conn, options...)
 	if err != nil {
@@ -499,7 +521,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 	if !known.Opened() {
 		t.Fatal("the store does not report its bucket open before the grant is taken away")
 	}
-	return known, conn, grant, logs.String
+	return known, conn, grant, logs.String, timers
 }
 
 // repairRunning reports whether the store's one background repair is running.
@@ -507,6 +529,24 @@ func repairRunning(known *KnownSessions) bool {
 	known.repairMu.Lock()
 	defer known.repairMu.Unlock()
 	return known.repairing
+}
+
+// repairUntil waits for holds, and each time it does not hold yet fires the earliest wait armed
+// on timers, the store's repair timers (withKnownSessionTimers), as the production schedule would
+// once that wait ran out: the repair makes its attempts when the test is ready for them rather
+// than on the schedule, and an attempt that fails arms its next wait, which a later turn fires.
+func repairUntil(t *testing.T, timers *clocktest.Fake, what string, holds func() bool) {
+	t.Helper()
+	testwait.Until(t, what, func() ([]time.Time, bool) {
+		if holds() {
+			return nil, true
+		}
+		armed := timers.Armed()
+		if len(armed) > 0 {
+			timers.Set(armed[0])
+		}
+		return armed, false
+	})
 }
 
 // watchHandle is the bucket handle the store's watcher reads and the store writes through
@@ -521,14 +561,6 @@ func watchHandle(known *KnownSessions) nats.KeyValue {
 // failed (attemptRepair).
 const knownBackLine = "the known-session cache is back"
 
-// awaitKnown waits for what to hold, failing the test when it has not within the wait.
-func awaitKnown(t *testing.T, within time.Duration, what string, holds func() bool) {
-	t.Helper()
-	if !testwait.Holds(within, 10*time.Millisecond, holds) {
-		t.Fatalf("%s within %s", what, within)
-	}
-}
-
 // A move to a recovered connection that failed is repaired by the store itself, on its own
 // backoff. The bus runs a reconnect hook that fails again (internal/bus/recovery.go,
 // AddReconnectHook), but the listener's hook for this store answers nil over the error: a failed
@@ -540,7 +572,7 @@ func awaitKnown(t *testing.T, within time.Duration, what string, holds func() bo
 // listener has left, so every record written is lost and, past the stale bound, a publish's
 // recipient count is left out.
 func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
-	known, conn, grant, logged := knownOverGrant(t, 200*time.Millisecond, time.Second)
+	known, conn, grant, logged, timers := knownOverGrant(t)
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
@@ -557,10 +589,10 @@ func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
 	// The cluster takes this listener back, and nothing asks the store to move again: no
 	// connection event, no reconnect hook, no rebuild. The store's own retry is the whole repair.
 	grant.Grant(t, knownBucketGrant()...)
-	awaitKnown(t, 60*time.Second, "the store's own repair did not move the watcher", func() bool {
+	repairUntil(t, timers, "the store's own repair to move the watcher", func() bool {
 		return watchHandle(known) != before
 	})
-	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+	repairUntil(t, timers, "the repair to retire once it had nothing left to repair", func() bool {
 		return !repairRunning(known)
 	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
@@ -569,7 +601,7 @@ func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
 
 	// The cache the repair left behind is the bucket's again: it reports the bucket open once the
 	// moved watcher's scan has delivered every record, and the records written through it answer.
-	awaitKnown(t, 60*time.Second, "the repaired store did not report its bucket open", known.Opened)
+	testwait.Eventually(t, "the repaired store to report its bucket open", known.Opened)
 	const repaired = "ses_after_the_repair"
 	const topic = "notifications.team.repaired-move"
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: repaired, Topics: []string{topic}}); err != nil {
@@ -582,12 +614,13 @@ func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
 
 // The move the next connection event makes ends the retry, and the retry moves nothing after it:
 // the connection event's move is the newer one, and a retry that moved the watcher again would
-// put it on the handle of a connection the store has already left. The waits here are long
-// enough that the connection event lands between the retry being armed and its first attempt,
-// which is the window this guards. The connection event's move is the repair, so it is the one
-// that says the store is back, and the retry that ends after it says nothing more.
+// put it on the handle of a connection the store has already left. The retry's waits are on the
+// row's fake, which it fires only after the connection event's move, so that move lands between
+// the retry being armed and its first attempt, which is the window this guards. The connection
+// event's move is the repair, so it is the one that says the store is back, and the retry that
+// ends after it says nothing more.
 func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
-	known, conn, grant, logged := knownOverGrant(t, 5*time.Second, 5*time.Second)
+	known, conn, grant, logged, timers := knownOverGrant(t)
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
@@ -606,7 +639,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	if moved == before {
 		t.Fatal("the move that succeeded left the watcher on the handle it had")
 	}
-	awaitKnown(t, 60*time.Second, "the retry did not end after a move that succeeded", func() bool {
+	repairUntil(t, timers, "the retry to end after a move that succeeded", func() bool {
 		return !repairRunning(known)
 	})
 	if watchHandle(known) != moved {
@@ -623,7 +656,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 // move says nothing of the kind, and neither does the move of a connection event with no failure
 // before it, which is the ordinary path.
 func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
-	known, conn, grant, logged := knownOverGrant(t, 5*time.Second, 5*time.Second)
+	known, conn, grant, logged, timers := knownOverGrant(t)
 
 	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of an ordinary connection event: %v", err)
@@ -656,7 +689,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	if !strings.Contains(back[0], "level=INFO") || !strings.Contains(back[0], "bucket="+bus.KnownSessionBucket) {
 		t.Errorf("the line saying the store is back is %q, want an INFO line naming the bucket", back[0])
 	}
-	awaitKnown(t, 60*time.Second, "the retry did not end after the connection event's repair", func() bool {
+	repairUntil(t, timers, "the retry to end after the connection event's repair", func() bool {
 		return !repairRunning(known)
 	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
@@ -673,8 +706,11 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // when the test moves it, so the bound is passed without waiting it out, and a failed move that
 // takes minutes on a busy machine does not pass it before the test asks the store inside it.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
-	watcherClock := &heldClock{now: time.Now()}
-	known, conn, grant, logged := knownOverGrant(t, 200*time.Millisecond, time.Second, withKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
+	// A clock that moves only when the test moves it: the stale bound is passed by the test's
+	// advance, never by how long the steps before it took, so a failed move that takes minutes on
+	// a busy machine does not pass it before the test asks the store inside it.
+	watcherClock := clocktest.New(time.Now())
+	known, conn, grant, logged, timers := knownOverGrant(t, WithKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: stale, Topics: []string{topic}}); err != nil {
@@ -698,7 +734,7 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 		t.Errorf("MatchEach answered %v inside the stale bound, want %q", got, stale)
 	}
 
-	watcherClock.advance(2*time.Minute + time.Second)
+	watcherClock.Advance(2*time.Minute + time.Second)
 	if known.Opened() {
 		t.Fatal("the store reports itself open past the stale bound: a publish would count its recipients against a copy that stopped following its bucket")
 	}
@@ -710,7 +746,7 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	awaitKnown(t, 60*time.Second, "the store did not answer again once its retry had moved the watcher", known.Opened)
+	repairUntil(t, timers, "the store to answer again once its retry had moved the watcher", known.Opened)
 	if _, ok := known.Get(stale); !ok {
 		t.Error("the repaired store answers no record of the session written before the failed move")
 	}
@@ -719,7 +755,8 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	// so the two are not ordered: a count read when Opened turns true can find no line yet. The
 	// retry retires at an attempt after the one that wrote the line, both under repairMu, so its
 	// retirement is what the count waits for, and no attempt after it writes a second line.
-	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+	// The retry's next attempt is armed on the store's timers, which the test moves.
+	repairUntil(t, timers, "the repair to retire once it had nothing left to repair", func() bool {
 		return !repairRunning(known)
 	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
@@ -727,31 +764,13 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	}
 }
 
-// heldClock is a clock that moves only when the test advances it, as kvwatch's own tests hold
-// theirs: a stale bound measured on it is passed by the test's advance, never by how long the
-// steps before that advance took. The package's other clock (clock) follows the real time, which
-// a stale episode would then measure too.
-type heldClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *heldClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *heldClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
 // A stop ends the retry wherever it is, and a store that stopped repairs nothing afterwards: its
-// watcher is retired for the drain, and a move it made would arm a watcher nothing ends.
+// watcher is retired for the drain, and a move it made would arm a watcher nothing ends. The
+// retry's waits are on the row's fake, so what would make a stopped store move is a wait armed
+// there, which the row reads, and fires past the schedule's cap, after the cluster takes the
+// listener back.
 func TestAStopEndsTheStoresRetry(t *testing.T) {
-	known, conn, grant, _ := knownOverGrant(t, 200*time.Millisecond, time.Second)
+	known, conn, grant, _, timers := knownOverGrant(t)
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
@@ -766,17 +785,20 @@ func TestAStopEndsTheStoresRetry(t *testing.T) {
 	}
 
 	known.StopWatch()
-	awaitKnown(t, 60*time.Second, "the retry did not end at the stop", func() bool {
+	testwait.Eventually(t, "the retry to end at the stop", func() bool {
 		return !repairRunning(known)
 	})
 	// A move made after the stop, however it came, would still move the handle
 	// (kvwatch.Watcher.Rewatch), so the handle is what says none was made.
 	retired := watchHandle(known)
 
-	// The cluster takes the listener back, past several of the retry's waits: a store that
-	// stopped arms nothing, and moves nothing.
+	// The cluster takes the listener back, and every wait the store could have armed is fired,
+	// past the schedule's cap: a store that stopped arms nothing, and moves nothing.
 	grant.Grant(t, knownBucketGrant()...)
-	time.Sleep(2 * time.Second)
+	if armed := timers.Armed(); len(armed) != 0 {
+		t.Errorf("a stopped store holds the repair waits %v, want none", armed)
+	}
+	timers.Advance(2 * knownBucketRetryMax)
 	if repairRunning(known) {
 		t.Error("a repair was armed after the stop")
 	}
@@ -834,11 +856,12 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	grant.Grant(t, "nothing.this.store.uses")
 	logs := &lockedWriter{}
 	logged := logs.String
+	timers := clocktest.New(time.Now())
 	known, err := OpenKnownSessions(conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
-		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
-		withKnownSessionWatch(kvwatch.WithAfterFunc(after)))
+		withKnownSessionTimers(timers),
+		WithKnownSessionWatch(kvwatch.WithAfterFunc(after)))
 	if err != nil {
 		t.Fatalf("open the store over a bucket its user may not open: %v", err)
 	}
@@ -855,14 +878,17 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	release := func() { unlocked.Do(known.mu.Unlock) }
 	defer release()
 	grant.Grant(t, knownBucketGrant()...)
-	select {
-	case <-reading:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the store did not open the bucket within 60s of the grant")
-	}
+	repairUntil(t, timers, "the store to begin the first read of the bucket once the grant arrived", func() bool {
+		select {
+		case <-reading:
+			return true
+		default:
+			return false
+		}
+	})
 	known.Disconnected()
 	release()
-	awaitKnown(t, 60*time.Second, "the first read of the bucket did not end", known.watch().Ready)
+	testwait.Eventually(t, "the first read of the bucket to end", known.watch().Ready)
 	if known.Opened() {
 		t.Fatal("the first read completed over the disconnect said inside it; this test says nothing about a read a disconnect overlapped")
 	}
@@ -880,7 +906,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The cluster takes this listener back, and nothing asks the store to move again: no
 	// connection event, no reconnect hook, no rebuild.
 	grant.Grant(t, knownBucketGrant()...)
-	awaitKnown(t, 60*time.Second, "the store did not repair itself after the move that failed during its first read", known.Opened)
+	repairUntil(t, timers, "the store to repair itself after the move that failed during its first read", known.Opened)
 	if got := matchedIDs(known, topic); !slices.Equal(got, held) {
 		t.Errorf("the repaired store answered %v, want every record the bucket holds, %v", got, held)
 	}
@@ -895,14 +921,15 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	if got := matchedIDs(known, writtenTopic); !slices.Equal(got, []string{written}) {
 		t.Errorf("the repaired store answered %v for the topic of the record just written, want %q", got, written)
 	}
-	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+	repairUntil(t, timers, "the repair to retire once it had nothing left to repair", func() bool {
 		return !repairRunning(known)
 	})
 
 	// Opened is the moved watcher's read completed, and the open line is written by the goroutine
 	// that waited for that read, so the two are not ordered: wait for the line before counting it.
-	awaitKnown(t, 60*time.Second, "the store did not say its bucket is open", func() bool {
-		return strings.Contains(logged(), openLine)
+	testwait.Until(t, "the store to say its bucket is open", func() (string, bool) {
+		text := logged()
+		return text, strings.Contains(text, openLine)
 	})
 	if lines := strings.Count(logged(), openLine); lines != 1 {
 		t.Errorf("the store said its bucket is open %d times, want one line:\n%s", lines, logged())
@@ -919,7 +946,13 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 // the end and arms the retry again, whose next attempt moves the watcher that ended. Here the
 // watch ends because the grant carries the bucket but not the consumer a watch of it creates, so
 // the bucket opens and the create request of its watcher's consumer is dropped.
+//
+// The open is late, by lateOpen on the row's clock: the grant comes only once the store's retry
+// has backed off past it, so the store's first attempt after the grant is at least lateOpen after
+// the grant. No wait of the row has a bound of its own, so however late the open, the row waits
+// for it; one that never opens fails at the shared wait's end.
 func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing.T) {
+	const lateOpen = 65 * time.Second
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
@@ -927,21 +960,38 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(conn.Close)
+	timers := clocktest.New(time.Now())
 	known, err := OpenKnownSessions(conn,
 		WithKnownSessionReplicas(1),
-		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
+		withKnownSessionTimers(timers))
 	if err != nil {
 		t.Fatalf("open the store over a bucket its user may not open: %v", err)
 	}
 	t.Cleanup(known.StopWatch)
 
+	// The retry's attempts are refused while the grant does not carry the bucket, and each refusal
+	// doubles the wait before the next (repairUntilStopped).
+	testwait.Until(t, fmt.Sprintf("the store's retry to back off to a wait of %s or more", lateOpen), func() ([]time.Time, bool) {
+		armed := timers.Armed()
+		if len(armed) > 0 && armed[0].Sub(timers.Now()) >= lateOpen {
+			return armed, true
+		}
+		if len(armed) > 0 {
+			timers.Set(armed[0])
+		}
+		return armed, false
+	})
+	granted := timers.Now()
 	grant.Grant(t, slices.DeleteFunc(knownBucketGrant(), func(subject string) bool {
 		return strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE.")
 	})...)
-	awaitKnown(t, 60*time.Second, "the store did not open the bucket", func() bool {
+	if armed := timers.Armed(); len(armed) == 0 || armed[0].Sub(granted) < lateOpen {
+		t.Fatalf("the store's next attempt after the grant is armed for %v from %v, want one %s or more after the grant", armed, granted, lateOpen)
+	}
+	repairUntil(t, timers, "the store to open the bucket", func() bool {
 		return known.watch() != nil
 	})
-	awaitKnown(t, 60*time.Second, "the first watch of the bucket did not end", func() bool {
+	testwait.Eventually(t, "the first watch of the bucket to end", func() bool {
 		return known.watch().Err() != nil
 	})
 	if known.Opened() {
@@ -950,7 +1000,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 
 	// The cluster grants the consumer, and nothing asks the store to move: no connection event.
 	grant.Grant(t, knownBucketGrant()...)
-	awaitKnown(t, 60*time.Second, "the store did not repair the watch that ended before its first read", known.Opened)
+	repairUntil(t, timers, "the store to repair the watch that ended before its first read", known.Opened)
 	const written = "ses_after_the_ended_watch"
 	const topic = "notifications.team.ended-watch"
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: written, Topics: []string{topic}}); err != nil {
@@ -959,7 +1009,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 	if got := matchedIDs(known, topic); !slices.Equal(got, []string{written}) {
 		t.Errorf("the repaired store answered %v for the topic of the record just written, want %q", got, written)
 	}
-	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+	repairUntil(t, timers, "the repair to retire once it had nothing left to repair", func() bool {
 		return !repairRunning(known)
 	})
 }

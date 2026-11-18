@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/url"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Kind is the wire protocol an endpoint speaks. It picks the provider a call is made through
@@ -236,6 +238,9 @@ type Request struct {
 	Tools []Tool
 	// Bounds are the limits of the run.
 	Bounds Bounds
+	// Clock is what Bounds.Time runs on: clock.Real when nil, and a test's clocktest.Fake,
+	// which ends the run's time only when the test moves it there.
+	Clock BoundClock
 	// FirstToolIndex is the number of tool calls an earlier run of the same work already
 	// made, so this run's first call is FirstToolIndex + 1. A fresh run leaves it zero.
 	FirstToolIndex int
@@ -249,6 +254,19 @@ type Request struct {
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error
+}
+
+// BoundClock is the clock a run's time bound is armed on, a narrowing of Envoy's clock.Clock.
+type BoundClock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+}
+
+// boundClock is the clock req's time bound runs on.
+func (req Request) boundClock() BoundClock {
+	if req.Clock == nil {
+		return clock.Real()
+	}
+	return req.Clock
 }
 
 // Usage is what one model call, or a whole run, consumed and what it cost.

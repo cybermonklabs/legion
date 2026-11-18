@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const msNs = int64(1e6)
@@ -115,8 +116,7 @@ func TestJoinDeliveryCountsClockAnomalies(t *testing.T) {
 // returns no rows and an error naming public.loadtest_event_commits, never an empty result that
 // reads as no commits; with no write in the window it reads nothing and fails nothing.
 func TestReadCommitsNamesTheTableWhenItCannotRead(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	rows, err := readCommits(ctx, unreachablePG, 1, []int64{1, 2})
 	if err == nil || rows != nil {
 		t.Fatalf("readCommits on an unreachable Postgres = %v, %v; want no rows and an error", rows, err)

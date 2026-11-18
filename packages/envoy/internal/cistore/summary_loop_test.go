@@ -12,10 +12,12 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // verdictNames names a verdict in a failure message.
@@ -163,14 +165,9 @@ func publishTimes(pub *recPub) func() []int64 {
 
 // waitPublished polls until pub has published n envelopes, failing once the wall clock passes by
 // (milliseconds).
-func waitPublished(t *testing.T, pub *recPub, n int, by int64, what string) {
+func waitPublished(t *testing.T, pub *recPub, n int, what string) {
 	t.Helper()
-	for pub.count() < n {
-		if time.Now().UnixMilli() > by {
-			t.Fatalf("%s: %d settlements by %d, want %d", what, pub.count(), by, n)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, what, func() bool { return pub.count() >= n })
 }
 
 // gaugeReads is the value met serves on /metrics for the gauge name.
@@ -217,11 +214,10 @@ func TestARecordFallingDueSettlesWithNoOtherChange(t *testing.T) {
 	waitCacheChecks(t, store, owner, repo, number, sha, 1)
 	due := getState(t, store, owner, repo, number, sha).LastEventAt + debounce.Milliseconds()
 
-	waitPublished(t, pub, 1, due+(tick+time.Second).Milliseconds(), "the record falling due")
+	waitPublished(t, pub, 1, "the record falling due")
 	if at := published()[0]; at < due {
 		t.Fatalf("the record settled at %d, before its debounce ran out at %d", at, due)
 	}
-	time.Sleep(3 * tick)
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the record published %d settlements, want 1", got)
 	}
@@ -261,16 +257,19 @@ func TestAStaleClaimIsReclaimedWithNoOtherChange(t *testing.T) {
 	StartSummaryLoop(ctx, store, pub, debounce, tick, metrics.New().NewGauge("held", ""), logging.New("test"))
 
 	// The reclaim and the claim that follows it take two passes.
-	waitPublished(t, pub, 1, stale+(2*tick+time.Second).Milliseconds(), "the record behind a dead replica's claim")
+	waitPublished(t, pub, 1, "the record behind a dead replica's claim")
 	if at := published()[0]; at < stale {
 		t.Fatalf("the record settled at %d, while its claim was fresh until %d", at, stale)
 	}
-	time.Sleep(3 * tick)
+	// The loop publishes the settlement before its write that marks the record settled and
+	// clears the claim lands, so the row waits for that write rather than reading the record as
+	// the publish leaves it.
+	settled := testwait.Until(t, "the record to read settled with no claim", func() (State, bool) {
+		state := getState(t, store, owner, repo, number, sha)
+		return state, state.SettledEmitted && state.Claim == nil
+	})
 	if got := pub.count(); got != 1 {
-		t.Fatalf("the record published %d settlements, want 1", got)
-	}
-	if settled := getState(t, store, owner, repo, number, sha); !settled.SettledEmitted || settled.Claim != nil {
-		t.Fatalf("final state = %+v, want settled with no claim", settled)
+		t.Fatalf("the record published %d settlements, want 1; final state = %+v", got, settled)
 	}
 }
 
@@ -298,13 +297,7 @@ func TestARecordPastTheGraceIsCountedWithNoOtherChange(t *testing.T) {
 	defer cancel()
 	StartSummaryLoop(ctx, store, pub, debounce, tick, met.NewGauge(gauge, "held"), logging.New("test"))
 
-	by := graceEnds + (tick + time.Second).Milliseconds()
-	for gaugeReads(t, met, gauge) != 1 {
-		if time.Now().UnixMilli() > by {
-			t.Fatalf("the gauge reads %d at %d, want 1 held once the grace ended at %d", gaugeReads(t, met, gauge), time.Now().UnixMilli(), graceEnds)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the grace ends and the record is counted as held", func() bool { return gaugeReads(t, met, gauge) == 1 })
 	if at := time.Now().UnixMilli(); at < graceEnds {
 		t.Fatalf("the gauge read 1 at %d, before the grace ended at %d", at, graceEnds)
 	}
@@ -343,18 +336,12 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	StartSummaryLoop(ctx, store, &recPub{}, debounce, tick, held, logging.New("test"))
 	waitGauge := func(want int64, what string) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for gaugeReads(t, met, gauge) != want {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: the gauge reads %d, want %d", what, gaugeReads(t, met, gauge), want)
-			}
-			time.Sleep(time.Millisecond)
-		}
+		testwait.Eventually(t, what, func() bool { return gaugeReads(t, met, gauge) == want })
 	}
 	waitGauge(0, "the first pass")
 
 	held.Set(noPass)
-	time.Sleep(50 * tick)
+	testwait.Span(t, 50*tick, "no record changed and none is due, and the loop writes nothing while it sleeps, so only waiting the window and finding the gauge untouched shows it ran no pass")
 	if got := gaugeReads(t, met, gauge); got != noPass {
 		t.Fatalf("a pass ran (gauge %d) during 50 ticks with nothing changed", got)
 	}
@@ -370,20 +357,12 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store the marker: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, "the rewatched cache applies the marker", func() bool {
 		store.mu.RLock()
-		applied := store.cache.FenceFor(store.watcher.Epoch(), marker) == revision
-		store.mu.RUnlock()
-		if applied {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the rewatched cache never applied the marker")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(50 * tick)
+		defer store.mu.RUnlock()
+		return store.cache.FenceFor(store.watcher.Epoch(), marker) == revision
+	})
+	testwait.Span(t, 50*tick, "a Rewatch replays the records unchanged and the loop writes nothing while it sleeps, so only waiting the window and finding the gauge untouched shows the replay woke no pass")
 	if got := gaugeReads(t, met, gauge); got != noPass {
 		t.Fatalf("a pass ran (gauge %d) after a Rewatch replayed the records unchanged", got)
 	}
@@ -398,7 +377,8 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 func TestAFailingPublisherIsRetriedOncePerTick(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := clocktest.New(time.Now())
+	store := openStore(t, conn, WithClock(fake))
 	// NATS fails every publication while it is unreachable.
 	pub := &failingPub{err: errors.New("nats unavailable")}
 	const (
@@ -415,19 +395,28 @@ func TestAFailingPublisherIsRetriedOncePerTick(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	began := time.Now()
 	StartSummaryLoop(ctx, store, pub, 0, tick, metrics.New().NewGauge("held", ""), logging.New("test"))
-	time.Sleep(time.Second)
-	attempts, elapsed := pub.count(), time.Since(began)
-	cancel()
 
-	// Passes run only at the ticks after the loop started, one attempt each at most.
-	if most := int(elapsed/tick) + 1; attempts > most {
-		t.Fatalf("%d publication attempts in %v, want at most %d, one a tick", attempts, elapsed, most)
+	// Each tick runs one pass, which attempts the settlement once; the publisher fails it, so it is
+	// retried at the next tick, not at once. Drive exactly passes ticks on the loop's clock and
+	// expect exactly that many attempts, one a tick.
+	const passes = 5
+	for i := range passes {
+		fake.AwaitArmed(t, "the summary loop's next tick", 1)
+		fake.Advance(tick)
+		testwait.Eventually(t, "the pass of this tick attempts its settlement", func() bool { return pub.count() >= i+1 })
 	}
-	if attempts < 2 {
-		t.Fatalf("%d publication attempts in %v, want the failed settlement retried", attempts, elapsed)
+	if got := pub.count(); got != passes {
+		t.Fatalf("%d publication attempts over %d ticks, want one a tick", got, passes)
 	}
+}
+
+// recreateCIBucket makes the CI bucket again with the config openStore opens it with, so a test that
+// deleted it finds it as the store expects. It holds the config apart from the tests that recreate
+// the bucket, which also keeps a test's own count assertions clear of its TTL.
+func recreateCIBucket(t *testing.T, js natsgo.JetStreamContext) {
+	t.Helper()
+	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.CIStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: time.Hour})
 }
 
 // A CI bucket deleted and created again holds none of the old bucket's records, and the store
@@ -461,7 +450,7 @@ func TestARecreatedBucketForgetsTheOldBucketsRecords(t *testing.T) {
 		t.Fatalf("the pass over the old bucket published %d settlements, want none", got)
 	}
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -469,7 +458,7 @@ func TestARecreatedBucketForgetsTheOldBucketsRecords(t *testing.T) {
 		t.Fatalf("delete the bucket: %v", err)
 	}
 	// The config openStore opens the bucket with.
-	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.CIStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: time.Hour})
+	recreateCIBucket(t, js)
 	if err := store.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}

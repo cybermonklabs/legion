@@ -32,8 +32,9 @@ import (
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
-	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -57,17 +58,15 @@ import (
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
 // testDSN is the one database this run's tests write in, made by TestMain on the devbox and CI
-// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). The daemon has no in-memory mode:
-// what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
-// whatever database it is given, so the run owns one rather than sharing the server's. A test
-// that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// Postgres the fixture names it on (testdb.RunDatabaseMain, read back here with
+// testdb.RunDatabase). The daemon has no in-memory mode: what it does on a boot is what its
+// store recorded, and a boot migrates Legion's schema into whatever database it is given, so the
+// run owns one rather than sharing the server's. A test that needs rows no other test of the run
+// can see takes a clone of its own instead (testpg.Clone), and a test that boots against a
+// server nothing answers on sets cfg.PostgresDSN itself.
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
-	return testdb.RunDatabaseFor(dsn)
+	return testdb.RunDatabase(t)
 }
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket
@@ -274,21 +273,29 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
-// stillClock is a clock whose timers never fire: the machines arm them and nothing calls them
-// back, and a Sleep returns at once, so a test sees only what it drove. Its Now is the wall
-// clock, so what is due by the time of day — an outbox row's next_at — still comes due as the
-// run goes on.
-type stillClock struct{}
+// stillClock is a clock whose timers never fire: a clocktest.Fake on the wall clock (Held) that
+// nothing moves, so the machines arm their timers and nothing calls them back, and a test sees
+// only what it drove. Its Now is the wall clock, so what is due by the time of day — an outbox
+// row's next_at — still comes due as the run goes on. Its Sleep returns at once: a machine backs
+// off inside a decision the test is waiting on, where a wait for a move nobody makes would never
+// end.
+//
+// It is an interface, so a test cannot write an empty one: `stillClock{}`, which compiled while it
+// was an empty struct, does not compile now, where a struct wrapping the fake would compile it with
+// no fake inside and panic at its first Now. newStillClock is the one way to make one.
+type stillClock interface {
+	clock.Clock
+	Advance(d time.Duration)
+	Set(at time.Time)
+	Armed() []time.Time
+}
 
-func (stillClock) Now() time.Time { return time.Now() }
+// heldStill is stillClock's one implementation.
+type heldStill struct{ *clocktest.Fake }
 
-func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
+func newStillClock() stillClock { return heldStill{clocktest.Held()} }
 
-func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-
-type stopped struct{}
-
-func (stopped) Stop() bool { return true }
+func (heldStill) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 // built is what the daemon handed the runtime it built: the connection directory, the address
 // every pane's shim dials, the workflow's App tokens and repository rule, the store it reads, and
@@ -314,7 +321,7 @@ func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 			record.conns, record.address, record.apps, record.repository, record.store, record.mapped = listener, address, apps, repository, st, mapped
 			return rt, nil
 		},
-		clock:  stillClock{},
+		clock:  newStillClock(),
 		listen: heldListen,
 	}
 }
@@ -382,19 +389,15 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 		refused <- run(context.Background(), cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
 	}()
 
-	select {
-	case err := <-refused:
-		if err == nil {
-			t.Fatal("run started without a Postgres to start against")
-		}
-		if !strings.Contains(err.Error(), "127.0.0.1:1") {
-			t.Errorf("the refusal does not name the host it could not reach: %v", err)
-		}
-		if strings.Contains(err.Error(), "hunter2") {
-			t.Errorf("the refusal leaks the DSN password: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("run did not refuse an unreachable Postgres within one second")
+	err := testwait.Receive(t, "run to refuse a Postgres it cannot reach", refused)
+	if err == nil {
+		t.Fatal("run started without a Postgres to start against")
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:1") {
+		t.Errorf("the refusal does not name the host it could not reach: %v", err)
+	}
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("the refusal leaks the DSN password: %v", err)
 	}
 }
 
@@ -661,7 +664,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 	}
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
-	// The wall clock, in place of these tests' still one (daemon.go's RealClock for a nil
+	// The wall clock, in place of these tests' still one (daemon.go's clock.Real for a nil
 	// override): a wake parked on a clock whose timers never fire would never take its turn.
 	o.clock = nil
 	d := startDaemon(t, cfg, o)
@@ -825,71 +828,58 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 
 // daemon is one run of the daemon in the test's process.
 type daemon struct {
-	t         *testing.T
-	cfg       config.Config
-	cancel    context.CancelFunc
-	done      chan error
+	t      *testing.T
+	cfg    config.Config
+	cancel context.CancelFunc
+	done   chan error
+	// ctx is the bound every request of this daemon's client carries: the test binary's own
+	// deadline less the shared wait's margin (testwait.Context), so a route that never answers
+	// fails the test naming the request rather than hanging to the binary's panic, and a loaded
+	// machine's slow answer fails nothing.
+	ctx       context.Context
 	transport *http.Transport
 	client    *http.Client
 	base      string
 	stopped   bool
+	// quiet is the supervisor's reading of the work its machines still hold (supervisionQuiet),
+	// for a test that started the daemon with overrides.supervising (startWaveDaemon); nil
+	// otherwise.
+	quiet func() supervisionQuiet
 }
 
-// startDaemon runs the daemon until the test stops it, and returns once it answers /healthz.
+// startDaemon runs the daemon until the test stops it, and returns once it reports itself ready to
+// serve (observedReady).
 func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	t.Helper()
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log, and failing the test at once
+// when run returns before the daemon is ready. It hooks an observer of its own into o for the
+// report (observing), so an observer the test hooked first hears every report too. A test that
+// points its workflow at no GitHub of its own gets repositoriesGitHub, so every launch on a
+// repository reads its default branch from a stand-in rather than from github.com.
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
-	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
-}
-
-// startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
-// within the given time. A test that points its workflow at no GitHub of its own gets
-// repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
-// rather than from github.com.
-func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
 	}
+	obs := observing(&o)
 	ctx, cancel := context.WithCancel(context.Background())
 	// One transport for every request, so the test can close its own connections before it asks
 	// the daemon to stop: net/http gives an idle connection five seconds before a Shutdown may
 	// close it, and a connection this client dialled is this client's to clean up.
 	transport := &http.Transport{}
 	d := &daemon{
-		t: t, cfg: cfg, cancel: cancel, done: make(chan error, 1), transport: transport,
-		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		t: t, cfg: cfg, cancel: cancel, done: make(chan error, 1), ctx: testwait.Context(t), transport: transport,
+		client: &http.Client{Transport: transport},
 		base:   "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
 	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
 	t.Cleanup(d.stop)
-	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
-	// daemon serves, the held listener queues the connection unanswered.
-	poll := &http.Client{Transport: transport, Timeout: time.Second}
-	var err error
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
-		var response *http.Response
-		response, err = poll.Get(d.base + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case exited := <-d.done:
-			d.stopped = true
-			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
-		default:
-		}
-		return false
-	}) {
-		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
+	if returned, err := obs.readyOrReturned(t, d.done); returned {
+		d.stopped = true
+		t.Fatalf("the daemon's run returned before it was ready to serve: %v", err)
 	}
 	return d
 }
@@ -900,7 +890,7 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 // unanswered reaches github.com.
 func repositoriesGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		if r.Method != http.MethodGet || !isRepository || len(parts) != 2 {
@@ -914,11 +904,11 @@ func repositoriesGitHub(t *testing.T) string {
 
 // stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
 // never returns, not a measurement of how long the stop took: no row of its callers reads the
-// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
-// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
-// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
-// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
-// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
+// elapsed time, so it waits through the shared wait, whose one bound is the test binary's
+// deadline. Held to the stop's own contract — the budget, then the NATS close's, the stamp's and
+// the store close's bounds (daemon.go, stopBudget) — a row reds on a machine that spends a few
+// milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s against
+// 3 s, which is what INFRA-985 was filed for.
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -927,13 +917,8 @@ func (d *daemon) stop() {
 	d.stopped = true
 	d.transport.CloseIdleConnections()
 	d.cancel()
-	select {
-	case err := <-d.done:
-		if err != nil {
-			d.t.Fatalf("run: %v", err)
-		}
-	case <-time.After(stopHangGuard(stopBudget)):
-		d.t.Fatal("run did not return after its context was cancelled")
+	if err := testwait.Receive(d.t, "run to return once its context was cancelled", d.done); err != nil {
+		d.t.Fatalf("run: %v", err)
 	}
 }
 
@@ -948,7 +933,7 @@ func (d *daemon) request(method, path string, body any, operator bool) (int, []b
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequest(method, d.base+path, reader)
+	req, err := http.NewRequestWithContext(d.ctx, method, d.base+path, reader)
 	if err != nil {
 		d.t.Fatalf("build the request: %v", err)
 	}
@@ -1037,6 +1022,48 @@ func (d *daemon) spawn(req api.SpawnRequest) claim.Token {
 	return spawned.Token
 }
 
+// servedState is GET /legion/v1/state of the daemon on cfg's port, read once: a row that runs
+// the daemon itself, rather than through startDaemonLogging, has no rig to ask. The request
+// carries the one bound this test binary has (testwait.Context), so a daemon that answers
+// nothing fails the row naming this read.
+func servedState(t *testing.T, cfg config.Config) api.State {
+	t.Helper()
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet,
+		"http://127.0.0.1:"+strconv.Itoa(cfg.Port)+"/legion/v1/state", nil)
+	if err != nil {
+		t.Fatalf("build the state request: %v", err)
+	}
+	response, err := (&http.Client{Transport: transport}).Do(req)
+	if err != nil {
+		t.Fatalf("GET the state: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET the state = %d", response.StatusCode)
+	}
+	var state api.State
+	if err := json.NewDecoder(response.Body).Decode(&state); err != nil {
+		t.Fatalf("decode the state: %v", err)
+	}
+	return state
+}
+
+// readBy gives conn the one bound this test binary has for a read that must answer: the moment
+// every wait of the shared wait gives up at (testwait.Context), and none at all under
+// `go test -timeout 0`, where no wait here has an end either.
+func readBy(t *testing.T, conn net.Conn) {
+	t.Helper()
+	deadline, bounded := testwait.Context(t).Deadline()
+	if !bounded {
+		return
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // lastLaunch is the spec of the claim's latest launch — the boot token its pane carries.
 func lastLaunch(t *testing.T, rt *fake.Runtime, token claim.Token) runtime.SpawnSpec {
 	t.Helper()
@@ -1086,9 +1113,7 @@ func (s *shim) send(frame shimwire.Frame) {
 // next is the next frame the daemon sends.
 func (s *shim) next() shimwire.Frame {
 	s.t.Helper()
-	if err := s.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		s.t.Fatalf("set the read deadline: %v", err)
-	}
+	readBy(s.t, s.conn)
 	line, err := s.lines.ReadBytes('\n')
 	if err != nil {
 		s.t.Fatalf("read a frame from the daemon: %v", err)
@@ -1100,7 +1125,9 @@ func (s *shim) next() shimwire.Frame {
 	return frame
 }
 
-// closed waits for the daemon to close the connection.
+// closed waits for the daemon to close the connection. A connection the daemon closed answers at
+// once with its end, so the window below is the moment that end arrives in and not a bound on a
+// wait: a connection still open is one nothing comes over, which no longer wait would settle.
 func (s *shim) closed() {
 	s.t.Helper()
 	if err := s.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -1133,45 +1160,22 @@ func (s *shim) prompt() shimwire.Prompt {
 func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
+	o := overrides{
+		listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: newStillClock(),
+		workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
+	}
+	obs := observing(&o)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, quietLogger(), overrides{
-			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
-		})
-	}()
+	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		if err := testwait.Receive(t, "run to return once its context was cancelled", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
-	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("the daemon stopped instead of booting: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the daemon never answered its state")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	obs.ready(t, done)
+	state := servedState(t, cfg)
 	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
 		Apps: &api.AppInstallationsView{Implement: true}}}}
 	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
@@ -1191,55 +1195,30 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
 	var logged syncBuffer
+	o := overrides{
+		listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: newStillClock(),
+		workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
+	}
+	obs := observing(&o)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), overrides{
-			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
-		})
-	}()
+	go func() { done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		if err := testwait.Receive(t, "run to return once its context was cancelled", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
-	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("the daemon stopped instead of booting: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the daemon never answered its state")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	obs.ready(t, done)
+	state := servedState(t, cfg)
 	want := []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the implement App's installation on acme/widgets could not be read: " + failure.Error() + "; Legion reads it again"}}
 	if len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want) {
 		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its failed read", state.Repositories)
 	}
-	// Every ERROR line the booting daemon writes, counted whole. pollClient bounds each readiness
-	// poll at a second (:275), and a poll the daemon answers more slowly than that - on a busy
-	// machine, or under the race detector - is abandoned by this test; the API logs the request
-	// whose context went with it at Warn, because the failure is the request's own ending
-	// (api's logRequestFailure). So the test's own doing costs this row nothing, and the row is
-	// the end-to-end guard it reads as: an ERROR line here is the boot's.
+	// Every ERROR line the booting daemon writes, counted whole. This row makes one request, once
+	// the daemon has reported itself ready to serve, so no poll of its own is abandoned
+	// mid-flight: an abandoned request is logged by the API at Warn, because the failure is the
+	// request's own ending (api's logRequestFailure), and an ERROR line here is the boot's.
 	var errorLines []string
 	for line := range strings.SplitSeq(logged.String(), "\n") {
 		if strings.Contains(line, `"level":"ERROR"`) {
@@ -1260,41 +1239,25 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, logger, overrides{
-			listen:         heldListen,
-			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
-			clock:          stillClock{},
-			workflowTokens: tokens,
-			githubAPI:      repositoriesGitHub(t),
-		})
-	}()
+	o := overrides{
+		listen:         heldListen,
+		runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
+		clock:          newStillClock(),
+		workflowTokens: tokens,
+		githubAPI:      repositoriesGitHub(t),
+	}
+	obs := observing(&o)
+	go func() { done <- run(ctx, cfg, logger, o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		if err := testwait.Receive(t, "run to return once its context was cancelled", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("daemon did not answer /healthz: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// Every stage the boot logs comes before the daemon serves, so its report that it is ready
+	// to serve is the moment the whole order is in the log.
+	obs.ready(t, done)
 
 	// The boot mints the implement then the review App's token, then reads each served repository
 	// as the implement App.
@@ -1380,63 +1343,60 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	github := workflowBranchGitHub(t, branchCreated)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
-			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
-			githubAPI: github.url,
-		})
-	}()
+	o := overrides{
+		listen:  heldListen,
+		runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: newStillClock(), workflowTokens: &workflowTokenRecorder{},
+		githubAPI: github.url,
+	}
+	// Two observers, each read on its own: the consumer starts beside the serving API, so the
+	// move's admission pass may be reported before the daemon reports itself ready.
+	obs, reports := observing(&o), observing(&o)
+	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		if err := testwait.Receive(t, "run to return once its context was cancelled", done); err != nil {
+			t.Errorf("run: %v", err)
 		}
 	})
 
-	awaitHealthz(t, cfg, done)
-	// The move reaches admission through the consumer once supervision serves; on a loaded machine
-	// that takes seconds, not milliseconds.
-	var active []string
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		var state struct {
-			Admission struct {
-				Active []string `json:"active"`
-			} `json:"admission"`
-		}
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				active = state.Admission.Active
-				if slices.Contains(active, key) {
-					break
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("admission is %v, want %s, moved to todo while boot listed Dispatch", active, key)
-		}
-		time.Sleep(50 * time.Millisecond)
+	obs.ready(t, done)
+	// The move reaches admission through the consumer once supervision serves. Admission changes
+	// only inside a pass, and each pass is reported once it commits, so the state read after each
+	// report says whether that pass, or one before it, admitted the move.
+	reports.admissionPasses(t, "the pass that admits "+key+", moved to todo while boot listed Dispatch", 1, func(intake.Fact) bool {
+		return slices.Contains(admissionActive(t, cfg), key)
+	})
+	reports.settled(t, rowOf{issue: key, kind: record.OutboxKindIssueBranch, outcome: settledFinished})
+	creates := github.created()
+	if want := "refs/heads/legion/" + key; len(creates) == 0 || creates[0].ref != want {
+		t.Fatalf("the GitHub stand-in's creates are %+v once %s's issue_branch row finished, want the first of %s", creates, key, want)
 	}
-	for deadline := time.Now().Add(60 * time.Second); ; {
-		if creates := github.created(); len(creates) > 0 {
-			if want := "refs/heads/legion/" + key; creates[0].ref != want {
-				t.Fatalf("the GitHub stand-in's first create is of %s, want %s", creates[0].ref, want)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the GitHub stand-in saw no create of %s's branch", key)
-		}
-		time.Sleep(50 * time.Millisecond)
+}
+
+// admissionActive is the admission line's active issues as GET /legion/v1/state on cfg's port
+// answers them, read once. The request closes its connection, so it leaves nothing open for the
+// daemon's stop to wait on.
+func admissionActive(t *testing.T, cfg config.Config) []string {
+	t.Helper()
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(cfg.Port)+"/legion/v1/state", nil)
+	if err != nil {
+		t.Fatalf("build the state request: %v", err)
 	}
+	request.Close = true
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("GET /legion/v1/state: %v", err)
+	}
+	defer response.Body.Close()
+	var state struct {
+		Admission struct {
+			Active []string `json:"active"`
+		} `json:"admission"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&state); err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /legion/v1/state = %d, decoded with %v", response.StatusCode, err)
+	}
+	return state.Admission.Active
 }
 
 // With no notification stream the daemon would boot with no intake, and nothing Dispatch or GitHub
@@ -1453,17 +1413,12 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 	go func() {
 		done <- run(ctx, cfg, quietLogger(), overrides{
 			listen:  heldListen,
-			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
+			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: newStillClock(), workflowTokens: &workflowTokenRecorder{},
 			githubAPI: repositoriesGitHub(t),
 		})
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "ENVOY_NOTIFICATIONS") {
-			t.Fatalf("run = %v, want a boot refusal naming ENVOY_NOTIFICATIONS", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("the daemon booted with no notification stream")
+	if err := testwait.Receive(t, "run to refuse a boot with no notification stream", done); err == nil || !strings.Contains(err.Error(), "ENVOY_NOTIFICATIONS") {
+		t.Fatalf("run = %v, want a boot refusal naming ENVOY_NOTIFICATIONS", err)
 	}
 }
 
@@ -1478,7 +1433,7 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 	go func() {
 		done <- run(ctx, cfg, quietLogger(), overrides{
 			listen:  heldListen,
-			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
+			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: newStillClock(), workflowTokens: &workflowTokenRecorder{},
 			githubAPI: repositoriesGitHub(t),
 		})
 	}()
@@ -1498,23 +1453,17 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 	if err := stream.DeleteConsumer(context.Background(), consumer); err != nil {
 		t.Fatalf("delete %s: %v", consumer, err)
 	}
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), consumer) {
-			t.Fatalf("run = %v, want the daemon stopped by its intake naming %s", err, consumer)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("the daemon kept running after its intake ended")
+	if err := testwait.Receive(t, "run to stop with the error its intake ended on", done); err == nil || !strings.Contains(err.Error(), consumer) {
+		t.Fatalf("run = %v, want the daemon stopped by its intake naming %s", err, consumer)
 	}
 }
 
 // readinessAttempt and bootprobe.Run are only useful if run() actually wires them together. Here
 // a real daemon.Run() boots against a Dispatch stand-in that answers 503 twice before listing no
-// issues, under a fast readinessRetry, and reaches /healthz — proving the wiring itself rides out
-// the outage, not just the adapter TestReadinessAttempt (readiness_test.go) already covers in
-// isolation.
+// issues, and comes up once the test moves the daemon's clock past each wait readinessRetry arms —
+// proving the wiring itself rides out the outage, not just the adapter TestReadinessAttempt
+// (readiness_test.go) already covers in isolation.
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
-	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	natsURL := workflowNATS(t)
 	var requests atomic.Int64
 	cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string {
@@ -1536,9 +1485,12 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 			}
 		})
 	})
-	o := fakeRuntime(fake.NewRuntime(), &built{})
-	o.workflowTokens = &workflowTokenRecorder{}
-	startDaemon(t, cfg, o)
+	clk := clocktest.New(time.Now())
+	boot := bootOn(t, cfg, &workflowTokenRecorder{}, clk, quietLogger())
+	fireBackoff(t, clk, "the wait before the admission listing's next attempt", readinessRetry, 2)
+	if err := boot.readyOrExit(t); err != nil {
+		t.Fatalf("boot = %v, want it to wait out two 503s and come up", err)
+	}
 
 	if got := requests.Load(); got < 3 {
 		t.Fatalf("Dispatch saw %d requests, want at least 3 (two 503s then the 200 the daemon booted on)", got)
@@ -1547,13 +1499,12 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 
 // The boot's first Dispatch read is the repository mapping. A Dispatch with no ready endpoint,
 // fronted here by a proxy that answers 503 for it, fails that read for as long as it has none, and
-// the boot waits that out (readinessRetry, without limit) as it waits out the listing for
-// admission, and comes up once Dispatch answers. Bounded at appMintRetry's attempts, the read
-// exited the daemon, and its supervisor restarted it straight back into the same refusal. Here
-// Dispatch fails the mapping read two times more than appMintRetry's budget allows.
+// the boot waits that out (readinessRetry, without limit, on the daemon's clock, which the test
+// moves past each wait) as it waits out the listing for admission, and comes up once Dispatch
+// answers. Bounded at appMintRetry's attempts, the read exited the daemon, and its supervisor
+// restarted it straight back into the same refusal. Here Dispatch fails the mapping read two times
+// more than appMintRetry's budget allows.
 func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
-	quickAppMints(t)
-	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	refusals := int64(appMintRetry.Attempts + 2)
 	var reads atomic.Int64
 	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
@@ -1576,7 +1527,10 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 		})
 	})
 
-	if err := bootsOrExits(t, cfg, &workflowTokenRecorder{}, 60*time.Second); err != nil {
+	clk := clocktest.New(time.Now())
+	boot := bootOn(t, cfg, &workflowTokenRecorder{}, clk, quietLogger())
+	fireBackoff(t, clk, "the wait before the mapping read's next attempt", readinessRetry, int(refusals))
+	if err := boot.readyOrExit(t); err != nil {
 		t.Fatalf("boot = %v, want it to wait out %d failed mapping reads and come up", err, refusals)
 	}
 	if got := reads.Load(); got <= refusals {
@@ -1639,7 +1593,7 @@ func workflowDispatch(t *testing.T, project string) string {
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
 	conn := testnats.Connect(t, natsURL)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -1769,7 +1723,7 @@ func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
 	conn := testnats.Connect(t, url)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

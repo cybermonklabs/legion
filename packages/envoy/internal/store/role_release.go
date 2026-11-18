@@ -358,7 +358,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	r.mu.RLock()
 	restoredRevision, restored := r.restoredRoleRevisions[role]
 	r.mu.RUnlock()
-	if restored && restoredRevision == claim.Revision && !claim.HandedBack && sessionTTL > 0 && r.now().Sub(r.openedAt) < sessionTTL {
+	if restored && restoredRevision == claim.Revision && !claim.HandedBack && sessionTTL > 0 && r.clock.Now().Sub(r.openedAt) < sessionTTL {
 		return ExpiredRoleClaimRetained, nil
 	}
 	epoch := r.roleViewEpoch()

@@ -24,7 +24,7 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 				t.Fatalf("connect with the seed: %v", err)
 			}
 			defer conn.Close()
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(MaxWait(t))
 			if err != nil {
 				t.Fatalf("JetStream context: %v", err)
 			}
@@ -36,8 +36,8 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 	}
 }
 
-// With no serverArgs the server runs without JetStream: StartImageConfig replaces the NATS
-// module's own default arguments (-DV -js) rather than adding to them. nats-server enables
+// With no serverArgs the server runs without JetStream: StartImageConfig gives it no argument of
+// its own but the configuration and its ports (ownPorts), and adds no -js. nats-server enables
 // JetStream before it accepts a client (server/server.go Start), so the first answer is final.
 func TestStartImageConfigRunsNoArgumentItWasNotGiven(t *testing.T) {
 	for _, image := range Images {
@@ -50,7 +50,7 @@ func TestStartImageConfigRunsNoArgumentItWasNotGiven(t *testing.T) {
 				t.Fatalf("connect with the seed: %v", err)
 			}
 			defer conn.Close()
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(MaxWait(t))
 			if err != nil {
 				t.Fatalf("JetStream context: %v", err)
 			}

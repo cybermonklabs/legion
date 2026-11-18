@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { MermaidDrawing } from "@legion/proof-editor/mermaid";
 import * as mermaidRenderer from "@legion/proof-editor/mermaid-render";
+import { settled } from "@legion/test-fixtures/wait";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -665,8 +666,12 @@ describe("Mermaid diagrams", () => {
   });
 
   // A worker's chunk can take longer to download and load than the time limit; the limit is for
-  // drawing one source, so it starts when the worker posts `ready` and is handed that source.
+  // drawing one source, so it starts when the worker posts `ready` and is handed that source. On
+  // the fake clock, which only the wait below moves: the worker posts `ready` 150 ms after it
+  // starts, three limits on, so a limit counted from the start would refuse the source first.
   test("a worker that loads slower than the time limit still draws: the limit starts when the worker is ready", async () => {
+    await warmMarkdownRenderer();
+    jest.useFakeTimers();
     resetMermaidDiagrams(50);
     FakeWorker.readyDelayMs = 150;
     const view = render(
@@ -679,6 +684,7 @@ describe("Mermaid diagrams", () => {
       expect(diagramIn(figure)?.textContent).toContain("Loaded");
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -956,21 +962,16 @@ describe("Mermaid diagrams", () => {
   });
 
   describe("mermaidDrawsSettled", () => {
-    /** Whether `promise` settles within `ms`, so a promise that never resolves fails the case on
-     *  its assertion rather than on the test's timeout. This wait stays on the real clock where
-     *  the rest of the file moved to a fake one (INFRA-1505): a fake clock only moves when the
-     *  test moves it, so the losing side of the race would never come up and the race would
-     *  decide nothing. */
-    const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> =>
-      Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
-
+    // The cases that wait do so on the real clock, through the shared wait
+    // (`@legion/test-fixtures/wait`): a promise that never resolves fails the case naming what it
+    // waited for, before the row's guard, rather than as a bare timeout.
     test("resolves at once when no source is waiting", async () => {
-      let settled = false;
+      let resolved = false;
       void mermaidDrawsSettled().then(() => {
-        settled = true;
+        resolved = true;
       });
       await Promise.resolve();
-      expect(settled).toBe(true);
+      expect(resolved).toBe(true);
       expect(FakeWorker.created).toHaveLength(0);
     });
 
@@ -978,10 +979,12 @@ describe("Mermaid diagrams", () => {
       const events: string[] = [];
       requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: First", () => events.push("first"));
       requestMermaidDrawing("sequenceDiagram\n  Carol->>Dave: Second", () => events.push("second"));
-      const settled = mermaidDrawsSettled().then(() => {
-        events.push("settled");
-      });
-      expect(await settlesWithin(settled, 2000)).toBe(true);
+      await settled(
+        "the draws to settle once both waiting sources are answered",
+        mermaidDrawsSettled().then(() => {
+          events.push("settled");
+        })
+      );
       expect(events).toEqual(["first", "second", "settled"]);
     });
 
@@ -993,7 +996,10 @@ describe("Mermaid diagrams", () => {
         requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: Never", (drawing) =>
           drawn.push(drawing)
         );
-        expect(await settlesWithin(mermaidDrawsSettled(), 1000)).toBe(true);
+        await settled(
+          "the draws to settle once the failed renderer clears the queue",
+          mermaidDrawsSettled()
+        );
         expect(logged).toHaveBeenCalledTimes(1);
         expect(drawn).toEqual([{ unavailable: true }]);
       } finally {

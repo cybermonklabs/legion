@@ -70,13 +70,14 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 	if started.StatusCode != http.StatusServiceUnavailable || errorCodeOf(string(body)) != "SIGNIN_UNAVAILABLE" {
 		t.Fatalf("/auth/start while the sign-in issuer is down: %d %s, want 503 SIGNIN_UNAVAILABLE", started.StatusCode, body)
 	}
-	process.waitForLog(t, 30*time.Second, `msg="oidc: discover the issuer`, "issuer="+signInIssuer.URL())
+	process.waitForLog(t, `msg="oidc: discover the issuer`, "issuer="+signInIssuer.URL())
 
 	signInIssuer.FailDiscovery(0)
 	podIssuer.FailDiscovery(0)
-	process.waitForHealth(t, discoveryRetryWindow, "signin and service_tokens true", func(health healthBody) bool {
+	process.waitForHealth(t, "signin and service_tokens true", func(health healthBody) bool {
 		return health.OK && health.SignIn != nil && *health.SignIn && health.ServiceTokens != nil && *health.ServiceTokens
 	})
+
 	if status, body := bearerWhoami(t, process, podToken); status != http.StatusOK || !strings.Contains(body, podSubject) {
 		t.Fatalf("a pod's JWT once its issuer answers: %d %s, want 200 naming %s", status, body, podSubject)
 	}

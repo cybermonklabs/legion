@@ -167,12 +167,13 @@ type ExcerptDrift struct {
 // driftedExcerptsQuery lists, in id order, the documents some of whose mentions hold no excerpt
 // version (excerpt_version is null), through the partial index refs_excerpt_drift, which holds
 // exactly those rows: once the reconciliation has caught up, the index is empty and the query reads
-// nothing else. A document whose backoff row names its latest version and is not yet due is left
-// out, so the limit is spent on documents a batch can still record; a row naming an older version
-// is a failure of a version the document has since replaced, and holds nothing back. The
-// exclusion is an anti-join inside the limited distinct, so the plan stays the ordered walk of
-// refs_excerpt_drift that stops after limit documents, whatever the visibility map says; the
-// backoff table holds only failing documents and is read whole once.
+// nothing else. A document whose backoff row names its latest version and is not yet due by the
+// moment the caller passes is left out, so the limit is spent on documents a batch can still
+// record; a row naming an older version is a failure of a version the document has since
+// replaced, and holds nothing back. The exclusion is an anti-join inside the limited distinct, so
+// the plan stays the ordered walk of refs_excerpt_drift that stops after limit documents,
+// whatever the visibility map says; the backoff table holds only failing documents and is read
+// whole once.
 const driftedExcerptsQuery = `
 	select d.from_id,
 	       (select coalesce(max(v.number), 0) from artifact_versions v where v.artifact_id = d.from_id::uuid),
@@ -182,7 +183,7 @@ const driftedExcerptsQuery = `
 		where r.from_kind = 'artifact' and r.excerpt_version is null
 		  and not exists (
 			select 1 from reference_excerpt_backoff b
-			where b.artifact_id = r.from_id::uuid and b.next_attempt_at > now()
+			where b.artifact_id = r.from_id::uuid and b.next_attempt_at > $2
 			  and b.version = (select coalesce(max(v.number), 0) from artifact_versions v where v.artifact_id = b.artifact_id)
 		  )
 		order by r.from_id
@@ -194,8 +195,13 @@ const driftedExcerptsQuery = `
 // owed an excerpt and that are not waiting out a backoff (DeferExcerpts): every mention indexed
 // before migration 0092, each one rebuild-refs inserts, one a version write could not cut
 // (ClearExcerpts), and one MarkStaleExcerpts found behind.
-func DriftedExcerpts(ctx context.Context, q Queryer, limit int) ([]ExcerptDrift, error) {
-	rows, err := q.Query(ctx, driftedExcerptsQuery, limit)
+//
+// at is the moment a backoff is judged due by, which the caller reads from the clock it defers
+// with (DeferExcerpts): the reconciliation's own, clock.Real in production and a test's fake. The
+// two read one clock, so a row written base ahead of a moment is due exactly base of that clock
+// later, and no deferral waits on a clock the caller cannot move.
+func DriftedExcerpts(ctx context.Context, q Queryer, limit int, at time.Time) ([]ExcerptDrift, error) {
+	rows, err := q.Query(ctx, driftedExcerptsQuery, limit, at)
 	if err != nil {
 		return nil, fmt.Errorf("list drifted reference excerpts: %w", err)
 	}
@@ -221,18 +227,23 @@ func DriftedExcerpts(ctx context.Context, q Queryer, limit int) ([]ExcerptDrift,
 // older version is replaced and counts from one again: the document has a version that has not
 // failed yet. The exponent is held at 30, past which every delay a caller passes is the ceiling,
 // so the doubling never leaves double precision.
-func DeferExcerpts(ctx context.Context, q Execer, fromID string, version int, base, ceiling time.Duration) error {
+//
+// at is the moment the wait counts from, which the caller reads from the clock DriftedExcerpts
+// judges the row by: the reconciliation's own, clock.Real in production and a test's fake. It is
+// the caller's rather than the database's now() so that a test moves its clock past a backoff
+// instead of waiting out a minute of the database's.
+func DeferExcerpts(ctx context.Context, q Execer, fromID string, version int, base, ceiling time.Duration, at time.Time) error {
 	if _, err := q.Exec(ctx, `
 		insert into reference_excerpt_backoff as b (artifact_id, version, attempts, next_attempt_at)
-		values ($1::uuid, $2, 1, now() + make_interval(secs => least($3::float8, $4::float8) * (1 + 0.2 * random())))
+		values ($1::uuid, $2, 1, $5::timestamptz + make_interval(secs => least($3::float8, $4::float8) * (1 + 0.2 * random())))
 		on conflict (artifact_id) do update set
 			version = excluded.version,
 			attempts = case when b.version = excluded.version then b.attempts + 1 else 1 end,
-			next_attempt_at = now() + make_interval(secs => least(
+			next_attempt_at = $5::timestamptz + make_interval(secs => least(
 				$3::float8 * power(2, case when b.version = excluded.version then least(b.attempts, 30) else 0 end),
 				$4::float8
 			) * (1 + 0.2 * random()))
-	`, fromID, version, base.Seconds(), ceiling.Seconds()); err != nil {
+	`, fromID, version, base.Seconds(), ceiling.Seconds(), at); err != nil {
 		return fmt.Errorf("defer the reference excerpts of %s: %w", fromID, err)
 	}
 	return nil

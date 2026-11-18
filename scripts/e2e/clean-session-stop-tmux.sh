@@ -502,9 +502,12 @@ gone_within() {
 }
 
 # ---- the daemon's own surface -----------------------------------------------------------------------
+# legion ARGS… runs an operator command of the daemon's against it. It names the daemon by its
+# port rather than by legion.yaml: the file names no postgres_dsn, the loader of a command that
+# reads it wants the store's DSN, and an operator command needs no database to reach the daemon.
 legion() {
   env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$work/tmp" XDG_STATE_HOME="$work/xdg" \
-    "$work/bin/legion" "$@" --config "$work/legion.yaml" --operator-token-file "$work/operator-token"
+    "$work/bin/legion" "$@" --port "$daemon_port" --operator-token-file "$work/operator-token"
 }
 
 # claim_json TOKEN prints the daemon's record of one claim.
@@ -782,11 +785,8 @@ note "the listener on 127.0.0.1:$listener_port judges records with a ${live_wind
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
   fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
-run_database_url database_url CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
-  "the run creates and drops a database there" || fail "$database_url"
-# That string holds spaces and single quotes, so the daemon's configuration file takes it as a
-# single-quoted YAML scalar, in which a single quote is written twice.
-daemon_dsn=${database_url//\'/\'\'}
+require_run_database refusal CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
+  "the run creates and drops a database there" || fail "$refusal"
 note "the daemon's store is the run's own database $database"
 echo "ok services"
 
@@ -797,10 +797,12 @@ keep_port daemon_keeper daemon_port
 # has no mise, so the Oh My Pi under proof is named by LEGION_OMP_PATH in the daemon's own
 # environment (omplaunch.ResolveInvocation), which the daemon resolves to its real path for every
 # pane and for its own boot gate.
+# postgres_dsn is left out too: the daemon reads its store from LEGION_POSTGRES_DSN, which
+# lib/loopback-dsn.sh's exec_run_database sets in the daemon's own environment alone (below), so
+# no file, argument list or variable of this shell holds the connection string.
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $daemon_port
-postgres_dsn: '$daemon_dsn'
 state_dir: $state_dir
 operator_token_file: $work/operator-token
 envoy_url: http://127.0.0.1:$listener_port
@@ -833,8 +835,18 @@ claude_claim_dir=$state_dir/claude/legion-$ptoken-css-2-implementer
 )
 chmod 0700 "$work/claude-key-command"
 
-start_kept daemon daemon_keeper LEGION_LISTEN_FD -- env -i PATH="$PATH" \
-  LEGION_LISTEN_FD=3 HOME="$omp_home" TMPDIR="$work/tmp" OMP_PROFILE="$profile" \
+# The daemon's environment is LEGION_POSTGRES_DSN, LEGION_LISTEN_FD and the variables `env` names
+# here, as `env -i` gave it before: --env-only hands on that one variable alone, held-port.py adds
+# LEGION_LISTEN_FD, and `env` adds the rest. held-port.py is Python, which sets LC_CTYPE in its own
+# environment under the C locale (PEP 538), so `env -u LC_CTYPE` takes that back out.
+# exec_run_database runs first and held-port.py after it, where start_kept would run held-port.py
+# first, because the DSN reaches the helper in the environment of the subshell start_process runs.
+# Every exec keeps the pid, so daemon_pid is the daemon's.
+start_process daemon exec_run_database CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
+  "the run creates and drops a database there" --env-only LEGION_POSTGRES_DSN -- \
+  python3 "$root/scripts/e2e/lib/held-port.py" exec --from "$work/daemon_keeper.sock" \
+  --fd-env LEGION_LISTEN_FD -- env -u LC_CTYPE PATH="$PATH" \
+  HOME="$omp_home" TMPDIR="$work/tmp" OMP_PROFILE="$profile" \
   TMUX_TMPDIR="$work/tmux" XDG_STATE_HOME="$work/xdg" LEGION_OMP_PATH="$omp_bin" \
   LEGION_CLAUDE_PATH="$claude_bin" LEGION_BUN_PATH="$(command -v bun)" \
   LEGION_CLAUDE_PLUGIN_DIR="$work/claude-envoy" \

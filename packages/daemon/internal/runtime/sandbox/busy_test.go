@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -110,47 +111,53 @@ func TestOnlyALaunchsRequestsAreSentAgainWhileTheServerIsOverloaded(t *testing.T
 // deadline for it allows a further wait, and then fails with the server's last answer, saying how
 // often and how long it was waited out. The deadline is its context's when it has one, and
 // otherwise the boot timeout from its first send: the bound each wait of a launch has, never a
-// multiple of it.
+// multiple of it. The rig runs in a synctest bubble, whose clock is the test's own: the time the
+// request was waited out is read on it, so the bounds below hold the deadline the runtime armed,
+// at no load.
 func TestALaunchsRequestStopsWaitingAtItsDeadline(t *testing.T) {
 	for name, tc := range map[string]struct {
 		// bootTimeout is the rig's boot timeout, 0 for the rig's own; deadline is the request's
 		// context's, 0 for none.
 		bootTimeout, deadline time.Duration
-		// least and most bound how long the request is waited out.
+		// least and most bound how long the request is waited out: up to the deadline, and no
+		// further from it than the longest backoff, 32 times the rig's BusyBackoff of 1 ms
+		// (backoff.Wait), since the runtime stops once the next wait would reach its deadline.
 		least, most time.Duration
 	}{
-		"a deadline on its context":  {deadline: 50 * time.Millisecond, most: 50*time.Millisecond + recheckInterval},
-		"no deadline on its context": {bootTimeout: 400 * time.Millisecond, least: 200 * time.Millisecond, most: 600 * time.Millisecond},
+		"a deadline on its context":  {deadline: 50 * time.Millisecond, least: 50*time.Millisecond - 32*time.Millisecond, most: 50 * time.Millisecond},
+		"no deadline on its context": {bootTimeout: 400 * time.Millisecond, least: 400*time.Millisecond - 32*time.Millisecond, most: 400 * time.Millisecond},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var options []rigOption
-			if tc.bootTimeout != 0 {
-				options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
-			}
-			g := newRig(t, nil, options...)
-			ctx := launching(g.ctx)
-			if tc.deadline != 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, tc.deadline)
-				defer cancel()
-			}
-			var sent atomic.Int32
-			g.kube.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
-				sent.Add(1)
-				return true, nil, apierrors.NewInternalError(errors.New(etcdThrottle))
+			synctest.Test(t, func(t *testing.T) {
+				var options []rigOption
+				if tc.bootTimeout != 0 {
+					options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
+				}
+				g := newRig(t, nil, options...)
+				ctx := launching(g.ctx)
+				if tc.deadline != 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tc.deadline)
+					defer cancel()
+				}
+				var sent atomic.Int32
+				g.kube.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+					sent.Add(1)
+					return true, nil, apierrors.NewInternalError(errors.New(etcdThrottle))
+				})
+				start := time.Now()
+				_, err := g.r.kube.CoreV1().Secrets(testNamespace).Get(ctx, "a-secret", metav1.GetOptions{})
+				waitedOut := time.Since(start)
+				if !apierrors.IsInternalError(err) || !strings.Contains(err.Error(), "the API server answered get secrets a-secret overloaded") {
+					t.Fatalf("get through a throttle that never clears = %v, want the server's last answer saying how long it was waited out", err)
+				}
+				if waitedOut < tc.least || waitedOut > tc.most {
+					t.Fatalf("the read was waited out for %s on the bubble's clock, want between %s and %s", waitedOut, tc.least, tc.most)
+				}
+				if sent.Load() < 2 {
+					t.Fatalf("the read was sent %d times, want it sent again inside its deadline", sent.Load())
+				}
 			})
-			start := time.Now()
-			_, err := g.r.kube.CoreV1().Secrets(testNamespace).Get(ctx, "a-secret", metav1.GetOptions{})
-			took := time.Since(start)
-			if !apierrors.IsInternalError(err) || !strings.Contains(err.Error(), "the API server answered get secrets a-secret overloaded") {
-				t.Fatalf("get through a throttle that never clears = %v, want the server's last answer saying how long it was waited out", err)
-			}
-			if took < tc.least || took > tc.most {
-				t.Fatalf("the read was waited out for %s, want between %s and %s", took, tc.least, tc.most)
-			}
-			if sent.Load() < 2 {
-				t.Fatalf("the read was sent %d times, want it sent again inside its deadline", sent.Load())
-			}
 		})
 	}
 }
@@ -165,9 +172,9 @@ func TestALaunchsRequestStopsWaitingAtItsDeadline(t *testing.T) {
 // kind of request a launch makes meets the throttle: the Sandbox's
 // suspension and its Running patch, the wait for the old pod's end, the launcher Secrets' writes
 // and binding, their reads, and the address record. The informers meet it too: their watches end as
-// the burst begins, and the server refuses their next lists and watches for half a second, so every
-// store's feed is failing while the launches wait for their launchers. The burst converges: every
-// claim is launched, and none is charged a launch failure.
+// the burst begins, and the server refuses their next lists and watches until the throttle has
+// answered the burst both ways, so every store's feed is failing while the launches are under way.
+// The burst converges: every claim is launched, and none is charged a launch failure.
 func TestABurstOfRelaunchesThroughAThrottlingAPIServerConvergesUncharged(t *testing.T) {
 	for name, refusal := range map[string]error{
 		"the feeds refused with 429":        apierrors.NewTooManyRequests("the request has been limited by the API server's flow control", 1),
@@ -177,11 +184,13 @@ func TestABurstOfRelaunchesThroughAThrottlingAPIServerConvergesUncharged(t *test
 	}
 }
 
-// burstOfRelaunches is the burst, the informers' lists and watches refused with feedRefusal.
+// burstOfRelaunches is the burst, the informers' lists and watches refused with feedRefusal. Each
+// launch's waits are bounded by the rig's boot timeout, the daemon's own two minutes (testOptions),
+// which the burst's throttle only delays.
 func burstOfRelaunches(t *testing.T, feedRefusal error) {
 	const issues = 8
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer}
-	g := newRig(t, nil, withBreakableFeeds(), withOptions(func(o *Options) { o.BootTimeout = 15 * time.Second }))
+	g := newRig(t, nil, withBreakableFeeds())
 	type role struct {
 		spec    runtime.SpawnSpec
 		machine *supervise.Machine
@@ -240,7 +249,6 @@ func burstOfRelaunches(t *testing.T, feedRefusal error) {
 	throttling.Store(true)
 	g.refuseFeeds(feedRefusal)
 	testwait.Eventually(t, "the stores' feeds to fail", func() bool { return g.r.sandboxFeed.check() != nil && g.r.podFeed.check() != nil })
-	time.AfterFunc(500*time.Millisecond, func() { g.refuseFeeds(nil) })
 
 	relaunched := make(chan error, len(all))
 	for _, r := range all {
@@ -248,14 +256,15 @@ func burstOfRelaunches(t *testing.T, feedRefusal error) {
 			relaunched <- r.machine.Handle(g.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{Locator: *r.first, Kind: runtime.StaleAddress, At: rigNow}})
 		}()
 	}
+	// The server serves the informers again once the burst is under way through the refused
+	// feeds: the throttle has answered its requests both 429 and 500.
+	testwait.Eventually(t, "the throttle to answer the burst's requests both 429 and 500 while the feeds are refused", func() bool {
+		return tooMany.Load() > 0 && serverError.Load() > 0
+	})
+	g.refuseFeeds(nil)
 	for range all {
-		select {
-		case err := <-relaunched:
-			if err != nil {
-				t.Errorf("a relaunch of the burst: %v", err)
-			}
-		case <-time.After(time.Minute):
-			t.Fatal("the burst of relaunches did not end")
+		if err := testwait.Receive(t, "a relaunch of the burst to end", relaunched); err != nil {
+			t.Errorf("a relaunch of the burst: %v", err)
 		}
 	}
 	throttling.Store(false)
@@ -379,26 +388,29 @@ func TestALastingRefusalOfTheRelabelFailsTheTryAfterOnePatch(t *testing.T) {
 
 // A request inside a launch's wait ends with the wait's budget: the old pod stays in the store for
 // most of awaitPodGone's budget, then the confirming read of it is answered overloaded, and the wait
-// still ends at its budget rather than a boot timeout after that read began.
+// still ends at its budget rather than a boot timeout after that read began. The rig runs in a
+// synctest bubble, whose clock is the test's own, so the wait is read against its budget exactly.
 func TestARequestInsideALaunchsWaitEndsWithTheWaitsBudget(t *testing.T) {
-	const boot = time.Second
-	name := SandboxName(workerToken)
-	labels := map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: testTree}
-	g := newRig(t, []k8sruntime.Object{
-		sandboxObject(t, name, "uid-waited", modeSuspended, labels),
-		podObject(name, "uid-old-pod", "uid-waited", labels, runningStatus()),
-	}, withoutController(), withOptions(func(o *Options) { o.BootTimeout = boot }))
-	g.kube.PrependReactor("get", "pods", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
-		return true, nil, apierrors.NewInternalError(errors.New(etcdThrottle))
+	synctest.Test(t, func(t *testing.T) {
+		const boot = time.Second
+		name := SandboxName(workerToken)
+		labels := map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: testTree}
+		g := newRig(t, []k8sruntime.Object{
+			sandboxObject(t, name, "uid-waited", modeSuspended, labels),
+			podObject(name, "uid-old-pod", "uid-waited", labels, runningStatus()),
+		}, withoutController(), withOptions(func(o *Options) { o.BootTimeout = boot }))
+		g.kube.PrependReactor("get", "pods", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+			return true, nil, apierrors.NewInternalError(errors.New(etcdThrottle))
+		})
+		time.AfterFunc(boot*7/10, func() { _ = g.kube.Tracker().Delete(podsGVR, testNamespace, name) })
+		start := time.Now()
+		_, err := g.r.awaitPodGone(launching(g.ctx), g.sandbox(name))
+		waited := time.Since(start)
+		if err == nil {
+			t.Fatal("awaitPodGone through a read answered overloaded throughout = nil, want it to end with an error")
+		}
+		if waited > boot {
+			t.Fatalf("awaitPodGone waited %s on the bubble's clock, past its %s budget: %v", waited, boot, err)
+		}
 	})
-	time.AfterFunc(boot*7/10, func() { _ = g.kube.Tracker().Delete(podsGVR, testNamespace, name) })
-	start := time.Now()
-	_, err := g.r.awaitPodGone(launching(g.ctx), g.sandbox(name))
-	took := time.Since(start)
-	if err == nil {
-		t.Fatal("awaitPodGone through a read answered overloaded throughout = nil, want it to end with an error")
-	}
-	if took > boot*13/10 {
-		t.Fatalf("awaitPodGone took %s, past its %s budget: %v", took, boot, err)
-	}
 }

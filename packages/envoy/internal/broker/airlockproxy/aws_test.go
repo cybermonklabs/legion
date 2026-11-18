@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The key pair behind the airlock: what the broker holds, and what the command holds in its
@@ -366,8 +367,8 @@ func TestTheThreeAWSShapesTheAirlockRefuses(t *testing.T) {
 // through once that one ends - were the budget not given back, it never would - and a call
 // that carries its own X-Amz-Content-Sha256 holds no body and takes nothing from the budget.
 //
-// Every wait of the row is bounded by cutWait and a call that fails ends it, so a proxy that
-// carries none of the calls fails the row in seconds rather than leaving it waiting for a call
+// Every wait of the row is the shared one (testwait), and a call that fails ends it, so a proxy
+// that carries none of the calls fails the row at once rather than leaving it waiting for a call
 // that never reaches the service; and the stand-in's held calls are let go when the row ends,
 // however it ends.
 func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
@@ -412,22 +413,23 @@ func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 	// next is the path of the next call the service is sent. While the stand-in holds every
 	// call it has, no call can end with an answer, so a status then is a call that failed on
 	// its way, and it ends the row; once the row has let them answer, the calls in flight end
-	// with their answers and only the wait itself is bounded.
+	// with their answers and only the wait itself goes on.
 	next := func(holding bool) string {
 		t.Helper()
 		failed := status
 		if !holding {
 			failed = nil
 		}
-		select {
-		case path := <-arrived:
-			return path
-		case got := <-failed:
-			t.Fatalf("a call ended %d while the stand-in held every call it had; want each call to reach the service", got)
-		case <-time.After(cutWait):
-			t.Fatalf("no further call reached the service within %v", cutWait)
-		}
-		return ""
+		return testwait.Until(t, "the next call to reach the service", func() (string, bool) {
+			select {
+			case path := <-arrived:
+				return path, true
+			case got := <-failed:
+				t.Fatalf("a call ended %d while the stand-in held every call it had; want each call to reach the service", got)
+			default:
+			}
+			return "no call yet", false
+		})
 	}
 
 	send(put("/first"))
@@ -442,11 +444,8 @@ func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 	if path := next(true); path != "/hashed" {
 		t.Fatalf("the service was sent %q next; want the call that carries its own hash, which holds no body", path)
 	}
-	select {
-	case path := <-arrived:
-		t.Fatalf("the service was sent %q while the whole budget was held; want it to wait for room", path)
-	case <-time.After(100 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the call that has to wait for room to reach the service", arrived, 100*time.Millisecond,
+		"the budget is a semaphore.Weighted, which keeps no count this test can read: no state of the proxy says a call is parked on it, no later action's effect shows it, and the call is a real HTTP request, so synctest cannot see it either")
 
 	// Both calls in flight answer, which gives the first one's bytes back, and the waiting
 	// call goes through on them.
@@ -455,13 +454,8 @@ func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 		t.Fatalf("the service was sent %q once the budget was free; want the call that was waiting", path)
 	}
 	for range 3 {
-		select {
-		case got := <-status:
-			if got != http.StatusOK {
-				t.Fatalf("a call answered %d; want 200 from each of the three", got)
-			}
-		case <-time.After(cutWait):
-			t.Fatalf("a call had not answered %v after the stand-in let them all answer", cutWait)
+		if got := testwait.Receive(t, "a call to answer once the stand-in let them all answer", status); got != http.StatusOK {
+			t.Fatalf("a call answered %d; want 200 from each of the three", got)
 		}
 	}
 }

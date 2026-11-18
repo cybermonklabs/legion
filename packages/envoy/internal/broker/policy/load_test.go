@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestLoadServesEveryWellTaggedSecretOnTheKey pins what the loader reads from Secrets Manager: a
@@ -407,10 +406,15 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 	})
 }
 
+// await waits inside a synctest bubble for done to hold. It takes no bound: each turn lets every
+// other goroutine of the bubble run to its next durable block and then steps the bubble's own
+// clock, which costs no real time, so a fact that never comes ends at the test binary's deadline
+// and one a tick brings is read as soon as that tick fires.
 func await(t *testing.T, done func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, done) {
-		t.Fatal("condition not met within 5s")
+	for !done() {
+		synctest.Wait()
+		time.Sleep(time.Millisecond)
 	}
 }
 

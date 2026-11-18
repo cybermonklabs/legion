@@ -52,10 +52,22 @@ func newRoomPeer(t *testing.T, service *Service, artifactID string, conn uint64,
 // sync takes in what the room holds that the peer's document does not.
 func (p *roomPeer) sync() {
 	p.t.Helper()
-	room := p.service.srv.GetDoc(p.artifactID)
-	if err := crdt.ApplyUpdateV1(p.doc, crdt.EncodeStateAsUpdateV1(room, p.doc.StateVector()), nil); err != nil {
+	if err := crdt.ApplyUpdateV1(p.doc, crdt.EncodeStateAsUpdateV1(p.room(), p.doc.StateVector()), nil); err != nil {
 		p.t.Fatalf("sync the peer from the room: %v", err)
 	}
+}
+
+// room is the room's document, which the peer reads and writes directly. A room no peer of ygo's
+// touches is retired by ygo's idle sweep after roomIdleTimeout, which a long test outlasts unless
+// it sets the server's RoomIdleTimeout before the room loads (stormRound); that ends the test here
+// by name.
+func (p *roomPeer) room() *crdt.Doc {
+	p.t.Helper()
+	room := p.service.srv.GetDoc(p.artifactID)
+	if room == nil {
+		p.t.Fatalf("the room of %s is not resident (RoomIdleTimeout %v)", p.artifactID, p.service.srv.RoomIdleTimeout)
+	}
+	return room
 }
 
 // edit makes edit in the peer's own document, in one transaction, without sending it.
@@ -79,7 +91,7 @@ func (p *roomPeer) flush() {
 	}
 	before := p.pending
 	p.pending = nil
-	room := p.service.srv.GetDoc(p.artifactID)
+	room := p.room()
 	update := crdt.EncodeStateAsUpdateV1(p.doc, before)
 	if p.sent[string(update)] {
 		return

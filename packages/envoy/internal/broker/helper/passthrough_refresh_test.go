@@ -7,7 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin: A10 says the helper
@@ -22,48 +23,40 @@ import (
 // it, ENROLL_FAILED carrying the broker's LAUNCHER_INVALID, and not an unknown outcome. The
 // refresh it stood behind goes on to its own answer and settles the credential.
 //
-// The row runs under a bound of overBound, so the refresh it holds need only outlast overBound
-// plus 1 s, where brokerCall's timer answers, rather than the real 21 s.
+// The bound and brokerCall's timer run on the server's fake clock (newRigOn): the row moves it to
+// the bound once the drop is about to wait, and never to the timer, so the answer can be no one's
+// but the op's, and the refresh it holds is let go once the row has read that answer.
 //
-// The named revert: put a sync.Mutex back as credMu, so the drop waits with no context, and
-// brokerCall's timer answers ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s for an enrolment the
-// broker refused.
+// The named revert: put a sync.Mutex back as credMu, so the drop waits with no context; the op
+// then never answers while the refresh is held, and the row fails at the shared wait's bound on
+// its reply.
 func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t *testing.T) {
-	// timerAnswers is when brokerCall's timer answers an op still running: the bound plus 1 s.
-	const timerAnswers = overBound + time.Second
-	r := startRig(t, "")
-	r.srv.BrokerCallBound = overBound
+	r := newRigOn(t, "")
+	// Set before the login starts the Broker's own goroutines, which read it.
+	dropping := make(chan struct{})
+	r.srv.Broker.testBeforeDrop = sync.OnceFunc(func() { close(dropping) })
+	r.login(t)
 	signed := r.srv.Broker.cred.Load()
 
 	release := heldRefresh(t, r.fake, r.srv.Broker)
-	// The refresh is let go 3 s after the timer would answer, as a broker that answers it that
-	// late would; a row that has its answer lets it go at once. The cleanup runs before the rig's
-	// own, whose Close waits on credMu.
-	refreshed := make(chan error, 1)
-	slowBroker := time.AfterFunc(timerAnswers+3*time.Second, func() { refreshed <- release() })
-	finishRefresh := sync.OnceValue(func() error {
-		if slowBroker.Stop() {
-			return release()
-		}
-		return <-refreshed
-	})
+	// The cleanup runs before the rig's own, whose Close waits on credMu, so a row that fails
+	// before its answer still lets the refresh go.
+	finishRefresh := sync.OnceValue(release)
 	t.Cleanup(func() { _ = finishRefresh() })
 
 	r.fake.mu.Lock()
 	r.fake.enrollUnauthorizedNext = 1
 	r.fake.mu.Unlock()
-	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-refresh", Thumbprint: "tp-during-the-refresh"}, BrokerCallWait)
-	waited := time.Since(started)
-	if err != nil {
-		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s)",
-			err, waited, overBound)
-	}
-	if waited >= timerAnswers {
-		t.Fatalf("enroll-session-key answered after %s, at or past brokerCall's timer (%s): the drop's wait did not end with the op's context (%+v)", waited, timerAnswers, resp)
-	}
+	const what = "enroll-session-key refused while the machine login is refreshing"
+	replies := callInBackground(t, r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-refresh", Thumbprint: "tp-during-the-refresh"})
+	armBrokerCall(t, r.clock, replies, what)
+	// The broker has refused the enrolment and the op is dropping the credential it signed with,
+	// which waits for the refresh; the bound ends that wait.
+	testwait.Receive(t, what+": the drop of the refused credential to wait for the refresh", dropping)
+	r.clock.Advance(BrokerCallBound)
+	resp := replyOf(t, replies, what)
 	if resp.OK || resp.Code != CodeEnrollFailed || !strings.Contains(resp.Error, "LAUNCHER_INVALID") || strings.Contains(resp.Error, "the outcome is unknown") {
-		t.Fatalf("enroll-session-key refused while the machine login is refreshing: %+v after %s; want %s with the broker's LAUNCHER_INVALID, a known refusal", resp, waited, CodeEnrollFailed)
+		t.Fatalf("%s: %+v; want %s with the broker's LAUNCHER_INVALID, a known refusal", what, resp, CodeEnrollFailed)
 	}
 
 	// The drop that gave up dropped nothing: the refresh settles the credential, and the helper

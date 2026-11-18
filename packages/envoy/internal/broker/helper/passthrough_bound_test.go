@@ -3,14 +3,7 @@
 
 package helper
 
-import (
-	"testing"
-	"time"
-)
-
-// overBound is the bound a test that runs an op past its bound gives its own Server: the test
-// need not wait the real 20 s, since what it reads is the answer at the bound and not the number.
-const overBound = 500 * time.Millisecond
+import "testing"
 
 // TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown drives, through the REAL helper socket, the
 // one case of a slow broker that contract_brokercall_test.go and brokercall_test.go leave out:
@@ -20,10 +13,13 @@ const overBound = 500 * time.Millisecond
 //
 // An unenroll-session-key whose DELETE the broker holds past the op's bound (the fake's
 // revokeGate) must reach the client, never as an empty reply, as UNENROLL_OUTCOME_UNKNOWN with
-// settle's cause, before the bound plus 1 s where brokerCall's timer would answer: the broker got
-// the request, so it may have revoked the enrollment.
+// settle's cause, once the server's clock reaches the bound and while brokerCall's timer, a second
+// later, has not fired: the broker got the request, so it may have revoked the enrollment. The
+// bound and the timer run on the server's fake clock (newRigOn), which the row moves to the bound
+// alone, so the answer can be no one's but the op's.
 func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
-	r := startRig(t, "")
+	r := newRigOn(t, "")
+	r.login(t)
 	enrolled := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "rt-ended-box", Thumbprint: "tp-ended-box"})
 	if !enrolled.OK || enrolled.EnrollmentID == "" {
 		t.Fatalf("enroll the key this row ends: %+v", enrolled)
@@ -32,22 +28,24 @@ func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.revokeGate = gate
 	r.fake.mu.Unlock()
-	r.srv.BrokerCallBound = overBound
 
-	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID}, BrokerCallWait)
-	waited := time.Since(started)
-	if err != nil {
-		t.Fatalf("unenroll-session-key held past its bound: %v after %s; the client must read one JSON reply, never an empty one", err, waited)
-	}
+	const what = "unenroll-session-key past its bound"
+	replies := callInBackground(t, r.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID})
+	armBrokerCall(t, r.clock, replies, what)
+	// The DELETE reaches the broker before the bound ends it, so the transport holds a connection
+	// for it when it ends, which settle reads as a request that may have reached the broker.
+	waitFor(t, func() bool {
+		r.fake.mu.Lock()
+		defer r.fake.mu.Unlock()
+		return r.fake.revokeAttempts == 1
+	})
+	r.clock.Advance(BrokerCallBound)
+	resp := replyOf(t, replies, what)
 	r.fake.mu.Lock()
 	attempts := r.fake.revokeAttempts
 	r.fake.mu.Unlock()
 	if attempts != 1 {
-		t.Fatalf("the fake received %d DELETEs, want 1, held at its gate; answer %+v after %s", attempts, resp, waited)
+		t.Fatalf("the fake received %d DELETEs, want 1, held at its gate; answer %+v", attempts, resp)
 	}
-	wantSettled(t, "unenroll-session-key past its bound", resp, CodeUnenrollUnknown, waited, overBound+time.Second)
-	if waited < overBound {
-		t.Fatalf("unenroll-session-key past its bound answered after %s; want about the %s bound", waited, overBound)
-	}
+	wantSettled(t, what, resp, CodeUnenrollUnknown)
 }

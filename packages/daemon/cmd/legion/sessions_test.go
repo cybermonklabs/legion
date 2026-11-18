@@ -9,10 +9,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // agentSessions is the sessions directory an agent's Oh My Pi writes under in a pod, the prefix of
@@ -77,10 +77,11 @@ func (r *sessionsImportRig) refuses(want string, extra ...string) {
 	}
 }
 
-// refusesWithin is refuses under a deadline, for the two cases whose open would never answer if
-// the walk's flag set lost O_NONBLOCK. Every other refusal comes back at once, so refuses stays
-// as it is: a deadline on all of them would only turn a slow database into a flake.
-func (r *sessionsImportRig) refusesWithin(limit time.Duration, want string, extra ...string) {
+// refusesWithin is refuses waited for, for the two cases whose open would never answer if the
+// walk's flag set lost O_NONBLOCK: without the wait a blocked open holds the whole package until
+// `go test`'s own timeout kills it, with a stack dump and no word of why. Every other refusal
+// comes back at once, so refuses stays as it is.
+func (r *sessionsImportRig) refusesWithin(want string, extra ...string) {
 	r.t.Helper()
 	type outcome struct {
 		code int
@@ -91,15 +92,9 @@ func (r *sessionsImportRig) refusesWithin(limit time.Duration, want string, extr
 		code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
 		done <- outcome{code: code, out: out}
 	}()
-	select {
-	case got := <-done:
-		if got.code != 1 || !strings.Contains(got.out, want) {
-			r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", got.code, got.out, want)
-		}
-	case <-time.After(limit):
-		// Failing here rather than waiting: without the deadline a blocked open holds the whole
-		// package until `go test`'s own timeout kills it, with a stack dump and no word of why.
-		r.t.Fatalf("the import did not answer within %s: the open of the named pipe is waiting for a writer, so the walk's flags have lost O_NONBLOCK; want the line %q", limit, want)
+	got := testwait.Receive(r.t, "the import to answer, rather than wait in the open of the named pipe for a writer, which is the walk's flags having lost O_NONBLOCK", done)
+	if got.code != 1 || !strings.Contains(got.out, want) {
+		r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", got.code, got.out, want)
 	}
 }
 
@@ -503,9 +498,6 @@ func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The refusal was measured at 0.47 s in this pod, so seconds of headroom keep a loaded
-	// machine from failing an import that does answer.
-	const limit = 10 * time.Second
 
 	t.Run("a named pipe where the session file belongs", func(t *testing.T) {
 		recorded := agentSessions + "/" + directory + "/" + name
@@ -513,15 +505,15 @@ func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 		mkfifo(t, r.onVolume(recorded))
 		// The leaf opens at once and is refused by the kind read off the handle, a refusal that
 		// names no path because the line already carries the one the claim recorded.
-		r.refusesWithin(limit, token+" failed "+recorded+": read the session file: is not a regular file\n")
+		r.refusesWithin(token + " failed " + recorded + ": read the session file: is not a regular file\n")
 	})
 
 	t.Run("a named pipe where an intermediate directory belongs", func(t *testing.T) {
 		recorded := agentSessions + "/a-pipe/" + name
 		r := newSessionsImportRig(t, claim(recorded))
 		mkfifo(t, filepath.Join(r.volume, "sessions", "a-pipe"))
-		r.refusesWithin(limit, token+" failed "+recorded+": read the session file: "+
-			filepath.Join(r.volume, "sessions", "a-pipe")+" is not a directory\n")
+		r.refusesWithin(token + " failed " + recorded + ": read the session file: " +
+			filepath.Join(r.volume, "sessions", "a-pipe") + " is not a directory\n")
 	})
 }
 

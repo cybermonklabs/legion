@@ -13,10 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// rewatchBenchWait bounds one warm-up: 25,000 records replay in seconds even on two cores.
-const rewatchBenchWait = 2 * time.Minute
 
 // rewatchBenchChecks is how many checks each benchmark record carries, which makes it about
 // 2.4 KB, a production CI record's size.
@@ -48,21 +46,16 @@ func (w warmUpWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// awaitBenchWarmUp returns the next warm-up line, failing b when none comes within
-// rewatchBenchWait or the scan timed out. A rewatch that resumes from the last revision it applied
-// logs "resumed", a full read "completed"; either reached its nil marker.
+// awaitBenchWarmUp returns the next warm-up line, failing b when none comes or the scan timed out.
+// A rewatch that resumes from the last revision it applied logs "resumed", a full read "completed";
+// either reached its nil marker.
 func awaitBenchWarmUp(b *testing.B, warmUps <-chan benchWarmUp) benchWarmUp {
 	b.Helper()
-	select {
-	case line := <-warmUps:
-		if line.Outcome != "completed" && line.Outcome != "resumed" {
-			b.Fatalf("warm-up ended %q after %d entries, want completed or resumed", line.Outcome, line.Entries)
-		}
-		return line
-	case <-time.After(rewatchBenchWait):
-		b.Fatalf("no warm-up line within %s", rewatchBenchWait)
-		return benchWarmUp{}
+	line := testwait.Receive(b, "a cache warm-up line", warmUps)
+	if line.Outcome != "completed" && line.Outcome != "resumed" {
+		b.Fatalf("warm-up ended %q after %d entries, want completed or resumed", line.Outcome, line.Entries)
 	}
+	return line
 }
 
 // benchProcessCPU is the CPU time this process has used, user and system. The test NATS server
@@ -117,7 +110,7 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 	if keys == 0 {
 		return
 	}
-	js, err := conn.JetStream(natsgo.PublishAsyncMaxPending(1024))
+	js, err := conn.JetStream(natsgo.PublishAsyncMaxPending(1024), testnats.MaxWait(b))
 	if err != nil {
 		b.Fatalf("jetstream: %v", err)
 	}
@@ -127,11 +120,7 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 			b.Fatalf("publish record %d: %v", i, err)
 		}
 	}
-	select {
-	case <-js.PublishAsyncComplete():
-	case <-time.After(rewatchBenchWait):
-		b.Fatalf("%d publishes not acknowledged within %s", js.PublishAsyncPending(), rewatchBenchWait)
-	}
+	testwait.Receive(b, "the async publishes acknowledged", js.PublishAsyncComplete())
 	status, err := kv.Status()
 	if err != nil {
 		b.Fatalf("bucket status: %v", err)
@@ -158,7 +147,7 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 	_, uri := testnats.Start(b)
 	conn := testnats.Connect(b, uri)
 	b.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(b))
 	if err != nil {
 		b.Fatalf("jetstream: %v", err)
 	}
@@ -182,9 +171,7 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 		b.Fatalf("open cistore: %v", err)
 	}
 	b.Cleanup(s.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), rewatchBenchWait)
-	defer cancel()
-	if err := s.WaitForCacheReady(ctx); err != nil {
+	if err := s.WaitForCacheReady(testwait.Context(b)); err != nil {
 		b.Fatalf("cache not ready: %v", err)
 	}
 	// The first generation logs its warm-up before it releases readiness.

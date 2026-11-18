@@ -3,7 +3,6 @@ package intake_test
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
@@ -364,13 +363,20 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
+		// A listener that never stops fails the wait, and is killed on the way out so it outlives
+		// no test; one that stopped is past killing, and Kill only says so.
+		defer func() {
 			_ = cmd.Process.Kill()
 			<-exited
-			t.Errorf("the listener did not stop after SIGINT:\n%s", output.String())
-		}
+		}()
+		testwait.Until(t, "the listener to stop after SIGINT", func() (string, bool) {
+			select {
+			case <-exited:
+				return "", true
+			default:
+				return output.String(), false
+			}
+		})
 	})
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/healthz"
@@ -453,9 +459,11 @@ type hookDelivery struct {
 // fakeGitHub keeps the App webhook's delivery log and serves its listing and redelivery request,
 // each only to an App JWT signed by the App's key for its client id. A delivery is GitHub posting
 // the body to the webhook URL, signed with the webhook secret, under its delivery GUID and event;
-// a redelivery re-posts the recorded attempt's body under the same GUID.
+// a redelivery re-posts the recorded attempt's body under the same GUID. A request whose bearer
+// the App's key did not sign (signedByTheApp) is another process's: it is answered 404 and logged,
+// and fails nothing; one the key signed with claims GitHub refuses still fails the test.
 type fakeGitHub struct {
-	t         *testing.T
+	t         testing.TB
 	url       string
 	publicKey *rsa.PublicKey
 	clientID  string
@@ -469,14 +477,14 @@ type fakeGitHub struct {
 	requests []int64
 }
 
-func newFakeGitHub(t *testing.T, publicKey *rsa.PublicKey, clientID, webhook string) *fakeGitHub {
+func newFakeGitHub(t testing.TB, publicKey *rsa.PublicKey, clientID, webhook string) *fakeGitHub {
 	t.Helper()
 	g := &fakeGitHub{t: t, publicKey: publicKey, clientID: clientID, webhook: webhook,
 		client: &http.Client{Timeout: 10 * time.Second}, bodies: map[int64][]byte{}, nextID: 3_844_000_000_000_000_000}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /app/hook/deliveries", g.list)
 	mux.HandleFunc("POST /app/hook/deliveries/{id}/attempts", g.attempt)
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: signedByTheApp(publicKey), Handle: mux.ServeHTTP})
 	return g
 }
 
@@ -572,9 +580,10 @@ func (g *fakeGitHub) attempt(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("{}"))
 }
 
-// verifyAppJWT refuses a request whose bearer is not an RS256 JWT signed by the App's key with the
-// App's client id as its issuer and an expiry at most ten minutes ahead, as GitHub does, and fails
-// the test for it.
+// verifyAppJWT refuses a request whose App JWT does not name the App's client id as its issuer
+// and an expiry at most ten minutes ahead, as GitHub does, and fails the test for it. The JWT's
+// signature is signedByTheApp's to check: a request whose bearer the App's key did not sign never
+// reaches a handler.
 func (g *fakeGitHub) verifyAppJWT(w http.ResponseWriter, r *http.Request) bool {
 	refuse := func(format string, args ...any) bool {
 		g.t.Errorf("%s %s: "+format, append([]any{r.Method, r.URL.Path}, args...)...)
@@ -585,14 +594,6 @@ func (g *fakeGitHub) verifyAppJWT(w http.ResponseWriter, r *http.Request) bool {
 	parts := strings.Split(raw, ".")
 	if !ok || len(parts) != 3 {
 		return refuse("Authorization %q is no App JWT", r.Header.Get("Authorization"))
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return refuse("decode the JWT signature: %v", err)
-	}
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err := rsa.VerifyPKCS1v15(g.publicKey, crypto.SHA256, digest[:], signature); err != nil {
-		return refuse("the JWT does not verify against the App's key: %v", err)
 	}
 	encoded, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {

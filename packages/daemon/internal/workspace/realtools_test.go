@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The two rows of this file drive the stop procgroup.Configure gives every git and jj of this
@@ -39,11 +41,10 @@ func realTool(t *testing.T, name string) string {
 	return path
 }
 
-// lockPoll is how often these rows ask whether a lock file is there. jj holds the git index lock
-// for about 6 ms of a 3.5 s `jj status` over 5,000 new files (measured in an issue pod on
-// 2026-11-12 with jj 0.45.1), so a row that asked at the 10 ms pace of cancelOnceExists
-// (errwaitdelay_test.go), whose command holds its marker for the rest of the run, would usually
-// step over the window it waits for.
+// lockPoll is how often TestARealJJStoppedAtItsBudgetIsRecorded asks whether the git index lock is
+// there. jj holds that lock for about 6 ms of a 3.5 s `jj status` over 5,000 new files (measured
+// in an issue pod on 2026-11-12 with jj 0.45.1), so a row that asked at the shared wait's 10 ms
+// pace (testwait) would usually step over the window it waits for.
 const lockPoll = 200 * time.Microsecond
 
 // whenLockAppears answers, on the channel it returns, the moment lock first exists. It stops at
@@ -115,8 +116,10 @@ const slowCleanFilter = "sleep 300; cat"
 // fails on it (dispatch://INFRA-3098, procgroup.StopGrace). The repository is a real one whose
 // `filter.slow.clean` sleeps past the budget and whose .gitattributes points every path at that
 // filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
-// through, under a budget shorter than the sleep: what the row reads is the production stop's
-// own SIGTERM reaching a real git that holds a real lock.
+// through: what the row reads is the production stop's own SIGTERM reaching a real git that holds
+// a real lock. The budget and the grace after its SIGTERM are on a fake clock, which the row moves
+// past the budget once the git holds the lock and never past the grace: a git that leaves on its
+// SIGTERM must end the grace, not sit out its whole span.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	git := realTool(t, "git")
 	root := t.TempDir()
@@ -133,35 +136,28 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	}
 
 	budget := time.Second
-	done := make(chan struct{})
-	defer close(done)
-	appeared := whenLockAppears(filepath.Join(repository, ".git", "index.lock"), done)
-	run := NewRunner(budget, map[string]string{"git": git})
+	clock := clocktest.New(stopMoment)
+	run := execRunner{timeout: budget, tools: map[string]string{"git": git}, clock: clock}
 
-	started := time.Now()
-	result, err := run.Run(context.Background(), Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: budget})
-	elapsed := time.Since(started)
+	ran := inFlight(func() runAnswer {
+		result, err := run.Run(context.Background(), Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: budget})
+		return runAnswer{result, err}
+	})
+	// The filter holds the git inside its add, and so holds the lock, until the stop ends it.
+	exists(t, "the git to take .git/index.lock", filepath.Join(repository, ".git", "index.lock"))
+	clock.Advance(budget)
+	got := testwait.Receive(t, "the run to end once the git left on its SIGTERM, inside a grace the clock never spends", ran)
 
-	select {
-	case took := <-appeared:
-		t.Logf("the git had taken .git/index.lock %s into its %s budget, and the run returned after %s", took.Sub(started), budget, elapsed)
-	default:
-		t.Fatalf("the git never took .git/index.lock inside its %s budget, so this run proves nothing about the lock its stop removes (Run = exit %d, timed out %t, error %v, stderr %q)",
-			budget, result.ExitCode, result.TimedOut, err, result.Stderr)
-	}
 	// exec reports a command whose Cancel succeeded as the context's error, so a Run that read
 	// that error before its own kill would report this git as one it could not run.
-	if err != nil {
-		t.Fatalf("Run = %v after %s, want no error: a git its own budget stopped is a timeout, not a command that could not be run", err, elapsed)
+	if got.err != nil {
+		t.Fatalf("Run = %v, want no error: a git its own budget stopped is a timeout, not a command that could not be run", got.err)
 	}
-	if !result.TimedOut {
-		t.Errorf("Run = exit %d, TimedOut false after %s; want timed out: the budget, not the filter, ended this git", result.ExitCode, elapsed)
+	if !got.result.TimedOut {
+		t.Errorf("Run = exit %d, TimedOut false; want timed out: the budget, not the filter, ended this git", got.result.ExitCode)
 	}
 	if locks := locksUnder(t, filepath.Join(repository, ".git")); len(locks) > 0 {
-		t.Errorf("the git left %v under .git after %s: the budget's end gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks, elapsed)
-	}
-	if elapsed > budget+procgroup.StopGrace/2 {
-		t.Errorf("the run took %s, past its %s budget plus half the %s grace: a git that leaves on its SIGTERM must end the grace, not sit out its whole span", elapsed, budget, procgroup.StopGrace)
+		t.Errorf("the git left %v under .git: the budget's end gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks)
 	}
 }
 
@@ -191,8 +187,8 @@ const jjSnapshotAttempts = 3
 // workspace large enough that `jj status` holds .git/index.lock for a measurable time, starts it
 // through RunCommand — the runner the shim's and the launcher's jj go through — under a context
 // of its own, polls for that lock, and cancels the moment it is there, which runs the same Cancel
-// the budget's end runs (procgroup.Configure). What it asserts is that the run ends inside the
-// grace, procgroup.WaitDelay and a margin: a jj the stop reaches is a jj that leaves.
+// the budget's end runs (procgroup.Configure). What it asserts is that the run ends once the stop
+// has run: a jj the stop reaches is a jj that leaves.
 //
 // It does not assert that no lock is left. jj removed the git index lock in 13 of 14 measured
 // SIGTERM runs and left it in the fourteenth (dispatch://INFRA-3098, measured in an issue pod on
@@ -242,11 +238,11 @@ func TestARealJJStoppedAtItsBudgetIsRecorded(t *testing.T) {
 // that did see it is here.
 func stoppedAtTheIndexLock(t *testing.T, jj, work string, files int) (time.Duration, bool) {
 	// No t.Helper: what this function logs is the row's whole record of the attempt, and a
-	// failure of its bound is this function's own, so both read better named by the line here
+	// failure of its wait is this function's own, so both read better named by the line here
 	// that wrote them than by the caller's loop.
 
-	// The budget is far longer than the command needs, so the cancel below, never the budget, is
-	// what ends this jj; the stop both run is the same one.
+	// The budget reaches the command as a number its timeout's report names, and no clock bounds
+	// it: the cancel below is what ends this jj, and the stop both run is the same one.
 	budget := time.Minute
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -272,18 +268,10 @@ func stoppedAtTheIndexLock(t *testing.T, jj, work string, files int) (time.Durat
 		return ended.elapsed, false
 	}
 	cancel()
-	cancelled := time.Now()
 
 	// The stop is SIGTERM to the group, procgroup's grace, and SIGKILL to whatever outlived it,
-	// and procgroup.WaitDelay behind that for anything still holding the command's pipes; the
-	// margin is for a loaded machine.
-	bound := procgroup.StopGrace + procgroup.WaitDelay + time.Second
-	var ended outcome
-	select {
-	case ended = <-returned:
-	case <-time.After(bound):
-		t.Fatalf("`jj status` was still running %s after the cancel, past the %s grace, the %s wait delay and a second of margin: the stop never ended it", time.Since(cancelled), procgroup.StopGrace, procgroup.WaitDelay)
-	}
+	// and procgroup.WaitDelay behind that for anything still holding the command's pipes.
+	ended := testwait.Receive(t, "`jj status` to end once the cancel's stop ran", returned)
 	t.Logf("`jj status` over %d files took .git/index.lock %s in, the cancel landed there, and the run returned %s later, %s in all",
 		files, took.Sub(started), ended.elapsed-took.Sub(started), ended.elapsed)
 	t.Logf("RunCommand = %q, %v", ended.out, ended.err)

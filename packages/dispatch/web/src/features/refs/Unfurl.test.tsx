@@ -15,18 +15,13 @@ import type {
   ReferenceQuestions,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
+import { referenceTrimReads } from "./reference-spans";
 import { Unfurl } from "./Unfurl";
 
 /** The test DOM is happy-dom's window (`__tests__/setup.ts` registers it), which TypeScript
  *  knows only as the DOM's; a dashboard address is read against the page's own origin, so the
  *  test that writes one puts the page on an origin first. */
 const testWindow = window as unknown as HappyDOMWindow;
-
-/** A wall-clock budget, not one of the machine-sensitive waits this package's defaults cover
- *  (`web/src/__tests__/setup.ts`): the regression the rows that read it guard, catastrophic
- *  backtracking, costs minutes rather than milliseconds, so a budget far above what any loaded
- *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
-const BACKTRACKING_BUDGET_MS = 2_000;
 
 function renderUnfurl(body: string, source?: Parameters<typeof Unfurl>[0]["source"]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -497,10 +492,15 @@ test("Unfurl shows no card, and asks nothing, for a body with prose beside its r
 // comment holds up to DISPATCH_BLOCK_UNITS UTF-16 units. A body of repeated schemes splits into
 // references in exponentially many ways, and a pattern that tried them ran for minutes in V8 on
 // one of these bodies, hanging every reader's tab; JavaScriptCore, which runs these tests, gives
-// up after a second or so per body.
+// up after a second or so per body and answers no match, which is what the one pass answers too.
+// So the pass is counted, not timed (`referenceTrimReads`): the shape is read from the one
+// reading of what the body cites, whose trim reads each body's one reference-shaped run once and
+// walks back over at most as much again. A shape read by a pattern instead reads nothing there,
+// and a reading that rescanned the run from every position reads about its square.
 test(`Unfurl reads ${DISPATCH_BLOCK_UNITS}-character bodies of repeated schemes in one pass`, () => {
-  const start = performance.now();
+  const before = referenceTrimReads();
   const views = [];
+  let runs = 0;
   for (const scheme of ["http://", "https://", "dispatch://"]) {
     // The repeat leaves room for the two units the ` x` and `\nx` cases append, so every body
     // here is at or just under the bound.
@@ -509,14 +509,15 @@ test(`Unfurl reads ${DISPATCH_BLOCK_UNITS}-character bodies of repeated schemes 
     // The run itself names nothing - no scheme repeated is a reference - so it cards nothing
     // either; what this holds is that reading it costs one pass.
     views.push(renderUnfurl(references));
+    runs += 3 * references.length;
   }
   try {
     for (const view of views) {
       expect(view.container.querySelector("section")).toBeNull();
     }
-    // This row reads 0.03 s idle and 0.16 s loaded on a 2-core pod, and the budget is 12 times
-    // that slowest loaded reading, so no loaded pod can fail it by being slow.
-    expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
+    const read = referenceTrimReads() - before;
+    expect(read).toBeGreaterThanOrEqual(runs);
+    expect(read).toBeLessThanOrEqual(2 * runs);
   } finally {
     for (const view of views) {
       view.unmount();
@@ -546,19 +547,26 @@ test("Unfurl links a GitHub pull request's card to the URL the body wrote", asyn
 });
 
 // The trim once rescanned the closing run from every position in it, taking seconds on 64 KiB.
+// The body is read twice - by the one reading of what it cites, and by the GitHub scan beside
+// it - and each read trims the whole body once, reading it once and walking back over at most
+// as much again: at least one pass over the body and at most four, counted rather than timed
+// (`referenceTrimReads`). A trim that rescanned the run reads about its square, and one handed
+// to a regular expression reads nothing.
 test("Unfurl reads a GitHub link trailed by a long closing run in one pass", () => {
   const githubRest = spyOn(api, "githubRest");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const start = performance.now();
+  const body = `https://github.com/owner/repository/pull/3${")".repeat(1 << 16)}x`;
+  const before = referenceTrimReads();
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <Unfurl body={`https://github.com/owner/repository/pull/3${")".repeat(1 << 16)}x`} />
+      <Unfurl body={body} />
     </QueryClientProvider>
   );
 
   try {
-    // This row reads 0.01 s idle and 0.07 s loaded on a 2-core pod.
-    expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
+    const read = referenceTrimReads() - before;
+    expect(read).toBeGreaterThanOrEqual(body.length);
+    expect(read).toBeLessThanOrEqual(4 * body.length);
     expect(view.container.querySelector("section")).toBeNull();
     expect(githubRest).not.toHaveBeenCalled();
   } finally {

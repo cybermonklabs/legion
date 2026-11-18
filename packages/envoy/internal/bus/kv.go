@@ -10,6 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // KeyValue is a KV handle that checks a key before nats.go builds a subject from it, since nats.go
@@ -65,10 +67,11 @@ type KeyValue struct {
 // deadline of its own: the STREAM.INFO that opens the handle, a read of the bucket's stream, a
 // key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
 // with, so a read moved off the legacy handle waits no longer than it did there, and no less,
-// whatever MaxWait the legacy handle carries. A start that sends a request again because the
-// server left it unanswered takes that bound once per send (sentAgain, wrapKeyValue for a
-// start's caller), so the bound is one send's and not one step's: what a step of EnsureKeyValue
-// costs is counted in that function's doc.
+// whatever MaxWait the legacy handle carries. It bounds each send of EnsureKeyValue's lookup of a
+// bucket too, armed on the clock of the client owning the connection (withinRequestTimeout). A
+// start that sends a request again because the server left it unanswered takes that bound once
+// per send (sentAgain, wrapKeyValue for a start's caller), so the bound is one send's and not one
+// step's: what a step of EnsureKeyValue costs is counted in that function's doc.
 const RequestTimeout = 10 * time.Second
 
 // A create a clustered server answers is committed to the JetStream metadata group, not applied
@@ -93,19 +96,19 @@ const (
 
 // awaitBucketApplied is read, a read of the bucket a start has just created, taken again every
 // bucketAppliedInterval while the member answering reports the bucket missing (missing) and no
-// longer than bucketAppliedDeadline. It returns the first answer that is not that, and the last
-// miss as it is once the deadline passes, so its caller wraps one error however the wait ended.
-// Any other error, a refusal included, is returned at once: only a member that has not caught up
-// is waited out. The first miss is logged, as bindListenerDurable logs its first refusal, so a
-// start that waited says which bucket it waited for.
-func awaitBucketApplied[T any](bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
-	start := time.Now()
+// longer than bucketAppliedDeadline, both on c (ensureKeyValue). It returns the first answer that
+// is not that, and the last miss as it is once the deadline passes, so its caller wraps one error
+// however the wait ended. Any other error, a refusal included, is returned at once: only a member
+// that has not caught up is waited out. The first miss is logged, as bindListenerDurable logs its
+// first refusal, so a start that waited says which bucket it waited for.
+func awaitBucketApplied[T any](c clock.Clock, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
+	start := c.Now()
 	for attempt := 1; ; attempt++ {
 		value, err := read()
 		if err == nil || !missing(err) {
 			return value, err
 		}
-		if time.Since(start) >= bucketAppliedDeadline {
+		if c.Now().Sub(start) >= bucketAppliedDeadline {
 			return value, err
 		}
 		if attempt == 1 {
@@ -115,7 +118,7 @@ func awaitBucketApplied[T any](bucket string, missing func(error) bool, read fun
 				slog.String("retry_in", bucketAppliedInterval.String()),
 				slog.String("deadline", bucketAppliedDeadline.String()))
 		}
-		time.Sleep(bucketAppliedInterval)
+		_ = c.Sleep(context.Background(), bucketAppliedInterval)
 	}
 }
 
@@ -141,6 +144,131 @@ func namedRequest(request string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", request, err)
+}
+
+// withinRequestTimeout is send, one JetStream request of a legacy handle, which takes no context,
+// held to RequestTimeout armed on the clock of the client that owns conn (armBound), as
+// RequestCore's bound is, as well as to the wait nats.go holds it to itself: the MaxWait of the
+// JetStream context it goes through, on the wall clock, which no clock of this package reaches.
+// It answers what send answers, or the bound's context.DeadlineExceeded once the bound runs out
+// first, which unanswered reads as the silence it is. Every production caller's MaxWait is
+// RequestTimeout (EnsureKeyValue), so on the wall clock the two run out together and the send it
+// leaves running ends with them; on a test's fake clock the call ends where the test moves the
+// clock, and the request nats.go still waits on ends at its own MaxWait or when the connection
+// closes, its answer dropped: a lookup reads and changes nothing, and sentAgain sends it again. A
+// connection no client owns has no client clock, so nats.go alone bounds its send.
+func withinRequestTimeout[T any](conn *nats.Conn, send func() (T, error)) (T, error) {
+	owner := clientOwning(conn)
+	if owner == nil {
+		return send()
+	}
+	ctx, cancel := owner.armBound(context.Background(), RequestTimeout)
+	defer cancel()
+	type answer struct {
+		value T
+		err   error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		value, err := send()
+		answered <- answer{value: value, err: err}
+	}()
+	select {
+	case got := <-answered:
+		return got.value, got.err
+	case <-ctx.Done():
+		var none T
+		return none, ctx.Err()
+	}
+}
+
+// keyValueVersionRefusal is the text of nats.go's refusal of a KV bucket's lookup or create on a
+// server older than 2.6.2 (nats.go@v1.53.1 kv.go:397-399, 422-424). nats.go reads the version from
+// ConnectedServerVersion, which is empty while the connection is not CONNECTED, so the same
+// refusal comes from a connection that is reconnecting, whatever its server's version is.
+const keyValueVersionRefusal = "key-value requires at least server version 2.6.2"
+
+// ErrNotConnected is the error of a step of EnsureKeyValue whose connection was not connected at
+// any moment within its wait (whileConnected): a caller that tries the open again later
+// (cmd/listener's legion agent registry) reads it as a failure a moment later need not repeat.
+var ErrNotConnected = errors.New("the NATS connection was not connected")
+
+// whileConnected is send, one step of ensureKeyValue, made on conn only while conn is connected:
+// a lookup or a create that nats.go makes on a connection that is reconnecting refuses itself as a
+// server older than 2.6.2 (keyValueVersionRefusal), which ends a start that a reconnect a moment
+// later would have let through. A connection that is not connected is waited for, through its
+// status events and never a sleep, for at most wait on c, armed once for the whole step; and the
+// version refusal read while the connection was not connected, or from a server whose version
+// nats.go could not read then, is taken for that and not for the server's version, and the step
+// waits again. A server that is connected and older than 2.6.2 is still refused at once. A
+// connection that is not connected once wait has passed, or that closed, ends the step with
+// ErrNotConnected, naming the version refusal when one was read, so the start fails as it did,
+// naming why, and never hangs.
+func whileConnected[T any](c clock.Clock, conn *nats.Conn, wait time.Duration, send func() (T, error)) (T, error) {
+	var expired <-chan time.Time
+	var refused error
+	for {
+		if conn.Status() != nats.CONNECTED {
+			if expired == nil {
+				timer := c.NewTimer(wait)
+				defer timer.Stop()
+				expired = timer.C()
+			}
+			if err := awaitConnected(conn, expired); err != nil {
+				var zero T
+				if refused != nil {
+					return zero, fmt.Errorf("%w within %s (%w): %w", ErrNotConnected, wait, err, refused)
+				}
+				return zero, fmt.Errorf("%w within %s: %w", ErrNotConnected, wait, err)
+			}
+		}
+		value, err := send()
+		if err != nil && strings.Contains(err.Error(), keyValueVersionRefusal) && !serverOlderThanKeyValue(conn) {
+			refused = err
+			continue
+		}
+		return value, err
+	}
+}
+
+// awaitConnected returns once conn is connected, reading its status after each status event, or
+// an error once conn has closed or expired has fired first.
+func awaitConnected(conn *nats.Conn, expired <-chan time.Time) error {
+	for {
+		// The listener is registered before the status is read, so a change between the two is
+		// still an event this wait receives.
+		changed := conn.StatusChanged(nats.CONNECTED, nats.CLOSED)
+		switch conn.Status() {
+		case nats.CONNECTED:
+			conn.RemoveStatusListener(changed)
+			return nil
+		case nats.CLOSED:
+			conn.RemoveStatusListener(changed)
+			return nats.ErrConnectionClosed
+		}
+		select {
+		case <-changed:
+			conn.RemoveStatusListener(changed)
+		case <-expired:
+			conn.RemoveStatusListener(changed)
+			return fmt.Errorf("its status was still %s", conn.Status())
+		}
+	}
+}
+
+// serverOlderThanKeyValue reports whether conn is connected to a server whose version is not
+// 2.6.2 or later, the one case in which nats.go's version refusal is the server's own: a version
+// below it, or one this cannot read, which nats.go cannot read either (versionComponents).
+func serverOlderThanKeyValue(conn *nats.Conn) bool {
+	version := conn.ConnectedServerVersion()
+	if version == "" {
+		return false
+	}
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return true
+	}
+	return major < 2 || (major == 2 && (minor < 6 || (minor == 6 && patch < 2)))
 }
 
 // EnsureKeyValue opens the KV bucket config names on conn, through js, creating it with config when
@@ -170,9 +298,11 @@ func namedRequest(request string, err error) error {
 // internal/bus/nats.go:511), and internal/legionagents/store.go:75 opens its own with
 // nats.MaxWait(openTimeout), the same ten seconds (store.go:29). That wait bounds one request and
 // not one step of this call, so what a step that draws no answer costs is counted a request at a
-// time, and every case of it is counted here. Where the server answers nothing at all, each send
-// ends at its first unanswered request, so each step costs unansweredSends waits of ten seconds:
-// 30 s for the lookup, and 30 s for the create, which nats.go leaves at the first of the requests
+// time, and every case of it is counted here. The lookup's sends are held to RequestTimeout on
+// the clock of the client that owns conn as well (withinRequestTimeout), the same ten seconds on
+// the wall clock. Where the server answers nothing at all, each send ends at its first
+// unanswered request, so each step costs unansweredSends waits of ten seconds: 30 s for the
+// lookup, and 30 s for the create, which nats.go leaves at the first of the requests
 // the comment on the create below lists. The create costs more when some of its requests do
 // answer: at most 60 s where every account info answers and the STREAM.CREATE behind it draws
 // nothing, and up to 120 s where the server answers that create "stream name already in use",
@@ -216,7 +346,27 @@ func namedRequest(request string, err error) error {
 // webhook redelivery sweep (redeliver.OpenState), which logs the failure and tries again on its
 // next pass. A caller that waits on a budget of its own, such as a request or a watcher's
 // repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
+//
+// The lookup and the create are each made only while conn is connected (whileConnected): a
+// connection that is reconnecting is waited for, up to RequestTimeout for each, so a start the
+// connection drops under for a moment goes on once it is back rather than end on nats.go's
+// version refusal of a connection that is not connected. EnsureKeyValueWithin sets that wait.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	return ensureKeyValue(clock.Real(), conn, js, config, RequestTimeout)
+}
+
+// EnsureKeyValueWithin is EnsureKeyValue with wait in place of RequestTimeout as the longest the
+// lookup and the create each wait for conn to be connected: the request wait of the caller's own
+// JetStream context (store.WithRequestWait).
+func EnsureKeyValueWithin(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, wait time.Duration) (KeyValue, error) {
+	return ensureKeyValue(clock.Real(), conn, js, config, wait)
+}
+
+// ensureKeyValue is EnsureKeyValue on the clock c, which its waits for a member that has not
+// applied a create (awaitBucketApplied), for the copies a raise added (awaitReplicasCurrent) and
+// for conn to be connected (whileConnected, up to wait) read and sleep on: clock.Real for every
+// caller but a test of those waits, which passes a clocktest.Fake and moves it.
+func ensureKeyValue(c clock.Clock, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig, wait time.Duration) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -241,7 +391,11 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
 		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) {
-			return refusedSend(conn, lookupSubjects, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+			return refusedSend(conn, lookupSubjects, func() (nats.KeyValue, error) {
+				return whileConnected(c, conn, wait, func() (nats.KeyValue, error) {
+					return withinRequestTimeout(conn, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+				})
+			})
 		})
 		return kv, namedRequest(lookup, err)
 	}
@@ -267,7 +421,9 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 		// request of the step the server refuses under the connection's grant ends the step at
 		// that send instead (refusedSend): it would be refused again.
 		kv, err = sentAgain(create, func() (nats.KeyValue, error) {
-			return refusedSend(conn, createSubjects, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
+			return refusedSend(conn, createSubjects, func() (nats.KeyValue, error) {
+				return whileConnected(c, conn, wait, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
+			})
 		})
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
@@ -281,7 +437,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
-			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
+			kv, err = awaitBucketApplied(c, config.Bucket, bucketMissing, lookUpBucket)
 		} else {
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
@@ -298,13 +454,13 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// (the webhook redelivery sweep reads its cursor and its index), and a stale miss
 			// there asks GitHub for a delivery it has already redelivered, so the start waits for
 			// the copies and fails rather than reading early.
-			err = awaitReplicasCurrent(js, config.Bucket, config.Replicas)
+			err = awaitReplicasCurrent(c, js, config.Bucket, config.Replicas)
 		}
 	}
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(context.Background(), conn, kv, created, startSendsAgain)
+	return wrapKeyValue(context.Background(), c, conn, kv, created, startSendsAgain)
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
@@ -353,10 +509,10 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 // moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
 //
 // A read that fails is returned as it is, since the stream is there: this runs only after a raise
-// of it answered.
-func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int) error {
+// of it answered. The reads are spaced and the deadline read on c (ensureKeyValue).
+func awaitReplicasCurrent(c clock.Clock, js nats.JetStreamContext, bucket string, replicas int) error {
 	stream := "KV_" + bucket
-	start := time.Now()
+	start := c.Now()
 	for attempt := 1; ; attempt++ {
 		info, err := js.StreamInfo(stream)
 		if err != nil {
@@ -366,7 +522,7 @@ func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int)
 		if behind == "" {
 			return nil
 		}
-		if time.Since(start) >= bucketAppliedDeadline {
+		if c.Now().Sub(start) >= bucketAppliedDeadline {
 			return fmt.Errorf("raise %s: %d copies were not current within %s: %s", stream, replicas, bucketAppliedDeadline, behind)
 		}
 		if attempt == 1 {
@@ -377,7 +533,7 @@ func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int)
 				slog.String("retry_in", bucketAppliedInterval.String()),
 				slog.String("deadline", bucketAppliedDeadline.String()))
 		}
-		time.Sleep(bucketAppliedInterval)
+		_ = c.Sleep(context.Background(), bucketAppliedInterval)
 	}
 }
 
@@ -451,7 +607,7 @@ func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(ctx, conn, kv, false, oneSend)
+	return wrapKeyValue(ctx, clock.Real(), conn, kv, false, oneSend)
 }
 
 // WrapKeyValue pairs kv, a legacy handle opened on conn, with the jetstream handle of the same
@@ -460,7 +616,7 @@ func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext
 // on it has had an answer for it already. A start opens its handles through EnsureKeyValue
 // instead, which sends its handle open again (wrapKeyValue).
 func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
-	return wrapKeyValue(context.Background(), conn, kv, false, oneSend)
+	return wrapKeyValue(context.Background(), clock.Real(), conn, kv, false, oneSend)
 }
 
 // startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
@@ -472,7 +628,8 @@ const (
 )
 
 // wrapKeyValue is WrapKeyValue, with two things its callers choose, under ctx, which bounds the
-// handle's open as well as RequestTimeout does.
+// handle's open as well as RequestTimeout does, and with the clock c a created bucket's wait reads
+// (ensureKeyValue).
 //
 // created says this start has just created the bucket, so the STREAM.INFO that opens the
 // jetstream handle is taken again until the member answering has applied that create
@@ -495,7 +652,7 @@ const (
 // caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again under
 // its own lock, on a request whose budget is two seconds, and a read that kept it waiting three
 // times as long would stop every role and session read of the process rather than save a start.
-func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
+func wrapKeyValue(ctx context.Context, c clock.Clock, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
@@ -512,7 +669,7 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(c, kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -18,7 +20,7 @@ type Registry struct {
 	kvMu                  sync.RWMutex
 	roleKV                bus.KeyValue
 	log                   *slog.Logger
-	now                   func() time.Time
+	clock                 clock.Clock
 	openedAt              time.Time
 	restoredRoleRevisions map[string]uint64
 	mu                    sync.RWMutex
@@ -64,10 +66,13 @@ type OpenOption func(*openOpts)
 
 type openOpts struct {
 	replicas       int
-	now            func() time.Time
+	clock          clock.Clock
 	log            *slog.Logger
+	interestWatch  []kvwatch.Option
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
+	// requestWait is WithRequestWait's wait, zero when no option set one.
+	requestWait time.Duration
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -93,9 +98,9 @@ func WithReplicas(n int) OpenOption {
 
 // WithClock sets the registry's clock: the time every interest and role claim records, the reaper's
 // staleness window, and a restored role claim's grace window, which starts when Open returns. Tests
-// move it to end a window without waiting for it.
-func WithClock(now func() time.Time) OpenOption {
-	return func(o *openOpts) { o.now = now }
+// drive a clocktest.Fake to end a window without waiting for it; there is one clock for the module.
+func WithClock(c clock.Clock) OpenOption {
+	return func(o *openOpts) { o.clock = c }
 }
 
 // WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
@@ -104,6 +109,33 @@ func WithClock(now func() time.Time) OpenOption {
 // a minute for it, without reaching into the registry. The listener passes none.
 func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 	return func(o *openOpts) { o.roleWatch = append(o.roleWatch, options...) }
+}
+
+// WithInterestWatch adds options to the interest registry's cache watcher's own, after them: the
+// watcher's timers for a test (kvwatch.WithAfterFunc, kvwatch.WithNow), so its stream probe and its
+// other waits run on a clock the test holds rather than on time.AfterFunc. No deployment sets it.
+func WithInterestWatch(options ...kvwatch.Option) OpenOption {
+	return func(o *openOpts) { o.interestWatch = append(o.interestWatch, options...) }
+}
+
+// WithRequestWait sets every wait the registry's own bucket calls and its open make, in place of
+// the defaults: each JetStream request (the MaxWait of the JetStream context the buckets are
+// opened through, 10 s, which every bucket call waits out: bus.Bounded), each bucket's lookup and
+// create's wait for a reconnecting connection (bus.EnsureKeyValueWithin, 10 s), and the open's scan
+// of the role bucket (roleRevisions), whose consumer create waits 5 s a send and is sent again for
+// as long as the server leaves it unanswered, and whose next entry waits 10 s
+// (kvwatch.ScanIdleTimeout); the scan as a whole then waits d. A test that writes through a
+// registry of its own passes what its test binary's deadline leaves, so that no bound of the
+// store's own ends a write the test then waits for; no deployment sets it. Open refuses a d that
+// is not positive.
+func WithRequestWait(d time.Duration) OpenOption {
+	return func(o *openOpts) {
+		o.requestWait = d
+		if d <= 0 {
+			// Recorded as refused, so Open tells a d that is not positive from no option at all.
+			o.requestWait = -1
+		}
+	}
 }
 
 // LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
@@ -123,23 +155,45 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 }
 
 func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
-	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
+	opts := openOpts{replicas: 1, clock: clock.Real(), log: slog.Default()}
 	for _, o := range options {
 		o(&opts)
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	requestWait, scanIdle := 10*time.Second, kvwatch.ScanIdleTimeout
+	scanCtx := context.Background()
+	switch {
+	case opts.requestWait < 0:
+		return nil, errors.New("open the interest registry: WithRequestWait was given a wait that is not positive")
+	case opts.requestWait > 0:
+		requestWait, scanIdle = opts.requestWait, opts.requestWait
+		// A scan whose context has a deadline creates its consumer within it rather than within
+		// the 5 s of the bucket handle's own request wait (bus.KeyValue.WatchKeys). The deadline is
+		// the wall clock's, as every JetStream request wait is: nats.go reads it off the context.
+		var cancel context.CancelFunc
+		scanCtx, cancel = context.WithTimeout(scanCtx, opts.requestWait)
+		defer cancel()
+	}
+	js, err := conn.JetStream(nats.MaxWait(requestWait))
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	// Each bucket's lookup and create wait for the connection while it reconnects, within this
+	// open's own request wait (bus.EnsureKeyValueWithin): a start the connection drops under for a
+	// moment goes on once it is back, while the listener still answers /healthz "starting", since
+	// it publishes what /healthz reads only once this open and the durable's bind have returned.
+	kv, err := bus.EnsureKeyValueWithin(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage}, requestWait)
 	if err != nil {
 		return nil, err
 	}
-	roleKV, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	roleKV, err := bus.EnsureKeyValueWithin(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage}, requestWait)
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(roleKV, kvwatch.ScanIdleTimeout, opts.log)
+	// The scan's consumer create is sent again for as long as the server leaves it unanswered
+	// (roleRevisions), so a server that answers late, as a loaded machine's does, delays this open,
+	// and the start that waits for it answers /healthz "starting" meanwhile; a refusal the server
+	// answers fails the open.
+	restoredRoleRevisions, err := roleRevisions(scanCtx, roleKV, opts.clock, scanIdle, opts.log, requestWait)
 	if err != nil {
 		return nil, err
 	}
@@ -147,14 +201,14 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		roleKV:                roleKV,
 		log:                   opts.log,
 		index:                 newSubjectIndex(),
-		now:                   opts.now,
-		openedAt:              opts.now(),
+		clock:                 opts.clock,
+		openedAt:              opts.clock.Now(),
 		restoredRoleRevisions: restoredRoleRevisions,
 		legacySubjects:        opts.legacySubjects,
 	}
 	r.cache = newInterestCopy(r)
 	r.roleHolders = newRoleHolderCopy(r)
-	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
+	r.watcher = r.newInterestWatcher(kv, opts.interestWatch...)
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)
 	// No eager load: the watchers populate the caches asynchronously. A synchronous load of N
 	// individual kv.Get() calls blocks indefinitely when the KV stream leader is on a remote node.
@@ -167,11 +221,23 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 // out is read again by the watcher itself, so a view RolesHeldBy refuses becomes servable without
 // waiting for a Rewatch, and the bucket is read whole again roleClaimRepairInterval after each read
 // that completed, which repairs a copy that drifted from the bucket in either direction (roleCache
-// counts what each such read repaired). options follow the watcher's own, so one of them replaces
-// the scheduled read's interval (WithRoleClaimWatch).
+// counts what each such read repaired). A first watch whose failure was transient, as a loaded
+// start's can be, is made again on the watcher's own clock (kvwatch.WithFirstWatchRetry), a WARN for
+// each attempt, rather than the ERROR that leaves the view to the self-health rebuild. options
+// follow the watcher's own, so one of them replaces the scheduled read's interval
+// (WithRoleClaimWatch).
 func (r *Registry) newRoleWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
-	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithScheduledRead(roleClaimRepairInterval)}, options...)
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithFirstWatchRetry()}, options...)
 	return kvwatch.New("role claims", kv, roleCache{r}, options...)
+}
+
+// newInterestWatcher returns the watcher that feeds the interest copy from kv. A first watch whose
+// failure was transient is made again on the watcher's own clock (kvwatch.WithFirstWatchRetry), as
+// the role claim watcher's is (newRoleWatcher). options follow the watcher's own
+// (WithInterestWatch).
+func (r *Registry) newInterestWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithFirstWatchRetry()}, options...)
+	return kvwatch.New("interest registry", kv, interestCache{r}, options...)
 }
 
 // Ping verifies both KV buckets are reachable through the current NATS connection and reports

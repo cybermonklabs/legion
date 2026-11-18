@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  Each `context` frame the session publishes names its interval's number, when it went out and when
+  its reading was taken, and a held reading is numbered from the moment its interval was up. The
+  typed shell's result reports `keptBytes`, the most output bytes it held.

@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // Whether an App is installed on a repository is GitHub's answer to the App's own JWT on GET
@@ -34,12 +34,12 @@ func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []string
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 				asked = append(asked, r.Method+" "+r.URL.Path)
 				verifyAppJWT(t, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), &key.PublicKey, now, "67890")
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(`{"id": 41}`))
-			}))
+			}})
 			defer server.Close()
 			tokens := New(config.GitHubApps{
 				Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
@@ -71,14 +71,14 @@ func TestAppLoginReadsTheAppsSlugUnderItsOwnJWT(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	status := http.StatusOK
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/app" {
 			t.Errorf("GitHub was asked %s %s, want GET /app alone", r.Method, r.URL.Path)
 		}
 		verifyAppJWT(t, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), &key.PublicKey, now, "67890")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"slug":"legion-reviewer"}`))
-	}))
+	}})
 	defer server.Close()
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},

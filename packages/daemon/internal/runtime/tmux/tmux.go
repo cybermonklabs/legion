@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -164,6 +165,10 @@ type Options struct {
 	Executable func() (string, error)
 	// Now stamps observations and ages orphans; time.Now when nil.
 	Now func() time.Time
+	// Clock is what the sweep's period (ProbeInterval), each tmux invocation's CommandTimeout and
+	// a stop's wait for a process to end itself (StopGrace) are measured on; the wall clock
+	// (clock.Real) when nil. A test hands it a clocktest.Fake and moves it.
+	Clock clock.Clock
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
 	Log *slog.Logger
 }
@@ -199,10 +204,12 @@ type Runtime struct {
 	// leak check in (resolveLeakCheck). environ above is the pane environment, which carries
 	// neither the operator's XDG_CONFIG_HOME nor any name off the allow list, so it is no
 	// environment to resolve that check in.
-	ownEnviron      []string
-	tmuxPath        string
-	legion          string
-	now             func() time.Time
+	ownEnviron []string
+	tmuxPath   string
+	legion     string
+	now        func() time.Time
+	// clock is Options.Clock; timers reads it, the wall clock when it is nil.
+	clock           clock.Clock
 	log             *slog.Logger
 	providerEnvDir  string
 	providerKeys    []string
@@ -358,6 +365,7 @@ func New(opts Options) (*Runtime, error) {
 		tmuxPath:             tmuxPath,
 		legion:               legion,
 		now:                  opts.Now,
+		clock:                opts.Clock,
 		log:                  opts.Log,
 		providerEnvDir:       opts.ProviderEnvDir,
 		providerKeys:         providerKeys,
@@ -441,7 +449,7 @@ type result struct {
 // open past the timeout for a server still holding the client's pipes, and the client's exit is
 // then its answer.
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
-	bounded, cancel := context.WithTimeout(ctx, r.commandTimeout)
+	bounded, cancel := r.timers().WithTimeout(ctx, r.commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, r.tmuxPath, argv[1:]...)
 	cmd.Env = r.environ
@@ -466,6 +474,15 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	}
 	res.exitCode = cmd.ProcessState.ExitCode()
 	return res, nil
+}
+
+// timers is the clock the sweep's period and the command timeout run on: Options.Clock, or the
+// wall clock where none was set (a Runtime a test builds by hand included).
+func (r *Runtime) timers() clock.Clock {
+	if r.clock == nil {
+		return clock.Real()
+	}
+	return r.clock
 }
 
 // verb is the tmux command an argv runs: the word after `-L <socket>`.
@@ -762,10 +779,10 @@ func (r *Runtime) settleUnverified(loc runtime.Locator, pane string, inc incarna
 }
 
 // awaitNotRunning re-verifies the pane until the recorded process no longer verifies, or grace
-// is spent, and returns the last verdict. A verdict that cannot be reached — tmux not answering
-// — keeps the wait going; it proves nothing either way.
+// is spent on the runtime's clock, and returns the last verdict. A verdict that cannot be reached
+// — tmux not answering — keeps the wait going; it proves nothing either way.
 func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnation, grace time.Duration) (verdict, error) {
-	deadline := time.NewTimer(grace)
+	deadline := r.timers().NewTimer(grace)
 	defer deadline.Stop()
 	tick := time.NewTicker(pollInterval)
 	defer tick.Stop()
@@ -773,7 +790,7 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 		select {
 		case <-ctx.Done():
 			return verdict{}, ctx.Err()
-		case <-deadline.C:
+		case <-deadline.C():
 			return r.verifyPane(ctx, pane, inc)
 		case <-tick.C:
 			v, err := r.verifyPane(ctx, pane, inc)

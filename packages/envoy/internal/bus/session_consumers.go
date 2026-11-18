@@ -272,13 +272,17 @@ func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 // SubscribeReplies subscribes handler over core NATS to subject, typically a reply-inbox wildcard,
 // on the connection, and keeps the subscription across a reconnect and on a connection dialled to
 // replace a closed one (Client.SubscribeCore). It is the connection's one core subscription: a
-// second call on another subject is refused with ErrSubscriptionHeld. It returns once the server
-// holds the subscription.
+// second call on another subject is refused with ErrSubscriptionHeld. It returns once the client
+// holds the subscription, and waits for no answer from the server. That answer would order
+// nothing: nats.go writes the subscription ahead of every message the connection publishes after
+// it, Publish's frames among them, and on each reconnect writes it again before anything it
+// publishes then, so no frame published on the connection reaches the server before the
+// subscription its reply comes back on. And a wait for it has a bound, nats.go's Flush's 10 s,
+// that a server answering late on a loaded machine runs past, which would end the listener's start
+// over a subscription that did not fail (cmd/listener startSessionRelays).
 func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHandler) error {
-	if _, err := s.client.SubscribeCore(subject, handler); err != nil {
-		return err
-	}
-	return s.client.Connection().Flush()
+	_, err := s.client.SubscribeCore(subject, handler)
+	return err
 }
 
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The approval page's two cookies (internal/broker/approval): the session a sign-in makes, and
@@ -527,8 +529,14 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 			t.Fatalf("ada's page for %s on the short-session broker offers no decision", recordB)
 		}
 		old := &http.Cookie{Name: sessionCookieName, Value: b.Cookie(t, sessionCookieName)}
-		// The one fixed wait: past the session's two-second absolute expiry.
-		time.Sleep(3 * time.Second)
+		// The session's two-second absolute expiry is this broker's own setting, in a process of
+		// its own, so what the row waits for is the first read that shows the session gone — a
+		// GET answered with the sign-in redirect — rather than a span of its own.
+		expired := newBrowser(t)
+		testwait.Until(t, "the short-session broker's session to pass its expiry", func() (string, bool) {
+			res := expired.Get(t, "/approve/"+recordB, old)
+			return fmt.Sprintf("%d to %q", res.Status, res.Header.Get("Location")), res.Status == http.StatusFound
+		})
 		replay := newBrowser(t)
 		res := replay.Post(t, "/approve", brokertest.Decision(form, "approve"), map[string]string{"Origin": base}, old)
 		if res.Status != http.StatusOK || !strings.Contains(brokertest.PageText(t, res.Body), "Not signed in") ||
@@ -630,7 +638,7 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 
 		for _, process := range []*brokerProcess{first, second} {
 			process.Terminate(t)
-			if err := process.AwaitExit(t, stopTimeout); err != nil {
+			if err := process.AwaitExit(t); err != nil {
 				t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 			}
 		}

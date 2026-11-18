@@ -32,7 +32,12 @@ env:
 jobs:
   dispatch-memory:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # The step's -timeout 70m is twice and more the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-15, 1963.339 s (run 43677717022), which the 60 minutes
+    # it had before held only 1.8 times. The limit is at least the job's sum over those runs: its
+    # other steps at their longest, 78 s, 6 s of its clock over them, and the step's longest
+    # 2033 s plus its 70 minutes: 6317 s, or 106 minutes.
+    timeout-minutes: 110
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -60,7 +65,7 @@ jobs:
       - name: Memory tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          go test -tags memory -count=1 -timeout 70m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

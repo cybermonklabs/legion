@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A project document's owner row is the artifact itself, and the upload has to take it before the
@@ -24,8 +25,7 @@ import (
 // load. Holding the owner row here must therefore stop the upload before the room lock, leaving
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LOCK", "name": "Lock order",
@@ -79,8 +79,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 // commit (Ledger.Commit's recordLatestEditSource), after its event, would wait for the answer and
 // then finish; what fails this test is a lock the two come to share in opposite orders.
 func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTheirEvents(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -146,7 +145,7 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 			"name": "Copy", "content": "Kept again\n\n" + block,
 		}, "alice")
 	})
-	awaitLockWaits(t, ctx, database, "the upload never waited between its document write and its event", func(waiting func(string) int) bool {
+	awaitLockWaits(t, ctx, database, "the upload to wait between its document write and its event", func(waiting func(string) int) bool {
 		return upload.finished() || waiting("%insert into artifact_versions%") > 0
 	})
 	if upload.finished() {
@@ -159,22 +158,18 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 	})
 	// The answer waits on the copy's pending row the upload holds; had the upload not taken it, the
 	// answer would mark it and wait before its own event instead.
-	awaitLockWaits(t, ctx, database, "the answer never reached the copy's pending row", func(waiting func(string) int) bool {
+	awaitLockWaits(t, ctx, database, "the answer to reach the copy's pending row", func(waiting func(string) int) bool {
 		return answer.finished() || waiting(markingCopy)+waiting(writingAnswer) > 0
 	})
 	release(uploadHold)
 	// The upload's event goes first: the upload commits, or it waits on the row the answer marked
 	// while the answer waits before its event.
-	awaitLockWaits(t, ctx, database, "the upload neither finished nor waited on the copy's pending row", func(waiting func(string) int) bool {
+	awaitLockWaits(t, ctx, database, "the upload to finish or wait on the copy's pending row", func(waiting func(string) int) bool {
 		return upload.finished() || (waiting(markingCopy) > 0 && waiting(writingAnswer) > 0)
 	})
 	release(answerHold)
 	for _, request := range []*pendingRequest{upload, answer} {
-		select {
-		case <-request.done:
-		case <-ctx.Done():
-			t.Fatalf("the upload (%s) and the answer (%s) never both finished", upload, answer)
-		}
+		testwait.Receive(t, fmt.Sprintf("the upload (%s) and the answer (%s) both to finish", upload, answer), request.done)
 	}
 	if upload.response.Code != http.StatusCreated || answer.response.Code != http.StatusOK {
 		t.Fatalf("upload: %s\nanswer: %s\nwant 201 and 200; the server logged:\n%s", upload, answer, logs.Lines("API handler failed"))
@@ -213,10 +208,9 @@ func (r *pendingRequest) String() string {
 	return fmt.Sprintf("status=%d body=%s", r.response.Code, strings.TrimSpace(r.response.Body.String()))
 }
 
-// awaitLockWaits polls until reached holds, given how many sessions of the test's database wait on
-// a lock whose statement matches a LIKE pattern (storetest.CountLockWaits), and fails the test with
-// never when it does not within 10 s.
-func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, never string, reached func(waiting func(like string) int) bool) {
+// awaitLockWaits waits until reached holds, given how many sessions of the test's database wait on
+// a lock whose statement matches a LIKE pattern (storetest.CountLockWaits); what names the fact.
+func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, what string, reached func(waiting func(like string) int) bool) {
 	t.Helper()
 	waiting := func(like string) int {
 		count, err := storetest.CountLockWaits(ctx, database, like)
@@ -225,21 +219,14 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 		}
 		return count
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !reached(waiting) {
-		if time.Now().After(deadline) {
-			t.Fatal(never)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	testwait.Eventually(t, what, func() bool { return reached(waiting) })
 }
 
 // awaitCopyShows waits for the latest version of copy to hold want, with no document owing a
 // settlement.
 func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, copy, want string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the copy's latest version to hold %s with nothing owed", want), func() (string, bool) {
 		var markdown string
 		var pending int
 		if err := database.Pool.QueryRow(ctx, `
@@ -248,14 +235,8 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 		`, copy).Scan(&markdown, &pending); err != nil {
 			t.Fatalf("read the copy's latest version: %v", err)
 		}
-		if strings.Contains(markdown, want) && pending == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the copy's latest version never held %s with nothing owed (%d owed):\n%s", want, pending, markdown)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d owed:\n%s", pending, markdown), strings.Contains(markdown, want) && pending == 0
+	})
 }
 
 // The upload holds the document's owner row across the room lock it then waits for, so that lock
@@ -263,8 +244,7 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 // doc_updates' foreign key, and while the owner lock was `for update` that key share conflicted
 // and the two deadlocked.
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LEVEL", "name": "Lock level",

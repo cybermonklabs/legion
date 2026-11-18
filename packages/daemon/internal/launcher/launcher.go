@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -92,6 +92,19 @@ type Config struct {
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
 	LeakCheckDir string
+	// Clock is what every timer of the launcher's that a test asserts reads: a generation's stop
+	// grace, the controller pod's drain of an exited generation, the Claude Code keeper's saves, a
+	// resume's lookup, the pod's test database and the git lock sweep. Nil is clock.Real(), the
+	// only one a pod uses; a test passes a clocktest.Fake and moves it.
+	Clock clock.Clock
+}
+
+// clock is the configuration's Clock, clock.Real() when it names none.
+func (c Config) clock() clock.Clock {
+	if c.Clock == nil {
+		return clock.Real()
+	}
+	return c.Clock
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -103,7 +116,8 @@ const reconnectDelay = time.Second
 // Only ctx's end (the container's SIGTERM) stops the children the launcher owns, and in an issue
 // pod's container it stops every role's at once, each with the whole stop grace. Run returns only
 // once each of those generations has ended (stopActive): its child given its stop grace, and its
-// session database proxy, which served it through that grace, closed.
+// session database proxy, which served it through that grace, closed. As its PID namespace's init
+// it returns only once its reaper has, too, so no pass of the reaper runs after Run.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.StopGrace == 0 {
 		cfg.StopGrace = 30 * time.Second
@@ -131,12 +145,20 @@ func Run(ctx context.Context, cfg Config) error {
 	// one role, whose processes are this namespace's; an issue pod's roles each have a namespace
 	// of their own, whose init reaps theirs, but anything else started in the container (a
 	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
-	// generation's own process, whose exit its manager reads.
-	if os.Getpid() == 1 {
-		exits := make(chan os.Signal, 1)
-		signal.Notify(exits, syscall.SIGCHLD)
-		defer signal.Stop(exits)
-		go reapOrphans(ctx, exits, managers, pids)
+	// generation's own process, whose exit its manager reads. Run stops the reaper and waits for it
+	// before it returns: a pass that ran on after Run would take the exit of a child its caller
+	// starts next, before that child's own wait read it (`waitid: no child processes`).
+	if reap := pidOneReaper(managers, pids); reap != nil {
+		reaping, stopReaping := context.WithCancel(ctx)
+		reaped := make(chan struct{})
+		go func() {
+			defer close(reaped)
+			reap(reaping)
+		}()
+		defer func() {
+			stopReaping()
+			<-reaped
+		}()
 	}
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
@@ -149,7 +171,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// Only a launcher that is the container's first process sweeps, as only that one runs the
 	// memory guard below, since only it sees every process that may hold a lock; any other logs
 	// a line instead (serveGitLockSweep).
-	locks := serveGitLockSweep(ctx, managers)
+	locks := serveGitLockSweep(ctx, managers, cfg.clock())
 	// The pod's one memory guard, before the test database and any role start, so it watches
 	// both from their first process; only a launcher that is the container's first process runs
 	// one, as only that one runs the reaper above, and any other logs a line instead
@@ -696,13 +718,13 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// A Claude Code child's session is kept in the session table (claudeKeeper): the order is
 	// the resume's lookup, which decides the recreated-workspace notice from the row's last save,
 	// then the restore of the session's files from their rows, then the child, then the saves.
-	if keeper, err = newClaudeKeeper(env, command.ResumeFile, clientURL, m.stderr); err != nil {
+	if keeper, err = newClaudeKeeper(env, command.ResumeFile, clientURL, m.stderr, m.cfg.clock()); err != nil {
 		return abandon(err)
 	}
 	recreated := false
 	var sessions *pgx.Conn
 	if command.ResumeFile != "" {
-		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
+		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr, m.cfg.clock()); err != nil {
 			return abandon(err)
 		}
 	}
@@ -850,7 +872,7 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	m.mu.Unlock()
 	// A child that exited on its own is given the whole grace a stop would have given it.
 	if end.IsZero() {
-		end = time.Now().Add(m.cfg.StopGrace)
+		end = m.cfg.clock().Now().Add(m.cfg.StopGrace)
 	}
 	active.keeper.finish(end.Add(-sessionDrain))
 	if active.proxy != nil {
@@ -1153,8 +1175,8 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 // only what was pushed. A workspace with no record, or a child with no workspace (the controller),
 // was not. A record that cannot be read, which an init container killed mid-write can leave, only
 // decides that notice: it is written to log and taken as no record, and the resume goes ahead.
-func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
-	sessions, err := newSessionDial(env, clientURL)
+func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer, clk clock.Clock) (recreated bool, conn *pgx.Conn, err error) {
+	sessions, err := newSessionDial(env, clientURL, clk)
 	if err != nil {
 		return false, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
 	}

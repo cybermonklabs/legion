@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeWatcher is a jetstream.KeyWatcher the test drives: it delivers what the test hands it
@@ -54,11 +55,12 @@ func (f *fakeWatcher) end() {
 // reader has taken it.
 func (f *fakeWatcher) deliver(t *testing.T, entry jetstream.KeyValueEntry) {
 	t.Helper()
-	select {
-	case f.updates <- entry:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out handing the watcher's reader an entry: nothing reads it")
-	}
+	sent := make(chan struct{})
+	go func() {
+		f.updates <- entry
+		close(sent)
+	}()
+	testwait.Receive(t, "the watcher's reader to take an entry", sent)
 }
 
 // step is the watch that hands out f, keeping the context it was created in.
@@ -125,12 +127,10 @@ type staleStream struct {
 
 func (s staleStream) CachedInfo() *jetstream.StreamInfo { return s.info }
 
-// endWithin runs End within 10 s.
+// endWithin runs End under the test's own bound.
 func endWithin(t *testing.T, w *kvwatch.Watcher) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	w.End(ctx)
+	w.End(testwait.Context(t))
 }
 
 // scanningFirst starts a watcher feeding into whose first watch is f, and returns once its consume
@@ -165,12 +165,14 @@ func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testi
 	}
 	scanning.stopCount(t, 1, "replaced mid-scan, when the replacing watch returned")
 	scanning.released(t, "replaced mid-scan")
-	eventually(t, "the replacement's read to complete", w.Following)
+	testwait.Eventually(t, "the replacement's read to complete", w.Following)
 
 	scanning.deliver(t, fakeEntry{key: "from-the-replaced-watcher"})
 	scanning.deliver(t, nil)
 	scanning.end()
-	time.Sleep(200 * time.Millisecond)
+	// The replaced watcher is read until its updates close, which scanning.end did; once its
+	// consume has returned it can apply, record or log nothing more, leaving the replacement's.
+	testwait.Eventually(t, "the replaced watcher to be read to its end", func() bool { return consuming() == 1 })
 	if into.has("from-the-replaced-watcher") || w.Err() != nil || len(warnings(records())) != 0 || !w.Following() {
 		t.Fatalf("after the replaced watcher delivered and ended: its record applied %v, Err %v, logged %q, Following %v; want nothing applied, recorded or logged, the copy following",
 			into.has("from-the-replaced-watcher"), w.Err(), warnings(records()), w.Following())
@@ -217,7 +219,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0))
 			t.Cleanup(w.Stop)
 			w.Start()
-			eventually(t, "the first read's completion", w.Following)
+			testwait.Eventually(t, "the first read's completion", w.Following)
 
 			discarded := newFakeWatcher(t)
 			if old != nil {

@@ -17,6 +17,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -52,19 +54,23 @@ func testStore(t *testing.T) *store.Store {
 	return testpg.CloneStore(t, "legion_api_test")
 }
 
-// stillClock is time that never moves: a machine's timers are armed and never fire, so a route
-// test sees only what its own requests did.
-type stillClock struct{}
+// stillMoment is where stillClock stands.
+var stillMoment = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 
-func (stillClock) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
+// stillClock is a clocktest.Fake nothing moves, standing at stillMoment: a machine's timers are
+// armed and never fire, so a route test sees only what its own requests did. Its Sleep returns at
+// once: a machine backs off inside the decision a request drives, where a wait for a move nobody
+// makes would never end. It is an interface, so a test cannot write an empty one (`stillClock{}`
+// does not compile, where a struct wrapping the fake would compile it with no fake inside and panic
+// at its first Now); newStillClock is the one way to make one.
+type stillClock interface{ clock.Clock }
 
-func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
+// stillAt is stillClock's one implementation.
+type stillAt struct{ *clocktest.Fake }
 
-func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+func newStillClock() stillClock { return stillAt{clocktest.New(stillMoment)} }
 
-type stopped struct{}
-
-func (stopped) Stop() bool { return true }
+func (stillAt) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 // fixedSpecs is a launch the fake runtime accepts: the machine fills in who it is for.
 type fixedSpecs struct{}
@@ -222,7 +228,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	sup := &testSupervisor{
 		ctx: ctx,
 		deps: supervise.Deps{
-			Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: fixedSpecs{}, Clock: stillClock{}, Log: quiet,
+			Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: fixedSpecs{}, Clock: newStillClock(), Log: quiet,
 			Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
 			Timeouts: supervise.Timeouts{
 				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,

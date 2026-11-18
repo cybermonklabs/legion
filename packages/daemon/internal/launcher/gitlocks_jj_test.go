@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -221,10 +220,10 @@ func TestAStaleIndexLockBlocksJJUntilTheSweepRemovesIt(t *testing.T) {
 
 	// One clock pass, the pass a pod runs every minute of its life, over a /proc root holding the
 	// one process this row has: the test binary, which holds no descriptor of the lock. The sweep
-	// its clone answers carries a millisecond's recheck, so the second read of the lock costs the
-	// row nothing (lockClone.sweep).
+	// its clone answers reads a clock of the row's own, which clockPass moves past the recheck
+	// between the pass's two reads of the lock (lockClone.sweep).
 	log := &lockedBuffer{}
-	c.sweep(log, procRoot(t, os.Getpid())).pass(context.Background(), false)
+	clockPass(t, c.sweep(log, procRoot(t, os.Getpid())))
 
 	t.Logf("jj status after the sweep's clock pass:\n%s", c.worked("after the sweep's clock pass"))
 	requireRemoved(t, log, lock)
@@ -243,7 +242,7 @@ func TestAHeldIndexLockStaysAndJJStaysBlocked(t *testing.T) {
 	t.Logf("jj status with the held lock:\n%s", c.blocked("with the held lock in the workspace's worktree entry"))
 
 	log := &lockedBuffer{}
-	c.sweep(log, procRoot(t, holder)).pass(context.Background(), false)
+	clockPass(t, c.sweep(log, procRoot(t, holder)))
 
 	requireKept(t, log, lock, "a process of the container holds it open")
 	t.Logf("jj status after the sweep's clock pass:\n%s", c.blocked("after the sweep's clock pass"))

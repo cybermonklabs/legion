@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // capsAnUnsetStream is what a test tells a start (ensureStreamWithConfig) or a keeper pass
@@ -107,10 +108,12 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 	})
 
+	// The outer deadline is the one under test, and the dial it bounds reaches real sockets: the
+	// connect is given it as a real context, and the row asserts it ended with that deadline
+	// rather than with its ten attempts run out.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
-	started := time.Now()
 	go func() {
 		conn, err := connectWithContext(ctx, "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
 		if conn != nil {
@@ -118,28 +121,22 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 		result <- err
 	}()
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("connect unexpectedly succeeded against unresponsive servers")
-		}
-		if elapsed := time.Since(started); elapsed > 6*time.Second {
-			t.Fatalf("connect returned after %s, want the outer five-second deadline", elapsed)
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("connect exceeded the outer deadline while walking NATS URLs")
+	err := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
+	if err == nil {
+		t.Fatal("connect unexpectedly succeeded against unresponsive servers")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", err)
 	}
 }
 
 func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
-	baseCtx := context.Background()
 	uri := testnats.URL(t)
 
 	// The property under test is that a connect context that is done by the time the server
-	// drops the connection does not poison automatic reconnect; cancel it explicitly instead of
-	// racing a short dial deadline against the freshly started server.
-	connectCtx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
-	defer cancel()
+	// drops the connection does not poison automatic reconnect; the row cancels it explicitly
+	// rather than racing a dial deadline against the freshly started server.
+	connectCtx, cancel := context.WithCancel(testwait.Context(t))
 	reconnected := make(chan struct{}, 1)
 	conn, err := connectWithContext(connectCtx, "reconnect-dialer-test", []string{uri}, nil, nil, func(*nats.Conn) {
 		reconnected <- struct{}{}
@@ -154,11 +151,7 @@ func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
 	if err := conn.ForceReconnect(); err != nil {
 		t.Fatalf("force reconnect: %v", err)
 	}
-	select {
-	case <-reconnected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("connection did not automatically reconnect after its initial context expired")
-	}
+	testwait.Receive(t, "the connection to reconnect automatically after its initial context expired", reconnected)
 }
 
 func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testing.T) {
@@ -184,7 +177,7 @@ func TestConnectOwningStreamMigratesExistingStreamDuplicatesWindow(t *testing.T)
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
 	t.Cleanup(legacyConn.Close)
-	legacyJS, err := legacyConn.JetStream()
+	legacyJS, err := legacyConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open legacy JetStream: %v", err)
 	}
@@ -256,7 +249,7 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart(t *testing.T) {
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
-	legacyJS, err := legacyConn.JetStream()
+	legacyJS, err := legacyConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open legacy JetStream: %v", err)
 	}
@@ -284,13 +277,9 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	if _, err := legacyJS.Publish("notifications.role.legion-replay", []byte("legacy role message")); err != nil {
 		t.Fatalf("publish legacy role message: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for legacyDelivery.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if legacyDelivery.Load() != 1 {
-		t.Fatal("legacy durable consumer did not receive the role message")
-	}
+	testwait.Eventually(t, "the legacy durable consumer to receive the role message", func() bool {
+		return legacyDelivery.Load() == 1
+	})
 	_ = legacySub
 	legacyConn.Close()
 
@@ -310,32 +299,31 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 	// nats-server releases a push binding on the consumer's own goroutine, after the client's
 	// Close is answered, so only the consumer's own report tells this test that the durable may
 	// be bound again; Client.Subscribe does not retry a "consumer is already bound" refusal.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Eventually(t, "the server to release the legacy durable consumer's push binding", func() bool {
 		consumer, err := client.JS().ConsumerInfo(Stream, "legacy-role-replay")
 		if err != nil {
 			t.Fatalf("read the legacy durable consumer: %v", err)
 		}
-		if !consumer.PushBound {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the server still reports the legacy durable consumer bound 10s after the legacy connection closed")
-		}
-	}
+		return !consumer.PushBound
+	})
 
-	redelivered := make(chan struct{}, 1)
-	restartedSub, err := client.Subscribe("notifications.>", func(*nats.Msg) {
-		redelivered <- struct{}{}
+	delivered := make(chan string, 4)
+	restartedSub, err := client.Subscribe("notifications.>", func(msg *nats.Msg) {
+		delivered <- msg.Subject
 	}, nats.Durable("legacy-role-replay"), nats.AckExplicit(), nats.ManualAck())
 	if err != nil {
 		t.Fatalf("restart durable consumer: %v", err)
 	}
 	t.Cleanup(func() { _ = restartedSub.Unsubscribe() })
 
-	select {
-	case <-redelivered:
-		t.Fatal("legacy role message was redelivered after the durable consumer restart")
-	case <-time.After(500 * time.Millisecond):
+	// A redelivery of the purged message would reach the restarted durable before a message
+	// published now, which the stream holds and the consumer delivers in stream order.
+	const after = "notifications.github.test.after-migration"
+	if _, err := client.JS().Publish(after, []byte("{}")); err != nil {
+		t.Fatalf("publish after the migration: %v", err)
+	}
+	if got := testwait.Receive(t, "the restarted durable's first delivery after the migration", delivered); got != after {
+		t.Fatalf("the restarted durable was handed %s first, want %s: the legacy role message was redelivered", got, after)
 	}
 }
 
@@ -539,7 +527,7 @@ func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t 
 	}
 	otherConn := testnats.Connect(t, uri)
 	t.Cleanup(otherConn.Close)
-	otherJS, err := otherConn.JetStream()
+	otherJS, err := otherConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the other deployment's JetStream: %v", err)
 	}
@@ -623,7 +611,7 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 			uri := testnats.URL(t)
 			conn := testnats.Connect(t, uri)
 			t.Cleanup(conn.Close)
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("open JetStream: %v", err)
 			}
@@ -804,7 +792,7 @@ func streamTestJetStream(t *testing.T) nats.JetStreamContext {
 	t.Helper()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -930,7 +918,7 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 
 	otherConn := testnats.Connect(t, uri)
 	t.Cleanup(otherConn.Close)
-	otherJS, err := otherConn.JetStream()
+	otherJS, err := otherConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the other deployment's JetStream: %v", err)
 	}

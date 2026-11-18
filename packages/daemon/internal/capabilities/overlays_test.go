@@ -2,12 +2,16 @@ package capabilities
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // OverlayEntries leaves out the empty entries Oh My Pi leaves out.
@@ -65,14 +69,13 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 }
 
 // A run that never reaches an exit of its own (here a timeout) does not stop the check: it is
-// returned as err, and a role file Oh My Pi refuses after it is still refused.
+// returned as err, and a role file Oh My Pi refuses after it is still refused. The slow file's
+// command never answers, and its budget runs on the test's clock, which the test moves past the
+// budget once the command runs.
 func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
-	was := commandTimeout
-	commandTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { commandTimeout = was })
 	dir := t.TempDir()
-	omp := filepath.Join(dir, "omp")
-	script := "#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *slow.yml) sleep 5;; *bad.yml) echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1;; esac\necho '{\"value\": false}'\n"
+	omp, started := filepath.Join(dir, "omp"), filepath.Join(dir, "slow-started")
+	script := fmt.Sprintf("#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *slow.yml) : >%q; exec sleep 600;; *bad.yml) echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1;; esac\necho '{\"value\": false}'\n", started)
 	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -82,12 +85,30 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	img := Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
-	got, err := CheckOverlays(context.Background(), img, []string{slow, bad}, []string{slow, bad})
-	if want := "Oh My Pi refuses " + bad + ": error: Failed to parse config overlay " + bad; got != want {
-		t.Errorf("CheckOverlays refused %q, want %q", got, want)
+	clock := clocktest.New(time.Now())
+	img := Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir, Clock: clock}
+	type answer struct {
+		refused string
+		err     error
 	}
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("CheckOverlays err = %v, want the slow file's timeout", err)
+	answered := make(chan answer, 1)
+	go func() {
+		refused, err := CheckOverlays(testwait.Context(t), img, []string{slow, bad}, []string{slow, bad})
+		answered <- answer{refused, err}
+	}()
+	testwait.Eventually(t, "the slow file's command to run", func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	})
+	if armed, want := clock.AwaitArmed(t, "the slow file's command budget", 1), clock.Now().Add(commandTimeout); !slices.Equal(armed, []time.Time{want}) {
+		t.Fatalf("armed %v, want the slow file's command budget alone, at %s", armed, want)
+	}
+	clock.Advance(commandTimeout)
+	got := testwait.Receive(t, "CheckOverlays' answer once the slow file's command budget passed", answered)
+	if want := "Oh My Pi refuses " + bad + ": error: Failed to parse config overlay " + bad; got.refused != want {
+		t.Errorf("CheckOverlays refused %q, want %q", got.refused, want)
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "timed out") {
+		t.Errorf("CheckOverlays err = %v, want the slow file's timeout", got.err)
 	}
 }

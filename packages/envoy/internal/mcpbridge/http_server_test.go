@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type mockHTTPMCPServer struct {
@@ -170,13 +172,11 @@ func TestHTTPServer_StartAndStop(t *testing.T) {
 	if s.State() != StateReady {
 		t.Fatalf("expected ready state, got %d", s.State())
 	}
-	time.Sleep(500 * time.Millisecond)
-	notifyMu.Lock()
-	uri := notifiedURI
-	notifyMu.Unlock()
-	if uri == "" {
-		t.Fatal("expected notification URI to be set")
-	}
+	uri := testwait.Until(t, "the notification URI the server sends after its subscribe", func() (string, bool) {
+		notifyMu.Lock()
+		defer notifyMu.Unlock()
+		return notifiedURI, notifiedURI != ""
+	})
 	if uri != "whatsapp://messages/15551234567/5551234567@s.whatsapp.net" {
 		t.Fatalf("unexpected notified URI: %s", uri)
 	}
@@ -252,11 +252,7 @@ func TestHTTPServer_SSEDisconnectReturnsError(t *testing.T) {
 		s.WaitForExit()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("WaitForExit did not return within timeout after SSE disconnect")
-	}
+	testwait.Receive(t, "WaitForExit to return after the SSE disconnect", done)
 	if s.State() != StateDead {
 		t.Fatalf("expected dead state after SSE disconnect, got %d", s.State())
 	}

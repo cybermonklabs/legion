@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // useStoreCallDeadline makes d the deadline on each store call of a create, for the rest of t.
@@ -103,14 +104,9 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 				done <- result{stderr, code}
 			}()
-			var got result
-			select {
-			case got = <-done:
-			case <-time.After(10 * time.Second):
-				releaseOnce()
-				got = <-done
-				t.Fatalf("the create waited on a store call the store never answered for more than 10s, past the 300ms deadline; once the store answered: exit %d, stderr %q", got.code, got.stderr)
-			}
+			// The store's hold is let go at the test's end (releaseOnce, above), so a create that
+			// never gives up fails the wait and is not left holding the store.
+			got := testwait.Receive(t, "the create to give up, at its 300ms deadline, on the store call its store never answers", done)
 			if got.code != 1 {
 				t.Fatalf("exit %d after %s, stderr %q; want 1", got.code, time.Since(start), got.stderr)
 			}

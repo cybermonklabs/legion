@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deviceMachine is one machine logging in: its key, the OAuth client it logs in with, and the
@@ -84,7 +85,9 @@ func (m *deviceMachine) login(t *testing.T) *oauth2.DeviceAuthResponse {
 	return da
 }
 
-// poll exchanges an approved device code for its tokens, polling at once.
+// poll exchanges an approved device code for its tokens, polling at once: the interval is
+// x/oauth2's own wait between token requests, which no clock of Envoy's reaches, and the code
+// is already approved, so the first poll is the only one.
 func (m *deviceMachine) poll(t *testing.T, da *oauth2.DeviceAuthResponse) *oauth2.Token {
 	t.Helper()
 	da.Interval = 1
@@ -475,7 +478,7 @@ func TestADeviceCodeOfARevokedLoginIsRefused(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("revoke = %d: %s", status, body)
 	}
-	da.Interval = 1
+	da.Interval = 1 // x/oauth2's own poll interval, as in poll above
 	_, err := m.config.DeviceAccessToken(m.ctx, da)
 	if code, _ := oauthErrorCode(t, err); code != "invalid_grant" {
 		t.Fatalf("poll of a revoked login = %s, want invalid_grant", code)
@@ -492,7 +495,7 @@ func TestADeniedDeviceLoginIsAccessDenied(t *testing.T) {
 	m := newDeviceMachine(t, rig)
 	da := m.login(t)
 	rig.DecideMachineLogin(t, da.UserCode, false)
-	da.Interval = 1
+	da.Interval = 1 // x/oauth2's own poll interval, as in poll above
 	_, err := m.config.DeviceAccessToken(m.ctx, da)
 	if code, _ := oauthErrorCode(t, err); code != "access_denied" {
 		t.Fatalf("poll of a denied login = %s, want access_denied", code)
@@ -608,22 +611,15 @@ func lockCredential(t *testing.T, rig *brokertest.Rig, credentialID string) (pgx
 // awaitWaiters waits until n backends wait, directly or behind another waiter, on holder's lock.
 func awaitWaiters(t *testing.T, rig *brokertest.Rig, holder, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("%d backends to wait on the credential's lock", n), func() (int, bool) {
 		var waiting int
 		if err := rig.Store.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity a
 			where $1 = any(pg_blocking_pids(a.pid)) or exists (select 1 from pg_stat_activity b
 				where $1 = any(pg_blocking_pids(b.pid)) and b.pid = any(pg_blocking_pids(a.pid)))`, holder).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends wait on the credential's lock, want %d", waiting, n)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return waiting, waiting >= n
+	})
 }
 
 // revokeAsync revokes credentialID as the rig's operator through the route Dispatch relays to,

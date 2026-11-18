@@ -32,6 +32,10 @@ func (w *Watcher) Stop() {
 	w.clearScheduledArm()
 	w.clearProbeArm()
 	w.clearIdleArm()
+	if w.firstRetryTimer != nil {
+		w.firstRetryTimer.Stop()
+		w.firstRetryTimer = nil
+	}
 	w.generation++
 	// A stopped watcher completes no read, so a caller waiting for a copy it can serve stops
 	// waiting (WaitComplete).

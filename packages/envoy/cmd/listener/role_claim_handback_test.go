@@ -18,11 +18,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleClaimHandBackRig is one listener's whole set of v1 routes over one listener's stores: a
@@ -111,8 +111,7 @@ func (r *roleClaimHandBackRig) send(method, target, body string) *httptest.Respo
 // stored is the role's claim as the bucket holds it now.
 func (r *roleClaimHandBackRig) stored() store.RoleClaim {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	claim, err := r.deps.registry.RoleClaim(ctx, r.role)
 	if err != nil {
 		r.t.Fatalf("read %s's claim: %v", r.role, err)
@@ -123,8 +122,7 @@ func (r *roleClaimHandBackRig) stored() store.RoleClaim {
 // topics is the session's interest record as the routes have left it.
 func (r *roleClaimHandBackRig) topics() []string {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	item, err := r.deps.registry.Get(ctx, r.session)
 	if err != nil {
 		r.t.Fatalf("read %s's interest record: %v", r.session, err)

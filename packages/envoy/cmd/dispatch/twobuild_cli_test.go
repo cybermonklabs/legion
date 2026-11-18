@@ -7,7 +7,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── the CLI ──────────────────────────────────────────────────────────────
@@ -61,13 +61,14 @@ func (r cliRun) String() string {
 // HOME and DISPATCH_STATE_DIR are home, so it reads no developer's envoy.json.
 func (c cliBuild) run(t *testing.T, server *dispatchProcess, home string, args ...string) cliRun {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, c.argv[0], append(slices.Clone(c.argv[1:]), args...)...)
+	cmd := exec.CommandContext(testwait.Context(t), c.argv[0], append(slices.Clone(c.argv[1:]), args...)...)
 	cmd.Dir = home
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
+		// Bun keeps its runtime transpiler cache under HOME, the test's own directory here, where
+		// each run would write every module it transpiles: "0" turns that cache off.
+		"BUN_RUNTIME_TRANSPILER_CACHE_PATH=0",
 		"DISPATCH_STATE_DIR=" + home,
 		"DISPATCH_HOST=omp",
 		"DISPATCH_SESSION_ID=" + cliSession,

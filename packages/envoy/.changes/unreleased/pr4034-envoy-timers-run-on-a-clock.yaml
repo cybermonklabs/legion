@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Envoy's product timers whose effect a test asserts take one module clock (the real clock in
+  production): the listener's route budgets, relay waits, durable bind and self-health monitor, the
+  bus keeper and its bounds, the broker's airlock proxy, helper, judge and serving clock,
+  `agentloop.Run`'s time bound, the stores' scans, the Dispatch server's passes and the bounds of
+  its related-item check and near-copy gate. The listener's self-health monitor now
+  waits 30 s after each pass ends rather than ticking on a fixed 30 s cadence. The broker's reread and
+  policy reload log the cause of each read. `pgmigrate`'s lock diagnosis returns before the rollback
+  of its own connection, which runs bounded on its own, so a stalled cleanup no longer delays the
+  lock timeout's answer.

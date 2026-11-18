@@ -84,6 +84,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -100,30 +101,15 @@ const busyRecallHold = 20 * time.Second
 // this proof changes.
 const busyRecallClientBound = 30 * time.Second
 
-// busyConfirmedWithin is how long a step reads the operator's claim listing, with the late turn's
-// model request held, for the task confirmed: the turn's agent_start reaches the daemon before its
-// model request reaches the stand-in, and the confirmation is written as that start is handled.
-const busyConfirmedWithin = 10 * time.Second
-
 // busyOwnJobSeconds is how long the `async` bash job of busy-own-turn sleeps: long enough that the
 // turn which started it has ended before the job's result starts a turn of Oh My Pi's own.
 const busyOwnJobSeconds = 20
 
 // busyOwnTurnWatch is how long busy-own-turn holds that turn of the agent's own open with a task
 // waiting: two observations of the local runtime, each of which sends what a ready or idle claim
-// holds (supervise's observe), and the settle every proof watches for what must not happen.
+// holds (supervise's observe), and the settle every proof watches for what must not happen. It is
+// a span that proves an absence, held through watchQuiet.
 const busyOwnTurnWatch = 2*localObserveInterval + liveSettle
-
-// relaunchFirstPromptWithin is how long a relaunch step waits, from the relaunched process's
-// ready, for the first prompt that process is sent. At this head the prompt goes at the ready
-// (supervise's queueRelaunch, or the held task itself); the bound is what lets the base, which
-// sends a root architect holding nothing no prompt at all, fail the step rather than the run.
-const relaunchFirstPromptWithin = 90 * time.Second
-
-// relaunchReportWithin bounds the wait for the pane's activity report to reach the store. The
-// pane reads its host's jobs and reports what changed every five seconds
-// (pi-legion/extensions/legion.ts, SESSION_ACTIVITY_PERIOD_MS).
-const relaunchReportWithin = time.Minute
 
 // deepWorkerSystemLine is the first line of packages/pi-legion/agents/deep-worker.md's body, which
 // Oh My Pi puts in the system prompt of a `task` subagent of that agent, and nowhere else: it is
@@ -226,7 +212,6 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/busy-relaunch-delivery.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/busy-relaunch-delivery.sh")
 	key := func(n int) string { return fmt.Sprintf("%s-%d", proof.cfg.Project, n) }
 	r := &busyRelaunchLive{
@@ -286,12 +271,12 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	for _, pane := range r.panes {
 		r.awaitReady(pane.token)
 	}
 	for _, pane := range r.panes {
-		r.awaitQuiet(pane.token, 4*time.Minute)
+		r.awaitQuiet(pane.token)
 		if pane.role != claim.RoleArchitect && len(pane.stand.promptsCarrying(startTask(pane.role))) == 0 {
 			t.Fatalf("%s's stand-in answered no turn carrying the task its start left pending, %q", pane.token, startTask(pane.role))
 		}
@@ -426,7 +411,7 @@ func (r *busyRelaunchLive) fails(assertion, format string, args ...any) {
 // (stale-result).
 func (r *busyRelaunchLive) busyLateTurn() {
 	pane := r.pane(r.late)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	marker := "LATE-" + randomSuffix(r.t)
 	task := "Say the word " + marker + " and nothing else."
 	r.hindsight.holdNext(busyRecallHold)
@@ -434,16 +419,16 @@ func (r *busyRelaunchLive) busyLateTurn() {
 	from := r.daemon.count()
 	sent := time.Now()
 	r.deliver(pane.token, task)
-	arrived := late.await(r, "the late turn's model request", busyRecallHold+2*time.Minute)
+	arrived := late.await(r, "the late turn's model request")
 	view := r.awaitListedConfirmed(pane.token, marker)
 	r.note("the task went at +0s; its turn's model request came at +%s, and while it was held `legion claims list --json` read the task %s",
 		arrived.Sub(sent).Round(100*time.Millisecond), describePending(view.Pending, marker))
 	ended := r.daemon.count()
 	late.let()
-	turnEnd := r.awaitLogFrom("the late turn's end", ended, 2*time.Minute, streamTurnEnded(pane.token))
-	// Whether the claim settles is judged with the rest below (retired), so a claim still holding
-	// the task fails there by name rather than here.
-	quiet := r.quietWithin(pane.token, 3*time.Minute)
+	turnEnd := r.logFrom("the late turn's end", ended, streamTurnEnded(pane.token))
+	// Whether the claim settles is the step's retired assertion, and the wait for it is named so:
+	// a claim still holding the task fails there by name.
+	r.awaitQuietAs("retired", pane.token)
 
 	recall, held := r.hindsight.recallCarrying(marker)
 	if !held || recall.answered.IsZero() || recall.answered.Sub(recall.at) < busyRecallHold || arrived.Before(recall.answered) {
@@ -475,16 +460,11 @@ func (r *busyRelaunchLive) busyLateTurn() {
 		r.fails("busy-answers", "the agent answered %d sends of the task busy (%v), and a send after the first busy answer goes into a turn the daemon has been told is running",
 			len(busy), busy)
 	}
-	if view.Pending == nil || view.Pending.ConfirmedAt == nil || !strings.Contains(view.Pending.Task, marker) {
-		r.fails("confirmed-in-turn", "while the late turn ran the claim listing read the task %s, and that turn is the task's own",
-			describePending(view.Pending, marker))
-	}
+	// The task's confirmation in the late turn is not judged here: the step waited for it while
+	// the turn was held (awaitListedConfirmed), and over the base, which confirms nothing in a late
+	// turn, that wait is where the step fails, at stale-result.
 	if len(turns) != 1 {
 		r.fails("one-turn", "%d turns carried the task, want the late one alone: %v", len(turns), requestTimes(turns, sent))
-	}
-	if !quiet {
-		r.fails("retired", "within %s of the late turn's end the claim never stood ready or idle with no task for %s; it holds %s",
-			3*time.Minute, liveSettle, describePending(r.claim(pane.token).Pending, marker))
 	}
 	r.note("one turn carried the task; it ended at +%s, the claim retired the task by that turn's result and has been sent nothing since",
 		turnEnd.at.Sub(sent).Round(100*time.Millisecond))
@@ -503,7 +483,7 @@ func (r *busyRelaunchLive) busyLateTurn() {
 // that agent_start did.
 func (r *busyRelaunchLive) busyOwnTurn() {
 	pane := r.pane(r.own)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	suffix := randomSuffix(r.t)
 	starts, done := "ASYNC-START-"+suffix, "OWN-TURN-"+suffix
 	pane.stand.callTool(promptCarrying(starts), "bash", map[string]any{
@@ -512,10 +492,10 @@ func (r *busyRelaunchLive) busyOwnTurn() {
 	own := pane.stand.hold(promptCarrying(done))
 	started := time.Now()
 	r.deliver(pane.token, "Start the background job. "+starts)
-	r.awaitQuiet(pane.token, 2*time.Minute)
+	r.awaitQuiet(pane.token)
 	r.note("the task that starts `sleep %d` as an async bash job was answered and retired at +%s",
 		busyOwnJobSeconds, time.Since(started).Round(100*time.Millisecond))
-	arrived := own.await(r, "the turn the job's result starts", time.Duration(busyOwnJobSeconds)*time.Second+time.Minute)
+	arrived := own.await(r, "the turn the job's result starts")
 	r.note("the job's result started a turn of Oh My Pi's own at +%s, held at its model request",
 		arrived.Sub(started).Round(100*time.Millisecond))
 
@@ -523,11 +503,11 @@ func (r *busyRelaunchLive) busyOwnTurn() {
 	from := r.daemon.count()
 	queued := time.Now()
 	r.deliver(pane.token, "Say the word "+marker+" and nothing else.")
-	time.Sleep(busyOwnTurnWatch)
+	r.watchQuiet(busyOwnTurnWatch, "no task may reach the agent inside its own turn, and nothing the daemon writes says no send is coming: it has seen the turn begin and sends nothing, and the local runtime counts no sweep of a claim no step holds, so the window is two of that runtime's observations and the settle every proof watches for what must not happen")
 	ended := r.daemon.count()
 	own.let()
-	turnEnd := r.awaitLogFrom("the turn of the agent's own to end", ended, 2*time.Minute, streamTurnEnded(pane.token))
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	turnEnd := r.logFrom("the turn of the agent's own to end", ended, streamTurnEnded(pane.token))
+	r.awaitQuiet(pane.token)
 
 	busy := r.busyDeliveries(pane.token, from)
 	if len(busy) > 1 {
@@ -554,30 +534,30 @@ func (r *busyRelaunchLive) busyOwnTurn() {
 // nothing in a late turn and refuses it `a delivery is already pending` (accepted).
 func (r *busyRelaunchLive) newerTask() {
 	pane := r.pane(r.late)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	suffix := randomSuffix(r.t)
 	marker, newer := "LATER-"+suffix, "NEWER-"+suffix
 	r.hindsight.holdNext(busyRecallHold)
 	late := pane.stand.hold(promptCarrying(marker))
 	sent := time.Now()
 	r.deliver(pane.token, "Say the word "+marker+" and nothing else.")
-	arrived := late.await(r, "the late turn's model request", busyRecallHold+2*time.Minute)
+	arrived := late.await(r, "the late turn's model request")
 	out, err := r.legionClaimsTry("deliver", "--claim", string(pane.token), "--task", "Say the word "+newer+" and nothing else.")
 	r.note("the late turn's model request came at +%s; `legion claims deliver` of a newer task while it was held answered %v:\n%s",
 		arrived.Sub(sent).Round(100*time.Millisecond), err, indentOutput(out))
 	ended := r.daemon.count()
 	late.let()
-	turnEnd := r.awaitLogFrom("the late turn's end", ended, 2*time.Minute, streamTurnEnded(pane.token))
+	turnEnd := r.logFrom("the late turn's end", ended, streamTurnEnded(pane.token))
 
 	if err != nil || strings.Contains(out, "already pending") {
 		r.fails("accepted", "the newer task was refused while the late turn ran (%v): %s", err, out)
 	}
 	var turns []seenRequest
-	r.await("the newer task's turn", 2*time.Minute, func() bool {
+	testwait.Eventually(r.t, "the newer task's turn", func() bool {
 		turns = pane.stand.promptsCarrying(newer)
 		return len(turns) > 0
 	})
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	turns = pane.stand.promptsCarrying(newer)
 	if !turns[0].at.After(turnEnd.at) {
 		r.fails("sent-after", "the newer task was put in front of the agent at +%s, inside the late turn that ended at +%s",
@@ -594,24 +574,24 @@ func (r *busyRelaunchLive) newerTask() {
 }
 
 // idleControl is the control of the busy steps: a worker in no turn is sent its task at once —
-// its turn begins before the daemon's own wait for it runs out — with no busy answer and no
-// prompt charged.
+// its turn begins before the daemon's own wait for it runs out, which the daemon's own log says by
+// writing no line that the wait ran out — with no busy answer and no prompt charged.
 func (r *busyRelaunchLive) idleControl() {
 	pane := r.pane(r.worker)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	marker := "IDLE-" + randomSuffix(r.t)
 	from := r.daemon.count()
 	sent := time.Now()
 	r.deliver(pane.token, "Say the word "+marker+" and nothing else.")
 	var turns []seenRequest
-	r.await("the idle worker's turn of the task", time.Minute, func() bool {
+	testwait.Eventually(r.t, "the idle worker's turn of the task", func() bool {
 		turns = pane.stand.promptsCarrying(marker)
 		return len(turns) > 0
 	})
-	r.awaitQuiet(pane.token, 2*time.Minute)
-	if waited := turns[0].at.Sub(sent); waited >= r.cfg.WorkerRPCTimeout {
-		r.fails("at-once", "the idle worker's turn of the task began %s after the deliver, past the daemon's own %s wait for it",
-			waited.Round(100*time.Millisecond), r.cfg.WorkerRPCTimeout)
+	r.awaitQuiet(pane.token)
+	if waited := r.daemon.firstAfter(from, promptWaitRanOut(pane.token)); waited != nil {
+		r.fails("at-once", "the daemon's own %s wait for the idle worker's turn of the task ran out before that turn began: %v",
+			r.cfg.WorkerRPCTimeout, waited.Attrs)
 	}
 	if busy := r.busyDeliveries(pane.token, from); len(busy) > 0 {
 		r.fails("no-busy", "a worker in no turn answered %d sends busy: %v", len(busy), busy)
@@ -631,10 +611,10 @@ func (r *busyRelaunchLive) idleControl() {
 // naming the subagent and the death (sentence), and the claim row holds the record (claim-row).
 func (r *busyRelaunchLive) relaunchSubagentWorker() {
 	pane := r.pane(r.worker)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	r.startsASubagent(pane, "SUBAGENT-WORKER-"+randomSuffix(r.t))
-	killed, ready := r.killAndRelaunch(pane)
-	prompt := r.firstPromptAfter(pane, killed, ready)
+	killed, asked := r.killAndRelaunch(pane)
+	prompt := r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchDiedWords, relaunchSubagentWords)
 	r.note("the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
@@ -655,13 +635,13 @@ func (r *busyRelaunchLive) relaunchSubagentWorker() {
 // the daemon has no report of that turn and that its subagents and background jobs are gone.
 func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	pane := r.pane(r.root)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	suffix := randomSuffix(r.t)
 
 	told := len(r.architectNotices(pane.issue, "catch-up"))
 	r.startsASubagent(pane, "SUBAGENT-ROOT-"+suffix)
-	killed, ready := r.killAndRelaunch(pane)
-	prompt := r.firstPromptAfter(pane, killed, ready)
+	killed, asked := r.killAndRelaunch(pane)
+	prompt := r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchDiedWords, relaunchSubagentWords)
 	r.note("holding no task: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
@@ -671,16 +651,16 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	})
 	r.note("the claim row records %s", ended.describe())
 
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	r.startsASubagent(pane, "SUBAGENT-AGAIN-"+suffix)
 	held := "HELD-TASK-" + suffix
 	turn := pane.stand.hold(promptCarrying(held))
 	r.deliver(pane.token, "Wait for the scratch check, then say the word "+held+".")
-	turn.await(r, "the architect's turn of the task it holds", time.Minute)
+	turn.await(r, "the architect's turn of the task it holds")
 	r.awaitReported(pane.token, "subagent")
 	told = len(r.architectNotices(pane.issue, "catch-up"))
-	killed, ready = r.killAndRelaunch(pane)
-	prompt = r.firstPromptAfter(pane, killed, ready)
+	killed, asked = r.killAndRelaunch(pane)
+	prompt = r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchSubagentWords,
 		relaunchNoTurnReportWords, relaunchTurnGoneWords, held)
 	r.note("holding a task in its turn: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
@@ -697,19 +677,19 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 // sent again behind the sentence naming the turn, the job and the death (sentence).
 func (r *busyRelaunchLive) relaunchTask() {
 	pane := r.pane(r.task)
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	r.awaitQuiet(pane.token)
 	marker := "ASYNC-TASK-" + randomSuffix(r.t)
 	pane.stand.callTool(promptCarrying(marker), "bash", map[string]any{"command": "sleep 600", "async": true})
 	turn := pane.stand.hold(turnContinuing(marker))
 	r.deliver(pane.token, "Run the long check in the background, then report on it. "+marker)
-	turn.await(r, "the task's turn after its job was backgrounded", 2*time.Minute)
+	turn.await(r, "the task's turn after its job was backgrounded")
 	r.awaitReported(pane.token, "async-job")
-	killed, ready := r.killAndRelaunch(pane)
+	killed, asked := r.killAndRelaunch(pane)
 	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool {
 		return slices.Contains(e.Kinds, "async-job") && e.Turn && e.TaskTurn && e.Reported
 	})
 	r.note("the claim row records %s", ended.describe())
-	prompt := r.firstPromptAfter(pane, killed, ready)
+	prompt := r.firstPromptAfter(pane, asked)
 	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchJobWords, marker)
 	r.note("the first prompt the relaunched process was sent, %s after the death, is the task behind the sentence:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
@@ -729,6 +709,18 @@ func (r *busyRelaunchLive) pane(issue string) *busyPane {
 	return nil
 }
 
+// paneOf is the live claim token names, and fails the step when token names none.
+func (r *busyRelaunchLive) paneOf(token claim.Token) *busyPane {
+	r.t.Helper()
+	for _, pane := range r.panes {
+		if pane.token == token {
+			return pane
+		}
+	}
+	r.t.Fatalf("this proof drives no pane for the claim %s", token)
+	return nil
+}
+
 // deliver gives the claim one task of the operator's own, through the route `legion claims
 // deliver` posts to.
 func (r *busyRelaunchLive) deliver(token claim.Token, task string) {
@@ -740,40 +732,45 @@ func (r *busyRelaunchLive) deliver(token claim.Token, task string) {
 	}
 }
 
-// awaitQuiet waits until the claim holds no task and is ready or idle, and has stayed so for
-// liveSettle: an Oh My Pi phase worker's turn can run on past its prompt's result (the plugin's
-// phase reminder continues the run once), so a claim read idle once may be read working again.
-func (r *busyRelaunchLive) awaitQuiet(token claim.Token, within time.Duration) {
+// awaitQuiet waits until the claim holds no task and is ready or idle, and stays so through a
+// span of liveSettle in which its pane's stand-in is asked for no turn: an Oh My Pi phase worker's
+// turn can run on past its prompt's result (the plugin's phase reminder continues the run once),
+// so a claim read idle once may be read working again, and nothing the daemon or the pane writes
+// says that no such turn is coming. Every turn asks the stand-in for the model as it begins, so a
+// turn begun inside the span is a request the stand-in counted (turnRequests), however briefly
+// the claim was read working meanwhile. The span is watchQuiet's; the wait around it is the
+// shared one (testwait.Eventually), with no bound of its own, and a span a turn began in is
+// followed by another.
+func (r *busyRelaunchLive) awaitQuiet(token claim.Token) {
 	r.t.Helper()
-	if !r.quietWithin(token, within) {
-		r.t.Fatalf("timed out after %s waiting for %s to hold no task and run no turn", within, token)
-	}
-}
-
-// quietWithin is awaitQuiet's wait, answering whether the claim settled within the bound rather
-// than failing, for a step that judges it by an assertion of its own name.
-func (r *busyRelaunchLive) quietWithin(token claim.Token, within time.Duration) bool {
-	r.t.Helper()
-	deadline := time.Now().Add(within)
-	var since time.Time
-	for {
+	stand := r.paneOf(token).stand
+	settled := func() bool {
 		held := r.claim(token)
 		if held.State == string(supervise.StateFailed) {
 			r.t.Fatalf("%s failed; its workers' output is under %s", token, r.rt.paneLogs)
 		}
-		switch {
-		case held.Pending != nil || (held.State != string(supervise.StateReady) && held.State != string(supervise.StateIdle)):
-			since = time.Time{}
-		case since.IsZero():
-			since = time.Now()
-		case time.Since(since) >= liveSettle:
-			return true
-		}
-		if time.Now().After(deadline) {
+		return held.Pending == nil && (held.State == string(supervise.StateReady) || held.State == string(supervise.StateIdle))
+	}
+	testwait.Eventually(r.t, string(token)+" to hold no task and run no turn for "+liveSettle.String(), func() bool {
+		if !settled() {
 			return false
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		asked := stand.turnRequests()
+		r.watchQuiet(liveSettle, "a turn the plugin's phase reminder continues comes, if at all, after the prompt's result, and "+
+			"nothing the daemon, the pane or Oh My Pi records says that none is coming, so no state reads it and no later action's "+
+			"effect is ordered after it; the daemon's real NATS and Postgres and the Oh My Pi process keep it out of a synctest bubble")
+		return settled() && stand.turnRequests() == asked
+	})
+}
+
+// awaitQuietAs is awaitQuiet for a step that judges the claim settling by an assertion of its own
+// name: should the wait give up, the step fails at assertion, which run prints and the negative
+// control reads back.
+func (r *busyRelaunchLive) awaitQuietAs(assertion string, token claim.Token) {
+	r.t.Helper()
+	r.failedAt = assertion
+	r.awaitQuiet(token)
+	r.failedAt = ""
 }
 
 // startsASubagent gives the claim a task whose turn starts a `task` subagent, whose own model
@@ -785,8 +782,8 @@ func (r *busyRelaunchLive) startsASubagent(pane *busyPane, marker string) {
 	pane.stand.callTool(promptCarrying(marker), "task", subagentCall(marker))
 	subagent := pane.stand.hold(func(seen seenRequest) bool { return seen.subagent })
 	r.deliver(pane.token, "Start a subagent for the scratch check. "+marker)
-	subagent.await(r, "the subagent's own model request", 2*time.Minute)
-	r.awaitQuiet(pane.token, 2*time.Minute)
+	subagent.await(r, "the subagent's own model request")
+	r.awaitQuiet(pane.token)
 	r.awaitReported(pane.token, "subagent")
 	r.note("%s's turn started a task subagent and ended; the claim holds no task, and the subagent's own model request is held",
 		pane.token)
@@ -798,7 +795,7 @@ func (r *busyRelaunchLive) startsASubagent(pane *busyPane, marker string) {
 func (r *busyRelaunchLive) awaitReported(token claim.Token, kind string) {
 	r.t.Helper()
 	var kinds string
-	r.await(fmt.Sprintf("%s's activity report to name %s", token, kind), relaunchReportWithin, func() bool {
+	testwait.Eventually(r.t, fmt.Sprintf("%s's activity report to name %s", token, kind), func() bool {
 		if err := r.st.Pool().QueryRow(context.Background(),
 			"select activity_kinds from claims where token = $1", string(token)).Scan(&kinds); err != nil {
 			r.t.Fatalf("read %s's activity report: %v", token, err)
@@ -809,10 +806,12 @@ func (r *busyRelaunchLive) awaitReported(token claim.Token, kind string) {
 }
 
 // killAndRelaunch SIGKILLs the claim's process group — the shim, Oh My Pi and every job and
-// subagent Oh My Pi started, as a process killed under it dies — and waits for the daemon to
-// relaunch it and the new process to report ready. It answers when the process was killed and
-// when the relaunched one was read ready.
-func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) (killed, ready time.Time) {
+// subagent Oh My Pi started, as a process killed under it dies — and waits for the process to end,
+// for the daemon to relaunch it and for the new process to report ready. It answers when the
+// process was killed, which the step's notes read, and how many requests the pane's stand-in had
+// received by then (received), which is where the relaunched process's requests begin: no
+// process of the claim runs between the kill and the relaunch.
+func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) (killed time.Time, asked int) {
 	r.t.Helper()
 	was := r.claim(pane.token)
 	r.rt.mu.Lock()
@@ -821,15 +820,20 @@ func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) (killed, ready time.T
 	if !ok {
 		r.t.Fatalf("the runtime runs no process for %s", pane.token)
 	}
-	killed = time.Now()
+	asked, killed = pane.stand.received(), time.Now()
 	if err := syscall.Kill(-running.pid, syscall.SIGKILL); err != nil {
 		r.t.Fatalf("kill %s's process group %d: %v", pane.token, running.pid, err)
 	}
-	if !waitGone(running, localStopGrace) {
-		r.t.Fatalf("%s's process %d did not end after SIGKILL", pane.token, running.pid)
-	}
+	testwait.Eventually(r.t, fmt.Sprintf("%s's process %d to end after SIGKILL", pane.token, running.pid), func() bool {
+		select {
+		case <-running.done:
+			return true
+		default:
+			return false
+		}
+	})
 	var now api.OperatorClaim
-	r.await(string(pane.token)+" to be relaunched and report ready", paneReady, func() bool {
+	testwait.Eventually(r.t, string(pane.token)+" to be relaunched and report ready", func() bool {
 		now = r.claim(pane.token)
 		if now.State == string(supervise.StateFailed) {
 			r.t.Fatalf("%s failed after its process was killed; its workers' output is under %s", pane.token, r.rt.paneLogs)
@@ -837,28 +841,28 @@ func (r *busyRelaunchLive) killAndRelaunch(pane *busyPane) (killed, ready time.T
 		return now.Generation > was.Generation && (now.State == string(supervise.StateReady) ||
 			now.State == string(supervise.StateIdle) || now.State == string(supervise.StateWorking))
 	})
-	ready = time.Now()
+	ready := time.Now()
 	r.note("killed %s's process group %d (generation %d); the daemon relaunched it as generation %d, ready %s later",
 		pane.token, running.pid, was.Generation, now.Generation, ready.Sub(killed).Round(100*time.Millisecond))
-	return killed, ready
+	return killed, asked
 }
 
-// firstPromptAfter is the first prompt the stand-in received after killed — a role turn's request
-// whose last message is the prompt itself — waited for from ready for
-// relaunchFirstPromptWithin. A relaunched process that is sent no prompt in that time fails the
-// step's sentence assertion: the sentence is what the first prompt was to carry.
-func (r *busyRelaunchLive) firstPromptAfter(pane *busyPane, killed, ready time.Time) seenRequest {
+// firstPromptAfter is the first prompt the stand-in received after the first asked of its requests
+// — a role turn's request whose last message is the prompt itself — waited for through the shared
+// wait. A relaunched process that is sent no prompt fails the step's sentence assertion: the
+// sentence is what the first prompt was to carry, and the base commit sends a root architect
+// holding nothing no prompt at all.
+func (r *busyRelaunchLive) firstPromptAfter(pane *busyPane, asked int) seenRequest {
 	r.t.Helper()
-	deadline := ready.Add(relaunchFirstPromptWithin)
-	for {
-		if prompt, ok := pane.stand.firstPromptAfter(killed); ok {
-			return prompt
-		}
-		if time.Now().After(deadline) {
-			r.fails("sentence", "the relaunched process of %s was sent no prompt in the %s after its ready", pane.token, relaunchFirstPromptWithin)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	var prompt seenRequest
+	r.failedAt = "sentence"
+	testwait.Eventually(r.t, fmt.Sprintf("sentence: the first prompt the relaunched process of %s is sent", pane.token), func() bool {
+		var sent bool
+		prompt, sent = pane.stand.firstPromptAfter(asked)
+		return sent
+	})
+	r.failedAt = ""
+	return prompt
 }
 
 // holdsTheSentence holds that the prompt carries every one of words.
@@ -877,7 +881,7 @@ func (r *busyRelaunchLive) holdsTheSentence(prompt seenRequest, words ...string)
 func (r *busyRelaunchLive) catchUpOpensWithTheSentence(pane *busyPane, told int) {
 	r.t.Helper()
 	var notices []listenerPublish
-	r.await(pane.issue+"'s architect's catch-up for the relaunched process", time.Minute, func() bool {
+	testwait.Eventually(r.t, pane.issue+"'s architect's catch-up for the relaunched process", func() bool {
 		notices = r.architectNotices(pane.issue, "catch-up")
 		return len(notices) > told
 	})
@@ -906,32 +910,67 @@ func (r *busyRelaunchLive) claimRowHolds(token claim.Token, want func(endedWorkR
 }
 
 // awaitListedConfirmed reads the claim through `legion claims list --json`, the built binary
-// against the daemon, until the task carrying marker reads confirmed or busyConfirmedWithin runs
-// out, and answers the last reading: the step judges it after the turn, so an unconfirmed reading
-// fails the assertion that names it rather than this read.
+// against the daemon, until the task carrying marker reads confirmed, and answers that reading.
+// The wait is the shared one, testwait.Eventually, which both this head's testwait and the base's
+// have. Should it give up, the step fails at stale-result, the assertion the negative control reads
+// back for this step: the base drops the late turn's result at the fence and sends the task again,
+// and confirms nothing in that turn, so this wait is where the base fails. Its what carries
+// ": stale-result: " so the line the wait fails with, the base's `timed out waiting for …` and this
+// head's `gave up waiting for …`, is the stale-result sentence the control's awk reads, written at
+// a line of this file as the step's own t.Fatalf lines are.
 func (r *busyRelaunchLive) awaitListedConfirmed(token claim.Token, marker string) api.OperatorClaim {
 	r.t.Helper()
-	deadline := time.Now().Add(busyConfirmedWithin)
-	for {
+	var held api.OperatorClaim
+	r.failedAt = "stale-result"
+	testwait.Eventually(r.t, fmt.Sprintf("the task carrying %s to read confirmed in `legion claims list --json` while its late turn runs: stale-result: "+
+		"a daemon that drops the late turn's result at the fence and sends the task again confirms nothing in that turn", marker), func() bool {
 		var list api.OperatorClaims
 		out := r.legionClaims("list", "--json")
 		if err := json.Unmarshal([]byte(out), &list); err != nil {
 			r.t.Fatalf("decode `legion claims list --json` %s: %v", out, err)
 		}
-		var held api.OperatorClaim
+		held = api.OperatorClaim{}
 		for _, listed := range list.Claims {
 			if listed.Token == token {
 				held = listed
 			}
 		}
-		if p := held.Pending; (p != nil && p.ConfirmedAt != nil && strings.Contains(p.Task, marker)) || time.Now().After(deadline) {
-			return held
-		}
-		time.Sleep(500 * time.Millisecond)
+		p := held.Pending
+		return p != nil && p.ConfirmedAt != nil && strings.Contains(p.Task, marker)
+	})
+	r.failedAt = ""
+	return held
+}
+
+// watchQuiet holds the step for d before it reads that something did not happen in that window,
+// why being why no state, no later action's effect and no testing/synctest reaches the code. It is
+// the head's testwait.Span(r.t, d, why), which this driver cannot call: the negative control lays
+// this file over a base commit whose testwait has no Span (only Eventually, WithinPolling, Holds and
+// Bounded), and the driver must build there. Like Span it refuses an empty why; unlike Span it does
+// not end at the shared wait's margin, which a span of seconds never reaches.
+func (r *busyRelaunchLive) watchQuiet(d time.Duration, why string) {
+	r.t.Helper()
+	if why == "" {
+		r.t.Fatal("watchQuiet: a span that proves an absence names why nothing else proves it")
 	}
+	time.Sleep(d)
 }
 
 // ---- reads of the daemon's own log ----------------------------------------------------------------
+
+// logFrom waits through the shared wait for the first record the daemon wrote from the mark from
+// on that matches want, and answers it: liveAgentProof's awaitLogFrom, waited for with the one
+// call the base commit's testwait shares with this head's (testwait.Eventually), so the driver
+// still builds over the base for the negative control.
+func (r *busyRelaunchLive) logFrom(what string, from int, want func(loggedRecord) bool) *loggedRecord {
+	r.t.Helper()
+	var found *loggedRecord
+	testwait.Eventually(r.t, what, func() bool {
+		found = r.daemon.firstAfter(from, want)
+		return found != nil
+	})
+	return found
+}
 
 // logsFrom is every record the daemon wrote from the mark from on that matches want.
 func (r *busyRelaunchLive) logsFrom(from int, want func(loggedRecord) bool) []loggedRecord {
@@ -1302,12 +1341,35 @@ func (s *scriptedStandin) promptsCarrying(marker string) []seenRequest {
 	return carrying
 }
 
-// firstPromptAfter is the first role turn's prompt the stand-in received after at.
-func (s *scriptedStandin) firstPromptAfter(at time.Time) (seenRequest, bool) {
+// received is how many requests the stand-in has received, in the order it recorded them (seen).
+func (s *scriptedStandin) received() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return len(s.seen)
+}
+
+// turnRequests is how many of the requests the stand-in has received are a role turn's own: a
+// turn asks the stand-in for the model as it begins and again after each tool's result, and a
+// side question or a subagent's request is neither.
+func (s *scriptedStandin) turnRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns := 0
 	for _, seen := range s.seen {
-		if seen.at.After(at) && seen.prompt && !seen.side && !seen.subagent {
+		if !seen.side && !seen.subagent {
+			turns++
+		}
+	}
+	return turns
+}
+
+// firstPromptAfter is the first role turn's prompt among the requests the stand-in received after
+// its first asked.
+func (s *scriptedStandin) firstPromptAfter(asked int) (seenRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, seen := range s.seen[asked:] {
+		if seen.prompt && !seen.side && !seen.subagent {
 			return seen, true
 		}
 	}
@@ -1353,17 +1415,19 @@ func (h *heldRequest) take(asked context.Context, stopped <-chan struct{}) bool 
 	}
 }
 
-// await waits for the held request, failing the step with what it waited for, and answers when
-// it came.
-func (h *heldRequest) await(r *busyRelaunchLive, what string, within time.Duration) time.Time {
+// await waits for the held request through the shared wait, failing the step with what it waited
+// for, and answers when it came.
+func (h *heldRequest) await(r *busyRelaunchLive, what string) time.Time {
 	r.t.Helper()
-	select {
-	case <-h.arrived:
-		return h.at
-	case <-time.After(within):
-		r.t.Fatalf("timed out after %s waiting for %s", within, what)
-		return time.Time{}
-	}
+	testwait.Eventually(r.t, what, func() bool {
+		select {
+		case <-h.arrived:
+			return true
+		default:
+			return false
+		}
+	})
+	return h.at
 }
 
 // let lets the held request go, or the one the hold will take answer at once.

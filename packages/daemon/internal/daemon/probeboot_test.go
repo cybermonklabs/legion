@@ -12,32 +12,33 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // probeBootConfig is a Kubernetes daemon's configuration over the cluster at server, with the whole
 // workflow configured, whose Postgres cannot be reached, whose NATS listens nowhere and whose
-// Dispatch counts every request it gets: a probe-boot that opened its store, connected to NATS or
-// asked Dispatch anything would fail or show it.
+// Dispatch counts every request it gets under the daemon's bearer (dispatchBoard: another
+// process's request is answered 404 and counted as nothing): a probe-boot that opened its store,
+// connected to NATS or asked Dispatch anything would fail or show it.
 func probeBootConfig(t *testing.T, server string) (config.Config, *atomic.Int32) {
 	t.Helper()
-	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
 	cfg := kubernetesConfig(t, server)
+	// Nothing listens on 127.0.0.1:1, so a probe-boot that opened its store fails here rather
+	// than writing the run's own database.
+	cfg.PostgresDSN = "postgres://legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
 	var dispatched atomic.Int32
-	dispatch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	cfg.DispatchURL = dispatchBoard(t, func(w http.ResponseWriter, _ *http.Request) {
 		dispatched.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(dispatch.Close)
-	cfg.DispatchURL = dispatch.URL
+	})
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte("dispatch-test-token\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg.NatsURLs = []string{"nats://127.0.0.1:1"}
@@ -46,10 +47,16 @@ func probeBootConfig(t *testing.T, server string) (config.Config, *atomic.Int32)
 }
 
 // agentSandboxCluster is an API server with Agent Sandbox installed and no Sandbox in the
-// namespace, recording each request it is sent.
+// namespace, recording each request of the shape the daemon's cluster client sends it, a
+// Kubernetes API path, since that client sends no bearer here. Any other request is another
+// process's, answered 404 and recorded as nothing.
 func agentSandboxCluster(t *testing.T, requests *[]string, mu *sync.Mutex) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		*requests = append(*requests, r.Method+" "+r.URL.Path)
 		mu.Unlock()
@@ -114,6 +121,10 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxBeforeAnyProbe(t *testing.T)
 	var mu sync.Mutex
 	var requested []string
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		requested = append(requested, r.Method+" "+r.URL.Path)
 		mu.Unlock()
@@ -162,8 +173,7 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 	var checkedFirst bool
 	census := "GET /apis/agents.x-k8s.io/v1beta1/namespaces/" + cfg.Runtime.Kubernetes.Namespace + "/sandboxes"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	report, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(),
 		func(_ context.Context, _ *rest.Config, opts sandbox.Options) (imageProber, error) {
 			mu.Lock()

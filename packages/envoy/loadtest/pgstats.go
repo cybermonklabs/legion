@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // pgStatementsExtension is the extension the window's statements come from. The load-test
@@ -621,7 +622,7 @@ func collectPGStatements(ctx context.Context, db pgStatsDB, opt pgStatementsOpti
 		until = start.Add(opt.window)
 	}
 	samples := make([]pgLockSample, 0, 1024)
-	out.LockSampleFailures = poll(ctx, start, until, opt.interval, "pg-statements lock waits", opt.lg, func(context.Context) error {
+	out.LockSampleFailures = poll(ctx, clock.Real(), start, until, opt.interval, "pg-statements lock waits", opt.lg, func(context.Context) error {
 		// The read has a context of its own rather than the window's: a signal that reached the
 		// watcher while a query was in flight would cancel it, and pgx closes a connection whose
 		// query was cancelled -- the very connection the statements are read over once the

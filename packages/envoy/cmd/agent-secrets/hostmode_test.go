@@ -26,6 +26,8 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
@@ -281,13 +283,9 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	if err != nil || ro != "eyJ.fake.request" {
 		t.Fatalf("sign-request: %q %v", ro, err)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime {
-			t.Fatalf("request sent to the helper: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake never saw a request")
+	req := testwait.Receive(t, "the fake helper to see a request", reqs)
+	if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime {
+		t.Fatalf("request sent to the helper: %+v", req)
 	}
 
 	sock2, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
@@ -306,13 +304,12 @@ func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 	var stdout, stderr bytes.Buffer
-	start := time.Now()
+	// A register that waited out helperConnectPatience for the absent socket instead of
+	// refusing it would end in registerWithPatience's dial failure, which is exit 1 and a
+	// different line, not this usage error.
 	code := cmdRegister(nil, &stdout, &stderr)
 	if code != exitUsageError {
 		t.Fatalf("register with no helper socket: exit %d, want %d; stderr %q", code, exitUsageError, stderr.String())
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("register waited %s for a helper that is not there", elapsed)
 	}
 	sock := filepath.Join(runtimeDir, "agent-secrets", "helper.sock")
 	if msg := stderr.String(); !strings.Contains(msg, "AGENT_SECRETS_HELPER_SOCK is unset") || !strings.Contains(msg, sock) ||
@@ -521,9 +518,7 @@ func TestIdentity(t *testing.T) {
 				tc.setup(t, p)
 
 				var stdout, stderr bytes.Buffer
-				start := time.Now()
 				code := cmdIdentity(nil, &stdout, &stderr)
-				elapsed := time.Since(start)
 				if code != tc.exit {
 					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
 				}
@@ -539,12 +534,6 @@ func TestIdentity(t *testing.T) {
 				}
 				if want == "" && stderr.Len() != 0 {
 					t.Fatalf("stderr %q, want nothing", stderr.String())
-				}
-				if tc.slow && (elapsed < 1500*time.Millisecond || elapsed > 4*time.Second) {
-					t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
-				}
-				if !tc.slow && elapsed > 5*time.Second {
-					t.Fatalf("identity took %s; only a silent helper may hold it up", elapsed)
 				}
 			})
 		}
@@ -602,14 +591,12 @@ func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 type identityRowPaths struct{ home, keyDir, sock, state string }
 
 // identityCase is one row of TestIdentity: what it puts on disk, the exit code identity answers,
-// the notice it prints (nil for none; mode is "named" or "defaults"), and whether the row waits
-// out a helper that never answers.
+// and the notice it prints (nil for none; mode is "named" or "defaults").
 type identityCase struct {
 	name   string
 	setup  func(t *testing.T, p identityRowPaths)
 	exit   int
 	stderr func(mode string, p identityRowPaths) string
-	slow   bool
 }
 
 // identityPaths gives one row a home, a runtime directory and a state directory of its own, with
@@ -678,9 +665,48 @@ func identityCases() []identityCase {
 				t.Fatal(err)
 			}
 		}, exit: 1, stderr: unreachable},
-		{name: "helper never answers", setup: func(t *testing.T, p paths) { silentHelperAt(t, p.sock) }, exit: 1, stderr: unreachable, slow: true},
+		{name: "helper never answers", setup: func(t *testing.T, p paths) { silentHelperAt(t, p.sock) }, exit: 1, stderr: unreachable},
 		{name: "nothing", setup: func(t *testing.T, p paths) {}, exit: 1, stderr: namedOnly},
 	}
+}
+
+// TestIdentityGivesUpOnASilentHelperAtItsDeadline is the service level identityDeadline
+// promises: a helper that accepts a connection and never answers holds identity for about two
+// seconds and no longer, so a shell that runs it in front of a command is not hung by a wedged
+// helper, and a helper that answers holds it for no time at all. The deadline is a net.Conn
+// deadline inside helper.Call, which no clock of ours reaches, so the reading is of the
+// machine's own clock and the row runs only in benchtime's timing lane; that identity gives up
+// at all, exits 1 and says the helper is unreachable, is TestIdentity's "helper never answers"
+// case, which every run proves.
+func TestIdentityGivesUpOnASilentHelperAtItsDeadline(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	identityTook := func(t *testing.T, setup func(t *testing.T, sock string)) time.Duration {
+		t.Helper()
+		sock := filepath.Join(shortTempDir(t), "h.sock")
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+		t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(t.TempDir(), "keys"))
+		t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+		setup(t, sock)
+		var stdout, stderr bytes.Buffer
+		start := time.Now()
+		cmdIdentity(nil, &stdout, &stderr)
+		return time.Since(start)
+	}
+	t.Run("a helper that never answers", func(t *testing.T) {
+		if took := identityTook(t, silentHelperAt); took < 1500*time.Millisecond || took > 4*time.Second {
+			t.Fatalf("a helper that never answers is given up on after about %s, took %s", identityDeadline, took)
+		}
+	})
+	t.Run("a helper that answers", func(t *testing.T) {
+		took := identityTook(t, func(t *testing.T, sock string) {
+			fakeHelperAt(t, sock, helper.Response{OK: true, Proof: "eyJ.fake.proof", EnrollmentID: "enr-h"})
+		})
+		if took > 5*time.Second {
+			t.Fatalf("identity took %s; only a silent helper may hold it up", took)
+		}
+	})
 }
 
 // staleSocketAt leaves a socket file at sock that nothing listens on: the state a helper killed

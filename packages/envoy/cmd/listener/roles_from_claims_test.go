@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // publishedSender sends one message from source to target through the send route and returns the
@@ -128,7 +129,7 @@ func TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics(t *testing
 			t.Fatalf("store %s's claim naming %s: %v", role, session, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the claims to reach the registry's view", func() bool {
+	testwait.Eventually(t, "the claims to reach the registry's view", func() bool {
 		a, errA := registry.RolesHeldBy(holder)
 		b, errB := registry.RolesHeldBy(bare)
 		return errA == nil && errB == nil && slices.Equal(a, []string{"reviewer"}) && slices.Equal(b, []string{"planner"})
@@ -182,7 +183,7 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the role claim view to stop answering", func() bool {
+	testwait.Eventually(t, "the role claim view to stop answering", func() bool {
 		_, err := registry.RolesHeldBy(sender)
 		return err != nil
 	})
@@ -234,7 +235,7 @@ func refuseRoleClaimView(t *testing.T, registry *store.Registry) func() {
 	return func() {
 		t.Helper()
 		refilling.Start()
-		waitFor(t, 30*time.Second, "the role claim view to answer again", func() bool {
+		testwait.Eventually(t, "the role claim view to answer again", func() bool {
 			return registry.RoleViewErr() == nil
 		})
 	}
@@ -402,21 +403,18 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		return nil
 	}
 	refilling := 0
-	for deadline := time.Now().Add(30 * time.Second); ; {
+	testwait.Eventually(t, "the session routes to answer the view's read of the new bucket", func() bool {
 		entry := sessionEntryRoute(t, state, holder)
 		entryAnswered := requireRolesOrUnanswered(t, "GET /v1/registry/"+holder, entry, want, kept, entryRoles)
 		list := httptest.NewRecorder()
 		sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 		listAnswered := requireRolesOrUnanswered(t, "GET /v1/sessions", list, want, kept, listedRoles)
 		if entryAnswered && listAnswered {
-			break
+			return true
 		}
 		refilling++
-		if time.Now().After(deadline) {
-			t.Fatal("the session routes still answer the copy the view had, or 503, 30 s after the rewatch")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return false
+	})
 	t.Logf("the session routes answered the copy the view had, or the bus-unavailable 503, %d times while the read of the new bucket ran", refilling)
 	if got := decodeSessionInfo(t, sessionEntryRoute(t, state, target)).Roles; !slices.Equal(got, []string{"architect"}) {
 		t.Fatalf("after the refill GET /v1/registry/%s reports roles %v, want [architect]: the old bucket's revision fenced out the new bucket's claim", target, got)

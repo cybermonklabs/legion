@@ -12,10 +12,115 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// takeOverTries drives the fake clock a test server runs on through a comment's wait for a
+// listener take-over before its transaction (resolveThroughTakeover): each lookup the comment
+// makes is bounded by mentionLookupTimeout, and each one the take-over answered is followed by a
+// backoff. The test moves the clock through every backoff and never through a lookup's bound,
+// which would leave that lookup unanswered instead of answered by the stand-in - the outcome a
+// real clock gave a loaded machine, and one these rows' comments decide their routes on.
+//
+// The first backoff and a lookup's bound are one span (takeoverFirstBackoff and
+// mentionLookupTimeout are both 250 ms), so for a moment after a try is answered its bound is
+// still pending at the very deadline its backoff is about to be armed for. The stand-in tells the
+// two apart: as it takes a lookup it notes the clock's reading - the moment that try armed its
+// bound and its call's window (envoy.CallWindow) - and moves the clock on by takeOverTryStep,
+// within which nothing is due, so the backoff that try's answer leads to is armed later than the
+// try's own bound.
+//
+// Each try must reach the stand-in as one request, which an answered status gives and a dropped
+// connection does not: an HTTP client sends a GET again, on a new connection, when a reused one
+// is dropped.
+type takeOverTries struct {
+	clock *clocktest.Fake
+
+	mu sync.Mutex
+	// taken is the clock's reading as the stand-in took each registry lookup.
+	taken []time.Time
+	// moved is how many lookups the stand-in had taken when the clock last moved.
+	moved int
+}
+
+// takeOverTryStep is how far the stand-in moves the clock as it takes a lookup: less than any
+// deadline the try has armed, so the move fires nothing.
+const takeOverTryStep = time.Millisecond
+
+// takeOverServer is a test server whose listener is a take-over stand-in and whose clock is a
+// fake, which runs the take-over window every deployment runs, and the record of the lookups the
+// stand-in takes (takeOverTries), through which a comment's wait for the take-over is driven.
+func takeOverServer(t *testing.T) (*takeOverListener, *takeOverTries, http.Handler, *store.Store, Deps) {
+	t.Helper()
+	listener := startTakeOverListener(t)
+	clock := clocktest.New(time.Now())
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
+	tries := &takeOverTries{clock: clock}
+	listener.mu.Lock()
+	listener.observe = tries.took
+	listener.mu.Unlock()
+	return listener, tries, handler, database, deps
+}
+
+func (w *takeOverTries) took(route takeOverRoute) {
+	if route != takeOverRegistry {
+		return
+	}
+	w.mu.Lock()
+	w.taken = append(w.taken, w.clock.Now())
+	w.mu.Unlock()
+	w.clock.Advance(takeOverTryStep)
+}
+
+// answer runs request, a comment whose mention lookups wait a take-over out, on a goroutine of
+// its own and waits for its answer, moving the clock to each backoff once the try before it has
+// returned: the stand-in has taken a lookup since the last move, and neither that lookup's bound
+// nor its call's window is pending any longer. A backoff is never further off than
+// takeoverMaxBackoff.
+func (w *takeOverTries) answer(t *testing.T, request func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	w.mu.Lock()
+	w.moved = len(w.taken)
+	w.mu.Unlock()
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- request() }()
+	return testwait.Until(t, "the comment to answer once its mention's lookups had waited the take-over out",
+		func() (*httptest.ResponseRecorder, bool) {
+			select {
+			case response := <-answered:
+				return response, true
+			default:
+			}
+			w.mu.Lock()
+			taken, moved := len(w.taken), w.moved
+			var last time.Time
+			if taken > 0 {
+				last = w.taken[taken-1]
+			}
+			w.mu.Unlock()
+			if taken <= moved {
+				return nil, false
+			}
+			armed := w.clock.Armed()
+			inFlight := func(at time.Time) bool {
+				return at.Equal(last.Add(mentionLookupTimeout)) || at.Equal(last.Add(envoy.CallWindow))
+			}
+			if len(armed) == 0 || slices.ContainsFunc(armed, inFlight) ||
+				armed[0].After(w.clock.Now().Add(takeoverMaxBackoff)) {
+				return nil, false
+			}
+			w.clock.Set(armed[0])
+			w.mu.Lock()
+			w.moved = taken
+			w.mu.Unlock()
+			return nil, false
+		})
+}
 
 // A person's comment on an issue routed to session s1 that also mentions s1 reaches s1 once:
 // either the mention steers it there and the route fan-out stands aside (suppress_route), or the
@@ -23,10 +128,11 @@ import (
 // comment is written - its registry read answered 503 once - must not make it both: the
 // creating transaction decides suppress_route from the mention's pre-commit resolution, so a
 // mention that only resolves on the post-commit take-over retry steers s1 a comment the route
-// fan-out also delivers, under a different key the listener cannot recognise as a repeat.
+// fan-out also delivers, under a different key the listener cannot recognise as a repeat. The
+// server runs on a fake clock, moved through the backoff between the two lookups and never
+// through a lookup's bound (takeOverTries).
 func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) {
-	listener := startTakeOverListener(t)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Routed take-over", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
 		map[string]any{"route": "session:s1"}, "alice"); patched.Code != http.StatusOK {
@@ -35,13 +141,17 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 
 	// The listener is starting when the comment's mention is resolved, and answers from then on.
 	listener.play(takeOverAnswer{takeOverRegistry, answerJSON(http.StatusServiceUnavailable, `{"error":"service starting"}`)})
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
-		"body": "@s1, please look at this.", "mentions": []map[string]any{{"target": "session:s1"}},
+	created := decodeMentionedComment(t, tries.answer(t, func() *httptest.ResponseRecorder {
+		return postMentionedComment(t, handler, issue.Key, map[string]any{
+			"body": "@s1, please look at this.", "mentions": []map[string]any{{"target": "session:s1"}},
+		})
 	}))
 
 	// The mention's send runs on the recipient's lane after the response, which answers its
-	// attempts pending, so what s1 received is only settled once they are.
-	settled := settledCommentDeliveries(t, database, created.ID)
+	// attempts pending, so what s1 received is only settled once they are. A lane that waits a
+	// take-over out does so on the server's clock, which the wait moves through its backoffs; a
+	// lane's lookups carry no bound of the comment's.
+	settled := settledCommentDeliveriesOn(t, database, created.ID, tries.clock, &listener.calls)
 
 	var suppressRoute bool
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -87,11 +197,14 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 // Each mention of a session the listener holds no record of waits out the listener take-over
 // window before it settles "no live session", and the creating request sends its mentions before
 // it answers. Those waits must not stack per mention: a comment mentioning several ended
-// sessions answers within one take-over window, well inside the dispatch CLI's 60 s request
-// abort, which would otherwise fire after the comment committed and make its retry post the
-// comment a second time.
+// sessions answers within one take-over window - read on the clock the server runs on, which
+// this test moves through each wait - well inside the dispatch CLI's 60 s request abort, which
+// would otherwise fire after the comment committed and make its retry post the comment a second
+// time.
 func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t *testing.T) {
+	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/") {
 			writeSessionRecord(t, w, `[]`, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
 			return
@@ -99,7 +212,8 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer listener.Close()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: listenerTakeoverWindow})
+	clock := clocktest.New(time.Now())
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "Ended sessions", "before")
 
 	ended := []string{"ended-1", "ended-2"}
@@ -108,21 +222,30 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 		mentions = append(mentions, map[string]any{"target": "session:" + session})
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
-	started := time.Now()
+	started := clock.Now()
 	go func() {
 		responses <- postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body": "Did either of you finish this?", "mentions": mentions,
 		})
 	}()
-	// The dispatch CLI aborts the request at 60 s (packages/envoy-client/src/dispatch-http.ts).
-	const clientAbort = 60 * time.Second
-	var response *httptest.ResponseRecorder
-	select {
-	case response = <-responses:
-	case <-time.After(clientAbort):
-		t.Fatalf("the comment mentioning %d ended sessions had not answered after %v, when the dispatch CLI aborts it", len(ended), clientAbort)
-	}
-	took := time.Since(started)
+	// The comment looks each mention up before its transaction, bounded by mentionLookupTimeout on
+	// the server's clock - a deadline as near as a backoff, which stepListenerWaits fires whenever
+	// the stand-in is serving nothing, as it is while a lookup's request is still on its way to
+	// it. A lookup cut so goes unanswered, not answered with the "no live session" the stand-in
+	// gives, so its comment commits on another resolution than the one this row writes it with. A
+	// comment with no route, as this one is, commits once its lookups have answered, waiting out
+	// no take-over first (resolveCommentDeliveries), so the clock stays where it is until the
+	// comment's attempts are committed; a wait of the request's after that is one the move below
+	// takes it through.
+	testwait.Eventually(t, "the comment's attempts to be committed", func() bool {
+		var committed int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from comment_deliveries`).Scan(&committed); err != nil {
+			t.Fatalf("count the comment's attempts: %v", err)
+		}
+		return committed >= len(ended)
+	})
+	response := answerWhileCallsAreHeld(t, clock, &calls, responses)
+	took := clock.Now().Sub(started)
 	created := decodeMentionedComment(t, response)
 	if len(created.Deliveries) != len(ended) {
 		t.Fatalf("deliveries = %#v, want one per mention", created.Deliveries)
@@ -134,7 +257,7 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 			t.Fatalf("delivery = %#v, want it answered pending: the mention is sent after the response", attempt)
 		}
 	}
-	settled := settledCommentDeliveries(t, database, created.ID)
+	settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &calls)
 	if len(settled) != len(ended) {
 		t.Fatalf("settled deliveries = %#v, want one per mention", settled)
 	}
@@ -144,11 +267,11 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 			t.Fatalf("delivery = %#v, want failed with %q: the mentioned session is ended", attempt, want)
 		}
 	}
-	if limit := listenerTakeoverWindow + 2*time.Second; took > limit {
-		t.Fatalf("the comment mentioning %d ended sessions answered after %v, want within %v: each mention waited out "+
-			"its own %v take-over window one after another before the response, so the wait grows with every "+
-			"mention and the dispatch CLI's %v abort fires after the comment committed",
-			len(ended), took.Round(100*time.Millisecond), limit, listenerTakeoverWindow, clientAbort)
+	if took > listenerTakeoverWindow {
+		t.Fatalf("the comment mentioning %d ended sessions answered %v after its first try, want within one take-over "+
+			"window (%v): each mention waited out a window of its own, one after another, so the wait grows with "+
+			"every mention and the dispatch CLI's 60 s abort fires after the comment committed",
+			len(ended), took, listenerTakeoverWindow)
 	}
 }
 
@@ -160,9 +283,14 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 // sweep, or a person's Retry of the pending attempt - must settle it with that resolution: s1
 // answers by then, and a mention resolved afresh steers s1 the comment under the mention's own
 // key, beside the route's frame the listener cannot recognise it as a repeat of.
+//
+// The server runs the window every deployment runs, on a fake clock the test moves through each
+// backoff of a comment's resolution and never through a lookup's bound (takeOverTries): a bound
+// that ran out before the listener's answer leaves the mention unanswered rather than failed,
+// which suppresses the route and leaves the mention to a sender that resolves it afresh - what a
+// real clock let a loaded machine do.
 func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) {
-	listener := startTakeOverListener(t)
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	listener, tries, handler, database, deps := takeOverServer(t)
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Routed resume", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
@@ -171,24 +299,21 @@ func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) 
 	}
 
 	// Both comments are written during one take-over that outlasts the window, so each mention's
-	// resolution runs the window out before its comment commits.
-	listener.refuse(true)
-	responses := make([]*httptest.ResponseRecorder, 2)
-	var writes sync.WaitGroup
-	for index := range responses {
-		writes.Go(func() {
-			responses[index] = postMentionedComment(t, handler, issue.Key, map[string]any{
+	// resolution runs the window out before its comment commits. The listener answers 503 as it
+	// does while it starts, so each try is one lookup the stand-in takes (takeOverTries); the
+	// comments are written one after the other, so the backoffs the clock is moved to are one
+	// comment's at a time.
+	listener.answerEvery(answerJSON(http.StatusServiceUnavailable, `{"error":"service starting"}`))
+	comments := make([]mentionedCommentRead, 2)
+	for index := range comments {
+		comments[index] = decodeMentionedComment(t, tries.answer(t, func() *httptest.ResponseRecorder {
+			return postMentionedComment(t, handler, issue.Key, map[string]any{
 				"body":     fmt.Sprintf("@s1, look at this (%d).", index),
 				"mentions": []map[string]any{{"target": "session:s1"}},
 			})
-		})
+		}))
 	}
-	writes.Wait()
-	listener.refuse(false)
-	comments := make([]mentionedCommentRead, len(responses))
-	for index, response := range responses {
-		comments[index] = decodeMentionedComment(t, response)
-	}
+	listener.answerEvery(nil)
 
 	// heard is how many times s1 has received comment: the mention sends the listener published
 	// under the comment's key since the last play, and the route fan-out of its comment.created.
@@ -262,9 +387,11 @@ func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) 
 // the body and the mention, while the listener is starting - its registry read answers 503 once,
 // and it answers from then on - and returns how many times s1 received the comment: the mention
 // steers the listener published to s1, and the comment.created event's fan-outs to s1's own topic.
-// attempts describes the mention's delivery attempts, for a failure.
+// attempts describes the mention's delivery attempts, for a failure. The comment waits the
+// take-over out on the server's fake clock, which tries moves through the backoff between its two
+// lookups.
 func receivedDuringTakeOver(
-	t *testing.T, listener *takeOverListener, handler http.Handler, database *store.Store,
+	t *testing.T, listener *takeOverListener, tries *takeOverTries, handler http.Handler, database *store.Store,
 	issueKey string, input map[string]any,
 ) (mentionSends, fanOuts int, attempts string) {
 	t.Helper()
@@ -273,11 +400,15 @@ func receivedDuringTakeOver(
 		body[field] = value
 	}
 	listener.play(takeOverAnswer{takeOverRegistry, answerJSON(http.StatusServiceUnavailable, `{"error":"service starting"}`)})
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issueKey, body))
+	created := decodeMentionedComment(t, tries.answer(t, func() *httptest.ResponseRecorder {
+		return postMentionedComment(t, handler, issueKey, body)
+	}))
 
 	// The mention's send runs on s1's lane after the response, and the outbox holds the
-	// comment.created event while its attempt is live: both are read once it has settled.
-	settled := settledCommentDeliveries(t, database, created.ID)
+	// comment.created event while its attempt is live: both are read once it has settled. A lane
+	// that waits a take-over out does so on the server's clock, which the wait moves through its
+	// backoffs; a lane's lookups carry no bound of the comment's.
+	settled := settledCommentDeliveriesOn(t, database, created.ID, tries.clock, &listener.calls)
 
 	for _, send := range listener.published() {
 		if send.target == "s1" {
@@ -310,8 +441,7 @@ func receivedDuringTakeOver(
 // comment.created payload, so the claimant route cannot leave s1's copy to it: the comment must
 // resolve its mentions through the take-over before it commits, as a routed issue's comment does.
 func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
-	listener := startTakeOverListener(t)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Claimed take-over", "before")
 	if _, err := database.Pool.Exec(context.Background(), `
 		update issues set claimed_by = '{"kind":"session","id":"s1"}'::jsonb, claimed_at = now() where key = $1
@@ -319,7 +449,7 @@ func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
 		t.Fatalf("claim the issue for s1: %v", err)
 	}
 
-	mentionSends, fanOuts, attempts := receivedDuringTakeOver(t, listener, handler, database, issue.Key, nil)
+	mentionSends, fanOuts, attempts := receivedDuringTakeOver(t, listener, tries, handler, database, issue.Key, nil)
 	if heard := mentionSends + fanOuts; heard != 1 {
 		t.Fatalf("session s1 received the comment %d times, want once: %d mention steer(s) and %d claimant fan-out(s) "+
 			"while the mention's delivery is [%s] - the mention committed unresolved and retried through the listener "+
@@ -334,8 +464,7 @@ func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
 // an agent even with no route, no reply_to, no anchor and no document: it must resolve its mentions
 // through the take-over before it commits too.
 func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
-	listener := startTakeOverListener(t)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask thread take-over", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Which approach?", "actor": map[string]any{"kind": "session", "id": "s1"},
@@ -345,7 +474,7 @@ func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
 	}
 	ask := decodeBody[model.Ask](t, askResponse)
 
-	mentionSends, fanOuts, attempts := receivedDuringTakeOver(t, listener, handler, database, issue.Key,
+	mentionSends, fanOuts, attempts := receivedDuringTakeOver(t, listener, tries, handler, database, issue.Key,
 		map[string]any{"ask_id": ask.ID})
 	if heard := mentionSends + fanOuts; heard != 1 {
 		t.Fatalf("session s1 received the reply %d times, want once: %d mention steer(s) and %d follower fan-out(s) "+
@@ -361,8 +490,7 @@ func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
 // comment on the issue's conversation is on no document itself, so it must resolve its mentions
 // through the take-over before it commits once the issue's primary document credits a session.
 func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *testing.T) {
-	listener := startTakeOverListener(t)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Spec author take-over", "before")
 	if _, err := database.Pool.Exec(context.Background(), `
 		update artifacts set created_by = '{"kind":"session","id":"s1"}'::jsonb where id = $1
@@ -370,7 +498,7 @@ func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *t
 		t.Fatalf("credit s1 with the issue's primary document: %v", err)
 	}
 
-	mentionSends, fanOuts, attempts := receivedDuringTakeOver(t, listener, handler, database, issue.Key, nil)
+	mentionSends, fanOuts, attempts := receivedDuringTakeOver(t, listener, tries, handler, database, issue.Key, nil)
 	if heard := mentionSends + fanOuts; heard != 1 {
 		t.Fatalf("session s1 received the comment %d times, want once: %d mention steer(s) and %d primary document "+
 			"author fan-out(s) while the mention's delivery is [%s] - the mention committed unresolved and retried "+
@@ -388,10 +516,11 @@ func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *t
 // mention-failed-follower) waits that long for the row, and the outbox publishes the session's
 // own copy once it is failed.
 func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow(t *testing.T) {
-	const window = 2 * time.Second
+	var calls listenerCalls
 	var mu sync.Mutex
 	var sends []string
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			// The registry still holds s1: only its sends are refused.
@@ -411,10 +540,11 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 		}
 	}))
 	defer listener.Close()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: window})
+	clock := clocktest.New(time.Now())
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "Refused sends", "before")
 
-	started := time.Now()
+	started := clock.Now()
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "@s1, the listener will refuse every send of this.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
@@ -423,7 +553,7 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 			t.Fatalf("the comment answered %#v, want its attempt pending: the mention is sent after the response", attempt)
 		}
 	}
-	settled := settledCommentDeliveries(t, database, created.ID)
+	settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &calls)
 	if len(settled) != 1 || settled[0].State != "failed" ||
 		settled[0].Error == nil || *settled[0].Error != "no live session s1" {
 		t.Fatalf("the refused mention settled %#v, want attempt 1 failed with the listener's own answer", settled)
@@ -438,10 +568,11 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 			"the listener answers \"no live session\" is tried again inside the take-over window", tries, key)
 	}
 	// The sender stops once the next try would start past the window (takeoverRetry.again), so
-	// the settle lands inside it; what it may not do is settle before its first backoff.
-	if waited := time.Since(started); waited < takeoverFirstBackoff {
-		t.Fatalf("the attempt settled %v after the comment, want it to have waited at least the first backoff of "+
-			"%v: its sender settled on the first refusal instead of trying again",
-			waited.Round(time.Millisecond), takeoverFirstBackoff)
+	// the settle lands inside it; what it may not do is settle before its first backoff. Both
+	// are read on the clock its waits run on, the one this test moved through them.
+	if waited := clock.Now().Sub(started); waited < takeoverFirstBackoff || waited > listenerTakeoverWindow {
+		t.Fatalf("the attempt settled %v after the comment, want between the first backoff (%v) and the take-over "+
+			"window (%v): its sender settled on the first refusal instead of trying again, or tried on past the window",
+			waited, takeoverFirstBackoff, listenerTakeoverWindow)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -200,7 +201,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
-	clock := &heldClock{at: podUpdateStart}
+	clock := heldClockAt(podUpdateStart)
 	rt := fake.NewRuntime()
 	rt.Now = clock.Now
 	conns := fake.NewConns()
@@ -220,7 +221,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
 		log:     log,
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true},
 		runtime: rt, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
@@ -731,12 +732,7 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 	}
 
 	rig.signal(claim.RoleTester, "")
-	rig.tick()
-
-	calls := rig.replacements()
-	if len(calls) != 1 {
-		t.Fatalf("ReplacePod called %d times once every worker answered, want once", len(calls))
-	}
+	calls := rig.awaitReplacement(1, "once every worker answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
 		t.Fatalf("ReplacePod called with %+v, want a process of pod %s", calls[0].Pod, podUpdatePod)
 	}
@@ -835,12 +831,7 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 	}
 
 	rig.signal(claim.RoleArchitect, "e4f5a6b")
-	rig.tick()
-
-	calls := rig.replacements()
-	if len(calls) != 1 {
-		t.Fatalf("ReplacePod called %d times once the degraded architect answered, want once", len(calls))
-	}
+	calls := rig.awaitReplacement(1, "once the degraded architect answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
 		t.Fatalf("ReplacePod called with %+v, want a process of the kept pod %s", calls[0].Pod, podUpdatePod)
 	}
@@ -2417,14 +2408,13 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 		})
 	}()
 
-	var live []supervise.Claim
-	select {
-	case live = <-read:
-	case <-time.After(10 * time.Second):
-		close(released)
-		t.Fatal("the live read did not answer while a claim's machine was inside a Resume; it waited on the decision")
-	}
-	close(released)
+	// The resume stays held until the read has answered; a read that waited on the decision would
+	// never answer. A test that fails here leaves it held, which the release in the cleanup frees.
+	var freed sync.Once
+	free := func() { freed.Do(func() { close(released) }) }
+	t.Cleanup(free)
+	live := testwait.Receive(t, "the live read to answer while a claim's machine is inside a Resume", read)
+	free()
 
 	var answered []claim.Role
 	for _, c := range live {

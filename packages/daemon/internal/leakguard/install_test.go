@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -126,7 +127,7 @@ func leftovers(t *testing.T, dir string) []string {
 func install(t *testing.T, dir, tag string, body []byte) ([]string, error) {
 	t.Helper()
 	var logged []string
-	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper, Log: func(format string, args ...any) {
+	err := InstallServed(testwait.Context(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper, Log: func(format string, args ...any) {
 		logged = append(logged, format)
 	}})
 	return logged, err
@@ -511,7 +512,7 @@ func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "leak-check")
 		var started []*exec.Cmd
 		var exitAtDone *os.ProcessState
-		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+		err := InstallServed(testwait.Context(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
 			Start: func(cmd *exec.Cmd) (func(), error) {
 				started = append(started, cmd)
 				return func() { exitAtDone = cmd.ProcessState }, cmd.Start()
@@ -532,7 +533,7 @@ func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
 	t.Run("a start the starter refuses", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "leak-check")
 		refused := errors.New("the guard refused the start")
-		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+		err := InstallServed(testwait.Context(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
 			Start: func(*exec.Cmd) (func(), error) { return nil, refused }})
 		if want := "the served check could not be run: " + refused.Error(); err == nil || err.Error() != want || !errors.Is(err, refused) {
 			t.Fatalf("install = %v, want %q", err, want)
@@ -547,7 +548,7 @@ func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
 	t.Run("no starter", func(t *testing.T) {
 		parent := t.TempDir()
 		dir := filepath.Join(parent, "leak-check")
-		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp))})
+		err := InstallServed(testwait.Context(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp))})
 		if want := "the pod's launcher named no starter for the check's run"; err == nil || err.Error() != want {
 			t.Fatalf("install = %v, want %q", err, want)
 		}

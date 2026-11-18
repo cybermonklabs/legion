@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // One listener, both address families: a hello over either is acked, the connection is
@@ -236,7 +238,7 @@ func TestAHelloAtTheByteBoundIsRead(t *testing.T) {
 func TestAHelloNotCompletedInTimeIsRejected(t *testing.T) {
 	for name, payload := range map[string]string{"silence": "", "an unfinished line": `{"type":"hel`} {
 		t.Run(name, func(t *testing.T) {
-			h := startListener(t, harnessOptions{rpcTimeout: 50 * time.Millisecond})
+			h := startListener(t, harnessOptions{helloDeadline: 50 * time.Millisecond})
 			p := dial(t, h.listener.Addr())
 			if payload != "" {
 				p.writeRaw(payload)
@@ -343,11 +345,10 @@ func TestAwaitReturnsWhenTheRegistrationLands(t *testing.T) {
 		got = conn
 		awaited <- err
 	}()
-	select {
-	case err := <-awaited:
-		t.Fatalf("Await returned before any hello: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
+	testwait.Quiet(t, "Await's return before any hello", awaited, 20*time.Millisecond,
+		"an Await that did not wait would return on its own goroutine, which records nothing the test reads; "+
+			"the listener's accept loop is real socket I/O no synctest bubble holds; and no later action of the "+
+			"test is ordered after that return")
 	h.connect(testToken)
 	if err := awaitResult(t, awaited); err != nil {
 		t.Fatalf("Await: %v", err)
@@ -364,11 +365,21 @@ func TestAwaitReturnsWhenTheRegistrationLands(t *testing.T) {
 
 func TestAwaitHonoursItsContext(t *testing.T) {
 	h := startListener(t, harnessOptions{})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	caller := clocktest.New(testMoment)
+	ctx, cancel := caller.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	conn, err := h.listener.Await(ctx, testClaim)
-	if !errors.Is(err, context.DeadlineExceeded) || conn != nil {
-		t.Fatalf("Await = %v, %v; want nil and context.DeadlineExceeded", conn, err)
+	type awaited struct {
+		conn any
+		err  error
+	}
+	result := make(chan awaited, 1)
+	go func() {
+		conn, err := h.listener.Await(ctx, testClaim)
+		result <- awaited{conn, err}
+	}()
+	caller.Advance(30 * time.Millisecond)
+	if got := testwait.Receive(t, "Await's return once its context's deadline passed", result); !errors.Is(got.err, context.DeadlineExceeded) || got.conn != nil {
+		t.Fatalf("Await = %v, %v; want nil and context.DeadlineExceeded", got.conn, got.err)
 	}
 }
 
@@ -514,13 +525,9 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	p.send(hello)
 	p.expect(shimwire.TypeLauncherHelloAck)
 	p.send(shimwire.LauncherState{})
-	select {
-	case frame := <-served.frames:
-		if _, ok := frame.(shimwire.LauncherState); !ok {
-			t.Fatalf("the launcher handler read %#v, want its state", frame)
-		}
-	case <-time.After(wait):
-		t.Fatal("the accepted launcher's frames never reached its handler")
+	frame := testwait.Receive(t, "the accepted launcher's frame at its handler", served.frames)
+	if _, ok := frame.(shimwire.LauncherState); !ok {
+		t.Fatalf("the launcher handler read %#v, want its state", frame)
 	}
 	if got != hello {
 		t.Fatalf("the acceptor saw %+v, want %+v", got, hello)
@@ -591,13 +598,15 @@ func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())
 	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
-	// While no acceptor exists the hello is neither answered nor refused: it is parked.
+	// While no acceptor exists the hello is neither answered nor refused: it is parked, which its
+	// wait for an acceptor, armed on the listener's clock, shows.
+	h.clock.AwaitArmed(t, "the parked launcher hello's wait for an acceptor", 1)
 	select {
 	case frame := <-p.frames:
 		t.Fatalf("a hello sent before the acceptor was answered with %s", frame.FrameType())
 	case <-p.closed:
 		t.Fatal("a hello sent before the acceptor was refused instead of waiting for it")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
@@ -608,13 +617,9 @@ func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
 	p.expect(shimwire.TypeLauncherHelloAck)
 	// The same connection, and now the handler's: what the launcher sends next reaches it.
 	p.send(shimwire.LauncherState{})
-	select {
-	case frame := <-served.frames:
-		if _, ok := frame.(shimwire.LauncherState); !ok {
-			t.Fatalf("the launcher handler read %#v, want the state the waiting launcher sent", frame)
-		}
-	case <-time.After(wait):
-		t.Fatal("the served launcher's frames never reached its handler")
+	frame := testwait.Receive(t, "the served launcher's frame at its handler", served.frames)
+	if _, ok := frame.(shimwire.LauncherState); !ok {
+		t.Fatalf("the launcher handler read %#v, want the state the waiting launcher sent", frame)
 	}
 	lines := h.logs.Lines()
 	if len(lines) != 1 || !strings.Contains(lines[0], "the launcher acceptor is installed") || !strings.Contains(lines[0], "hellos=1") {
@@ -629,12 +634,17 @@ func TestALauncherHelloIsRefusedOnceTheWaitRunsOut(t *testing.T) {
 	const launcherWait = 50 * time.Millisecond
 	h := startListener(t, harnessOptions{launcherWait: launcherWait})
 	p := dial(t, h.listener.Addr())
-	sent := time.Now()
 	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
-	p.awaitClosed()
-	if waited := time.Since(sent); waited < launcherWait {
-		t.Fatalf("the hello was refused after %s, want the whole %s wait first", waited, launcherWait)
+	if armed := h.clock.AwaitArmed(t, "the launcher hello's wait for an acceptor", 1); !armed[0].Equal(testMoment.Add(launcherWait)) {
+		t.Fatalf("the hello waits until %v, want the whole %s wait from %v", armed, launcherWait, testMoment)
 	}
+	select {
+	case <-p.closed:
+		t.Fatalf("the hello was refused before its %s wait had run out", launcherWait)
+	default:
+	}
+	h.clock.Advance(launcherWait)
+	p.awaitClosed()
 	want := []string{"worker-stream: rejected hello (launcher acceptor unavailable)"}
 	if got := h.logs.Lines(); !slices.Equal(got, want) {
 		t.Fatalf("logs = %q, want %q", got, want)

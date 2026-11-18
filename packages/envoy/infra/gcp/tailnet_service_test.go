@@ -11,11 +11,12 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests sit inside the package because the pieces they run are unexported; they reach the
@@ -222,8 +223,7 @@ func (r *tailnetRig) run(t *testing.T, seconds int) ([]tailnetEvent, string) {
 	require.NoError(t, err)
 	now, _ := strconv.Atoi(strings.TrimSpace(string(clock)))
 	r.set(t, "limit", strconv.Itoa(now+seconds))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	cmd := tailnetTestShell(ctx, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	out, _ := cmd.CombinedOutput()
@@ -310,21 +310,34 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 			}
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	cmd := tailnetTestShell(ctx, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	require.NoError(t, cmd.Start())
-	require.Eventually(t, func() bool { return tailnetIndexOf(r.events(t), 0, "sleep ") >= 0 }, 10*time.Second, 50*time.Millisecond,
-		"the advertiser never waited (with no logged-in node it retries every %d s)", tailnetAdvertiserPeriodSeconds)
-	sent := time.Now()
+	testwait.Eventually(t, fmt.Sprintf("the advertiser's first wait (with no logged-in node it retries every %d s)", tailnetAdvertiserPeriodSeconds), func() bool {
+		return tailnetIndexOf(r.events(t), 0, "sleep ") >= 0
+	})
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	err = cmd.Wait()
-	took := time.Since(sent)
 	require.NoError(t, err, "the advertiser was killed by SIGTERM rather than exiting on it:\n%s", out.String())
-	require.Less(t, took, 5*time.Second, "the advertiser exited %s after SIGTERM, held by its sleep:\n%s", took, out.String())
+	// The sleep the advertiser is waiting on runs 30 s of real time, and it is still running: the
+	// advertiser acted on the signal mid-wait rather than when its sleep returned, which is what a
+	// trap held behind a foreground sleep would have done.
+	require.True(t, tailnetSleepRuns(t, r),
+		"the advertiser exited only once its sleep had returned, held by it:\n%s", out.String())
+}
+
+// tailnetSleepRuns reports whether the sleep the advertiser last waited on is still running, by
+// the pid the shimmed sleep recorded.
+func tailnetSleepRuns(t *testing.T, r *tailnetRig) bool {
+	t.Helper()
+	recorded, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid"))
+	require.NoError(t, err, "the shimmed sleep recorded no pid, so the advertiser never waited")
+	pid, err := strconv.Atoi(strings.TrimSpace(string(recorded)))
+	require.NoError(t, err)
+	return syscall.Kill(pid, 0) == nil
 }
 
 // The ready file appears only once the node's service-host capability lists the Service: every

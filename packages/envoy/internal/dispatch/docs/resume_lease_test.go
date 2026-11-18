@@ -57,7 +57,7 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	skipped := func() int {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", settlementResumptionLease)
 	}
-	waitFor(t, roomWait(t), "both runners' first tick to run or skip", func() bool { return ran()+skipped() >= 2 })
+	waitFor(t, "both runners' first tick to run or skip", func() bool { return ran()+skipped() >= 2 })
 	stop()
 	<-done
 	<-done

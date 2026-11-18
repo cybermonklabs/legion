@@ -44,8 +44,8 @@ func readEventID(kind, project, repo string, number int, observed ...string) str
 	return fmt.Sprintf("%s:%s:%s#%d:%s", kind, project, repo, number, strings.Join(observed, ":"))
 }
 
-// clock is GitHub's time t as an event id spells it.
-func clock(t time.Time) string {
+// eventTime is GitHub's time t as an event id spells it.
+func eventTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 

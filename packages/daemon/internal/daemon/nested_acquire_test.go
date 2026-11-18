@@ -7,18 +7,17 @@ package daemon
 // connections sat `idle in transaction`, and a pool of one is that deployment in miniature: a
 // path that acquires twice waits for a connection its own transaction holds, for ever.
 //
-// Each test bounds the operation it drives with a deadline of its own, so a daemon that goes
-// back to acquiring twice fails the test where it is measured instead of hanging the package's
-// run until the binary's timeout kills it.
+// The state request is bounded by the rig's client and by a context that ends at the test
+// binary's deadline less the shared wait's margin (testwait.Context), and the report by its own
+// strandedReportTimeout, so a daemon that goes back to acquiring twice fails the test where it is
+// measured instead of hanging the package's run until the binary's timeout kills it.
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -41,15 +40,14 @@ const strandedReadFailure = "read the issue record to report the claims nothing 
 // The state route answers over real HTTP while the daemon's pool holds one connection. The route
 // reads its whole state in one repeatable-read transaction, the released-claim rule's wakes among
 // them, so a read of those wakes that went to the pool would wait on the connection the route's
-// own transaction holds and the request would never be answered. The deadline on the request is
-// what makes that a failure here rather than a hung package.
+// own transaction holds and the request would never be answered. The request's bounds, the rig's
+// client and a context that ends at the test binary's deadline less the shared wait's margin, are
+// what make that a failure here rather than a hung package.
 func TestTheStateRouteAnswersWhenThePoolHasOneConnection(t *testing.T) {
 	cfg := oneConnectionDaemonOfAReleasedPod(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 10*time.Second, time.Second))
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, d.base+"/legion/v1/state", nil)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, d.base+"/legion/v1/state", nil)
 	if err != nil {
 		t.Fatalf("build the state request: %v", err)
 	}
@@ -71,23 +69,18 @@ func TestTheStateRouteAnswersWhenThePoolHasOneConnection(t *testing.T) {
 // while the daemon's pool holds one connection. The report runs its whole judgement in one
 // transaction, so a read of the released pods' wakes that went to the pool would wait on that
 // transaction's own connection until strandedReportTimeout cancelled it and the boot would log a
-// failed read instead of a report. The hook the daemon offers a test (strandedReported) is what
-// says the report has finished, and the deadline on waiting for it is the test's own.
+// failed read instead of a report. The daemon's report to the test's observer that the stranded
+// report has finished (observedStranded) comes either way, so the log read after it is what
+// tells the two apart.
 func TestTheBootReportAnswersWhenThePoolHasOneConnection(t *testing.T) {
 	cfg := oneConnectionDaemonOfAReleasedPod(t)
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
-	reported := strandedReportDone(&o)
+	obs := observing(&o)
 
 	startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, strandedReportTimeout+10*time.Second, time.Second))
-	defer cancel()
-	select {
-	case <-reported:
-	case <-ctx.Done():
-		t.Fatalf("the boot's stranded report did not finish on a pool of one connection: %v", ctx.Err())
-	}
+	obs.stranded(t)
 	for _, failure := range []string{unfinishedResumesFailure, strandedReadFailure} {
 		if strings.Contains(logs.String(), failure) {
 			t.Fatalf("the boot logged %q: %s", failure, logs.String())

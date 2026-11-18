@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // setup-ran: the root's first setup record witnesses the same checks `awaitRunning` applies to
@@ -160,20 +161,19 @@ func (r *liveRig) checkSetupNegative() error {
 		return fmt.Errorf("Spawn(%s) on the failing-setup runtime: %w", c.token, err)
 	}
 	c.loc, c.last = &loc, &loc
-	reg, ok := r.reg.await(c.token, c.gen, since, liveBootTimeout)
-	if !ok {
-		pod, podErr := r.getPod(name)
-		if podErr != nil {
-			return fmt.Errorf("the failing-setup shim did not register at generation %d within %s, and the pod could not be read: %w", c.gen, liveBootTimeout, podErr)
-		}
-		return r.networkPathFailure(pod)
-	}
+	var reg registration
+	testwait.Until(r.t, fmt.Sprintf("the failing-setup shim to register at generation %d", c.gen),
+		func() (networkPath, bool) {
+			var said bool
+			reg, said = r.reg.seen(c.token, c.gen, since)
+			return networkPath{rig: r, pod: name}, said
+		})
 	if reg.hash != tokenHash(c.bootToken) {
 		return fmt.Errorf("the failing-setup shim registered token hash %s, want %s", short(reg.hash), short(tokenHash(c.bootToken)))
 	}
 
 	var last runtime.Observation
-	if err := r.poll(liveBootTimeout, "failing setup generation "+loc.Incarnation+" to end", func() (bool, error) {
+	if err := r.poll("failing setup generation "+loc.Incarnation+" to end", func() (bool, error) {
 		obs, err := rt.Probe(ctx, loc)
 		if err != nil {
 			return false, err

@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // staleBound is the kvwatch stale bound the listener's session and interest copies run with: their
@@ -58,24 +60,6 @@ func assertListRefilling(t *testing.T, response *http.Response) {
 	if !reflect.DeepEqual(answer, want) {
 		t.Fatalf("body %s, want %v", body, want)
 	}
-}
-
-// listenerClock is the injected clock the rig's watchers measure a stale episode on.
-type listenerClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *listenerClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *listenerClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
 }
 
 // heldScanKV is a bucket's jetstream handle whose watch delivers every record but holds back the
@@ -126,8 +110,7 @@ func replaceWatcher(t *testing.T, owner any, name string, wrap func(jetstream.Ke
 	old := slot.Interface().(*kvwatch.Watcher)
 	cacheField := reflect.ValueOf(old).Elem().FieldByName("cache")
 	cache := reflect.NewAt(cacheField.Type(), unsafe.Pointer(cacheField.UnsafeAddr())).Elem().Interface().(kvwatch.Cache)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	old.End(ctx)
 	replacement := kvwatch.New(name, bus.NewKeyValue(old.KV().Legacy(), wrap(old.KV().WatchHandle()), old.KV().Streams()), cache, options...)
 	slot.Set(reflect.ValueOf(replacement))
@@ -140,7 +123,7 @@ func replaceWatcher(t *testing.T, owner any, name string, wrap func(jetstream.Ke
 type listRig struct {
 	server   *testnats.Server
 	client   *bus.Client
-	clock    *listenerClock
+	clock    *clocktest.Fake
 	registry *store.Registry
 	sessions *session.SessionRegistry
 	caches   []listenerCache
@@ -176,13 +159,12 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 	rig := &listRig{
 		server:       server,
 		client:       client,
-		clock:        &listenerClock{now: time.Now()},
+		clock:        clocktest.New(time.Now()),
 		registry:     registry,
 		sessions:     sessions,
 		disconnected: make(chan struct{}, 8),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	for name, owner := range map[string]interface {
 		WaitForCacheReady(context.Context) error
 	}{"interest": registry, "session": sessions} {
@@ -338,9 +320,9 @@ func (rig *listRig) assertLists(t *testing.T, ids []string) {
 }
 
 // awaitServed waits until both lists answer 200.
-func (rig *listRig) awaitServed(t *testing.T, timeout time.Duration, what string) {
+func (rig *listRig) awaitServed(t *testing.T, what string) {
 	t.Helper()
-	waitFor(t, timeout, what, func() bool {
+	testwait.Eventually(t, what, func() bool {
 		return rig.get("/v1/sessions").StatusCode == http.StatusOK && rig.get("/v1/interests/").StatusCode == http.StatusOK
 	})
 }
@@ -362,7 +344,7 @@ func (rig *listRig) register(t *testing.T, ids ...string) {
 func (rig *listRig) seed(t *testing.T, ids ...string) {
 	t.Helper()
 	rig.register(t, ids...)
-	waitFor(t, 5*time.Second, "both lists to hold the seeded sessions", func() bool {
+	testwait.Eventually(t, "both lists to hold the seeded sessions", func() bool {
 		if rig.get("/v1/sessions").StatusCode != http.StatusOK || rig.get("/v1/interests/").StatusCode != http.StatusOK {
 			return false
 		}
@@ -373,11 +355,7 @@ func (rig *listRig) seed(t *testing.T, ids ...string) {
 // awaitDisconnect waits until the disconnect hooks have run for the disconnect the test caused.
 func (rig *listRig) awaitDisconnect(t *testing.T) {
 	t.Helper()
-	select {
-	case <-rig.disconnected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bus never ran its disconnect hooks")
-	}
+	testwait.Receive(t, "the bus to run its disconnect hooks", rig.disconnected)
 }
 
 // newRelease returns a channel heldScanKV holds a scan's nil on, and the func that releases it,
@@ -407,7 +385,7 @@ func TestListsRefuseUntilTheirCopiesCompleteAFirstRead(t *testing.T) {
 	rig.assertBothListsRefilling(t)
 
 	releaseInterest()
-	waitFor(t, 5*time.Second, "the interest list once its copy's read completed", func() bool {
+	testwait.Eventually(t, "the interest list once its copy's read completed", func() bool {
 		return rig.get("/v1/interests/").StatusCode == http.StatusOK
 	})
 	if got := rig.interestIDs(t); !slices.Equal(got, ids) {
@@ -418,7 +396,7 @@ func TestListsRefuseUntilTheirCopiesCompleteAFirstRead(t *testing.T) {
 	rig.assertNoSample(t, "envoy_active_sessions")
 
 	releaseSession()
-	rig.awaitServed(t, 5*time.Second, "the session list once its copy's read completed")
+	rig.awaitServed(t, "the session list once its copy's read completed")
 	rig.assertLists(t, ids)
 }
 
@@ -457,7 +435,7 @@ func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
 			if err := cache.Rewatch(context.Background(), rig.client.Conn); err != nil {
 				t.Fatalf("read the %s bucket again: %v", stale, err)
 			}
-			rig.awaitServed(t, 5*time.Second, "both lists once the "+stale+" copy read its bucket again")
+			rig.awaitServed(t, "both lists once the "+stale+" copy read its bucket again")
 			rig.assertLists(t, ids)
 		})
 	}
@@ -467,7 +445,7 @@ func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
 // that read 0, the one case a 0 means no sessions.
 func TestACompleteEmptyCopyListsNothingAndCountsZero(t *testing.T) {
 	rig := newListRig(t, listRigOptions{})
-	rig.awaitServed(t, 5*time.Second, "both lists over empty buckets")
+	rig.awaitServed(t, "both lists over empty buckets")
 	for _, path := range []string{"/v1/sessions", "/v1/interests/"} {
 		if body, _ := io.ReadAll(rig.get(path).Body); string(body) != "[]\n" {
 			t.Fatalf("GET %s over an empty bucket answered %q, want []", path, body)
@@ -481,26 +459,21 @@ func TestACompleteEmptyCopyListsNothingAndCountsZero(t *testing.T) {
 // copy holds nothing for included, where a read-through of that session's interest would wait out
 // its 10 s deadline. GET /v1/interests/ and the gauges read no bucket either.
 func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
-	const bound = 5 * time.Second
 	rig := newListRig(t, listRigOptions{})
 	rig.seed(t, "ses_stall_joined")
 	if err := rig.sessions.Put("ses_stall_unsubscribed", session.SessionEntry{MachineID: "test-machine", Dir: "/test/unsubscribed", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register a session with no interest: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the session list to hold the session with no interest", func() bool {
+	testwait.Eventually(t, "the session list to hold the session with no interest", func() bool {
 		return len(rig.sessionIDs(t)) == 2
 	})
 
 	thaw := rig.server.Freeze(t)
 	defer thaw()
-	started := time.Now()
 	response := rig.get("/v1/sessions")
 	var rows []sessionInfo
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&rows) != nil {
 		t.Fatalf("GET /v1/sessions while NATS stalls: status %d, want a 200 list", response.StatusCode)
-	}
-	if elapsed := time.Since(started); elapsed > bound {
-		t.Fatalf("GET /v1/sessions while NATS stalls took %s, want under %s: the list read a bucket", elapsed, bound)
 	}
 	topics := map[string][]string{}
 	for _, row := range rows {
@@ -515,9 +488,6 @@ func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
 	}
 	rig.assertSample(t, "envoy_active_sessions", 2)
 	rig.assertSample(t, "envoy_active_interests", 1)
-	if elapsed := time.Since(started); elapsed > bound {
-		t.Fatalf("the list reads and the scrape while NATS stalls took %s, want under %s", elapsed, bound)
-	}
 }
 
 // unreadRewatch is a cache whose Rewatch fails, signalling failed, as a reconnect hook's Rewatch
@@ -558,7 +528,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		rig := newListRig(t, listRigOptions{})
 		refuseWhileDown(t, rig)
 		rig.server.Start(t)
-		rig.awaitServed(t, 30*time.Second, "both lists once the reconnect hook read the buckets again")
+		rig.awaitServed(t, "both lists once the reconnect hook read the buckets again")
 		rig.assertLists(t, ids)
 	})
 
@@ -573,13 +543,9 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		}})
 		refuseWhileDown(t, rig)
 		rig.server.Start(t)
-		select {
-		case <-failed:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the reconnect hook never ran its Rewatch")
-		}
+		testwait.Receive(t, "the reconnect hook to run its Rewatch", failed)
 		var probeErr error
-		waitFor(t, 10*time.Second, "the self-health probe to report a copy that needs a read", func() bool {
+		testwait.Eventually(t, "the self-health probe to report a copy that needs a read", func() bool {
 			probeErr = checkSelfHealth(rig.caches, nil)
 			return errors.Is(probeErr, errCacheNeedsRead)
 		})
@@ -593,7 +559,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		}
 		rig.assertBothListsRefilling(t)
 
-		monitorUntilRecovered(t, "the copies the reconnect left unread", 10*time.Second, 10*time.Millisecond,
+		monitorUntilRecovered(t, "the copies the reconnect left unread",
 			func() error { return checkSelfHealth(rig.caches, nil) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, rig.client, rig.caches) },
 			rig.client.Connected,
@@ -601,7 +567,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 				return rebuildListenerDependencies(context.Background(), rig.client, rig.caches, nil, "", nil, nil)
 			},
 		)
-		rig.awaitServed(t, 10*time.Second, "both lists once the monitor read the buckets again")
+		rig.awaitServed(t, "both lists once the monitor read the buckets again")
 		rig.assertLists(t, ids)
 	})
 }

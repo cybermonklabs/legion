@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -150,6 +151,9 @@ type Request struct {
 	// CheckoutTimeout; a test sets a short one to prove the checkout is bounded by this and not by
 	// the runner's slow-command budget.
 	CheckoutBound time.Duration
+	// Clock is what the moment provisioning creates the workspace is read from, the moment it
+	// records (RecordCreated). Nil is clock.Real(); a test hands a clocktest.Fake.
+	Clock clock.Clock
 }
 
 // checkoutPlace waits for one of request's checkout places (CheckoutSlot) and returns its release;
@@ -167,6 +171,14 @@ func (r Request) checkoutBound() time.Duration {
 		return r.CheckoutBound
 	}
 	return CheckoutTimeout
+}
+
+// now is the moment request's Clock reads, or the real clock's when it names none.
+func (r Request) now() time.Time {
+	if r.Clock == nil {
+		return time.Now()
+	}
+	return r.Clock.Now()
 }
 
 // storeLock is a Request's StoreLock, or nothing when it names none, and whether this provision
@@ -229,12 +241,22 @@ type execRunner struct {
 	timeout time.Duration
 	// tools maps each command's name to the executable boot resolved for it.
 	tools map[string]string
+	// clock is what each command's Timeout and the grace of its stop (procgroup.StopGrace) are
+	// measured on: clock.Real(), or a test's clocktest.Fake.
+	clock clock.Clock
 }
 
 // NewRunner returns the production process runner. The supplied timeout is applied to every
 // command separately, rather than bounding the whole provisioning sequence.
 func NewRunner(timeout time.Duration, tools map[string]string) Runner {
-	return execRunner{timeout: timeout, tools: tools}
+	return NewRunnerOn(timeout, tools, clock.Real())
+}
+
+// NewRunnerOn is NewRunner with the clock each command's Timeout and the grace of its stop are
+// measured on: a caller that keeps a clock of its own for provisioning passes it (cmd/legion's
+// provisionClock), and a test hands a clocktest.Fake.
+func NewRunnerOn(timeout time.Duration, tools map[string]string, c clock.Clock) Runner {
+	return execRunner{timeout: timeout, tools: tools, clock: c}
 }
 
 func (r execRunner) Timeout() time.Duration {
@@ -253,7 +275,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	if !filepath.IsAbs(command.Dir) {
 		return Result{}, fmt.Errorf("workspace command names no absolute working directory of its own (%q): %s", command.Dir, strings.Join(command.Argv, " "))
 	}
-	bounded, cancel := context.WithTimeout(ctx, command.Timeout)
+	bounded, cancel := r.clock.WithTimeout(ctx, command.Timeout)
 	defer cancel()
 
 	executable, ok := r.tools[command.Argv[0]]
@@ -310,7 +332,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// git that handles it removes the lock files it holds, then SIGKILL to whatever of the group
 	// outlived the grace. After that, Wait normally returns an ordinary *exec.ExitError for the
 	// signaled process.
-	killed := procgroup.Configure(child)
+	killed := procgroup.ConfigureOn(child, r.clock)
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr

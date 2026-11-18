@@ -14,13 +14,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // testChannels are the channels the listener under test listens on: the delivery hub's three, the
 // one deployment where three channels share a connection (api/delivery_live_hub.go).
@@ -92,29 +94,18 @@ func (p *listenerProbe) lastConn(t *testing.T) *pgx.Conn {
 	return p.conns[len(p.conns)-1]
 }
 
-func (p *listenerProbe) waitConnected(t *testing.T, within time.Duration, when string) {
+func (p *listenerProbe) waitConnected(t *testing.T, when string) {
 	t.Helper()
-	select {
-	case <-p.connected:
-	case <-time.After(within):
-		t.Fatalf("%s: OnConnected did not fire within %v (%d dials)", when, within, p.dials.Load())
-	}
+	testwait.Receive(t, when+" (OnConnected)", p.connected)
 }
 
-func (p *listenerProbe) waitNote(t *testing.T, within time.Duration, when string) listenerNote {
+func (p *listenerProbe) waitNote(t *testing.T, when string) listenerNote {
 	t.Helper()
-	select {
-	case note := <-p.notes:
-		return note
-	case <-time.After(within):
-		t.Fatalf("%s: OnNotify was not called within %v", when, within)
-		return listenerNote{}
-	}
+	return testwait.Receive(t, when+" (OnNotify)", p.notes)
 }
 
 // runListener runs listener until the returned cancel is called or the test ends; done closes
-// once Run has returned. The test's cleanup fails it when Run does not return within ten seconds
-// of its context ending.
+// once Run has returned. The test's cleanup cancels it and waits for Run to return.
 func runListener(t *testing.T, probe *listenerProbe, listener *Listener) (context.CancelFunc, <-chan struct{}) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -126,11 +117,7 @@ func runListener(t *testing.T, probe *listenerProbe, listener *Listener) (contex
 	t.Cleanup(func() {
 		cancel()
 		close(probe.stop)
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Errorf("Run did not return within 10s of its context ending")
-		}
+		testwait.Receive(t, "Run to return once its context ended", done)
 	})
 	return cancel, done
 }
@@ -151,33 +138,39 @@ func terminateBackend(t *testing.T, database *store.Store, pid uint32) {
 }
 
 // waitBackendGone waits until Postgres no longer lists the backend pid.
-func waitBackendGone(t *testing.T, database *store.Store, pid uint32, within time.Duration) {
+func waitBackendGone(t *testing.T, database *store.Store, pid uint32) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
+	testwait.Eventually(t, "the listener's killed backend to leave pg_stat_activity", func() bool {
 		var count int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity where pid = $1`, int(pid)).Scan(&count); err != nil {
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
-		if count == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("backend %d is still connected %v after the listener returned", pid, within)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return count == 0
+	})
+}
+
+// awaitIdleWait waits until the listener is waiting out its idle period on the fake alone - the one
+// timer armed a full idle period ahead, told apart from the short-lived ping timeout by its
+// deadline - and returns that deadline, so a test can move the fake to it to make the listener
+// ping. It is for a listener whose Clock is a clocktest.Fake.
+func awaitIdleWait(t *testing.T, fake *clocktest.Fake) time.Time {
+	t.Helper()
+	armed := testwait.Until(t, "the listener's idle wait on the fake clock", func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, len(armed) == 1 && armed[0].Sub(fake.Now()) > DefaultPingTimeout
+	})
+	return armed[0]
 }
 
 func TestTheListenerReconnectsAfterItsBackendIsKilled(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	runListener(t, probe, probe.listener(database.Pool.Listener))
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	killed := probe.lastConn(t).PgConn().PID()
 
 	terminateBackend(t, database, killed)
-	probe.waitConnected(t, 5*time.Second, "after its backend was killed")
+	probe.waitConnected(t, "after its backend was killed")
 	if dials := probe.dials.Load(); dials < 2 {
 		t.Fatalf("dials after the kill = %d, want a second", dials)
 	}
@@ -186,7 +179,7 @@ func TestTheListenerReconnectsAfterItsBackendIsKilled(t *testing.T) {
 	}
 
 	notifyChannel(t, database, "delivery_changes", "")
-	if note := probe.waitNote(t, 5*time.Second, "a notification after the reconnect"); note != (listenerNote{channel: "delivery_changes"}) {
+	if note := probe.waitNote(t, "a notification after the reconnect"); note != (listenerNote{channel: "delivery_changes"}) {
 		t.Fatalf("notification after the reconnect = %+v, want delivery_changes with an empty payload", note)
 	}
 }
@@ -304,29 +297,35 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, time.Second
+	fake := clocktest.New(time.Now())
+	listener.Clock = fake
 	runListener(t, probe, listener)
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
 
-	time.Sleep(1500 * time.Millisecond)
+	// Move the fake past the idle period: the listener ends its idle wait and pings the healthy
+	// connection rather than redialing. Driven until the ping lands, in case an earlier wait ended
+	// on something other than the deadline.
+	testwait.Eventually(t, "the listener to ping its healthy idle connection", func() bool {
+		deadline := awaitIdleWait(t, fake)
+		fake.Advance(deadline.Sub(fake.Now()) + time.Millisecond)
+		awaitIdleWait(t, fake)
+		var query string
+		if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
+			t.Fatalf("read the listener's backend: %v", err)
+		}
+		return query == "-- ping"
+	})
 	if dials := probe.dials.Load(); dials != 1 {
-		t.Fatalf("dials after seven idle periods = %d, want 1", dials)
+		t.Fatalf("dials after the idle periods = %d, want 1", dials)
 	}
 	select {
 	case <-probe.connected:
 		t.Fatal("OnConnected fired again on an idle, healthy connection")
 	default:
 	}
-	var query string
-	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
-		t.Fatalf("read the listener's backend: %v", err)
-	}
-	if query != "-- ping" {
-		t.Fatalf("the idle listener's last statement = %q, want its ping", query)
-	}
 	notifyChannel(t, database, "dispatch_events", "")
-	if note := probe.waitNote(t, 5*time.Second, "a notification after the idle periods"); note != (listenerNote{channel: "dispatch_events"}) {
+	if note := probe.waitNote(t, "a notification after the idle periods"); note != (listenerNote{channel: "dispatch_events"}) {
 		t.Fatalf("notification = %+v, want dispatch_events with an empty payload", note)
 	}
 }
@@ -336,21 +335,34 @@ func TestTheListenerReplacesAHalfOpenConnection(t *testing.T) {
 	proxy := newBlindingProxy(t, databaseAddress(database))
 	probe := newListenerProbe()
 	listener := probe.listener(proxiedDial(database, proxy))
-	listener.ListenIdle, listener.PingTimeout = time.Second, time.Second
+	fake := clocktest.New(time.Now())
+	listener.Clock = fake
 	runListener(t, probe, listener)
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	notifyChannel(t, database, "delivery_changes", "")
-	if note := probe.waitNote(t, 5*time.Second, "a notification through the proxy"); note != (listenerNote{channel: "delivery_changes"}) {
+	if note := probe.waitNote(t, "a notification through the proxy"); note != (listenerNote{channel: "delivery_changes"}) {
 		t.Fatalf("notification through the proxy = %+v, want delivery_changes with an empty payload", note)
 	}
 
 	proxy.blind()
-	probe.waitConnected(t, 5*time.Second, "after its connection went half-open")
+	// The connection is half-open: it delivers nothing and fails nothing. Move the fake past the
+	// idle period so the listener pings it; the ping hangs, so move past the ping timeout to fail
+	// it; closing the half-open connection hangs too, then comes the redial backoff. The listener
+	// then dials a fresh connection the proxy forwards and LISTENs on it again.
+	idle := awaitIdleWait(t, fake)
+	fake.Advance(idle.Sub(fake.Now()) + time.Millisecond)
+	ping := fake.AwaitArmed(t, "the ping timeout on the half-open connection", 1)
+	fake.Advance(ping[0].Sub(fake.Now()) + time.Millisecond)
+	closing := fake.AwaitArmed(t, "the close of the half-open connection", 1)
+	fake.Advance(closing[0].Sub(fake.Now()) + time.Millisecond)
+	backoff := fake.AwaitArmed(t, "the redial backoff", 1)
+	fake.Advance(backoff[0].Sub(fake.Now()) + time.Millisecond)
+	probe.waitConnected(t, "after its connection went half-open")
 	if dials := probe.dials.Load(); dials < 2 {
 		t.Fatalf("dials after the connection went half-open = %d, want a second", dials)
 	}
 	notifyChannel(t, database, "delivery_changes", "")
-	if note := probe.waitNote(t, 5*time.Second, "a notification on the replacement"); note != (listenerNote{channel: "delivery_changes"}) {
+	if note := probe.waitNote(t, "a notification on the replacement"); note != (listenerNote{channel: "delivery_changes"}) {
 		t.Fatalf("notification on the replacement = %+v, want delivery_changes with an empty payload", note)
 	}
 }
@@ -361,7 +373,7 @@ func TestTheListenerPassesEachPayloadUnchanged(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	runListener(t, probe, probe.listener(database.Pool.Listener))
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 
 	freshness := `{"last_event_at" : "2026-10-12T15:04:05.123456+00:00", "last_reconcile_at" : null, "last_error" : "GitHub answered 502: \"bad gateway\" (réessayer)"}`
 	sent := []listenerNote{
@@ -374,17 +386,19 @@ func TestTheListenerPassesEachPayloadUnchanged(t *testing.T) {
 		notifyChannel(t, database, note.channel, note.payload)
 	}
 	for index, want := range sent {
-		if got := probe.waitNote(t, 5*time.Second, "notification "+strconv.Itoa(index)); got != want {
+		if got := probe.waitNote(t, "notification "+strconv.Itoa(index)); got != want {
 			t.Fatalf("notification %d = %+v, want %+v", index, got, want)
 		}
 	}
 	if !json.Valid([]byte(freshness)) {
 		t.Fatal("the freshness payload sent is not JSON")
 	}
+	// Every note sent on a listened channel was received above, in order, and delivery_unheard is a
+	// channel the listener does not name, so Postgres never delivers it: nothing more can arrive.
 	select {
 	case note := <-probe.notes:
 		t.Fatalf("an extra notification reached OnNotify: %+v", note)
-	case <-time.After(300 * time.Millisecond):
+	default:
 	}
 }
 
@@ -400,36 +414,35 @@ func TestAListenerOnOneChannelWithoutAnOnConnectedHearsThatChannelAlone(t *testi
 	}
 	runListener(t, probe, listener)
 
-	// The LISTEN has to be in place before a notification can reach it, and this listener reports
-	// no connection: a notification repeated until one arrives is what a test without OnConnected
-	// has. Every repeat is delivered once the LISTEN stands, so the first note is the first that
-	// found it.
-	go func() {
-		for {
-			select {
-			case <-probe.stop:
-				return
-			case <-time.After(50 * time.Millisecond):
-			}
-			if _, err := database.Pool.Exec(context.Background(), `select pg_notify('dispatch_doc_changed', 'artifact-1')`); err != nil {
-				return
-			}
+	// The LISTEN has to be in place before a notification can reach it, and this listener reports no
+	// connection: notifications sent before the LISTEN stands are lost. Repeat it until one is
+	// reported.
+	var got listenerNote
+	testwait.Eventually(t, "a notification on the one channel once its LISTEN stands", func() bool {
+		notifyChannel(t, database, "dispatch_doc_changed", "artifact-1")
+		select {
+		case got = <-probe.notes:
+			return true
+		default:
+			return false
 		}
-	}()
-	if note := probe.waitNote(t, 10*time.Second, "a notification on the one channel"); note != (listenerNote{channel: "dispatch_doc_changed", payload: "artifact-1"}) {
-		t.Fatalf("notification = %+v, want dispatch_doc_changed carrying artifact-1", note)
+	})
+	if got != (listenerNote{channel: "dispatch_doc_changed", payload: "artifact-1"}) {
+		t.Fatalf("notification = %+v, want dispatch_doc_changed carrying artifact-1", got)
 	}
 
+	// A channel this listener does not name never reaches OnNotify. Send one, then a marker on the
+	// named channel; once the marker arrives, every note the listener will report has been read, and
+	// the unnamed channel was not among them.
 	notifyChannel(t, database, "delivery_changes", "")
-	deadline := time.After(300 * time.Millisecond)
+	notifyChannel(t, database, "dispatch_doc_changed", "marker")
 	for {
-		select {
-		case note := <-probe.notes:
-			if note.channel != "dispatch_doc_changed" {
-				t.Fatalf("a channel the listener does not name reached OnNotify: %+v", note)
-			}
-		case <-deadline:
-			return
+		note := probe.waitNote(t, "a notification after the unnamed channel")
+		if note.payload == "marker" {
+			break
+		}
+		if note.channel != "dispatch_doc_changed" {
+			t.Fatalf("a channel the listener does not name reached OnNotify: %+v", note)
 		}
 	}
 }
@@ -441,7 +454,7 @@ func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	runListener(t, probe, probe.listener(database.Pool.Listener))
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	ctx := context.Background()
 
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
@@ -463,7 +476,7 @@ func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 
 	heard := map[string]string{}
 	for len(heard) < 3 {
-		note := probe.waitNote(t, 5*time.Second, "the triggers' notifications")
+		note := probe.waitNote(t, "the triggers' notifications")
 		heard[note.channel] = note.payload
 	}
 	if heard["delivery_changes"] != "" || heard["dispatch_events"] != "" {
@@ -484,20 +497,16 @@ func TestTheListenerReturnsWithItsConnectionClosedWhenItsContextEnds(t *testing.
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	cancel, done := runListener(t, probe, probe.listener(database.Pool.Listener))
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	conn := probe.lastConn(t)
 	pid := conn.PgConn().PID()
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return within 2s of its context ending")
-	}
+	testwait.Receive(t, "Run to return once its context ended", done)
 	if !conn.IsClosed() {
 		t.Fatal("Run returned with its connection open")
 	}
-	waitBackendGone(t, database, pid, 3*time.Second)
+	waitBackendGone(t, database, pid)
 	if dials := probe.dials.Load(); dials != 1 {
 		t.Fatalf("dials = %d, want 1", dials)
 	}
@@ -510,27 +519,19 @@ func TestTheListenerReturnsWhileBackingOffWhenItsContextEnds(t *testing.T) {
 	backingOff := make(chan int, 4)
 	listener.Backoff = func(attempt int) time.Duration {
 		backingOff <- attempt
+		// An hour keeps the redial away so the test can cancel mid-backoff; it never elapses.
 		return time.Hour
 	}
 	cancel, done := runListener(t, probe, listener)
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	conn := probe.lastConn(t)
 	terminateBackend(t, database, conn.PgConn().PID())
-	select {
-	case attempt := <-backingOff:
-		if attempt != 1 {
-			t.Fatalf("the first backoff after a lost connection is attempt %d, want 1", attempt)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the listener did not back off within 5s of its backend being killed")
+	if attempt := testwait.Receive(t, "the listener to back off after its backend was killed", backingOff); attempt != 1 {
+		t.Fatalf("the first backoff after a lost connection is attempt %d, want 1", attempt)
 	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Run did not return within 1s of its context ending while it backed off")
-	}
+	testwait.Receive(t, "Run to return once its context ended while it backed off", done)
 	if !conn.IsClosed() {
 		t.Fatal("Run returned with its lost connection open")
 	}
@@ -571,23 +572,28 @@ func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
 	listener.OnNotify = nil
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, time.Second
+	fake := clocktest.New(time.Now())
+	listener.Clock = fake
 	runListener(t, probe, listener)
-	probe.waitConnected(t, 5*time.Second, "first connection")
+	probe.waitConnected(t, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
 
 	notifyChannel(t, database, "dispatch_events", "dropped")
-	// Long enough for the notification to arrive and for the wait after it to end on the idle
-	// period and be pinged.
-	time.Sleep(500 * time.Millisecond)
+	// The notification is dropped (nil OnNotify) rather than crashing the process. Drive the idle
+	// period until the connection is pinged: a dropped notification may end one idle wait early (the
+	// connection carried it), so the ping can take a further period; the connection is kept either
+	// way, never replaced.
+	testwait.Eventually(t, "the listener to ping the connection it dropped a notification on", func() bool {
+		deadline := awaitIdleWait(t, fake)
+		fake.Advance(deadline.Sub(fake.Now()) + time.Millisecond)
+		awaitIdleWait(t, fake)
+		var query string
+		if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
+			t.Fatalf("read the listener's backend: %v", err)
+		}
+		return query == "-- ping"
+	})
 	if dials := probe.dials.Load(); dials != 1 {
 		t.Fatalf("dials after a notification the listener has nowhere to report = %d, want 1: the notification cost it the connection", dials)
-	}
-	var query string
-	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
-		t.Fatalf("read the listener's backend: %v", err)
-	}
-	if query != "-- ping" {
-		t.Fatalf("the listener's last statement = %q, want its idle ping: a notification it has nowhere to report must leave it waiting on the same connection", query)
 	}
 }

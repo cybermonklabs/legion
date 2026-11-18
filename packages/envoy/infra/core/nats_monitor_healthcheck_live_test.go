@@ -3,20 +3,20 @@
 package core_test
 
 import (
-	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/aws/rendering"
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // healthCheckArgs are the server arguments the README gives aws:NatsService, the store left out: the
@@ -55,34 +55,58 @@ func taskHealthCheck(t *testing.T, a core.Authorization) (command, config string
 // health check command in the container, as ECS does. It fails as UNKNOWN when the container's
 // loopback has no IPv6 address: there `localhost` names 127.0.0.1 alone, and no run can tell a
 // health check that reads only 127.0.0.1 from one that reads either loopback.
-func runTaskHealthCheck(t *testing.T, a core.Authorization, config, command string) (int, string) {
+//
+// The container runs on Docker's default bridge network and publishes no port, so its loopback
+// and the 8222 healthCheckArgs open are its own, as a task's are, and Docker chooses no host port
+// for it (docs/testing.md, "A container a test starts publishes no port"). The test reaches it
+// through docker exec alone. testnats.StartImageConfig runs its server on the host's network on
+// ports the kernel chooses, where 8222 and the loopback would be the machine's, so this test
+// drives the docker CLI itself, as tests3 does for the same reason.
+func runTaskHealthCheck(t *testing.T, config, command string) (int, string) {
 	t.Helper()
-	ctx := context.Background()
-	start := a
-	start.Callout, start.PrivateProjects = nil, false
-	first, err := start.Render(nil)
-	require.NoError(t, err)
-	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, first, healthCheckArgs, false)
-	stop := 10 * time.Second
-	require.NoError(t, ctr.Stop(ctx, &stop))
-	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
-	require.NoError(t, ctr.Start(ctx))
+	file := filepath.Join(t.TempDir(), "nats-server.conf")
+	require.NoError(t, os.WriteFile(file, []byte(config), 0o644))
+	// One CPU and 512 MiB, as every container the repository's tests start is capped on a shared
+	// host: the task's server holds no stream here.
+	id := strings.TrimSpace(dockerCLI(t, append([]string{"create", "--cpus", "1", "--memory", "512m",
+		testnats.HubImage, "-c", "/etc/nats/nats-server.conf"}, healthCheckArgs...)...))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", id).Run() })
+	dockerCLI(t, "cp", file, id+":/etc/nats/nats-server.conf")
+	dockerCLI(t, "start", id)
 
 	run := func(cmd string) (int, string) {
-		code, r, err := ctr.Exec(ctx, []string{"/bin/sh", "-c", cmd})
-		require.NoError(t, err)
-		out, err := io.ReadAll(r)
-		require.NoError(t, err)
-		return code, strings.TrimSpace(string(out))
+		out, err := exec.Command("docker", "exec", id, "/bin/sh", "-c", cmd).CombinedOutput()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, strings.TrimSpace(string(out))
+		case errors.As(err, &exit):
+			return exit.ExitCode(), strings.TrimSpace(string(out))
+		}
+		t.Fatalf("docker exec %s: %v", cmd, err)
+		return 0, ""
 	}
 	code, v6 := run("cat /proc/sys/net/ipv6/conf/lo/disable_ipv6")
 	require.Equal(t, 0, code, "read the container's loopback IPv6 setting: %s", v6)
 	require.True(t, strings.HasSuffix(v6, "0"), "UNKNOWN: this container's loopback has no IPv6 (disable_ipv6 %q), so localhost names 127.0.0.1 alone and the run cannot see the defect", v6)
-	require.Eventually(t, func() bool {
+	testwait.Eventually(t, "monitoring to answer on 127.0.0.1:8222", func() bool {
 		code, _ := run("wget -qO- http://127.0.0.1:8222/healthz")
 		return code == 0
-	}, 30*time.Second, 200*time.Millisecond, "monitoring never answered on 127.0.0.1:8222")
+	})
 	return run(command)
+}
+
+// dockerCLI runs the docker CLI with args and returns what it printed on stdout, failing the test
+// with what it printed on stderr when it fails.
+func dockerCLI(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("docker", args...).Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), err, exit.Stderr)
+	}
+	require.NoError(t, err, "docker %s", strings.Join(args, " "))
+	return string(out)
 }
 
 // TestThePrivateTasksHealthCheckPasses (found by the tester of #4118 at ca09cdf594): beside
@@ -94,7 +118,7 @@ func TestThePrivateTasksHealthCheckPasses(t *testing.T) {
 	a := privateOnly()
 	command, config := taskHealthCheck(t, a)
 	require.Contains(t, config, "\nhttp: \"127.0.0.1:0\"\n", "the private start script binds monitoring to loopback")
-	code, out := runTaskHealthCheck(t, a, config, command)
+	code, out := runTaskHealthCheck(t, config, command)
 	require.Equal(t, 0, code, "the task's health check %q failed in the private task: %s", command, out)
 }
 
@@ -105,6 +129,6 @@ func TestThePublicTasksHealthCheckPasses(t *testing.T) {
 	a.PrivateProjects = false
 	command, config := taskHealthCheck(t, a)
 	require.NotContains(t, config, "http:")
-	code, out := runTaskHealthCheck(t, a, config, command)
+	code, out := runTaskHealthCheck(t, config, command)
 	require.Equal(t, 0, code, "the task's health check %q failed in the public task: %s", command, out)
 }

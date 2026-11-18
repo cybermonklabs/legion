@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -37,9 +38,7 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 
@@ -127,9 +126,7 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 
@@ -221,9 +218,7 @@ func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 	const (

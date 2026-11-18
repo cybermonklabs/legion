@@ -25,6 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -62,9 +63,9 @@ const statementTimeout = 3 * time.Second
 // the flush and the acknowledgement alike, and once it ends sends nothing. The bus client bounds
 // its own publish too, but a client that is still dialling or reconnecting must not hold the
 // publishing transaction, and with it every other process's publish, for longer than this: the
-// next pass tries again. A variable rather than a constant only so this package's tests can
-// shorten it; nothing else sets it.
-var publishTimeout = 10 * time.Second
+// next pass tries again. It runs on the Announcer's clock (Deps.Clock), so a test moves a fake
+// past it rather than shortening it.
+const publishTimeout = 10 * time.Second
 
 // publishPassTimeout bounds a pass's publishing transaction as a whole, its statements and its
 // publishes together, so a database link that stalls mid-pass ends the pass rather than the loop.
@@ -97,18 +98,27 @@ type Deps struct {
 	// Publisher publishes announcements; nil where NATS is disabled, and such a process announces
 	// into the table and publishes nothing.
 	Publisher Publisher
+	// Clock is the clock one publish's bound runs on (publishTimeout): nil is clock.Real(), and a
+	// test hands a clocktest.Fake and moves it past the bound.
+	Clock clock.Clock
 }
 
 // Announcer announces the fleet's build (Run) and remembers the latest announcement's commit
 // (FleetCommit) for /healthz.
 type Announcer struct {
-	deps  Deps
+	deps Deps
+	// clock is Deps.Clock, the real clock when that is nil.
+	clock clock.Clock
 	fleet atomic.Pointer[string]
 }
 
 // New returns an Announcer over deps; nothing runs until Run.
 func New(deps Deps) *Announcer {
-	return &Announcer{deps: deps}
+	c := deps.Clock
+	if c == nil {
+		c = clock.Real()
+	}
+	return &Announcer{deps: deps, clock: c}
 }
 
 // FleetCommit is the commit of the latest announcement as of this process's last pass, nil when
@@ -282,7 +292,7 @@ func (a *Announcer) publish(ctx context.Context) error {
 			failed = err
 			break
 		}
-		publishCtx, cancelPublish := context.WithTimeout(ctx, publishTimeout)
+		publishCtx, cancelPublish := a.clock.WithTimeout(ctx, publishTimeout)
 		duplicate, err := a.deps.Publisher.PublishReportingDuplicateWithin(publishCtx, item)
 		cancelPublish()
 		if err != nil {

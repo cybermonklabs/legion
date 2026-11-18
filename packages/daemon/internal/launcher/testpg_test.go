@@ -5,9 +5,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // stubTestPG puts a `legion-testpg` on PATH that appends one line per call — the subcommand, the
@@ -83,18 +88,16 @@ func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
 // Each tick asks again, which is what starts a postmaster that has died, and every call carries
 // the DSN the roles are told, the cluster's directory under the roles directory and the server's
 // log in it, which is a file before the first `ensure` runs: every role started after it has the
-// log to bind, whatever that `ensure` came to.
+// log to bind, whatever that `ensure` came to. The launcher's clock is the test's, which moves it
+// past the one interval it armed.
 func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.T) {
 	calls := stubTestPG(t)
-	testPGInterval = 20 * time.Millisecond
-	t.Cleanup(func() { testPGInterval = 15 * time.Second })
 	rolesDir := t.TempDir()
 	var log bytes.Buffer
+	clk := clocktest.New(time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
-	// The ticker goroutine is waited for before the cleanup above restores the interval, so no
-	// read of it outlives this test.
-	done := serveTestPG(ctx, Config{RolesDir: rolesDir, TestPostgres: true}, &roleLog{stdout: &log, stderr: &log}, &pidGuard{})
-	t.Cleanup(func() { cancel(); <-done })
+	done := serveTestPG(ctx, Config{RolesDir: rolesDir, TestPostgres: true, Clock: clk}, &roleLog{stdout: &log, stderr: &log}, &pidGuard{})
+	t.Cleanup(func() { cancel(); testwait.Receive(t, "the test database's ticker to stop", done) })
 	first, err := os.ReadFile(calls)
 	if err != nil {
 		t.Fatalf("serveTestPG returned before its first ensure ran: %v", err)
@@ -103,37 +106,33 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 	if string(first) != want {
 		t.Errorf("the first call is %q, want %q", first, want)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if armed := clk.AwaitArmed(t, "the launcher's next ask", 1); !armed[0].Equal(clk.Now().Add(testPGInterval)) {
+		t.Fatalf("the launcher armed %v, want its next ask one interval (%s) on", armed, testPGInterval)
+	}
+	clk.Advance(testPGInterval)
+	again := testwait.Until(t, "the launcher to ask again (the reading is every call so far)", func() (string, bool) {
 		again, err := os.ReadFile(calls)
-		if err == nil && strings.Count(string(again), "ensure ") > 1 {
-			if got := strings.ReplaceAll(string(again), want, ""); got != "" {
-				t.Errorf("a later call is %q, want every call to be %q", got, want)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher asked once and never again: %q", again)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return string(again), err == nil && strings.Count(string(again), "ensure ") > 1
+	})
+	if got := strings.ReplaceAll(again, want, ""); got != "" {
+		t.Errorf("a later call is %q, want every call to be %q", got, want)
 	}
 }
 
 // A log the launcher finds is kept as it is: a launcher that restarts in a pod whose server has
 // run leaves that server's lines where every role reads them. And a log that cannot be made is
 // logged and nothing else, as a script that fails is: the script still runs, and the pod still
-// runs its roles.
+// runs its roles. The launcher's clock is the test's, which never moves it, so each serve's first
+// ensure is its only one.
 func TestATestDatabaseLogIsKeptAndOneThatCannotBeMadeOnlyLogs(t *testing.T) {
 	calls := stubTestPG(t)
-	testPGInterval = time.Hour
-	t.Cleanup(func() { testPGInterval = 15 * time.Second })
 	serve := func(rolesDir string) string {
 		t.Helper()
 		log := &lockedBuffer{}
 		ctx, cancel := context.WithCancel(context.Background())
-		done := serveTestPG(ctx, Config{RolesDir: rolesDir, TestPostgres: true}, &roleLog{stdout: log, stderr: log}, &pidGuard{})
+		done := serveTestPG(ctx, Config{RolesDir: rolesDir, TestPostgres: true, Clock: clocktest.New(time.Now())}, &roleLog{stdout: log, stderr: log}, &pidGuard{})
 		cancel()
-		<-done
+		testwait.Receive(t, "the test database's ticker to stop", done)
 		return log.String()
 	}
 	rolesDir := t.TempDir()
@@ -175,15 +174,14 @@ func TestATestDatabaseThatCannotStartOnlyLogs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(filepath.Dir(calls), "exit"), []byte("1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	testPGInterval = time.Hour
-	t.Cleanup(func() { testPGInterval = 15 * time.Second })
 	// The log is read here while the script's output is still being copied into it: cmd.Wait
 	// returns at WaitDelay with that copy goroutine still running, so the buffer the roleLog
-	// writes through must be one that holds its own lock against this read.
+	// writes through must be one that holds its own lock against this read. The launcher's clock
+	// is the test's, which never moves it, so the first ensure is the only one.
 	log := &lockedBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := serveTestPG(ctx, Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{stdout: log, stderr: log}, &pidGuard{})
-	t.Cleanup(func() { cancel(); <-done })
+	done := serveTestPG(ctx, Config{RolesDir: t.TempDir(), TestPostgres: true, Clock: clocktest.New(time.Now())}, &roleLog{stdout: log, stderr: log}, &pidGuard{})
+	t.Cleanup(func() { cancel(); testwait.Receive(t, "the test database's ticker to stop", done) })
 	if !strings.Contains(log.String(), "launcher: test database:") {
 		t.Errorf("the container log holds %q, want the refusal named", log.String())
 	}
@@ -207,23 +205,44 @@ func TestTheGuardForgetsAChildOnceItsWaitHasRead(t *testing.T) {
 
 // One run of the script is bounded, so an `ensure` that hangs — a lock a dead holder still owns —
 // costs a pod one wait and a log line, not its whole boot: the launcher's first `ensure` runs
-// before any role starts, inside the daemon's boot timeout.
+// before any role starts, inside the daemon's boot timeout. The bound is on the launcher's clock,
+// the test's, and the kill at it is final: the script leaves a child holding its output open, as
+// the postmaster `pg_ctl` leaves running does, and the run returns with that child still running.
 func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\nsleep 30\n"
+	holder := filepath.Join(dir, "holder")
+	script := "#!/bin/sh\nsleep 600 &\necho $! > " + holder + ".tmp && mv " + holder + ".tmp " + holder + "\nwait\n"
 	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	testPGBound = 200 * time.Millisecond
-	t.Cleanup(func() { testPGBound = 60 * time.Second })
-	started := time.Now()
-	err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, &pidGuard{}, "ensure")
-	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
+	clk := clocktest.New(time.Now())
+	// The script's output reaches the container's log through a pipe, as a pod's does, so its
+	// child holds that pipe open.
+	log := &lockedBuffer{}
+	cfg := Config{RolesDir: t.TempDir(), TestPostgres: true, Clock: clk}
+	ran := make(chan error, 1)
+	go func() {
+		ran <- runTestPG(context.Background(), cfg, &roleLog{stdout: log, stderr: log}, &pidGuard{}, "ensure")
+	}()
+	if armed := clk.AwaitArmed(t, "the script's bound", 1); !armed[0].Equal(clk.Now().Add(testPGBound)) {
+		t.Fatalf("runTestPG armed %v, want its bound %s on", armed, testPGBound)
+	}
+	recorded := testwait.Until(t, "the script's child holding its output to be recorded", func() (string, bool) {
+		body, err := os.ReadFile(holder)
+		return strings.TrimSpace(string(body)), err == nil
+	})
+	pid, err := strconv.Atoi(recorded)
+	if err != nil {
+		t.Fatalf("the script recorded %q, not its child's pid", recorded)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	clk.Advance(testPGBound)
+	if err := testwait.Receive(t, "runTestPG's return once its bound passed", ran); err == nil || !strings.Contains(err.Error(), "did not finish within") {
 		t.Fatalf("runTestPG = %v, want the bound named", err)
 	}
-	if waited := time.Since(started); waited > 10*time.Second {
-		t.Errorf("runTestPG waited %s on a script that hangs", waited)
+	if syscall.Kill(pid, 0) != nil || zombie(pid) {
+		t.Errorf("runTestPG returned only once the child holding its output (%d) had ended: the kill at the bound is not final", pid)
 	}
 }
 

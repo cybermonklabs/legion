@@ -47,23 +47,24 @@ func (m *fakeMinter) minted() []mintCall {
 	return append([]mintCall(nil), m.calls...)
 }
 
-// passwordRole creates a login role on the BROKER_TEST_DATABASE_URL server whose password is
-// password, dropped when t ends, and returns its name and a URL that signs in as it with no
-// password, as an IAM-form URL does. Postgres asks the role for a password over TCP (the test
-// server's pg_hba), so only a connection that brings one signs in.
-func passwordRole(t *testing.T, password string) (role, databaseURL string) {
+// passwordRole creates a login role on the server of the test's database databaseURL whose
+// password is password, and returns its name and a URL to that database that signs in as it with
+// no password, as an IAM-form URL does. Postgres asks the role for a password over TCP (the test
+// server's pg_hba), so only a connection that brings one signs in. A role is the server's, not
+// the database's, so its name is random and it is dropped when t ends, with what it owns in the
+// test's database.
+func passwordRole(t *testing.T, databaseURL, password string) (role, roleURL string) {
 	t.Helper()
-	raw := testDatabaseURL(t)
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatalf("random role name: %v", err)
 	}
 	role = "broker_iam_test_" + hex.EncodeToString(suffix[:])
-	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
-	t.Cleanup(func() { adminExec(t, raw, "drop owned by "+role+" cascade; drop role "+role) })
-	parsed, err := url.Parse(raw)
+	adminExec(t, databaseURL, "create role "+role+" login password '"+password+"'")
+	t.Cleanup(func() { adminExec(t, databaseURL, "drop owned by "+role+" cascade; drop role "+role) })
+	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("parse the test database's URL: %v", err)
 	}
 	parsed.User = url.User(role)
 	return role, parsed.String()
@@ -87,7 +88,7 @@ func endpointOf(t *testing.T, databaseURL string) string {
 // opened without the minter is refused, so the token is what signed in.
 func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	ctx := context.Background()
-	role, databaseURL := passwordRole(t, "fake-iam-token-1")
+	role, databaseURL := passwordRole(t, ownDatabase(t), "fake-iam-token-1")
 	minter := &fakeMinter{token: "fake-iam-token-1"}
 
 	s, err := Open(ctx, databaseURL, WithTokenMinter(minter.mint))
@@ -138,8 +139,8 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 // the lock and its holder.
 func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	ctx := context.Background()
-	raw := testDatabaseURL(t)
-	role, databaseURL := passwordRole(t, "fake-iam-token-1")
+	raw := ownDatabase(t)
+	role, databaseURL := passwordRole(t, raw, "fake-iam-token-1")
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatalf("random schema name: %v", err)

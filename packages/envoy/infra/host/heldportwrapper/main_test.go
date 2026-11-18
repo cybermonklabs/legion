@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The wrapper's real-process tests: the wrapper this directory builds, run as the held-port image
@@ -146,38 +147,32 @@ func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 	return match[1]
 }
 
-// requireAnswers waits up to 30 s for /healthz on port to answer at all, and fails the test when
-// the process exits first or it never does.
+// requireAnswers waits for /healthz on port to answer at all, and fails the test when the process
+// exits first or it never does.
 func requireAnswers(t *testing.T, process *cmdtest.Process, port int) {
 	t.Helper()
+	// net/http's own timer on one request: a request that runs out is made again by the wait.
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
-	var err error
-	for time.Now().Before(deadline) {
-		var response *http.Response
-		if response, err = client.Get(url); err == nil {
-			_ = response.Body.Close()
-			return
-		}
+	testwait.Until(t, fmt.Sprintf("an answer of any kind from /healthz on %d", port), func() (error, bool) {
 		select {
 		case <-process.Exited:
 			t.Fatalf("the process exited before /healthz answered on %d:\n%s", port, process.Output.String())
-		case <-time.After(200 * time.Millisecond):
+		default:
 		}
-	}
-	t.Fatalf("/healthz never answered on %d: %v\n%s", port, err, process.Output.String())
+		response, err := client.Get(url)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		return err, err == nil
+	})
 }
 
-// requireFailedNaming waits up to 10 s for the wrapper to exit, and fails the test unless it exited
-// 1 naming socket.
+// requireFailedNaming waits for the wrapper to exit, and fails the test unless it exited 1 naming
+// socket.
 func requireFailedNaming(t *testing.T, process *cmdtest.Process, socket string) {
 	t.Helper()
-	select {
-	case <-process.Exited:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the wrapper was still running 10s after it started:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the wrapper to exit", process.Exited)
 	output := process.Output.String()
 	if code := process.Cmd.ProcessState.ExitCode(); code != 1 {
 		t.Errorf("the wrapper exited %d, want 1:\n%s", code, output)

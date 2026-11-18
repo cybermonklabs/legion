@@ -8,6 +8,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -529,7 +530,7 @@ func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 	// The grant that wins the race is stamped an hour on, so the moment it was claimed at is one
 	// the seeded claim cannot share: a grant inside the same millisecond as the claim the
 	// release read would read as that very claim, and this row is about telling them apart.
-	reg.now = func() time.Time { return time.Now().Add(time.Hour) }
+	reg.clock = clocktest.New(time.Now().Add(time.Hour))
 	var granted RoleClaim
 	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
 	racing.beforeFirstUpdate = func() {
@@ -719,7 +720,7 @@ func TestAHandBackThatRacesAFreshGrantOverAClaimNamingNoProcessMarksNothing(t *t
 			// at is one the seeded claim cannot share: a grant inside the same millisecond as
 			// the claim the release read would read as that very claim, and this row is about
 			// telling them apart.
-			reg.now = func() time.Time { return time.Now().Add(time.Hour) }
+			reg.clock = clocktest.New(time.Now().Add(time.Hour))
 			var granted RoleClaim
 			racing := raceReleaseWith(t, reg, role, 1, func() {
 				claimRoleAs(t, reg, holder, "example-host", role, instance)

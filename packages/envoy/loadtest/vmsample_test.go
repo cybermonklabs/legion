@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -317,10 +318,10 @@ func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 
 // vmSampleUntil runs vm-sample with args until done holds, then stops it and returns its error.
 // The test waits on what the file holds, not on a span: a loaded machine can start the ssh later
-// than any span, and that makes the test slow, not wrong. The bound is five minutes, or the test
-// binary's own deadline less a second: the embedded script counts this machine's processors one
+// than any span, and that makes the test slow, not wrong. The wait is the shared one, bounded by
+// the test binary's deadline alone: the embedded script counts this machine's processors one
 // /proc/cpuinfo line at a time, so on a machine of hundreds of them a starved test takes most of
-// a minute for two machine readings. A broken ssh does not wait the bound out, since each ssh
+// a minute for two machine readings. A broken ssh does not wait the deadline out, since each ssh
 // that ends or stays silent for vmSampleSilence leaves a gap reading of every series.
 func vmSampleUntil(t *testing.T, args []string, what string, done func() bool) error {
 	t.Helper()
@@ -332,7 +333,7 @@ func vmSampleUntil(t *testing.T, args []string, what string, done func() bool) e
 		sampled = sampleVMs(ctx, args)
 	}()
 	t.Cleanup(func() { cancel(); <-stopped })
-	testwait.WithinPolling(t, testwait.Bounded(t, 5*time.Minute, time.Second), testwait.Poll, what, func() bool {
+	testwait.Eventually(t, what, func() bool {
 		select {
 		case <-stopped: // a collector that stops on its own fails the caller's checks of its file
 			return true
@@ -437,12 +438,11 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 }
 
 // TestVMSampleTakesASilentSSHForDead: a VM whose script is wedged holds its ssh open and prints
-// nothing; the stream is killed once it has been silent for the sampler's silence and says so,
-// rather than reporting the kill as an ssh that died. The test fires the silence itself, once the
-// stream has written the reading the VM printed first: a real timer starts with the ssh, and a
-// loaded machine can start the fake later than any short silence. The fire writes that fact on
-// the test's goroutine and the stream reads it after the ssh ends, so this is also what the race
-// detector reads.
+// nothing; the stream is killed once it has been silent for vmSampleSilence, counted from its last
+// reading, and says so, rather than reporting the kill as an ssh that died. The silence runs on the
+// sampler's clock, a fake here that the test moves past it once the timer is armed. The timer
+// goroutine writes that fact and the stream reads it after the ssh ends, so this is also what the
+// race detector reads.
 func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-ssh")
@@ -453,35 +453,30 @@ func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	expire := make(chan func(), 1)
-	s := &vmSampler{ssh: []string{fake}, interval: 100 * time.Millisecond, silence: 150 * time.Millisecond,
-		afterSilence: func(_ time.Duration, f func()) vmIdleTimer { expire <- f; return vmHeldTimer{} },
-		now:          time.Now, lg: log.New(io.Discard, "", 0), out: io.Discard}
-	target := vmTestTarget(t)
-	var err error
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		err = s.stream(t.Context(), target)
-	}()
-	t.Cleanup(func() { <-stopped })
-	testwait.Eventually(t, "the reading the VM printed before it went silent", func() bool {
-		select {
-		case <-stopped:
-			return true
-		default:
-		}
+	start := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	clk := clocktest.New(start)
+	s := &vmSampler{ssh: []string{fake}, interval: 5 * time.Second, clock: clk, lg: log.New(io.Discard, "", 0), out: io.Discard}
+	ended := make(chan error, 1)
+	go func() { ended <- s.stream(t.Context(), vmTestTarget(t)) }()
+
+	// The reading re-arms the silence timer, so once it is written the one timer pending is the
+	// silence counted from it.
+	testwait.Eventually(t, "the one reading the VM prints before it goes silent", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.written > 0
+		return s.written == 1
 	})
+	armed := clk.AwaitArmed(t, "the stream's silence timer", 1)
+	if want := start.Add(vmSampleSilence); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("the stream armed %v, want the one silence timer at %s, vmSampleSilence after its reading", armed, want)
+	}
 	select {
-	case <-stopped:
-		t.Fatalf("the stream ended before its silence passed, with %v and %d samples", err, s.written)
+	case err := <-ended:
+		t.Fatalf("the stream ended (%v) before its VM had been silent for vmSampleSilence", err)
 	default:
 	}
-	(<-expire)()
-	<-stopped
+	clk.Advance(vmSampleSilence)
+	err := testwait.Receive(t, "the stream to end once its VM has been silent for vmSampleSilence", ended)
 	if err == nil || !strings.Contains(err.Error(), "printed nothing for") {
 		t.Fatalf("a wedged VM ended the stream with %v, want the silence it was taken for dead after", err)
 	}
@@ -489,9 +484,3 @@ func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 		t.Errorf("the stream wrote %d samples, want the one reading it printed before it went silent", s.written)
 	}
 }
-
-// vmHeldTimer is a silence timer that only its test fires: a reset or a stop of it does nothing.
-type vmHeldTimer struct{}
-
-func (vmHeldTimer) Reset(time.Duration) bool { return true }
-func (vmHeldTimer) Stop() bool               { return true }

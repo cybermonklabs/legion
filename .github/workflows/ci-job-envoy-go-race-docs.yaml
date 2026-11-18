@@ -32,10 +32,13 @@ env:
 jobs:
   envoy-go-race-docs:
     runs-on: ubuntu-24.04
-    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
-    # then the step's own 60 minutes, which is 66 under this limit of 70.
-    timeout-minutes: 70
+    # The step's -timeout 65m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. It is twice and more the package's slowest run over this job's 20
+    # newest green merge-group runs up to 2026-11-15, 1881.151 s (run 43584271399), which the 60
+    # minutes it had before held only 1.9 times. The limit is at least the job's sum over those
+    # runs: its other steps at their longest, 65 s, 7 s of its clock over them, and the step's
+    # longest 1941 s plus its 65 minutes: 5913 s, or 99 minutes.
+    timeout-minutes: 100
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -88,7 +91,7 @@ jobs:
       # because the job restores the Go build cache above, and a cached pass must not stand in
       # for a run.
       - name: Race-test the document service
-        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 65m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

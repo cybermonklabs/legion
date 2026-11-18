@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/session"
 )
 
@@ -24,12 +25,12 @@ const (
 )
 
 // sweepRig is a session-consumer rig whose registry crosses the session windows on a clock the
-// test moves (stateClock, session_state_test.go), and the sweep over it. A test runs one pass
+// test moves (clocktest.Held, as stalledSessionsRig does), and the sweep over it. A test runs one pass
 // itself: no row here waits on the sweep's ticker.
 type sweepRig struct {
 	*sessionConsumerRig
 	sweep *sessionConsumerSweep
-	now   *stateClock
+	now   *clocktest.Fake
 }
 
 func newSweepRig(t *testing.T) *sweepRig { return newSweepRigKeeping(t, sweepRecordTTL) }
@@ -38,10 +39,10 @@ func newSweepRig(t *testing.T) *sweepRig { return newSweepRigKeeping(t, sweepRec
 // put the pass in front of a session its copy reads gone whose record the bucket still holds.
 func newSweepRigKeeping(t *testing.T, ttl time.Duration) *sweepRig {
 	t.Helper()
-	now := &stateClock{}
+	now := clocktest.Held()
 	rig := newSessionConsumerRig(t,
 		session.WithSessionTTL(ttl),
-		session.WithSessionClock(now.Now),
+		session.WithSessionClock(now),
 		session.WithSessionLiveWindow(sweepSessionWindow),
 		session.WithSessionGoneHorizon(sweepSessionWindow),
 	)
@@ -98,7 +99,7 @@ func TestTheSweepDeletesTheConsumerOfASessionThatEndedWithoutDeregistering(t *te
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_ended"
 	rig.register(t, sessionID)
-	rig.now.advance(sweepLapse)
+	rig.now.Advance(sweepLapse)
 	rig.requireState(t, sessionID, session.Gone)
 
 	rig.sweep.pass(context.Background())
@@ -149,7 +150,7 @@ func TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding(t *testing
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_unbound_task"
 	rig.register(t, sessionID)
-	rig.now.advance(sweepLapse)
+	rig.now.Advance(sweepLapse)
 	rig.requireState(t, sessionID, session.Gone)
 	// A relay set whose binding this task does not hold: owned is false, as it is on the task
 	// of a machine whose other task took the binding.
@@ -167,7 +168,7 @@ func TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady(t *testing.T) {
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_cold_cache"
 	rig.register(t, sessionID)
-	rig.now.advance(sweepLapse)
+	rig.now.Advance(sweepLapse)
 	rig.requireState(t, sessionID, session.Gone)
 	rig.sweep.sessions = coldSessions{rig.harness.sessions}
 
@@ -188,7 +189,7 @@ func TestTheSweepKeepsTheConsumerOfASessionTheBucketStillHolds(t *testing.T) {
 	rig := newSweepRigKeeping(t, time.Hour)
 	const sessionID = "ses_sweep_bucket_holds"
 	rig.register(t, sessionID)
-	rig.now.advance(sweepLapse)
+	rig.now.Advance(sweepLapse)
 	rig.requireState(t, sessionID, session.Gone)
 	if _, err := rig.harness.sessions.Refresh(context.Background(), sessionID); err != nil {
 		t.Fatalf("the bucket answers no record for %s (%v); this row needs one it still holds", sessionID, err)

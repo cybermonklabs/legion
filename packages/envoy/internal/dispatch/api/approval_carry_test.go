@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A human's approval is what a request to approve again follows. A request opened on a document
@@ -634,11 +635,7 @@ func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
 	documents.SettleNow(artifactID)
-	for deadline := time.Now().Add(5 * time.Second); owed(); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the document's settlement never committed")
-		}
-	}
+	testwait.Eventually(t, "the document's settlement to commit", func() bool { return !owed() })
 }
 
 // The human changes his answer. The block's answered_at moves, so the block is newly answered

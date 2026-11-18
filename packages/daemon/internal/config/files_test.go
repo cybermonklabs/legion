@@ -7,7 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A set pointer is authoritative: its file's trimmed contents, or a refusal naming the pointer
@@ -87,17 +88,13 @@ func TestReadPrivateSecretPointer(t *testing.T) {
 				_, err := ReadPrivateSecretPointer("operator_token_file", tc.path)
 				done <- err
 			}()
-			select {
-			case err := <-done:
-				want := "operator_token_file " + strings.Replace(tc.want, "%s", tc.path, 1)
-				if err == nil || !strings.HasPrefix(err.Error(), want) {
-					t.Fatalf("err = %v, want it to start %q", err, want)
-				}
-				if strings.Contains(err.Error(), "op-tok") {
-					t.Fatalf("the refusal carries the token: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("ReadPrivateSecretPointer is still waiting on the file")
+			err := testwait.Receive(t, "ReadPrivateSecretPointer's answer, rather than a wait on the file", done)
+			want := "operator_token_file " + strings.Replace(tc.want, "%s", tc.path, 1)
+			if err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("err = %v, want it to start %q", err, want)
+			}
+			if strings.Contains(err.Error(), "op-tok") {
+				t.Fatalf("the refusal carries the token: %v", err)
 			}
 		})
 	}
@@ -132,13 +129,9 @@ func TestReadGroupSecretPointer(t *testing.T) {
 			_, err := ReadGroupSecretPointer("nats_nkey_seed_file", path)
 			done <- err
 		}()
-		select {
-		case err := <-done:
-			if want := strings.Replace(want, "%s", path, 1); err == nil || err.Error() != want {
-				t.Fatalf("err = %v, want %q", err, want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("ReadGroupSecretPointer is still waiting on the file")
+		err := testwait.Receive(t, "ReadGroupSecretPointer's answer, rather than a wait on the file", done)
+		if want := strings.Replace(want, "%s", path, 1); err == nil || err.Error() != want {
+			t.Fatalf("err = %v, want %q", err, want)
 		}
 	}
 	groupRefusal := func(mode string) string {

@@ -25,6 +25,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -90,6 +91,11 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
+	// VerifyMark's wait for a mark (MarkWait), the compaction queue's waits (compactionQueue) and
+	// the edit notice sweep's gaps and due times (RunEditNotices); nil means the real clock. A test
+	// hands a clocktest fake and moves it past the wait.
+	Clock clock.Clock
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -150,6 +156,11 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// clock is Deps.Clock, the real clock when that is nil: what a room query's wait and its flush
+	// answer's timeout run on (roomQueries), VerifyMark's wait for a mark (markWait), the compaction
+	// queue's waits (compactionQueue) and the edit notice sweep's gaps and due times
+	// (RunEditNotices).
+	clock clock.Clock
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -227,8 +238,9 @@ type Service struct {
 	// describe its fork, at names where: "fork" once forkLive has brought the fork up to date,
 	// "margin", "docTree" and "capture" as a margin write (applyMargin) or a read joined to the
 	// write's transaction takes the rendering in place of reading the fork (reuseRendering), and
-	// "publish" just before publishLiveWrite releases the fork. Nil outside tests; tests use it to
-	// compare the rendering with a fresh read and render of the fork.
+	// "commit" as the transaction's commit hands the fork to the room's shadow (Ledger.commit),
+	// the last point the fork is the write's own. Nil outside tests; tests use it to compare the
+	// rendering with a fresh read and render of the fork.
 	checkRendering func(at string, write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
@@ -803,6 +815,12 @@ func (s *Service) purgeSuppressedPersistence(room string) {
 // cost in production is one nil check per service.
 var newServiceHook func(*Service)
 
+// shutdownServiceHook is nil outside this package's own tests, where the leak check installs it
+// beside newServiceHook. Shutdown calls it last, once everything else it does has returned: the
+// service's own report that its shutdown finished, which tells the leak check a service a test
+// shut down from one a test never did. The cost in production is one nil check per shutdown.
+var shutdownServiceHook func(*Service)
+
 // New constructs the ygo server used by Dispatch's document API and websocket
 // endpoint.
 func New(deps Deps) *Service {
@@ -839,6 +857,10 @@ func New(deps Deps) *Service {
 	slog.Info("dispatch: document rooms' limits", "read_budget_bytes", readBudget,
 		"max_live_rooms", roomCap, "max_doc_connections", connectionCap)
 	processID := uuid.NewString()
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	persist := deps.Persistence
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
@@ -857,6 +879,7 @@ func New(deps Deps) *Service {
 		now:               time.Now,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
+		clock:             serviceClock,
 		editNoticeQuiet:   editNoticeQuiet,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
@@ -878,7 +901,7 @@ func New(deps Deps) *Service {
 	if deps.TestHooks {
 		service.hooks = newTestHooks()
 	}
-	service.compactions = startCompactionQueue(service.compactionStep)
+	service.compactions = startCompactionQueue(serviceClock, service.compactionStep)
 	// The store tells the queue of every append it commits and every load it reads; a store that
 	// wraps a PgVersioned - a test's, to fail or hold one of its calls - tells it through the one
 	// it wraps.
@@ -1092,7 +1115,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. It runs on the
+// service's clock (Deps.Clock), so a test drives it with a fake.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1124,6 +1148,12 @@ const ShutdownDrainBudget = 9 * time.Second
 // ctx, and is cancelled once ctx ends; either way Shutdown returns only after the queue's worker
 // has, so nothing of it outlives the store's pools, which its caller closes next.
 func (s *Service) Shutdown(ctx context.Context) error {
+	// Registered first, so it runs after every other deferred step of the shutdown.
+	defer func() {
+		if shutdownServiceHook != nil {
+			shutdownServiceHook(s)
+		}
+	}()
 	// Last, whichever way Shutdown returns: closing a room may yet have something to send. The
 	// awareness relay sends what it still holds - the removals the rooms' closes made, and what
 	// ygo's shutdown drained from the rooms' relay lanes - through the sender, so it closes first.
@@ -1155,7 +1185,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {

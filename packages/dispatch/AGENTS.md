@@ -1682,8 +1682,9 @@ bun run dispatch:local
 
 `bun run test` runs the suite in two halves, because only the web half wants a DOM:
 `bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
-`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
-as the node processes those harness tests are.
+`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads only the
+row-deadline preload and runs as the node processes those harness tests are.
+Each half passes its own `--timeout`, which the package's `"//"` key gives with its reading.
 The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
 DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
 global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds

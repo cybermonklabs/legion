@@ -92,7 +92,9 @@ func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) 
 }
 
 // renameGitHub is GitHub as a transferred repository's calls reach it: every REST path and every
-// GraphQL variable pair naming a repository, with the bearer each request carried.
+// GraphQL variable pair naming a repository, with the bearer each request carried. A request that
+// carries no lease of the package's App token stand-ins (aLease) is another process's: it is
+// answered 404 and logged, and is recorded as no call.
 type renameGitHub struct {
 	url     string
 	mu      sync.Mutex
@@ -113,7 +115,7 @@ type renameCall struct {
 func newRenameGitHub(t *testing.T, answers func(r *http.Request, body string) string) *renameGitHub {
 	t.Helper()
 	g := &renameGitHub{answers: answers}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		call := renameCall{method: r.Method, path: r.URL.RequestURI(), bearer: r.Header.Get("Authorization")}
 		if parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/repos/"), "/", 3); r.URL.Path != "/graphql" && len(parts) >= 2 {

@@ -15,16 +15,31 @@
 # plugin gate holds to this daemon's contract before anything else. This proof launches no agent,
 # so the OMP it names is a stub that answers the gate's load probe and nothing else, under a home
 # of the run's own that holds the checkout's plugin manifest where the gate reads it.
+#
+# The daemon's store is a database of the run's own, made with psql on the server
+# LEGION_E2E_PG_DSN names (CI's service), or on the container the run starts when it names none,
+# and dropped by the cleanup. The DSN must name a loopback host, which lib/loopback-dsn.py asks
+# libpq for, so the run needs psql and python3 with libpq beside tmux. The daemon is handed that
+# database in LEGION_POSTGRES_DSN, in its own environment alone: legion.yaml names no
+# postgres_dsn, and no variable of this shell holds the URI. The run's own container listens on a
+# unix socket in a directory of the run's own and publishes no port (start_postgres_container,
+# lib/rig.sh). Its guard is proof_guard's below, and every wait goes through lib/rig.sh's
+# wait_for, which gives up 30 s before it.
 set -euo pipefail
 
 pid=
-# lib/rig.sh's start_kept and keep_port set these: the daemon's pid, copied to pid on each start,
-# and its port keeper's.
+# lib/rig.sh's start_process (through start_daemon below) and keep_port set these: the daemon's
+# pid, copied to pid on each start, and its port keeper's.
 daemon_pid=
 daemon_keeper_pid=
 ok=
 container=legion-e2e-pg-$$
-work=$(mktemp -d /tmp/legion-e2e.XXXXXXXX)
+# The server the run makes its database on, and that database, once made: cleanup drops it. The
+# run's own container's socket directory, once it has one: cleanup removes it after the container.
+pg_server=
+database=
+pg_sockets=
+work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e.XXXXXXXX")
 # lib/rig.sh's process helpers log each service to $evidence/logs/<name>.log.
 evidence=$work
 timeout_hook=
@@ -35,7 +50,12 @@ mkdir -p "$work/logs"
 cleanup() {
   if [ -n "${pid:-}" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
   if [ -n "${daemon_keeper_pid:-}" ]; then kill -TERM "$daemon_keeper_pid" 2>/dev/null || true; fi
+  if [ -n "${database:-}" ]; then
+    psql "$pg_server" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+      echo "could not drop database $database; drop it by hand"
+  fi
   docker rm -f -v "$container" >/dev/null 2>&1 || true
+  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets" || true
   if [ -n "${ok:-}" ]; then
     rm -rf "$work"
   else
@@ -48,20 +68,27 @@ cleanup() {
   return 0
 }
 
-# stop_daemon: $1 is how it was asked to stop. Bounded, and the exit status read and judged
-# (daemon.Run returns 0 on a cancelled context, so a non-zero status is a defect, not a stop).
+# daemon_exited is whether the daemon ($pid) has exited, for stop_daemon's wait_for.
+daemon_exited() {
+  kill -0 "$pid" 2>/dev/null || return 0
+  echo "the daemon ($pid) is still running"
+  return 1
+}
+# kill_daemon is stop_daemon's timeout_hook: SIGKILL on the way out of a wait the daemon never
+# ended, since a leaked daemon holds the port and, under $(...) or a pipe, the caller.
+kill_daemon() {
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pid=
+}
+# stop_daemon: $1 is how it was asked to stop. It waits for the exit through wait_for, so a daemon
+# that ignores the stop fails the run by name at the guard's deadline, killed on the way out, and
+# then reads and judges the exit status (daemon.Run returns 0 on a cancelled context, so a
+# non-zero status is a defect, not a stop).
 stop_daemon() {
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || break
-    # SIGKILL on the way out: a leaked daemon holds the port and, under $(...) or a pipe, the caller.
-    [ "$i" = 50 ] && {
-      echo "daemon ignored $1"
-      kill -KILL "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      exit 1
-    }
-    sleep 0.2
-  done
+  timeout_hook=kill_daemon
+  wait_for "the daemon ($pid) to exit on $1" daemon_exited
+  timeout_hook=
   st=0
   wait "$pid" || st=$?
   [ "$st" = 0 ] || {
@@ -82,24 +109,23 @@ fail() {
   echo "$*" >&2
   exit 1
 }
-# wait_healthz [SUFFIX] polls the daemon ($pid) on $port for 10 s. A daemon that exits first stops
-# the run at once, naming the daemon's exit status, rather than after the full wait. Each poll has a
-# timeout: the port is kept (below), so a daemon that is not serving yet leaves a request queued,
-# unanswered, instead of refused.
+note() { echo "   $*"; }
+# healthz_answered [SUFFIX] is the daemon's ($pid) answer to /healthz on $port, for wait_for: a
+# daemon that exits first ends the wait at once, naming its exit status, rather than at the
+# guard's deadline. Each poll has a timeout: the port is kept (below), so a daemon that is not
+# serving yet leaves a request queued, unanswered, instead of refused.
+healthz_answered() {
+  local status=0
+  curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" >/dev/null && return 0
+  kill -0 "$pid" 2>/dev/null && return 1
+  wait "$pid" || status=$?
+  pid= # reaped: cleanup must not signal a number the kernel may reuse
+  wait_impossible="the daemon exited ($status) before it answered"
+  return 1
+}
+# wait_healthz [SUFFIX] waits for the daemon to answer /healthz.
 wait_healthz() {
-  local i status=0
-  for i in $(seq 1 50); do
-    curl -fs --max-time 2 "http://127.0.0.1:$port/healthz" >/dev/null && return 0
-    if ! kill -0 "$pid" 2>/dev/null; then
-      wait "$pid" || status=$?
-      pid= # reaped: cleanup must not signal a number the kernel may reuse
-      echo "daemon exited ($status) before it answered /healthz${1:-}"
-      exit 1
-    fi
-    sleep 0.2
-  done
-  echo "daemon never answered /healthz${1:-}"
-  exit 1
+  wait_for "the daemon to answer /healthz${1:-}" healthz_answered
 }
 # held_by_daemon_and_keeper: after a healthy start, the socket the daemon serves on is held by the
 # daemon and the keeper alone. The daemon adopts it close-on-exec, so no process it starts (its
@@ -109,34 +135,39 @@ held_by_daemon_and_keeper() {
   held_only_by "$port" "$pid" "$daemon_keeper_pid" ||
     fail "the socket the daemon serves on port $port is not held by exactly the daemon ($pid) and its keeper ($daemon_keeper_pid)${1:-}"
 }
-# readyz_200 [SUFFIX] reads GET /readyz on the daemon ($pid) on $port and requires 200, the answer
+# readyz_200 [SUFFIX] waits for GET /readyz on the daemon ($pid) on $port to answer 200, the answer
 # the daemon's one-way serving latch gives from the moment it serves: the boot built its runtime,
 # installed its launcher acceptor and began serving (the daemon's servingLatch). While the boot
 # runs the daemon answers nothing, because the API is served only once the boot is done; from the
 # stop on, a connection the server still holds through its drain gets 503 `stopping`; and nothing
 # is read out of the database on the way.
-# It polls for 5 s rather than reading once, because the daemon sets the latch on a goroutine of
-# its own that starts when the serving goroutine does: /healthz can be answered in the instant
-# before that goroutine runs, when /readyz still answers 503 `starting`, and a single read would
-# fail a daemon that is about to say so. A daemon that answers /healthz and never latches still
-# fails here, which is what this proves.
+# It waits rather than reading once, because the daemon sets the latch on a goroutine of its own
+# that starts when the serving goroutine does: /healthz can be answered in the instant before that
+# goroutine runs, when /readyz still answers 503 `starting`, and a single read would fail a daemon
+# that is about to say so. A daemon that answers /healthz and never latches still fails here, at
+# the guard's deadline, which is what this proves.
 # The status is read off curl's stdout rather than asserted by curl's -f, so the failure names what
 # it got, and the body with it, which says whether the daemon called itself starting or stopping; a
 # connection curl never made writes no body and exits non-zero, which the run names 000 and fails
 # on the same way.
+readyz_answered_200() {
+  local status
+  : >"$work/readyz.json" # curl writes nothing here when it never connected, and this is read below
+  status=$(curl -sS -o "$work/readyz.json" -w '%{http_code}' --max-time 2 \
+    "http://127.0.0.1:$port/readyz") || status=000
+  [ "$status" = 200 ] && return 0
+  echo "GET /readyz answered $status $(cat "$work/readyz.json"), want 200"
+  return 1
+}
 readyz_200() {
-  local i status
-  for i in $(seq 1 25); do
-    : >"$work/readyz.json" # curl writes nothing here when it never connected, and this is read below
-    status=$(curl -sS -o "$work/readyz.json" -w '%{http_code}' --max-time 2 \
-      "http://127.0.0.1:$port/readyz") || status=000
-    [ "$status" = 200 ] && return 0
-    sleep 0.2
-  done
-  fail "GET /readyz${1:-} answered $status $(cat "$work/readyz.json"), want 200"
+  wait_for "GET /readyz${1:-} to answer 200" readyz_answered_200
 }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# Twice the longest green run on record, rounded up to the minute: e2e.yaml's 24 green jobs up to
+# 2026-11-15, the longest proof step 111 s (run 43611577738), against ci.yaml's Stage 1 step, which
+# builds from a warm Go cache and took at most 7 s in 140 green test jobs (run 43570026107).
+proof_guard 240
 # A devbox's first tmux can be a wrapper script or a mise shim. mise runs it from the daemon's
 # working directory, under the daemon's tmux environment, which moves the XDG directories under the
 # state directory; this run's own HOME (pane_home, below) has the same effect. From a working
@@ -157,10 +188,15 @@ if [ -n "$first_tmux" ] && {
 }; then
   PATH="$(real_bin_path "$work/realbin" tmux):$PATH"
 fi
-command -v tmux >/dev/null || {
-  echo "tmux is required: the Go daemon supervises under tmux and refuses to start without it"
-  exit 1
-}
+for tool in tmux psql; do
+  command -v "$tool" >/dev/null || {
+    case $tool in
+      tmux) echo "tmux is required: the Go daemon supervises under tmux and refuses to start without it" ;;
+      psql) echo "psql is required: the run makes the daemon's database of its own with it" ;;
+    esac
+    exit 1
+  }
+done
 export XDG_STATE_HOME="$work/xdg" # the registry lands here, never in the devbox's real one
 project="E2E$$$(date +%s)"        # daemon_boot counts per project; a fresh key makes boots==1 true on any store
 # A port this run holds alone, so a daemon of another run is never mistaken for this one's: a keeper
@@ -171,27 +207,70 @@ keep_port daemon_keeper port
 go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
-# CI passes its service's DSN; the devbox brings its own container on an ephemeral port.
-if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
+# CI passes its service's DSN; the devbox brings its own container, on a unix socket in a
+# directory of the run's own. Either way the daemon's store is a database the run makes there, so
+# nothing the run writes lands in a database the caller's DSN names.
+if [ -n "${LEGION_E2E_PG_DSN:-}" ]; then
+  pg_server=$LEGION_E2E_PG_DSN
+else
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
-  docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
-    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
-  # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
-  # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
-  for i in $(seq 1 40); do
-    docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion >/dev/null && break
-    [ "$i" = 40 ] && {
-      echo "postgres never became ready"
-      exit 1
-    }
-    sleep 0.5
-  done
-  pgport=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
-  LEGION_E2E_PG_DSN="postgres://legion:legion@127.0.0.1:$pgport/legion"
+  pg_password=legion # the scratch container's own login, which nothing outside this run reaches
+  start_postgres_container "$container" pg_sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+    -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$pg_password" \
+    -e POSTGRES_DB=legion -- ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+  # Its second readiness line: the entrypoint's bootstrap server answers on the same socket first,
+  # then stops, and a daemon that connected to it would be reset.
+  wait_for "postgres in $container to be ready" postgres_container_ready "$container"
+  pg_server="postgres://legion:${pg_password}@/legion?host=$pg_sockets"
 fi
+# lib/loopback-dsn.sh's require_loopback_dsn says why these three go before the first connection.
+unset PGHOSTADDR PGSERVICE PGSERVICEFILE
+run_db=stage1_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+# The URI form: the settings check below reads a DSN that leaks into the state by its
+# `postgres://`, and that is the form the daemon is given, in LEGION_POSTGRES_DSN (with_store
+# below). A caller's DSN goes through the guard, which reads it with libpq and refuses any host
+# but a loopback one, here, before the database is made; the run's own container's is a socket
+# directory the run made, which the guard would refuse as no loopback host, so the run writes that
+# URI itself.
+refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
+if [ -z "$pg_sockets" ]; then
+  require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
+    "the run creates and drops a database there" --uri || fail "$refusal"
+fi
+psql "$pg_server" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
+  fail "could not create database $run_db on the run's PostgreSQL server"
+database=$run_db
+note "the daemon's store is the run's own database $database"
+
+# with_store COMMAND... runs COMMAND, a legion command that reads legion.yaml, in place of the
+# subshell that calls it, with LEGION_POSTGRES_DSN naming the run's own database as a URI. The
+# file names no postgres_dsn, so the loader takes that variable
+# (packages/daemon/internal/config/config.go), and every command that loads the file needs it:
+# the daemon, and `legion stop`. A caller's DSN reaches the daemon through lib/loopback-dsn.sh's
+# exec_run_database, so the URI is in no variable of this shell, no argument list and no file;
+# the run's own container's is the one the run writes, as an assignment. Run it in ( … ) or in
+# the background.
+with_store() {
+  if [ -n "$pg_sockets" ]; then
+    LEGION_POSTGRES_DSN="postgres://legion:${pg_password}@/$run_db?host=$pg_sockets" exec "$@"
+  fi
+  exec_run_database LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
+    "the run creates and drops a database there" --uri --env LEGION_POSTGRES_DSN -- "$@"
+}
+# start_daemon starts the daemon as the service `daemon` on a copy of the socket daemon_keeper
+# holds, as lib/rig.sh's start_kept starts one, and copies its pid to pid. with_store runs first
+# and held-port.py after it, where start_kept would run held-port.py first: the DSN reaches the
+# helper in the environment of the subshell start_process runs. The first start and the restart
+# both run it, so each daemon is handed its store the same way, and every exec keeps the pid, so
+# pid is the daemon's own.
+start_daemon() {
+  start_process daemon with_store python3 "$root/scripts/e2e/lib/held-port.py" exec \
+    --from "$work/daemon_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
+    "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
+  pid=$daemon_pid
+}
 
 # The operator bearer, as the 0600 file operator_token_file names, and the OMP the daemon resolves
 # at boot (LEGION_OMP_PATH): a stub that answers the plugin gate's load probe (`omp models
@@ -239,11 +318,11 @@ pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
 # repositories are Dispatch's mapping, so its entry is empty. The one project is not this daemon's
 # own, so boot resolves no host git, jj or clone credential for it (readTmux reads tools only for
 # cfg.Projects[cfg.Project]), and with no dispatch_url there is no workflow and no App token mint
-# (openWorkflow): the proof still launches nothing and needs nothing new.
+# (openWorkflow): the proof still launches nothing and needs nothing new. It names no postgres_dsn:
+# the daemon reads its store from LEGION_POSTGRES_DSN (with_store above).
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $port
-postgres_dsn: $LEGION_E2E_PG_DSN
 state_dir: $work/state
 operator_token_file: $work/operator-token
 review_round_cap: 5
@@ -269,9 +348,15 @@ github_apps:
 EOF
 
 # 1. refuses without Postgres, naming the host and never the password. The bad DSN carries its
-#    own credentials so both halves of that assertion mean something wherever this runs.
-sed 's#^postgres_dsn: .*#postgres_dsn: postgres://legion:hunter2@127.0.0.1:5499/legion#' \
-  "$work/legion.yaml" >"$work/bad.yaml"
+#    own credentials so both halves of that assertion mean something wherever this runs. It is the
+#    file's own postgres_dsn, which outranks LEGION_POSTGRES_DSN, and this start is given none. Its
+#    password is random bytes of this run, so no file holds it and the assertion below reads a
+#    value only this refusal could have printed.
+bad_password=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+{
+  cat "$work/legion.yaml"
+  printf 'postgres_dsn: postgres://legion:%s@127.0.0.1:5499/legion\n' "$bad_password"
+} >"$work/bad.yaml"
 if "${pane_home[@]}" "$work/legion" start --config "$work/bad.yaml" 2>"$work/refusal.log"; then
   echo "expected refusal"
   exit 1
@@ -282,14 +367,13 @@ grep -q '127.0.0.1:5499' "$work/refusal.log" || {
 }
 # `! grep …` would be read as a negation set -e ignores (shellcheck SC2251): the assertion could
 # never fail. The password must fail the run, so the run says so itself.
-grep -q 'hunter2' "$work/refusal.log" && {
+grep -q -- "$bad_password" "$work/refusal.log" && {
   echo "the refusal printed the password"
   exit 1
 }
 
 # 2. starts, answers, restarts against the same store
-start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
-pid=$daemon_pid
+start_daemon
 wait_healthz
 # The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
 # It is read here and after the restart both, never at one boot alone: the latch is one-way and
@@ -333,7 +417,8 @@ jq -e '(.capabilities | length) == 21
 # fixture set over its default, a default the fixture left alone, the runtime, the envoy_url with
 # its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
 # App key — the App rides as its id and installations alone, and nothing anywhere in the document
-# reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
+# reads as a PEM, a DSN (the store's, which the daemon read from LEGION_POSTGRES_DSN), the planted
+# password or a `user:password@` of any URL.
 jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
@@ -353,8 +438,7 @@ jq -e '.settings.review_round_cap == 5
 kill -TERM "$pid"
 stop_daemon SIGTERM
 
-start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
-pid=$daemon_pid
+start_daemon
 wait_healthz " after restart"
 # The restart's own latch, which the first boot's proves nothing about: a second boot, over a store
 # that already holds this project, must reach serving and say so, and its 503 would be as invisible
@@ -370,7 +454,8 @@ jq -e '.daemon.boots == 2' "$work/state2.json" || {
   echo "firstBootAt changed across the restart: the store is not the same one"
   exit 1
 }
-"$work/legion" stop --config "$work/legion.yaml"
+# `legion stop` loads legion.yaml as the daemon does, so it is handed the store the same way.
+(with_store "$work/legion" stop --config "$work/legion.yaml")
 stop_daemon "legion stop"
 
 ok=1

@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   type Stats,
@@ -26,12 +27,52 @@ export type TemporaryDirectoriesOptions = {
 /** What {@link temporaryDirectory} takes. */
 export type TemporaryDirectoryOptions = {
   /**
-   * Returns the path under `realpathSync` of `tmpdir()`. A macOS `tmpdir()` is a symlink (`/var`
-   * to `/private/var`), so a test that compares a path a child process printed with the path the
-   * fixture returned needs the resolved one.
+   * The directory the temporary one is made in, `tmpdir()` by default: {@link memoryRoot} for a
+   * file whose hooks make hundreds of entries in it.
+   */
+  root?: string;
+  /**
+   * Returns the path under `realpathSync` of the parent, `root` or `tmpdir()`. A macOS `tmpdir()`
+   * is a symlink (`/var` to `/private/var`), so a test that compares a path a child process
+   * printed with the path the fixture returned needs the resolved one.
    */
   real?: boolean;
 };
+
+/**
+ * `/dev/shm` when `mountinfo` shows a tmpfs mounted there, read-write and without `noexec`, and
+ * `tmpdir()` otherwise, or when the file cannot be read: the root for a fixture whose one hook or
+ * row makes or removes hundreds of entries. Each of those calls on the dev box's shared disk waits
+ * for the volume's metadata and I/O that every session of the box shares, 0.2 ms to 6 ms an entry,
+ * so `score.test.ts`'s 5,004 entries took 1,122 ms to 12,608 ms there and 49 ms to 65 ms on
+ * `/dev/shm` (dispatch://INFRA-4311). `noexec` is refused because a fixture may run a script it
+ * wrote there (`multi-repo-acceptance-harness.ts`). The last mount at `/dev/shm` in the file is the
+ * one a path there reaches. `mountinfo` is the seam the fixture's own rows use.
+ */
+export function memoryRoot(mountinfo = "/proc/self/mountinfo"): string {
+  let lines: string[];
+  try {
+    lines = readFileSync(mountinfo, "utf8").split("\n");
+  } catch {
+    return tmpdir();
+  }
+  let found: { fstype: string; options: string[] } | undefined;
+  for (const line of lines) {
+    // <id> <parent> <major:minor> <root> <mount point> <mount options> [optional fields...] - <fstype> <source> <super options>
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-", 6);
+    if (fields[4] !== "/dev/shm" || separator < 0) continue;
+    found = { fstype: fields[separator + 1] ?? "", options: (fields[5] ?? "").split(",") };
+  }
+  if (
+    found?.fstype === "tmpfs" &&
+    found.options.includes("rw") &&
+    !found.options.includes("noexec")
+  ) {
+    return "/dev/shm";
+  }
+  return tmpdir();
+}
 
 /**
  * Makes one fresh directory and returns its path. `suffix` goes into the directory's name, so a
@@ -106,10 +147,9 @@ export function temporaryDirectories(
  * from a test body, or from a hook of its own registered below this call: Bun runs the hooks of a
  * scope in the order they were registered.
  *
- * `real` resolves `tmpdir()` once, at the call, and joins the reserved name onto the resolved
- * parent: `realpathSync` needs a path that exists, and the directory itself does not yet. This
- * form takes no `root`: nothing needs one directory for a whole file on another filesystem, and
- * the maker is what a cross-filesystem row uses.
+ * `root` is the directory the reserved one is made in, `tmpdir()` by default. `real` resolves that
+ * parent once, at the call, and joins the reserved name onto the resolved parent: `realpathSync`
+ * needs a path that exists, and the directory itself does not yet.
  *
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
@@ -119,7 +159,8 @@ export function temporaryDirectory(
   prefix: string,
   options: TemporaryDirectoryOptions = {}
 ): string {
-  const parent = options.real === true ? realpathSync(tmpdir()) : tmpdir();
+  const base = options.root ?? tmpdir();
+  const parent = options.real === true ? realpathSync(base) : base;
   const directory = join(
     parent,
     `${nameTemplate(prefix, undefined)}${randomBytes(4).toString("hex")}`

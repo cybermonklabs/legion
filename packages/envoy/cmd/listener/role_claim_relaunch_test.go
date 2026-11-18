@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleClaimRelaunchRig is one listener's whole set of v1 routes over one listener's stores, with
@@ -93,8 +93,7 @@ func (r *roleClaimRelaunchRig) send(method, target, body string) *httptest.Respo
 // stored is the role's claim as the bucket holds it now.
 func (r *roleClaimRelaunchRig) stored() store.RoleClaim {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(r.t)
 	claim, err := r.deps.registry.RoleClaim(ctx, r.role)
 	if err != nil {
 		r.t.Fatalf("read %s's claim: %v", r.role, err)

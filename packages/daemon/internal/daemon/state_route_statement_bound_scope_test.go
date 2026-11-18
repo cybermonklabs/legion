@@ -2,18 +2,17 @@ package daemon
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // settingState is a state projection that reads, through the route's own transaction, the
@@ -37,7 +36,6 @@ func (s *settingState) State(ctx context.Context, tx pgx.Tx) (api.State, []super
 // on it next, a migration's long DDL among them (internal/store's apply), which is why the route
 // sets it for its transaction and the pool carries the idle bound instead.
 func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
-	const bound = 2 * time.Second
 	watcher := isolatedOutboxPool(t)
 	application := "legion-daemon-" + strings.ToLower(randomSuffix(t))
 	st, err := store.Open(context.Background(), daemonDSN(t, watcher, application))
@@ -48,20 +46,20 @@ func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
 
 	state := &settingState{}
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
-		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
+		State: state, StateTransactions: st, Log: quietLogger(),
 	}).Handler)
 	t.Cleanup(server.Close)
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Get(server.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("GET the state: %v", err)
+	got := getState(testwait.Context(t), server.URL)
+	if got.err != nil {
+		t.Fatalf("GET the state: %v", got.err)
 	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET the state = %d %s, want 200", response.StatusCode, strings.TrimSpace(string(body)))
+	if got.status != http.StatusOK {
+		t.Fatalf("GET the state = %d %s, want 200", got.status, got.body)
 	}
-	if state.bound != "2s" {
-		t.Fatalf("the route's own transaction runs under statement_timeout %q, want the route's bound, 2s", state.bound)
+	// The route's bound is the daemon's own minute (stateRouteReadBound), which PostgreSQL shows
+	// as 1min.
+	if state.bound != "1min" {
+		t.Fatalf("the route's own transaction runs under statement_timeout %q, want the route's bound, 1min", state.bound)
 	}
 
 	// The pool has one connection, so this read runs on the connection the route gave back.
