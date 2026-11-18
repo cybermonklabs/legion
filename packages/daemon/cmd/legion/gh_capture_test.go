@@ -238,19 +238,44 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
-// realGHForCapture is the real gh the capture test drives: LEGION_GH_PATH when the test runs in a
-// Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
+// realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
+// in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
 // neither skips, as the other gh-backed tests do.
+//
+// It also puts this test binary's own `legion gh` first on the test's PATH
+// (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
+// testing: Go resolves a command's name against the PATH of the process making the call and
+// never against the one the test sets on the child's environment (os/exec LookPath, read when
+// exec.Command is built), so on a machine that has a `gh` of its own — a Legion pod's
+// /opt/legion/bin/gh, which runs the image's legion and not this build, among them — that gh
+// would answer the call and the test would measure it. Every caller runs `gh` that way.
 func realGHForCapture(t *testing.T) string {
 	t.Helper()
-	if path := os.Getenv("LEGION_GH_PATH"); path != "" {
-		return path
+	path := os.Getenv("LEGION_GH_PATH")
+	if path == "" {
+		found, err := exec.LookPath("gh")
+		if err != nil {
+			t.Skip("no real gh on this machine: the capture test drives one")
+		}
+		path = found
 	}
-	if path, err := exec.LookPath("gh"); err == nil {
-		return path
+	ghWrapperFirstOnPath(t)
+	return path
+}
+
+// ghWrapperFirstOnPath puts a `gh` that runs this test binary's `legion gh` first on the test's
+// PATH for the rest of the test, as a pane's and a pod's PATH carries the wrapper the runtimes
+// install. The wrapper runs the binary under test, so a call a test makes by the name `gh`
+// reaches the code of this package; t.Setenv puts the PATH back when the test ends, and the
+// directory goes with the test's own temporary one.
+func ghWrapperFirstOnPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	wrapper := "#!/bin/sh\n" + testMainEnv + "=1 exec '" + os.Args[0] + "' gh \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(wrapper), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	t.Skip("no real gh on this machine: the capture test drives one")
-	return ""
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // Through the real gh and the real git, against a capture proxy standing in for GitHub: every
@@ -260,8 +285,8 @@ func realGHForCapture(t *testing.T) string {
 // explicit endpoint, -R under GH_REPO, --help=false, a name in --repos under --org, -R after an
 // optional-value shorthand, every argument of a plural slot, a placeholder gh fills from GH_REPO,
 // the working directory's own repository as gh reads its remotes whatever their scheme — the issue
-// owner's write token only for the issue owner's repository and for a command naming none run
-// where only that owner's remotes are, another owner's read-only token for that owner's, and the
+// owner's token only for the issue owner's repository and for a command naming none run
+// where only that owner's remotes are, each other owner's own token for that owner's, and the
 // git gh runs itself asking the wrapper for the owner in its path. A command the wrapper cannot
 // read for certain (a gh alias or an extension, run, as `gh help`'s target or after --version, a
 // command gh's own help does not list, `gh extension exec`, a search qualifier it cannot read,
@@ -279,7 +304,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	proxy := startCaptureProxy(t)
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
-	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"}
+	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_write"}
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
 		"acme":    ghconfig.Render(tokens["acme"], "implement", expires),
 		"sjawhar": ghconfig.Render(tokens["sjawhar"], "implement", expires),
@@ -473,7 +498,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/2"}, "sjawhar", ""},
 		{nil, []string{"api", "repos/acme/widgets"}, "acme", ""},
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
-		{nil, []string{"api", "repos/other/thing"}, "", `"other" is not an owner of this project`},
+		{nil, []string{"api", "repos/other/thing"}, "", `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
@@ -515,7 +540,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"repo", "view", "--json", "nameWithOwner"}, "sjawhar", ""},
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
-		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
@@ -530,7 +555,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/acme/widgets/issues/1"}, "", "more than one owner||is no option"},
 		{otherClone, nil, []string{"repo", "sync", "--source", "acme/widgets"}, "", "more than one owner"},
 		{otherClone, nil, []string{"issue", "develop", "3", "--branch-repo", "acme/widgets", "--name", "x"}, "", "more than one owner"},
-		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{home, []string{"GH_REPO=acme/widgets"}, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||is no option"},
 		{issueWorkspace, []string{"GH_REPO=sjawhar/legion"}, []string{"project", "link", "1", "--owner", "acme"}, "", "more than one owner"},
 		// Round 5's: a passthrough leaf's repository after `--` (deep 1); repo set-default's
@@ -540,7 +565,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{issueWorkspace, nil, []string{"repo", "fork", "--org", "acme", "--", "sjawhar/legion"}, "", "more than one owner"},
 		{issueWorkspace, nil, []string{"repo", "clone", "--", "sjawhar/legion"}, "sjawhar", ""},
 		{issueWorkspace, nil, []string{"repo", "set-default", "sjawhar/legion"}, "", "more than one owner"},
-		{outsideClone, nil, []string{"pr", "comment", "sjawhar/legion#2", "--body", "hi"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "comment", "sjawhar/legion#2", "--body", "hi"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{issueWorkspace, nil, []string{"pr", "view", "sjawhar/legion#2", "--json", "title"}, "acme", ""},
 		{issueWorkspace, nil, []string{"pr", "view", "https://github.com/sjawhar/legion/issues/5", "--json", "title"}, "", "more than one owner"},
 		{otherClone, nil, []string{"pr", "view", "https://github.com/acme/widgets/tree/x", "--json", "title"}, "", "more than one owner"},

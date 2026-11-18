@@ -9,6 +9,7 @@ package appauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -156,7 +157,12 @@ type saidShortfall struct {
 // A cut that leaves no permission at all refuses the mint instead: GitHub reads a request with
 // no permissions as every permission the installation holds, so a body without them would mint
 // wider than the role's set asks for rather than narrower. The refusal names the role, the
-// owner and the set asked for (askedFor), and carries no token.
+// owner and the set asked for (askedFor), and carries no token. A gh bundle leaves that owner's
+// directory out over it, unless it is the bundle's own default (mintBundle).
+//
+// An installation its account suspended is refused by the read, before any token is asked of it
+// (grantedPermissions, errInstallationSuspended), and a bundle leaves that owner's directory out
+// over it in the same way.
 //
 // A 422 from the exchange after this cut is a grant that changed between the two calls
 // (ErrNarrowingRefused): it stays the hard refusal it is.
@@ -168,11 +174,22 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	permissions, short := narrowToGranted(request.permissions, granted)
 	m.sayShortfalls(request.role, request.owner, short)
 	if len(permissions) == 0 {
-		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has",
-			request.role, request.owner, askedFor(request.permissions))
+		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has: %w",
+			request.role, request.owner, askedFor(request.permissions), errGrantedNone)
 	}
 	return m.exchange(ctx, jwt, installation, permissions)
 }
+
+// errGrantedNone is the refusal exchangeGranted makes of an installation granted none of what the
+// request asks for: an answer about the installation, read from what its account approved, which
+// a bundle leaves that owner's directory out over (credential.go's leaveOutReason).
+var errGrantedNone = errors.New("the installation is granted none of the permissions asked for")
+
+// errInstallationSuspended is the refusal grantedPermissions makes of an installation its account
+// suspended: an answer about the installation, read from the installation's own suspended_at,
+// which a bundle leaves that owner's directory out over (credential.go's leaveOutReason), where
+// a rate limit or GitHub's own trouble is not one.
+var errInstallationSuspended = errors.New("the installation is suspended")
 
 // grantedPermissions is what owner's account approved for the App's installation: GET
 // /app/installations/{id} under the App's JWT answers the installation, whose permissions object
@@ -180,6 +197,16 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 // and names none of the ones it is granted nothing of. GitHub's trouble is transient, as every
 // other read here is, and a 404 is the installation gone (errInstallationGone), which mint
 // answers by looking for the installation once more.
+//
+// The same answer says whether the account suspended the installation: its suspended_at is a
+// time for one that is and null for every other, the field discovery leaves a suspended
+// installation out of the owners by (discoverInstallations). A suspended installation is refused
+// here (errInstallationSuspended) and no token is asked of it. GitHub answers that token request
+// 403, the status of its secondary rate limit too, so the exchange could tell the two apart by
+// the words of GitHub's message alone, and a message GitHub rewords would turn a suspended
+// owner into a failure of every role's bundle. A field has no words to change. This read is
+// what finds an installation suspended after discovery listed it, and one the configuration
+// names, which discovery never lists.
 //
 // It is read before every exchange and never cached. A mint happens about three times an hour
 // per scope, so the read costs little, and an account that approves a grant has it asked for at
@@ -209,9 +236,13 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	}
 	var payload struct {
 		Permissions map[string]string `json:"permissions"`
+		SuspendedAt *string           `json:"suspended_at"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("GitHub App installation permissions read returned an invalid response")
+	}
+	if payload.SuspendedAt != nil {
+		return nil, fmt.Errorf("%w: GitHub answers installation %s with suspended_at %s", errInstallationSuspended, installation, *payload.SuspendedAt)
 	}
 	return payload.Permissions, nil
 }

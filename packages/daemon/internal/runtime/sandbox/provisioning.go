@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"slices"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -11,6 +12,10 @@ import (
 // here together: failedInit, which an observation reads a pod's death out of (verdict), and
 // provisioning, which a relaunch reads a pod still coming up by (awaitRoleLauncher). They are one
 // judgement seen from either side, so a pod cannot be dead to the one and starting to the other.
+// neverStarted lives here too, though it reads a pod's conditions rather than its init containers,
+// and judges every pod the runtime launches, the project controller's as well as an issue's: a pod
+// scheduled onto a node that never made it ready to start, which a relaunch replaces rather than
+// waits on.
 
 // fetchRestartGrace is how many times the kubelet may restart a pod's workspace-fetch before a
 // non-zero end of it is the pod's death rather than one more start: three, so the fourth restart
@@ -75,4 +80,55 @@ func provisioning(pod *corev1.Pod) bool {
 	return slices.ContainsFunc(pod.Status.InitContainerStatuses, func(status corev1.ContainerStatus) bool {
 		return status.State.Running != nil || (initEnd(status) != nil && startingAgain(pod, status))
 	})
+}
+
+// startingGrace is the longest neverStarted leaves a pod just scheduled onto a node to start,
+// whatever the bound it judges against: a minute, several times the 9 to 15 s an issue pod's node
+// takes from the pod's scheduling to reporting it ready to start its containers.
+const startingGrace = time.Minute
+
+// neverStarted is how long ago pod was created and how long ago it was scheduled onto a node that
+// has not made it ready to start its containers, and whether it has never started at now: created
+// longer than bound ago, and scheduled longer than its margin ago, half of bound or startingGrace,
+// whichever is less. The kubelet reports PodReadyToStartContainers False until it has mounted the
+// pod's volumes and made its sandbox, and no container of the pod runs before then, an init
+// container or the launcher its roles run in: a node that cannot surface the new persistent disk an
+// issue pod owns (FailedMount) holds the pod there for as long as the pod lives, and a launch that
+// keeps such a pod waits for its launcher in vain at every try (relaunch). Such a pod is Pending,
+// PodScheduled True and PodReadyToStartContainers False.
+//
+// Two clocks judge it, since neither alone tells such a pod from one about to start. Its creation
+// is what the launch's wait for its launcher runs against: that wait starts once the store holds
+// the pod, so it gives up about a boot timeout after the pod's creation, and the next try follows
+// it by a backoff of at least a second, or at once for a sibling role's try queued on the pod's
+// launch turn (lockPod). Both conditions come later than the creation: PodScheduled's time is
+// stamped when the pod is bound, and the kubelet keeps it whenever it rewrites the status, while
+// PodReadyToStartContainers' is the kubelet's own, written once it first syncs the pod. Counted
+// from either, that next try could find the pod younger than the boot timeout, keep it, and wait on
+// it once more. Its scheduling, PodScheduled's time, is what tells it from a pod that waited
+// unscheduled for room in the pool for longer than the bound: such a pod, once a node gets it,
+// reads the same in the seconds until that node has mounted its volumes and made its sandbox,
+// created longer than the bound ago, and a try in that window would delete a pod about to start and
+// send its replacement to the back of the scheduling queue. PodScheduled's time is the one to read,
+// not the kubelet's, since it says how long the named node has had the pod. A pod scheduled less
+// than the margin ago is so left to start. A stuck pod scheduled late, within the margin of the try
+// that follows its timed-out wait, as one that waited for the autoscaler can be, is kept by that
+// try once more, which waits out the boot timeout and is charged; the try after it replaces the
+// pod, so a pod scheduled late costs at most one try.
+//
+// Nothing else is judged: a pod whose kubelet has not reported the condition, whose wait for its
+// image pull is the launcher wait's own (awaitRoleLauncher); a pod that is not scheduled, whose
+// wait is the scheduler's (verdict); a pod that has left Pending, which has started; and a pod
+// whose creation or scheduling time is unknown. Each of those is 0, 0 and false.
+func neverStarted(pod *corev1.Pod, now time.Time, bound time.Duration) (unstarted, scheduledFor time.Duration, stuck bool) {
+	if pod == nil || phaseOf(pod) != corev1.PodPending || pod.CreationTimestamp.IsZero() {
+		return 0, 0, false
+	}
+	scheduled, ready := podCondition(pod, corev1.PodScheduled), podCondition(pod, corev1.PodReadyToStartContainers)
+	if scheduled == nil || scheduled.Status != corev1.ConditionTrue || scheduled.LastTransitionTime.IsZero() ||
+		ready == nil || ready.Status != corev1.ConditionFalse {
+		return 0, 0, false
+	}
+	unstarted, scheduledFor = now.Sub(pod.CreationTimestamp.Time), now.Sub(scheduled.LastTransitionTime.Time)
+	return unstarted, scheduledFor, unstarted > bound && scheduledFor > min(bound/2, startingGrace)
 }

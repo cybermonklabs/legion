@@ -882,6 +882,67 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 	}
 }
 
+// The set the sweep judges caches against is the repositories the project works, which is the
+// mapping's and those of its live issue records (Options.Mapped), so a repository no mapping
+// names gets and keeps a cache for as long as a live record names it: one volume and one pod per
+// such repository. Once no record and no mapping names it — its last issue is done — the cache is
+// marked, kept for its retention and retired, which is the one rule the sweep has.
+func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T) {
+	// The mapping names acme/widgets; stranger/tools is named by a live issue record alone.
+	recorded := ghrepo.MustParse("stranger/tools")
+	var live atomic.Bool
+	live.Store(true)
+	logs := &logBuffer{}
+	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
+		o.Mapped = func() []ghrepo.Repository {
+			if live.Load() {
+				return []ghrepo.Repository{cacheRepo, recorded}
+			}
+			return []ghrepo.Repository{cacheRepo}
+		}
+	}))
+	name := CacheSandboxName(testProject, recorded)
+	sweep := func(what string) {
+		t.Helper()
+		g.clearActions()
+		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		}
+	}
+
+	sweep("with a repository only a record names")
+	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
+		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
+	}
+	g.eventually("the cache pod of "+recorded.String(), func() bool { return g.r.storedPod(name) != nil })
+
+	sweep("of the cache of a repository a live record still names")
+	if writes := g.sandboxWrites(); len(writes) != 0 {
+		t.Errorf("the sweep of a cache a live record names wrote %q, want it kept untouched", writes)
+	}
+	if s := g.sandbox(name); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
+		t.Fatalf("the cache of %s is %v, want it kept unmarked while a record names it: no mapping names it and it is served all the same", recorded, s)
+	}
+
+	live.Store(false)
+	sweep("once no record and no mapping names it")
+	g.eventually("the mark in the store", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+	})
+	g.advance(168 * time.Hour)
+	sweep("past the retention")
+	if g.sandbox(name) != nil {
+		t.Fatalf("the cache of %s past its retention is %v, want it retired", recorded, g.sandbox(name))
+	}
+	if g.sandbox(CacheSandboxName(testProject, cacheRepo)) == nil {
+		t.Fatal("the mapped repository's cache was retired with it, want it kept")
+	}
+	if !strings.Contains(logs.String(), recorded.String()) {
+		t.Errorf("the retirement was not logged with its repository:\n%s", logs)
+	}
+}
+
 // The sweep reads a cache's repository as its annotation spells it, against the repositories the
 // mapping serves, and resolves no configured rename: nothing under this package does. With the
 // pair's two names both named in the configuration and the load serving them as one entry, the

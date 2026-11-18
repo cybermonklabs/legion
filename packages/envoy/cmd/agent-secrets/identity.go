@@ -264,10 +264,12 @@ func identitySource(stdout, stderr io.Writer) int {
 		reportError(stderr, "agent-secrets identity", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: %s\n", name, detail)
-	if name != "helper" {
+	if name == "helper" {
+		fmt.Fprintf(stdout, "helper: %s%s\n", detail, helperVersionSuffix(detail))
+	} else {
+		fmt.Fprintf(stdout, "%s: %s\n", name, detail)
 		if answer := probeHelper(); answer.answered() {
-			fmt.Fprintf(stdout, "helper: %s\n", answer.sock)
+			fmt.Fprintf(stdout, "helper: %s%s\n", answer.sock, helperVersionSuffix(answer.sock))
 		}
 	}
 	return 0

@@ -11,9 +11,10 @@ import { harnessProcessCount } from "./harness-processes";
 import { type Harness, startHarness } from "./harness-start";
 import {
   agentViewRefusal,
-  awaitSeededInbox,
+  awaitPostgres,
   databaseUrlRefusal,
   Interrupted,
+  type PostgresProbe,
   Supervisor,
   shellQuote,
 } from "./local-instance-support";
@@ -44,21 +45,27 @@ function check(ok: boolean, what: string): void {
 
 /** The repository's dev Postgres through packages/envoy/scripts/dev-postgres.sh, which creates,
  *  starts or reuses the `dispatch-pg` container and refuses one on any image but its pinned
- *  pgvector one, and its database `dispatch_local`, created once. psql runs through e2e/psql.ts,
- *  without PGHOSTADDR: libpq would otherwise connect to that address instead of the URL's host,
- *  and no check here or in the server sees it. */
-async function ensureLocalPostgres(): Promise<string> {
+ *  pgvector one, and its database `dispatch_local`, created once. `boundMs` is how long the
+ *  server may take to answer once the script returns. psql runs through e2e/psql.ts, without
+ *  PGHOSTADDR: libpq would otherwise connect to that address instead of the URL's host, and no
+ *  check here or in the server sees it. */
+async function ensureLocalPostgres(boundMs: number): Promise<string> {
   await supervisor.run(["bash", "scripts/dev-postgres.sh"], envoyPackage);
-  const deadline = Date.now() + 30_000;
-  for (;;) {
+  // Each attempt is a psql of its own, killed once the time the wait left it has passed, so no
+  // psql outlives its attempt. The kill's own error says only that it was aborted, so the attempt
+  // says what happened. This message is the one a failure names: the kill's timer starts just
+  // before the wait's own timer of the same length (`answeredWithin`), and the killed psql
+  // rejects before that timer fires.
+  const probe: PostgresProbe = async (query, limitMs) => {
+    const limit = AbortSignal.timeout(limitMs);
     try {
-      await adminSql("select 1");
-      break;
+      return await sqlAt(adminUrl, [query], AbortSignal.any([supervisor.signal, limit]));
     } catch (error) {
-      if (error instanceof Interrupted || Date.now() >= deadline) throw error;
-      await untilInterrupted(Bun.sleep(500));
+      if (!limit.aborted) throw error;
+      throw new Error(`psql had not answered within ${(limitMs / 1_000).toFixed(1)} s`);
     }
-  }
+  };
+  await awaitPostgres(new URL(adminUrl).host, probe, boundMs, supervisor.signal);
   if ((await adminSql(`select 1 from pg_database where datname = '${localDatabase}'`)) === "") {
     await adminSql(`create database ${localDatabase}`);
   }
@@ -103,7 +110,9 @@ async function main(): Promise<void> {
 
   // 2. Postgres: DATABASE_URL as given (it is truncated and seeded), else the repo's dev container.
   // It stays ahead of the web build, so a database problem is the failure reported.
-  const databaseUrl = given || (await ensureLocalPostgres());
+  // A new container runs initdb before it takes connections, so the wait gives it 30 s.
+  const postgresBoundMs = 30_000;
+  const databaseUrl = given || (await ensureLocalPostgres(postgresBoundMs));
   process.env.DATABASE_URL = databaseUrl;
 
   // 3. The SPA, which the server reads from web/dist on every request.
@@ -114,7 +123,7 @@ async function main(): Promise<void> {
   harness = await startHarness({ signal: supervisor.signal });
   // The e2e modules read the ports when they are first imported, so they are imported only now.
   Object.assign(process.env, harness.env);
-  const { baseUrl, getInbox, listAgents, listBroadcasts, userHeaders } = await import("./api");
+  const { baseUrl, listAgents, listBroadcasts, userHeaders } = await import("./api");
   const { resetDatabase } = await import("./seed");
   const { seedWorkspace, workspaceSessionIds } = await import("./workspace");
 
@@ -123,14 +132,16 @@ async function main(): Promise<void> {
   // assertion, and this instance has to start on a server without the fix so that spec can go
   // red against it. The reset runs only now, after the server's own loopback check let it boot.
   await untilInterrupted(resetDatabase());
-  const seeded = await untilInterrupted(seedWorkspace());
+  // The Inbox was read settling in 230 ms (the sampler e2e/workspace.ts cites); 15 s is far
+  // above that, so only a seed that does not settle fails it.
+  const seedBoundMs = 15_000;
+  const seeded = await untilInterrupted(
+    seedWorkspace({ boundMs: seedBoundMs, signal: supervisor.signal })
+  );
   const whoami = await fetch(`${baseUrl}/auth/whoami`, { headers: await userHeaders("alice") });
   const identity = (await whoami.json()) as { login?: string };
   check(whoami.status === 200 && identity.login === "alice", "signed-in whoami");
-  const inbox = await awaitSeededInbox(seeded.inbox, () => getInbox({ login: "alice" }), {
-    signal: supervisor.signal,
-  });
-  console.log(inbox.line);
+  console.log(seeded.inboxLine);
   const [newest] = await listBroadcasts({ login: "alice" });
   check(newest?.id === seeded.broadcast.id, "broadcast listed");
   const agents = new Set((await listAgents({ login: "alice" })).map((agent) => agent.session_id));
@@ -141,8 +152,11 @@ async function main(): Promise<void> {
   // The live view rides the live socket, not the API, and Dispatch refuses an agent view whose
   // session id is not a uuid: a seed of named sessions passes every check above and still reads
   // "This session's conversation is unavailable" at /agents/<id>/live.
+  // Dispatch answers an agent view's subscribe at once, accepted or refused, so 10 s fails only
+  // a Dispatch that does not answer.
+  const liveViewBoundMs = 10_000;
   const liveView = await untilInterrupted(
-    agentViewRefusal(baseUrl, await userHeaders("alice"), sessionIds.planner)
+    agentViewRefusal(baseUrl, await userHeaders("alice"), sessionIds.planner, liveViewBoundMs)
   );
   check(liveView === undefined, `the Planner's live view: ${liveView}`);
 

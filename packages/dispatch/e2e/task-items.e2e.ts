@@ -93,6 +93,7 @@ async function steadyShotOf(box: Locator): Promise<{ clip: Rect; rect: Rect; sho
   let previous: { rect: Rect; shot: Buffer } | undefined;
   for (let attempt = 0; attempt < STEADY_SHOT_ATTEMPTS; attempt++) {
     await box.scrollIntoViewIfNeeded();
+    // The scroll above waited for the box to be visible and still, so its rect is there.
     const rect = await box.boundingBox();
     if (rect === null) throw new Error("the checkbox is not on the page");
     const x = Math.floor(rect.x - BOX_SHOT_PADDING);

@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  The listener publishes a GitHub webhook event only when it normalizes it. Every other event a
+  repository's webhook delivers (a commit status, a branch or tag created or deleted, a label, a
+  review thread resolved, a webhook's ping and the rest) is answered `200` and published nowhere.
+  Each was published on `notifications.github.<owner>.<repo>.comment` with no `payload`, and every
+  Legion daemon that hears the repository terminated it as poison (`poison JetStream message`,
+  `Envoy envelope payload is not JSON`), one ERROR line per delivery: hundreds a day while a
+  repository's commits were given statuses. A `sub_issues` event now carries a payload of kind
+  `sub_issue`, naming the issue its topic is for (`number`), the parent (`parent_number`,
+  `parent_title`, `parent_url`, `parent_repo`), the sub-issue (`sub_issue_number`,
+  `sub_issue_title`, `sub_issue_url`, `sub_issue_repo`) and the `sender`; it carried none, and was
+  poison to the daemon as well. A `parent_issue_added` or `parent_issue_removed` delivery, which
+  GitHub sends to the sub-issue's repository, is published on the sub-issue's
+  `issue.<n>.sub_issue`, where it was published on the parent's number in the sub-issue's
+  repository, which can name an unrelated issue; a `sub_issue_*` delivery stays on the parent's.
+  A session that follows a repository's `comment` topic, or its `>`, no longer receives a
+  `status ` notice for each commit status.

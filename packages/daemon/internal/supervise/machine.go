@@ -419,10 +419,10 @@ type Claim struct {
 	// text and the operator's reading of why this pod is being replaced.
 	UpdateReasons string
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
-	// UpdateTaskedAt is when the daemon's sweep enqueued the round's ask to this claim's role
-	// (record.UpdateAsk, Machine.PodUpdateAsked), nil until it has: the mark that makes the
-	// sweep publish one ask per claim per round. UpdateSignalledAt is when the worker answered
-	// ready_for_update, nil until it has.
+	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
+	// (record.UpdateAsk, Machine.PublishUpdateAsk), nil until one has: the mark that makes the
+	// sweep ask each claim of a round until one ask reaches it, and never after.
+	// UpdateSignalledAt is when the worker answered ready_for_update, nil until it has.
 	UpdateOpenedAt    *time.Time
 	UpdateTaskedAt    *time.Time
 	UpdateSignalledAt *time.Time
@@ -659,8 +659,9 @@ func (c Claim) RuleMayResume() bool {
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
 // idle issue pod, so the claim keeps its session, its phase and its pending task, and the next
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
-// the wakes, the notice routing, the stranded report, a release the store cancelled — reads it
-// here rather than spelling the pair out again.
+// the wakes, the notice routing and a reader in a transaction (both through record.HoldsRole), the
+// stranded report, a release the store cancelled — reads it here rather than spelling the pair out
+// again.
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
 }
@@ -1605,24 +1606,106 @@ func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error)
 	return m.markRound(ctx, round, &m.claim.UpdateToldAt)
 }
 
-// PodUpdateAsked marks that the daemon's sweep enqueued this claim's ask of its open update round
-// (record.UpdateAsk), so the sweep publishes one ask per claim per round however many ticks find
-// the round open (internal/daemon's openPodUpdate). It is no event, as PodUpdateTold is none: the
-// sweep is what decides the ask goes, and the mark is bookkeeping of that decision.
+// ErrMachineBusy is PublishUpdateAsk finding the machine's lock held — a decision in flight, or
+// another locked section — so it published nothing and marked nothing. The caller asks again
+// later; nothing of the ask happened.
+var ErrMachineBusy = errors.New("the claim's machine is busy")
+
+// UpdateAskOutcome is what PublishUpdateAsk did with one ask of an update round.
+type UpdateAskOutcome int
+
+const (
+	// UpdateAskDelivered is a publish that reached a session: the claim is marked asked.
+	UpdateAskDelivered UpdateAskOutcome = iota + 1
+	// UpdateAskUndelivered is a publish no live session took, the role's topic having no holder
+	// (notify.ErrNoHolder): nothing is marked, so the sweep asks the claim again.
+	UpdateAskUndelivered
+	// UpdateAskAlreadyDelivered is an ask of a round an earlier ask of which reached a session:
+	// nothing is published.
+	UpdateAskAlreadyDelivered
+	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
+	UpdateAskOutOfRound
+)
+
+// PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
+// claim asked (UpdateTaskedAt) when, and only when, that publish reached a session. publish
+// answers true for a publish a session of the role took, false for a topic no live session holds
+// (notify.ErrNoHolder), and an error for every other failure; it must not call into this machine,
+// whose lock it runs under. The outbox's update-ask row is the one caller (internal/daemon's
+// updateAsk). The sweep only enqueues the row and marks nothing (internal/daemon's askRound): an
+// ask counts once it reached a session, and an ask that reached none is lost, not given, so the
+// claim stays unasked and a later sweep asks it again (dispatch://INFRA-4109 R4,
+// dispatch://INFRA-4131 R4).
 //
-// It stamps nothing and reports false when the claim is no longer in round — the round ended, or
-// another opened — or when this round's ask is already marked: both are decisions already taken,
-// not faults. A write the store refuses is returned with false, the stamp is taken back here, and
-// the sweep publishes the ask again at the next tick rather than lose it, as PodUpdateTold does
-// for the notice.
-func (m *Machine) PodUpdateAsked(ctx context.Context, round string) (bool, error) {
-	return m.markRound(ctx, round, &m.claim.UpdateTaskedAt)
+// The order is what keeps an ask from being lost or given twice, and every step of it is inside
+// one locked section of this machine:
+//
+//  1. The lock is taken without waiting. A decision in flight holds it — a Sandbox relaunch for
+//     minutes while the runtime waits out the pod — and the caller runs on the outbox's
+//     role-message lane of this claim's issue, one row at a time (record.LaneKey), so a caller
+//     that waited would hold every role message of that issue behind that decision. Held, the
+//     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
+//     the first publish.
+//  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
+//     is one an earlier ask of round already reached. Two rows of one round — a row left by an
+//     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
+//     order they run in and whichever of them finds a holder.
+//  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
+//     between the publish and the mark. The section holds the lock for at most the owed write's
+//     repair, the publish and the mark's write: the claim-write deadline twice and notify's
+//     request timeout once, about 20 seconds, and the claim's other decisions wait that long.
+//  4. The mark is set in memory and written before the section ends, and before the row can end.
+//     The write runs under context.WithoutCancel, still bounded by the claim-write deadline
+//     (write), so a daemon stop that cancels the lane during or just after a delivered publish
+//     does not leave the mark unwritten; the outbox's own settle takes a fresh context for the
+//     same reason (outboxSettleTimeout). A write the store does not take, for a reason that judged
+//     no statement, is owed (persist) and the mark stays in memory, and the call answers
+//     UpdateAskDelivered with the store's error: the row stays queued, its next attempt makes the
+//     owed write at its head (repair), finds the mark and publishes nothing, and it answers an
+//     error for as long as the write stays owed. A write the store refuses outright is not owed
+//     (writeOwed): the mark stays in memory alone, the row's next attempt finds it and finishes,
+//     and after a restart, which loads the claim without it, the sweep asks the role again under
+//     a new row's dedupe key.
+//
+// What is left is a daemon that dies between a delivered publish and the write of its mark, a
+// crash rather than a stop, which the write outlives. It boots with the row still queued and the
+// claim unmarked, so the row publishes once more, under the row's own dedupe key
+// (record.OutboxKey), which the listener answers as a repeat, forwarding nothing, to a holder it
+// already forwarded that key to within its dedupe window (ten minutes, in the listener's memory).
+// Past that window, or across a listener restart, the role reads the ask twice: one message more,
+// never an ask lost (dispatch://INFRA-4109 R4 accepts it).
+//
+// It is no event, as PodUpdateTold is none: the outbox's publish is what reaches the role, and the
+// mark is bookkeeping of it.
+func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish func(context.Context) (bool, error)) (UpdateAskOutcome, error) {
+	if !m.mu.TryLock() {
+		return 0, ErrMachineBusy
+	}
+	defer m.unlock()
+	m.repair(ctx)
+	switch {
+	case m.claim.UpdateRound != round:
+		return UpdateAskOutOfRound, nil
+	case m.claim.UpdateTaskedAt != nil && m.owedWrite != nil:
+		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
+	case m.claim.UpdateTaskedAt != nil:
+		return UpdateAskAlreadyDelivered, nil
+	}
+	delivered, err := publish(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if !delivered {
+		return UpdateAskUndelivered, nil
+	}
+	at := m.deps.Clock.Now()
+	m.claim.UpdateTaskedAt = &at
+	return UpdateAskDelivered, m.persist(context.WithoutCancel(ctx))
 }
 
 // markRound stamps mark, one of this claim's own update-round marks, at the clock, for round
-// (PodUpdateTold, PodUpdateAsked). It stamps nothing and reports false when the claim is not in
-// round or the mark is already set. A write the store refuses takes the stamp back and is
-// returned with false.
+// (PodUpdateTold). It stamps nothing and reports false when the claim is not in round or the mark
+// is already set. A write the store refuses takes the stamp back and is returned with false.
 func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
@@ -1976,7 +2059,7 @@ func (m *Machine) stoppingProcess() func() {
 // every locked section that can change the wake, the credit or the intent ends in unlock, and a
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold, PodUpdateAsked), StartedBy,
+// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
 // ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
 // compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
 // added later has to keep, rather than this list of the sections there are now.
@@ -2874,6 +2957,13 @@ func (m *Machine) sessionGone() {
 // nothing of. The session is recorded as abandoned, with why it was, since nothing else keeps
 // where it went and the fresh agent is told of it in its first task.
 //
+// It is the one place a claim leaves its session behind, so every start, retry or resume of a
+// claim relaunches the session the claim records, and a claim starts in a new session only after
+// this ran. It has three callers: the launch's startFresh, for a session no store holds any more;
+// retry, when freshSession says the retry needs a new session; and the operator's forget-session
+// (forgetSession, the table's), which `legion claims retry --fresh-session` and the controller's
+// fresh_session run (api's freshSession).
+//
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
 // abandoned session, it ends that record too: a record that still tells is marked told, by no
@@ -2883,7 +2973,7 @@ func (m *Machine) sessionGone() {
 // them, so the record's sentence would tell it that work it never had has stopped. A record that
 // tells beside an abandoned session that tells is therefore always one of the fresh session's own
 // processes, and each reader tells both: the prompt's composer (Delivery.message), the delivery
-// of the record alone (queueRelaunch), and the ready's sentence for a root architect's catch-up
+// of the record alone (queueRelaunch), and the ready's sentence for an architect's catch-up
 // (the daemon's applyTerminal). A delivery of the record alone that the claim still holds has
 // nothing left to say, and its next send retires it (sendPending).
 //
