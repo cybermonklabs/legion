@@ -179,6 +179,7 @@ attempt:
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
+| Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
 
 A target whose entry the store holds within the gone horizon is resolved whatever its state, so a
 send to an `unresponsive` session is published to its inbox and waits there for it. The `404` is
@@ -215,6 +216,60 @@ JetStream. That is a change for a client: such a publish and such a send were th
 with `Retry-After: 1` before, and are now a `403` with none, which
 `packages/envoy-client/src/transport.ts` does not retry (it retries every status at or past 500 and
 none below it).
+
+Both routes also hold each agent session to the operator's sender limit
+(`cmd/listener/sender_limit.go`). `ENVOY_SENDER_MESSAGES_PER_MINUTE` is how many messages one
+session may send in a minute, a whole number from 0 to 60000, and an unset rate or 0 sets no
+limit. `ENVOY_SENDER_MESSAGE_BURST` is how many it may send at once, a whole number of 1 or more,
+and unset it equals the rate. A burst with no rate, or any other value, stops the start with an
+error that names the variable (`parseSenderLimit`). The start logs one line,
+`listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this
+process`, or `listener sender limit: none`.
+
+The listener keeps one count for each sending session, for both routes together
+(`ratelimit.Keyed`). The count starts at the burst and gains one message every 60 seconds divided
+by the rate, up to the burst. It is the listener process's own, so each replica keeps its own
+count and a restart fills each count again. The sender is the session a secrets-broker token
+proves, else the request's `source_session`. Only a message whose `source` is `agent` or absent
+and that has a sender is counted. So a message of Dispatch (`dispatch`) or of Envoy itself
+(`envoy`) is not counted, and neither is the Legion daemon's notice, which names no sender. The
+check comes after the request's own checks, the publish route's `ReachesNoSession` 400 included,
+and before the route reads a session, resolves a role, reports a wake or stores anything
+(`senderLimit.admit`).
+
+A message that finds its count at 0 is answered `429`, recorded `sender_rate_limited`, and the
+listener stores it nowhere, keeps it for no later holder of a role and reports no wake for it
+(`requestRecord.refuseSenderRateLimited`). `Retry-After` gives the whole seconds, rounded up and
+at least 1, until the count holds one message again (`ratelimit.Keyed.WaitAt`). The JSON body
+holds `reason: "sender_rate_limited"`, `retry_after_seconds` (the same seconds),
+`messages_per_minute`, `burst`, and an `error` that is the sentence `Your sending is rate limited.
+This message was not sent. This listener lets one session send <rate> messages a minute and
+<burst> at once. You can send it again after <seconds> seconds.` with the values filled in. Where
+a value in the sentence is 1 its noun is singular: `1 message a minute`, `after 1 second`. No
+client sends such a message again by itself (`packages/envoy-client/src/transport.ts` retries
+nothing below 500). The one exception is the Legion stall notice: its sender waits the seconds
+and sends it again, at most 3 times (`packages/pi-legion/src/stall-evidence.ts`). This is not the
+429 of the broker token check, `too many access tokens checked from this address`, whose log
+line's reason is `rate_limited`.
+
+A counted message costs its sender one where the route stores it, may have stored it or reports
+a wake for it, whatever it answers (`senderCharge`). So a send to a target with no entry costs
+one once the route reports its wake. A role send's `504` costs one whether or not a forward went
+out, also when the window ended before the first forward (`roleSend.timedOut`). The listener does
+not tell a `504` that forwarded nothing from one whose forward the stream may hold. A `503` after
+the listener sent the message to the stream and the write's acknowledgement did not arrive in time
+costs one too (`bus.ErrUnacknowledged`, `senderCharge.published`), since the stream may hold it.
+A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before the
+listener sent anything, one while it waits for NATS to reconnect among them, costs nothing. A
+repeat the listener recognises costs nothing too: the stream's `duplicate` answer to a send or a
+topic publish, and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) or of a forward in
+the route's own 10-minute record. So does an echo, a role message from the session that holds the
+role. A `duplicate` that answers the bus's own resend after the connection closed under its first
+send (`bus.StoredAck.Resent`) is no such repeat, since that first send may have stored the copy it
+names, so it costs one. A role send's echo, repeat or `403` costs nothing only while the send has
+made no forward. After an earlier forward of the same send it costs one, as any answer then does,
+since that forward may have stored the message. A repeat that finds the count at 0 is refused as a
+new message is, because the check comes first.
 
 A role-holder read that did not answer, within its cap or the 3.5 s budget, is the bus-unavailable
 503 above with `Retry-After: 1`, naming the call, on the publish route and on
@@ -254,7 +309,8 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable` and `stream_full`, plus `no_live_session` for send, `session_stopped` for a
+`bus_unavailable`, `stream_full` and `sender_rate_limited`, plus `no_live_session` for send,
+`session_stopped` for a
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,
 and `role_unclaimed`, `role_lapsed`,
@@ -263,7 +319,9 @@ send whose message the listener kept is `accepted`, because its 202 is an answer
 refusal, so `role_unclaimed` and `role_lapsed` name a send that kept nothing. Two
 refusals carry no such line, because neither reaches a handler: the 401 the API auth wrapper
 writes, and a request the starting gate turns away while the routes are still opening, which logs
-`request refused while starting` itself.
+`request refused while starting` itself. The line of a message the sender limit refused, and of
+each message that cost its sender one, also carries `sender`, the session the limit counted. No
+other line of the listener carries that field.
 
 `envoy_messages_delivered_total` counts one delivery attempt per recipient, labelled
 `delivery_status`:

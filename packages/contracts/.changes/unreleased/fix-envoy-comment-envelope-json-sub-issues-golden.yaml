@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The shared GitHub goldens carry `fixtures/github-envelopes/sub-issues-added.json`: a sub-issue
+  added to an issue, on its parent's `issue.<n>.sub_issue` topic, with the payload the Envoy
+  listener now sends for it (`kind` `sub_issue`).

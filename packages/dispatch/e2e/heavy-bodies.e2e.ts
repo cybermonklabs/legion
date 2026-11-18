@@ -156,6 +156,7 @@ function batchesOfTheFill(page: Page): Promise<readonly number[]> {
  * rather than as a silent green.
  */
 async function expectTheBodyFilledAcrossTasks(page: Page): Promise<void> {
+  // Every caller waited for the long body to settle, so the batches here are the whole fill.
   const batches = await batchesOfTheFill(page);
   test.info().annotations.push({
     description:
@@ -646,8 +647,14 @@ test("a reader who scrolls while a long body above them fills keeps where they s
  *  places the reader. A card opened in the margin carries a reply composer of the same name, so
  *  the docked one - the first in the page - is the one named here. */
 async function underTheComposer(page: Page): Promise<number> {
-  const composer = await page.getByRole("form", { name: "Comment composer" }).first().boundingBox();
-  const newest = await page.locator("[data-turn]").first().boundingBox();
+  const docked = page.getByRole("form", { name: "Comment composer" }).first();
+  const turn = page.locator("[data-turn]").first();
+  await expect(docked).toBeVisible();
+  await expect(turn).toBeVisible();
+  // The waits above drew the composer and the newest turn, and a drawn element has a box.
+  const composer = await docked.boundingBox();
+  // The newest turn was waited for above too, so its box is there as the composer's is.
+  const newest = await turn.boundingBox();
   if (composer === null || newest === null) {
     throw new Error("the composer and the newest turn must both be on screen");
   }
