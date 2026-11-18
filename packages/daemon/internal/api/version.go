@@ -26,6 +26,14 @@ package api
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
+// Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
+// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
+// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
+// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
+// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
+// package's tests (`contract_shapes_test.go`) and `.github/scripts/check-daemon-api-contract.sh`,
+// which keeps each contract's record fixed once the base carries it, refuse a change that does not.
+//
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
 //

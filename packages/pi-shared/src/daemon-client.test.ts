@@ -776,6 +776,7 @@ test("a refusal from a build above the daemon says the daemon is older than this
   expect(refused.message).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
   expect(refused.message).toContain(`The daemon speaks ${CONTRACT - 1}.`);
   expect(refused.message).toContain("The daemon is older than this build.");
+  expect(refused.message).not.toContain("waits for its replacement");
   expect(refused.message).not.toContain(BODY_SECRET);
 });
 
@@ -832,6 +833,7 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   expect(ahead).toMatchObject({ status: 503, code: undefined });
   expect((ahead as LegionDaemonApiError).detail).toContain(`The daemon speaks ${CONTRACT - 1}.`);
   expect((ahead as LegionDaemonApiError).detail).toContain("The daemon is older than this build.");
+  expect((ahead as LegionDaemonApiError).detail).not.toContain("waits for its replacement");
   expect((ahead as LegionDaemonApiError).detail).not.toContain(BODY_SECRET);
 
   // One bare word, which a JSON parser's own message quotes far past the start the refusal shows.

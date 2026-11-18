@@ -1255,18 +1255,32 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 	for _, path := range served.paths {
 		carried[path] = true
 	}
+	// A band or a stand-in is written in the state's or the record's row of shapeAnswer, and
+	// those two routes hand in their claims (writeAnswerFrom). Every other row is the identity
+	// and every other route hands in none, so the advice for those answers is what both need.
+	shaped := key.answer == AnswerState || key.answer == AnswerIssueRecord
 	for _, path := range served.paths {
 		if !described[path] {
+			advice := "Write a band that leaves the key out below the contract that adds it (shaping.go's stateNarrowings)."
+			if !shaped {
+				advice = "Write a band that leaves the key out below the contract that adds it. " + unshapedServingDown("band", key.answer)
+			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. Write a band that leaves the key out below the contract that adds it (shaping.go's stateNarrowings). Recording the key here applies only to the daemon's own contract, while the base does not carry that contract yet.",
-				key.contract, key.answer, path))
+				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. %s Recording the key here applies only to the daemon's own contract, while the base does not carry that contract yet.",
+				key.contract, key.answer, path, advice))
 		}
 	}
 	for _, path := range record.KeyPaths {
 		if !carried[path] {
+			advice := fmt.Sprintf("Serve the key to this contract with a stand-in (shaping.go's withFixAttempts is one): the record of %d is fixed once the base carries it, whether or not a reader requires the key.",
+				key.contract)
+			if !shaped {
+				advice = fmt.Sprintf("Serve the key to this contract with a stand-in: the record of %d is fixed once the base carries it, whether or not a reader requires the key. %s",
+					key.contract, unshapedServingDown("stand-in", key.answer))
+			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. Serve the key to this contract with a stand-in (shaping.go's withFixAttempts is one): the record of %d is fixed once the base carries it, whether or not a reader requires the key.",
-				key.contract, key.answer, path, key.contract))
+				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. %s For a key removed at the daemon's own contract while the base does not carry that contract yet, run `go test ./internal/api/ -update`, which rewrites that contract's record and no other.",
+				key.contract, key.answer, path, advice))
 		}
 	}
 	for _, path := range slices.Sorted(maps.Keys(served.values)) {
@@ -1280,6 +1294,17 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 		}
 	}
 	return problems
+}
+
+// unshapedServingDown is what a serving-down of kind, a band or a stand-in, needs before it
+// reaches the answer id, one whose row of shapeAnswer is the identity and whose route hands
+// contractsFor no claims (writeAnswer). Written in that row alone, it would reach the caller that
+// states its contract and not the caller of a pod, and this test would stay red for the second,
+// since servedShapes shapes such an answer with no claims (servedShapes says why).
+func unshapedServingDown(kind string, id AnswerID) string {
+	return fmt.Sprintf(
+		"A %s reaches the %s answer only once its route writes through writeAnswerFrom with the claims of the body it answers, and servedBodies has a case that drives that route, as its state and record cases do. shapeAnswer then needs a row of its own for the %s answer to write the %s in, where today that answer shares the identity row (shaping.go).",
+		kind, id, id, kind)
 }
 
 // allShapeProblems is every problem of every pair, in the fixture's order: what the case above
