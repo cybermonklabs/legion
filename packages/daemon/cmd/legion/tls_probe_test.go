@@ -492,6 +492,47 @@ func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 	}
 }
 
+// Four more variables name a file or a token a probed client sends to the site it reaches, and the
+// pod's value of each must not reach a client. Measured on 2026-11-18 on the pull request's image
+// (sha256:8f30d2f0…, with the legion of 1af3e416) against a local listener, each client run with
+// every tlsCredentialVariables name unset and its own variables set, as the probe runs it:
+// SYSTEM_WGETRC naming a wgetrc whose `header = Authorization: Bearer …` GNU wget 1.25.0 then sent;
+// GIT_CONFIG_SYSTEM naming a configuration whose http.extraHeader git 2.47.3 then sent with `git
+// ls-remote`; CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE naming a file whose contents gcloud 594.0.0
+// then sent as x-goog-iam-authorization-token to the compute endpoint; and MISE_NETRC_FILE naming
+// a netrc whose `default` login mise 2026.8.12's http: backend then sent as Basic, at its first
+// request. Without the variable, each sent no such header. The same image's legion probe-image, run
+// with the first three set, passed each of them to every wget, git and gcloud call it made.
+func TestImageTLSClientsReadNoSystemConfigurationOfThePods(t *testing.T) {
+	pod := map[string]string{
+		"SYSTEM_WGETRC":                          "/home/legion/.config/wget/system-wgetrc",
+		"GIT_CONFIG_SYSTEM":                      "/home/legion/.config/git/system-config",
+		"CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE": "/var/run/secrets/google/iam-authorization-token",
+		"MISE_NETRC_FILE":                        "/home/legion/.config/mise/netrc",
+	}
+	env := []string{"HOME=/home/legion", "PATH=/usr/bin:/bin"}
+	for name, value := range pod {
+		env = append(env, name+"="+value)
+	}
+	for _, client := range imageTLSClients("omp", env, t.TempDir(), t.TempDir()) {
+		command, ok := client.(interface {
+			commandLine(tlsSite) (string, []string, []string)
+		})
+		if !ok {
+			t.Fatalf("%s is a %T, which runs no command", client.name(), client)
+		}
+		for _, site := range tlsSites {
+			_, _, environment := command.commandLine(site)
+			for _, pair := range environment {
+				name, value, _ := strings.Cut(pair, "=")
+				if credential, ok := pod[name]; ok && value == credential {
+					t.Errorf("%s at %s carries the pod's %s", client.name(), site.name, name)
+				}
+			}
+		}
+	}
+}
+
 // tlsEnvironment takes explicit lists: an entry of set replaces base's value of its name, a name in
 // unset is removed, and an entry of set that is not NAME=value is refused, never read as either.
 func TestTLSEnvironmentSetsAndUnsetsByExplicitLists(t *testing.T) {
