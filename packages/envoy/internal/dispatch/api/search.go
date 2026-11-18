@@ -521,18 +521,20 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //
 //   - statement_timeout: the only bound the server itself holds on a meaning query, 15 seconds.
 //     The request's own context does reach the query - runMeaningSearch and relatedMeaningSearch
-//     each pass it to tx.Query - but pgx cancels out of band: a CancelRequest is a new connection
-//     of its own, and under saturation, which is exactly when meaning searches pile up, there is
-//     none to open, so the cancellation never arrives and a search whose caller has gone keeps
-//     running. One measured 60-minute step of INFRA-988's load test left 219 backends on
-//     searchQueryMeaning, 5,049 seconds old on average, still running an hour after the load had
-//     stopped, holding the connection pool full and 15 GiB of temporary files; cancelling them
-//     by hand took that deployment from 221 active backends to 2 and released the 15 GiB. The
-//     bound sits between the two numbers it has to separate: a healthy meaning search, under a
-//     second on production's data, and the 30-second deadline the generator and Dispatch's own
-//     clients give a request. So the server gives up before the client does, rather than an hour
-//     after, and the backend goes with the statement. A statement ended that way is SQLSTATE
-//     57014 (meaningStatementEnded), which each caller reports as its own timeout.
+//     each pass it to tx.Query - but pgx v5.13's default context watcher
+//     (pgconn.DeadlineContextWatcherHandler, which nothing in this module overrides) answers a
+//     context that ends mid-statement by setting a deadline on the client's connection, which
+//     fails the read in flight and closes the connection. It sends Postgres no cancel request at
+//     all, so a search whose caller has gone keeps running in the database. One measured 60-minute
+//     step of INFRA-988's load test left 219 backends on searchQueryMeaning, 5,049 seconds old
+//     on average, still running an hour after the load had stopped, holding the connection pool
+//     full and 15 GiB of temporary files; cancelling them by hand took that deployment from 221
+//     active backends to 2 and released the 15 GiB. The bound sits between the two numbers it
+//     has to separate: a healthy meaning search, under a second on production's data, and the
+//     30-second deadline the generator and Dispatch's own clients give a request. So the server
+//     gives up before the client does, rather than an hour after, and the backend goes with the
+//     statement. A statement ended that way is SQLSTATE 57014 (meaningStatementEnded), which each
+//     caller reports as its own timeout.
 //   - hnsw.ef_search: how many nearest vectors the HNSW index walks before the kind, project
 //     and model filters run. pgvector's default, 40, is spent on whichever kind holds the most
 //     vectors - the document windows, tens of thousands of them against one row per issue - so

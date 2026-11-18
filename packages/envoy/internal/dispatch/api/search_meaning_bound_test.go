@@ -88,10 +88,10 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 }
 
 // A meaning query's transaction carries the server's own bound, read from the transaction itself
-// rather than from the list that set it: a search whose caller has gone cannot be cancelled while
-// the pool is full, since pgx cancels out of band and a CancelRequest needs a connection of its
-// own, so the statement has to end itself. The two index settings are read beside it: all three
-// reach a query the same way, and a list that lost one of them is read here too.
+// rather than from the list that set it: pgx sends Postgres no cancel when a search's caller has
+// gone (its default context watcher, pgconn.DeadlineContextWatcherHandler, closes the client's
+// connection instead), so the statement has to end itself. The two index settings are read beside
+// it: all three reach a query the same way, and a list that lost one of them is read here too.
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
@@ -110,7 +110,7 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	}
 	if timeout != "15s" {
 		t.Fatalf("statement_timeout = %q in a meaning query's transaction, want 15s: the server's own bound is what "+
-			"ends a search whose caller has gone, since pgx cannot deliver a cancellation when the pool is full", timeout)
+			"ends a search whose caller has gone, since pgx closes the client's connection and sends Postgres no cancel", timeout)
 	}
 	if efSearch != "400" || iterativeScan != "relaxed_order" {
 		t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q, want 400 and relaxed_order", efSearch, iterativeScan)

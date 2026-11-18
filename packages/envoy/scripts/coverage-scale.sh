@@ -39,11 +39,10 @@ psql "$LEGION_TEST_PG_DSN" -X -A -t -c 'select version()'
 psql "$LEGION_TEST_PG_DSN" -X -A -t -c "select name || ' = ' || current_setting(name) from pg_settings
   where name in ('shared_buffers', 'work_mem', 'maintenance_work_mem', 'jit', 'max_parallel_workers_per_gather', 'effective_cache_size')
   order by name"
-echo "coverage-scale.sh: scales ${DISPATCH_COVERAGE_SCALES:-1 2}"
 
 # The test's own status, read from PIPESTATUS: tee's would say only that the log was written.
 set +e
-DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" DISPATCH_COVERAGE_SCALE_URL="$LEGION_TEST_PG_DSN" \
+DISPATCH_COVERAGE_SCALE_URL="$LEGION_TEST_PG_DSN" \
   go test -count=1 -v -timeout 3h -run '^TestCoverageStatementScale$' ./internal/dispatch/embedqueue/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e

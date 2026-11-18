@@ -20,11 +20,11 @@
 --
 -- The texts. A window's text is 300 to 2,400 characters of the prose (itemblocks.WindowTextChars
 -- 1200 of block text plus up to 1200 of context), with the row's number after it so no two rows
--- share a text. Every text and every title starts at a word, never mid-word or on white space,
--- so the only white-space-led and non-ASCII-led ones are those planted below. An issue's latest
--- primary version is a spec: it begins with `## Summary` and is, byte for byte, the next of the
--- sizes of 30 sampled INFRA specs in turn (median 4,488 bytes, mean 14,627, maximum 100,970),
--- the read whose cost the issue arm of the statement is about.
+-- share a text but the planted blank ones. Every text and every title starts at a word, never
+-- mid-word or on white space, so the only white-space-led and non-ASCII-led ones are those planted
+-- below. An issue's latest primary version is a spec: it begins with `## Summary` and is, byte for
+-- byte, the next of the sizes of 30 sampled INFRA specs in turn (median 4,488 bytes, mean 14,627,
+-- maximum 100,970), the read whose cost the issue arm of the statement is about.
 --
 -- The rows. Every issue's row holds its current text, embedded by coverage_corpus.identity, as
 -- the trigger and the queue leave it. Of each window kind's rows 0.5% wait for their first vector
@@ -39,17 +39,18 @@
 -- only whether embedding is null, and real vectors at twice production's size would be 12 GB of
 -- TOAST that no reading of them touches.
 --
--- Speed. The triggers of the four tables written are off for the load (`disable trigger user`;
--- the test's login is no superuser, so session_replication_role is not open to it) and on again
--- before the commit, inside the one transaction, so no other session sees them off. Every index
--- of embeddings that backs no constraint is dropped before the load: the HNSW index
--- embeddings_cosine is not built again, since no coverage statement reads it, and every other one
--- is built again after the load from its own definition as the migrations left it (the two the
--- coverage statement reads, embeddings_window_embedded and embeddings_window_unembedded, among
--- them), which is faster than keeping each up to date row by row. VACUUM and ANALYZE are the
--- caller's, since VACUUM cannot run inside a transaction. A vacuum sets the visibility map, which
--- the coverage statement's index-only scans rely on, only where every commit near this one in the
--- commit log is flushed, so TestCoverageStatementScale makes its databases commit synchronously.
+-- Speed. The triggers of the four tables the load fills (issues, artifacts, artifact_versions,
+-- embeddings) are off for the load (`disable trigger user`; the test's login is no superuser,
+-- so session_replication_role is not open to it) and on again before the commit, inside the
+-- one transaction, so no other session sees them off. Every index of embeddings that backs no
+-- constraint is dropped before the load: the HNSW index embeddings_cosine is not built again,
+-- since no coverage statement reads it, and every other one is built again after the load
+-- from its own definition as the migrations left it (the two the coverage statement reads,
+-- embeddings_window_embedded and embeddings_window_unembedded, among them), which is faster than
+-- keeping each up to date row by row. VACUUM and ANALYZE are the caller's, since VACUUM cannot
+-- run inside a transaction. A vacuum sets the visibility map, which the coverage statement's
+-- index-only scans rely on, only where every commit near this one in the commit log is flushed,
+-- so TestCoverageStatementScale makes its databases commit synchronously.
 
 begin;
 

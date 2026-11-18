@@ -2,7 +2,6 @@ package embedqueue
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // mainCoverageQuery is the search coverage statement byte for byte as the Go of commit
@@ -152,7 +152,7 @@ func embedRowAs(t *testing.T, q querier, kind, id, identity string) {
 // would move that age.
 func seedWindowStates(t *testing.T, q querier) {
 	t.Helper()
-	for position, kind := range []string{"document_block", "comment_block", "message_block", "ask_part"} {
+	for position, kind := range windowCoverageKinds {
 		owner := kind + "/oracle"
 		window := func(state, text string) string {
 			t.Helper()
@@ -333,11 +333,7 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	}
 	requireMainsAnswer(t, database, "before any record run")
 
-	var recorded int64
-	if err := recordSources(ctx, Deps{Store: database}, &recorded); err != nil {
-		t.Fatalf("record the issues' sources: %v", err)
-	}
-	if recorded == 0 {
+	if recordOnce(t, database) == 0 {
 		t.Fatal("the record step recorded no issue's source, so the report would read no hash from a row")
 	}
 	mains, heads := requireMainsAnswer(t, database, "after the record step")
@@ -356,23 +352,6 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireIssuesCurrent("after the inputs changed", mains, heads, trusted-stale)
 }
 
-// planNode is a node of a plan as EXPLAIN (FORMAT JSON) writes it, with what this file reads.
-type planNode struct {
-	NodeType  string     `json:"Node Type"`
-	IndexName string     `json:"Index Name"`
-	Plans     []planNode `json:"Plans"`
-}
-
-// indexOnlyScans adds the index of every Index Only Scan node of node's tree to scans.
-func indexOnlyScans(node planNode, scans map[string]bool) {
-	if node.NodeType == "Index Only Scan" {
-		scans[node.IndexName] = true
-	}
-	for _, child := range node.Plans {
-		indexOnlyScans(child, scans)
-	}
-}
-
 // The coverage statement reads the window kinds from the two indexes the migrations build for it,
 // by index-only scans: each half of the window arm (windowEmbedded, windowUnembedded) repeats its
 // index's predicate, so the planner proves the index applies and reads kind, model, dead and
@@ -381,8 +360,9 @@ func indexOnlyScans(node planNode, scans map[string]bool) {
 // statement reading every window's text again.
 //
 // The table is vacuumed first, which sets the visibility map an index-only scan relies on, and
-// sequential and bitmap scans are turned off, so that the plan of a few dozen rows is the plan
-// of a corpus where the indexes win on cost.
+// the plan is read on a pool that scans tables through indexes alone (storetest.IndexScan:
+// sequential and bitmap scans off), so that the plan of a few dozen rows is the plan of a corpus
+// where the indexes win on cost.
 func TestCoverageReadsTheWindowKindsFromTheirIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -391,27 +371,17 @@ func TestCoverageReadsTheWindowKindsFromTheirIndexes(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `vacuum (analyze) embeddings`); err != nil {
 		t.Fatalf("vacuum embeddings: %v", err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction the plan is read in: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	mustExec(t, tx, `set local enable_seqscan = off`)
-	mustExec(t, tx, `set local enable_bitmapscan = off`)
-	var plan string
-	if err := tx.QueryRow(ctx, `explain (format json) `+coverageQuery, configuredIdentity).Scan(&plan); err != nil {
+	var raw []byte
+	if err := storetest.Planned(t, database.Pool, storetest.IndexScan).QueryRow(ctx,
+		`explain (format json) `+coverageQuery, configuredIdentity).Scan(&raw); err != nil {
 		t.Fatalf("explain the coverage statement: %v", err)
 	}
-	var explained []struct {
-		Plan planNode `json:"Plan"`
-	}
-	if err := json.Unmarshal([]byte(plan), &explained); err != nil || len(explained) != 1 {
-		t.Fatalf("decode the plan (%v): %s", err, plan)
-	}
-	scans := map[string]bool{}
-	indexOnlyScans(explained[0].Plan, scans)
+	plan := explaintest.OnePlan(t, raw)
+	scans := explaintest.IndexScans(t, plan)
 	for _, index := range []string{"embeddings_window_embedded", "embeddings_window_unembedded"} {
-		if !scans[index] {
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
+			return scan.NodeType == "Index Only Scan" && scan.Index == index
+		}) {
 			t.Errorf("the coverage statement's plan holds no Index Only Scan on %s:\n%s", index, plan)
 		}
 	}

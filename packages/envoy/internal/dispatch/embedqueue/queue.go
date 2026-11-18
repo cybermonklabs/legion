@@ -718,7 +718,7 @@ func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal,
 // by meaning, so it needs no vector, and a model service may refuse it outright (Azure AI
 // Foundry's deployment answers HTTP 500 to an empty input, which bisection would confirm as the
 // row's own failure and dead-letter). The queue settles its row with no model call
-// (scanPending, settleDeadNothingToEmbed), and the coverage pass (searchableItems) and the report
+// (scanPending, settleDeadNothingToEmbed), and the coverage pass (issueItems) and the report
 // (somethingToEmbed, its negation) leave the item out.
 func nothingToEmbed(expr string) string {
 	return "(" + expr + " !~ " + somethingToEmbedPattern + ")"

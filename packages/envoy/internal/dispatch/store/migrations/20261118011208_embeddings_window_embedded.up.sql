@@ -7,7 +7,7 @@
 -- whether it is dead and how long it has waited (internal/dispatch/embedqueue/coverage.go,
 -- coverageQuery). The statement before this one ran the blank test over every window's whole
 -- text, about 10 µs a row because the regex engine converts the whole string before it matches,
--- and joined every window back to its own row: 10 to 30 s in production, past the coverage
+-- and joined every window back to its own row: 10 to 30 s in production, reaching the coverage
 -- probe's 30 s limit (dispatch://INFRA-4241). Every such row is in exactly one of two halves,
 -- embedded at its current text (this index) or not (20261118011258_embeddings_window_unembedded),
 -- and the two predicates are each other's negation over those rows, content_hash being NOT NULL.

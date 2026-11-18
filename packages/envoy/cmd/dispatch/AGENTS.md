@@ -141,7 +141,8 @@ jittered) for as long as the process runs, so a vector an old-configuration proc
 during a roll is dropped whenever it lands and an issue edited since the run before is recorded
 again; a run that finds nothing to do says nothing about the next ten minutes, and costs one
 `exists` query and one statement of the record step, which reads every issue's inputs (the id
-and `xmin` of its spec's latest version, never the spec's markdown).
+and `xmin` of its spec's latest version) and builds the text, the spec's markdown included, only
+of an issue whose inputs are not the recorded ones.
 `coverageKinds` there is the one list of what meaning
 search covers - the issue the pass builds (`issueKind`) and the windows the indexers own
 (`windowCoverageKinds`) - read by the pass and by `GET /api/v1/search/coverage`

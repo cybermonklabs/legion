@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // searchCoverageResponse reads GET /api/v1/search/coverage as alice and holds its body to
@@ -223,14 +224,7 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	ctx := context.Background()
 	const bound = time.Second
 	t.Cleanup(embedqueue.ShortenCoverageBoundForTest(bound.String()))
-	hold, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that holds components: %v", err)
-	}
-	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
-	if _, err := hold.Exec(ctx, "lock table components in access exclusive mode"); err != nil {
-		t.Fatalf("lock components: %v", err)
-	}
+	holdLock(t, database, "lock table components in access exclusive mode")
 	running := func() int {
 		t.Helper()
 		var count int
@@ -260,15 +254,17 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		answered <- answer{response, time.Since(started)}
 	}()
-	for seen := time.After(5 * time.Second); running() != 1; time.Sleep(10 * time.Millisecond) {
+	showed := testwait.Holds(5*time.Second, testwait.Poll, func() bool {
 		select {
 		case early := <-answered:
 			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement running",
 				early.response.Code, early.response.Body.String(), early.took)
-		case <-seen:
-			t.Fatal("pg_stat_activity never showed the coverage statement running while the request waited")
 		default:
 		}
+		return running() == 1
+	})
+	if !showed {
+		t.Fatal("pg_stat_activity never showed the coverage statement running while the request waited")
 	}
 	var got answer
 	select {
@@ -280,17 +276,18 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	if got.response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("coverage past its bound: status=%d body=%s, want 503", got.response.Code, got.response.Body.String())
 	}
-	if refusal := decodeBody[struct{ Code, Error string }](t, got.response); refusal.Code != "SEARCH_COVERAGE_TIMEOUT" || !strings.Contains(refusal.Error, bound.String()) {
+	if refusal := decodeBody[apiErrorBody](t, got.response); refusal.Code != "SEARCH_COVERAGE_TIMEOUT" || !strings.Contains(refusal.Error, bound.String()) {
 		t.Errorf("coverage past its bound answered %s, want the code SEARCH_COVERAGE_TIMEOUT and an error naming the %s bound", got.response.Body.String(), bound)
 	}
 	if got.took < bound || got.took > 5*time.Second {
 		t.Errorf("coverage past its bound answered after %s, want at least its %s bound and well under production's 10s", got.took, bound)
 	}
-	conns, statements := database.Pool.Stat().AcquiredConns(), running()
-	for freed := time.Now().Add(2 * time.Second); (conns != acquired || statements != 0) && time.Now().Before(freed); {
-		time.Sleep(50 * time.Millisecond)
+	var conns int32
+	var statements int
+	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
 		conns, statements = database.Pool.Stat().AcquiredConns(), running()
-	}
+		return conns == acquired && statements == 0
+	})
 	if conns != acquired {
 		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held before the request", conns, acquired)
 	}

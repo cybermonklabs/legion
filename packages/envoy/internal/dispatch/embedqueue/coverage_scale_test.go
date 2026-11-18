@@ -271,10 +271,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	const tables = "issues, artifacts, artifact_versions, embeddings, embedding_issue_sources"
 	mustExec(t, database.Pool, "analyze "+tables)
 	started = time.Now()
-	var recorded int64
-	if err := recordSources(ctx, Deps{Store: database}, &recorded); err != nil {
-		t.Fatalf("record the issues' sources: %v", err)
-	}
+	recorded := recordOnce(t, database)
 	recording := time.Since(started)
 	mustExec(t, database.Pool, "vacuum (analyze) "+tables)
 	t.Logf("scale %s: corpus loaded in %v, %d issue sources recorded in %v",

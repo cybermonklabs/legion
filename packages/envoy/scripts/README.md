@@ -813,8 +813,8 @@ cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
 `COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
 The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
 `DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
-The script sets `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `DISPATCH_COVERAGE_SCALE_URL` itself,
-all three to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
+The script sets `LEGION_TEST_PG_DSN` and `DISPATCH_COVERAGE_SCALE_URL` itself,
+both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
 
 It prints the server's version and the settings the times depend on
 (`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),

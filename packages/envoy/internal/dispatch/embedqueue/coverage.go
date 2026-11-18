@@ -23,11 +23,12 @@ import (
 const coverageStatementRows = 500
 
 // identityRecheckInterval is how long, plus up to a tenth again, Run's coverage loop waits
-// between runs of the identity steps (runCoverage), and after a failed run before it tries that
-// run again. While a rolling deploy that changes the identity still has an old-configuration
-// process embedding, that process commits vectors the new identity must drop; ten minutes was
-// the whole pass's period before, and nothing faster is owed to a vector search already filters
-// out by identity. A var, not a const, so a test can shrink it rather than wait out ten minutes.
+// between runs of the identity steps and the record step (runCoverage, recheckCoverage), and
+// after a failed run before it tries that run again. While a rolling deploy that changes the
+// identity still has an old-configuration process embedding, that process commits vectors the
+// new identity must drop; ten minutes was the whole pass's period before, and nothing faster is
+// owed to a vector search already filters out by identity. A var, not a const, so a test can
+// shrink it rather than wait out ten minutes.
 var identityRecheckInterval = 10 * time.Minute
 
 // issueKind is the one kind of row meaning search ranks that no indexer owns, and so the one
@@ -70,8 +71,9 @@ var issueRows = `select s.id, s.text, ` + contentHash("s.text") + ` as hash, s.w
 // issueItems is the issues worth a vector: those whose text has something to embed (not
 // nothingToEmbed, which is the empty string or white space alone). An item with nothing to embed
 // is not covered, since it matches nothing by meaning, so insertMissingIssues gives it no row
-// and the queue settles the row it already holds with no vector.
-var issueItems = searchableItems(issueRows)
+// and the queue settles the row it already holds with no vector. The report applies the same
+// test its own way (issueHasText).
+var issueItems = issueRows + " where not " + nothingToEmbed("s.text")
 
 // windowCoverageKinds is every kind whose rows the writers of windows own: one row per window
 // of a document's, a comment's, a message's blocks or of an ask's parts (INFRA-370). Migration
@@ -107,29 +109,26 @@ var (
 	windowUnembedded = windowItems + " and (embedding is null or embedded_hash is distinct from content_hash)"
 )
 
-// searchableItems holds the issue's items (issueRows) to those whose text has something to embed,
-// the items insertMissingIssues gives a row. The report applies the same test its own way
-// (issueHasText).
-func searchableItems(items string) string {
-	return items + " where not " + nothingToEmbed("s.text")
-}
-
 // issueSourceFrom is every issue (issues i) beside what its source (issueSource) is computed from
 // and compared with, for the report (coverageQuery) and for the step that records sources
 // (recordIssueSources):
 //
 //   - spec: the id and the row version (xmin) of the latest version of the issue's primary
-//     document, read by issue_embedding_spec's own statement (0140), so it names the version whose
-//     markdown that function returns. artifacts_one_primary makes the primary document unique and
-//     unique (artifact_id, number) the version, so it is one row or none. It reads no markdown:
-//     reading every issue's spec on every call is the cost the source exists to save.
+//     document, the version whose markdown issue_embedding_spec (0140) returns. That function
+//     joins artifacts to artifact_versions; this reads the primary document's id first, so the
+//     version is the first row of a backward scan of artifact_versions_artifact_id_number_key and
+//     no other version of the document is read or sorted. Both name the same version:
+//     artifacts_one_primary, unique on (issue_key) where is_primary, makes the subquery one id or
+//     none (none gives no row, as the join gives none), and unique (artifact_id, number) makes the
+//     highest number one version. It reads no markdown: reading every issue's spec on every call
+//     is the cost the source exists to save.
 //   - e: the issue's embeddings row, when it has one.
 //   - r: the issue's recorded source (embedding_issue_sources), when it has one.
 const issueSourceFrom = `issues i
 	left join lateral (
 		select v.id, v.xmin
-		from artifacts a join artifact_versions v on v.artifact_id = a.id
-		where a.issue_key = i.key and a.is_primary
+		from artifact_versions v
+		where v.artifact_id = (select a.id from artifacts a where a.issue_key = i.key and a.is_primary)
 		order by v.number desc
 		limit 1
 	) spec on true
@@ -166,9 +165,10 @@ var issueHash = "case when r.source = (" + issueSource + ") then e.content_hash 
 // issueHasText is whether an issue's text, over issues i, has something to embed: the test
 // issueItems applies (not nothingToEmbed), in the report's terms. The text begins with the title,
 // so a title whose first character is printable ASCII other than the space (33 to 126) answers it
-// alone; any other title - empty, or beginning with white space or outside ASCII - builds the
-// text and runs the regex (somethingToEmbed). Such titles are rare.
-var issueHasText = "(ascii(substr(i.title, 1, 1)) between 33 and 126 or " + somethingToEmbed(issueText) + ")"
+// alone (ascii reads the first character, and answers 0 for the empty string); any other title -
+// empty, or beginning with white space or outside ASCII - builds the text and runs the regex
+// (somethingToEmbed). Such titles are rare.
+var issueHasText = "(ascii(i.title) between 33 and 126 or " + somethingToEmbed(issueText) + ")"
 
 // insertMissingIssues adds a pending row for up to $2 issues ($1::text is issueKind) that have
 // none, exactly as the trigger's embeddings_enqueue would insert it. ON CONFLICT DO NOTHING,
@@ -222,6 +222,18 @@ var repairStaleIssues = `
 // points a stale row at the current text, and the next run records it. The source and the hash
 // are the very strings coverageQuery uses, so what this records is what the report compares.
 //
+// The hash is compared inside a CASE that asks first whether the recorded source differs, so the
+// text of an issue whose source is already recorded is neither built nor hashed. Written as a
+// plain conjunct, the comparison of content_hash with the hash names i and e alone, and Postgres
+// evaluates it where it joins issues to embeddings (as that join's Hash Cond or Join Filter),
+// below the join with r the source test needs: a run that recorded nothing still built and hashed
+// every issue's text, and each statement of the boot run hashed again every issue the statements
+// before it had recorded, so the boot run grew with the square of the issues (19.0 s to record
+// 11,151 issues, 59.3 s for 22,302). The CASE names r, so it is evaluated above that join, and
+// Postgres runs a CASE's branch only where it is chosen. content_hash IS NOT NULL stands beside
+// it because a CASE is not strict: that term is what still lets Postgres join embeddings as an
+// inner join, as the strict comparison let it before.
+//
 // It is idempotent and safe beside a live write and beside another process's run. It writes
 // embedding_issue_sources alone, never embeddings, so it changes nothing the triggers wrote. A
 // source names every input of the text it was checked against, so a write that commits after
@@ -234,8 +246,8 @@ var recordIssueSources = `
 	insert into embedding_issue_sources (key, source)
 	select i.key, ` + issueSource + `
 	from ` + issueSourceFrom + `
-	where r.source is distinct from (` + issueSource + `)
-	  and e.content_hash = ` + issueTextHash + `
+	where e.content_hash is not null
+	  and case when r.source is distinct from (` + issueSource + `) then e.content_hash = ` + issueTextHash + ` else false end
 	limit $1
 	on conflict (key) do update set source = excluded.source
 	where embedding_issue_sources.source is distinct from excluded.source`
@@ -354,15 +366,14 @@ func (step coverStep) run(ctx context.Context, deps Deps, kind string) error {
 	}
 }
 
-// recordSources runs recordIssueSources as a coverStep, until a statement records nothing, adding
-// what each recorded to recorded, but with no wake of Run's scan loop: the step writes no row of
-// embeddings, so it leaves nothing pending, and a wake would only make the scan loop scan again
-// for nothing - a statement an idle Run is held to never making
+// recordSources runs recordIssueSources over database as a coverStep, until a statement records
+// nothing, adding what each recorded to recorded, but with no wake of Run's scan loop: it runs on
+// Deps holding the store alone, whose nil enqueued signals nothing (Deps.signalEnqueued). The
+// step writes no row of embeddings, so it leaves nothing pending, and a wake would only make the
+// scan loop scan again for nothing - a statement an idle Run is held to never making
 // (TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone).
-func recordSources(ctx context.Context, deps Deps, recorded *int64) error {
-	quiet := deps
-	quiet.enqueued = nil // Deps.signalEnqueued signals nothing then
-	return coverStep{recorded, recordIssueSources, []any{coverageStatementRows}}.run(ctx, quiet, issueKind)
+func recordSources(ctx context.Context, database *store.Store, recorded *int64) error {
+	return coverStep{recorded, recordIssueSources, []any{coverageStatementRows}}.run(ctx, Deps{Store: database}, issueKind)
 }
 
 // foreignRowsExist reports whether any row of the covered kinds (coverageKinds) carries an
@@ -521,7 +532,7 @@ func coverPass(ctx context.Context, deps Deps) (identityRun, error) {
 		}
 	}
 	// After the repair, so a row it pointed at its issue's current text is recorded now.
-	if err := recordSources(ctx, deps, &recorded); err != nil {
+	if err := recordSources(ctx, deps.Store, &recorded); err != nil {
 		return identityRun{}, err
 	}
 	// Settling runs first, so a dead row with nothing to embed is never what makes the pass
@@ -553,17 +564,17 @@ func coverPass(ctx context.Context, deps Deps) (identityRun, error) {
 	return steps, nil
 }
 
-// recheckIdentity is the coverage loop's later run: the identity steps, then the step that
+// recheckCoverage is the coverage loop's later run: the identity steps, then the step that
 // records issue sources (recordIssueSources), logged when either changed anything. A failure of
 // either is the run's failure, which runCoverage tries again after identityRecheckInterval.
-func recheckIdentity(ctx context.Context, deps Deps) (identityRun, error) {
+func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 	identity := deps.Embedder.Identity()
 	steps, err := runIdentitySteps(ctx, deps, identity)
 	if err != nil {
 		return steps, err
 	}
 	var recorded int64
-	if err := recordSources(ctx, deps, &recorded); err != nil {
+	if err := recordSources(ctx, deps.Store, &recorded); err != nil {
 		return steps, err
 	}
 	if steps.dropped > 0 || steps.readmitted > 0 || recorded > 0 {
@@ -599,13 +610,14 @@ func recheckIdentity(ctx context.Context, deps Deps) (identityRun, error) {
 // embedder_active row and the live server processes - and two statements more: foreignRows, the
 // two exists over the covered kinds, which stops at the first row of another identity and
 // otherwise reads their rows once, and recordIssueSources, which reads every issue's inputs (the
-// latest primary version's id and xmin, not its markdown) and builds the text of each issue whose
-// inputs are not the recorded ones. A run that finds a row of another identity pays two
-// statements per kind on top, each repeated until it changes nothing, and only while such rows
-// remain and this process's embedder holds the active identity. One read of the queue's rows
-// every ten minutes is the right price for what it buys: without it a vector another identity
-// commits after this process's boot pass is matched by no search and reached by no scan for as
-// long as this process lives.
+// latest primary version's id and xmin, never its markdown) and its recorded source, and builds
+// and hashes the text only of an issue whose inputs are not the recorded ones: with nothing to
+// do, none (about 5 ms over 335 issues on a test Postgres, where hashing every issue's text took
+// 150 ms). A run that finds a row of another identity pays two statements per kind on top, each
+// repeated until it changes nothing, and only while such rows remain and this process's embedder
+// holds the active identity. One read of the queue's rows every ten minutes is the right price
+// for what it buys: without it a vector another identity commits after this process's boot pass
+// is matched by no search and reached by no scan for as long as this process lives.
 //
 // A run that skipped the steps because the embedder had not answered runs them again as soon as
 // it does (Deps.proven: the queue's first successful embed), not ten minutes later; one that
@@ -627,7 +639,7 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case err != nil:
 			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", identityRecheckInterval)
 		default:
-			pass = recheckIdentity
+			pass = recheckCoverage
 			if steps.skipped && steps.mine {
 				answered = deps.proven.answered()
 			}
