@@ -155,6 +155,10 @@ type mentionClaimState struct {
 	// sender wrote and never learned; the next refresh or try re-reads it (refreshHeldClaims,
 	// claimKnown), and a claim recorded from an answer ends it.
 	unsure bool
+	// lost counts the refreshes whose answer was lost while they named this attempt. A re-read
+	// applies what it read only while the count is the one it began under: a refresh that lost
+	// its answer after the read took the row may have written a claim the read never saw.
+	lost uint64
 	// trying is that a try of the attempt is in flight (mentionSender.trying), which the re-read of
 	// the unsure claims leaves alone while it runs (rereadUnsure).
 	trying bool
@@ -426,10 +430,21 @@ func (m *mentionSender) serve(lane laneKey) {
 		lane = next
 		item, known := m.claimKnown(item)
 		again, waits := item, true
-		if known {
+		for known {
+			// The try stays marked in flight until park records its claim, under park's lock, so
+			// no re-read records the try's own claim in between (trying, park).
 			m.trying(item.key(), true)
-			again, waits = m.send(m.ctx, item)
-			m.trying(item.key(), false)
+			if again, waits = m.send(m.ctx, item); waits {
+				break
+			}
+			// A hand-off recorded a newer claim while the try was in flight - the delivery sweep's
+			// or a keyed repeat's (queueLocked), which this send stands for - and the try, carrying
+			// the older one, may have been refused for it: the send is tried again under the claim
+			// recorded, which finds the attempt settled if the try sent it.
+			var moved bool
+			if item.claimed, moved = m.claimedDuring(item); !moved {
+				break
+			}
 		}
 		if !waits {
 			finished = item.key()
@@ -438,12 +453,7 @@ func (m *mentionSender) serve(lane laneKey) {
 		}
 		finished = mentionKey{}
 		claimed := !again.claimed.Equal(item.claimed)
-		if known && !claimed {
-			// A refresh whose answer was lost while the try was in flight left the claim unknown:
-			// it is read before the send parks under it.
-			again, _ = m.claimKnown(again)
-		}
-		held, delay := m.park(lane, again, claimed)
+		held, delay := m.park(lane, again, claimed, known)
 		wake := func() { m.after(delay, func() { m.unpark(held) }) }
 		if held == lane {
 			lane, givenUp = laneKey{}, wake
@@ -501,6 +511,22 @@ func (m *mentionSender) trying(key mentionKey, inFlight bool) {
 	}
 }
 
+// claimedDuring answers the claim this sender records for item's attempt, and whether it moved
+// while item's try was in flight, which carried item.claimed: a hand-off took a newer claim for the
+// send (queueLocked), or a refresh wrote the row before the try's take did. A try that ended not
+// waiting under the older claim may have been refused for the newer one, and one under the newer
+// claim finds the attempt settled if the first sent it; a re-read records nothing while a try is in
+// flight.
+func (m *mentionSender) claimedDuring(item mentionSend) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, mine := m.held[item.key()]
+	if !mine || state.claimed.Equal(item.claimed) {
+		return item.claimed, false
+	}
+	return state.claimed, true
+}
+
 // heldLane is the lane the sends of owner to lane's recipient wait on while one of them waits for
 // an earlier event of owner (park): a lane of its own beside lane, so a recipient's sends of other
 // owners pass them. A lane that is one already is its own.
@@ -537,7 +563,7 @@ func heldLane(lane laneKey, owner string) laneKey {
 // at WARN (warnHeld), naming its owner, the earlier event it waits behind and that event's last
 // publish error, beside the ERROR the outbox writes for that event's own failed publish, which is
 // the cause: here when a park finds it past the threshold, else as it leaves the lane (reportLate).
-func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held laneKey, delay time.Duration) {
+func (m *mentionSender) park(lane laneKey, item mentionSend, claimed, waited bool) (held laneKey, delay time.Duration) {
 	item.parks++
 	now := time.Now()
 	if item.heldSince.IsZero() {
@@ -547,11 +573,12 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held
 	owner := item.owner()
 	held = heldLane(lane, owner)
 	m.mu.Lock()
+	state := m.held[item.key()]
+	state.trying = false
 	if claimed {
-		state := m.held[item.key()]
 		state.claimed, state.unsure = item.claimed, false
-		m.held[item.key()] = state
 	}
+	m.held[item.key()] = state
 	if held == lane {
 		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
 	} else {
@@ -572,14 +599,18 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held
 		m.lanes[lane] = kept
 		m.lanes[held] = moved
 	}
+	// A send parked because its claim could not be read waited behind no event: it is no held
+	// copy the gauges count, and it logs no WARN naming an earlier event.
 	wait := heldWait{session: item.heldFor, by: item.heldBy}
-	m.waits[held] = wait
 	var warned []mentionSend
-	for index := range m.lanes[held] {
-		send := &m.lanes[held][index]
-		if !send.warned && now.Sub(send.heldSince) >= m.heldWarnAfter {
-			send.warned = true
-			warned = append(warned, *send)
+	if waited {
+		m.waits[held] = wait
+		for index := range m.lanes[held] {
+			send := &m.lanes[held][index]
+			if !send.warned && now.Sub(send.heldSince) >= m.heldWarnAfter {
+				send.warned = true
+				warned = append(warned, *send)
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -601,9 +632,9 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held
 func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
 	key := item.key()
 	m.mu.Lock()
-	unsure := m.held[key].unsure
+	began := m.held[key]
 	m.mu.Unlock()
-	if !unsure {
+	if !began.unsure {
 		return item, true
 	}
 	read, err := m.reread(m.ctx, []mentionClaim{item.claim()})
@@ -615,16 +646,20 @@ func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state := m.held[key]
-	if !state.claimed.Equal(item.claimed) {
+	switch {
+	case !state.claimed.Equal(item.claimed):
 		item.claimed = state.claimed
-		return item, true
+	case state.lost != began.lost:
+		// Another refresh lost its answer after the read: the claim stays unknown, and the try
+		// carries the one recorded, which the row's claim, if this sender's, is at or past.
+	default:
+		state.unsure = false
+		if len(read) == 1 {
+			item.claimed = read[0].claimedAt
+			state.claimed = item.claimed
+		}
+		m.held[key] = state
 	}
-	state.unsure = false
-	if len(read) == 1 {
-		item.claimed = read[0].claimedAt
-		state.claimed = item.claimed
-	}
-	m.held[key] = state
 	return item, true
 }
 
@@ -753,7 +788,7 @@ func (m *mentionSender) keepClaims() {
 // The statement runs without the lock, so for its length a row carries a newer claim than the map
 // records. That gap is safe: the row's claim only moves forward, so the delivery sweep, which
 // reads committed rows past a lease, sees it live sooner, never later, and the lane's bound send
-// accepts any claim at or past the one it carries (model.DeliveryClaimMineSQL). Its result is
+// accepts any claim at or past the one it carries within a lease (model.DeliveryClaimSinceSQL). Its result is
 // recorded only for a key whose claim the map still holds as the snapshot took it, so a claim
 // written meanwhile - a keyed repeat's (queueLocked) - is never set back.
 //
@@ -788,6 +823,7 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 		for key, claimed := range snapshot {
 			if state, mine := m.held[key]; mine && state.claimed.Equal(claimed) {
 				state.unsure = true
+				state.lost++
 				m.held[key] = state
 			}
 		}
@@ -815,9 +851,11 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 func (m *mentionSender) rereadUnsure(ctx context.Context) {
 	m.mu.Lock()
 	var unsure []mentionClaim
+	lost := map[mentionKey]uint64{}
 	for key, state := range m.held {
 		if state.unsure && !state.trying {
 			unsure = append(unsure, mentionClaim{key: key, claimedAt: state.claimed})
+			lost[key] = state.lost
 		}
 	}
 	m.mu.Unlock()
@@ -838,7 +876,7 @@ func (m *mentionSender) rereadUnsure(ctx context.Context) {
 	defer m.mu.Unlock()
 	for _, claim := range unsure {
 		state, mine := m.held[claim.key]
-		if !mine || !state.unsure || state.trying || !state.claimed.Equal(claim.claimedAt) {
+		if !mine || !state.unsure || state.trying || !state.claimed.Equal(claim.claimedAt) || state.lost != lost[claim.key] {
 			continue
 		}
 		state.unsure = false

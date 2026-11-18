@@ -29,7 +29,7 @@ import (
 // and the search tries every one from every state it reaches, the sender's own code running
 // between them. The search keys on the sender's maps and the model's own state, every claim in it
 // named by its order among the claims in play and its age, which is all the code compares
-// (model.DeliveryClaimMineSQL, model.DeliveryClaimFreeSQL).
+// (model.DeliveryClaimSinceSQL, model.DeliveryClaimFreeSQL).
 //
 // What the model holds:
 //   - comments A-1 and A-2 of issue T-1, each mentioning session s1 under attempt 1, which commits
@@ -115,6 +115,7 @@ const (
 	cmRefreshRereadAnswers
 	cmRefreshRereadFails
 	cmRefreshWrites
+	cmRefreshFailsUncommitted
 	cmRefreshRecords
 	cmRefreshAnswerLost
 	cmPublish
@@ -146,14 +147,30 @@ type cmVariant struct {
 	alwaysLoses bool
 	// readFailures is how many re-reads of one run may fail.
 	readFailures int
+	// outages is how many refresh statements of one run may fail before they commit: they write
+	// nothing and answer an error, as a database the sender cannot reach does, so the claims they
+	// named age while the sender holds them.
+	outages int
 	// blind has every re-read answer no row: the control's sender learns nothing of a lost write.
 	blind bool
+	// revivesLapsed is the refresh statement before this change, which wrote a row whose recorded
+	// claim had lapsed, and takeNeedsLive the take before it, which counted the row's claim the
+	// send's own only while the claim it carried was itself live: the control the outages must
+	// break.
+	revivesLapsed, takeNeedsLive bool
 }
 
 var (
-	cmAsBuilt     = cmVariant{name: "the sender as built: any refresh answer lost, one re-read failed", readFailures: 1}
+	cmAsBuilt     = cmVariant{name: "the sender as built: any refresh answer lost, two re-reads failed", readFailures: 2}
 	cmBlindRepair = cmVariant{
 		name: "control: every refresh answer lost, every re-read answers no row", alwaysLoses: true, blind: true,
+	}
+	cmOutage = cmVariant{
+		name: "the sender as built: up to two refreshes failed uncommitted, any answer lost", outages: 2,
+	}
+	cmOldStatements = cmVariant{
+		name:    "control: the same, with the refresh and the take before this change",
+		outages: 2, revivesLapsed: true, takeNeedsLive: true,
 	}
 )
 
@@ -193,6 +210,8 @@ type cmTry struct {
 	ran    bool
 	answer cmAnswer
 	took   bool
+	// refused is that its take found the attempt another sender's.
+	refused bool
 }
 
 type cmAnswer struct {
@@ -251,6 +270,7 @@ type cmRun struct {
 	seq          time.Duration
 	published    bool
 	readFailures int
+	outages      int
 	rows         [2]cmRow
 	took         []int
 	tries        map[int]*cmTry
@@ -407,12 +427,18 @@ func (r *cmRun) commit(c int) {
 	r.settle(nil)
 }
 
-// deliver is s1 taking comment c, by road.
-func (r *cmRun) deliver(c int, road string) {
+// deliver is s1 taking comment c, by road; bySweep is that the delivery sweep sent it itself. The
+// sweep sends only an attempt whose claim has lapsed - its sender stopped, or wrote no claim for
+// a lease - and sends the attempts it finds owed side by side (resumeOwedDeliveries), so it keeps
+// no order between two comments: an A-2 it sends first is "lapsed", which the spec puts outside
+// this change and the model counts apart.
+func (r *cmRun) deliver(c int, road string, bySweep bool) {
 	r.log("%s sends %s to s1", road, cmComments[c])
 	switch {
 	case slices.Contains(r.took, c):
 		r.fail("twice", "s1 takes %s a second time", cmComments[c])
+	case c == 1 && !slices.Contains(r.took, 0) && bySweep:
+		r.fail("lapsed", "the delivery sweep sends A-2, whose claim lapsed, before A-1")
 	case c == 1 && !slices.Contains(r.took, 0):
 		r.fail("order", "s1 takes A-2 before A-1")
 	}
@@ -453,9 +479,9 @@ func (r *cmRun) runRead(read *cmRead) {
 
 // runTry is a try's statements (sendCommentMention): a send that waited before reads the rule
 // alone and, while the earlier event still owes s1 a send, writes nothing; otherwise the try
-// claims the attempt as claimCommentDeliveryAttempt does - the row's claim free, or the send's own
-// claim live with the row's at or past it, each at some timing within the slots - and then waits
-// behind the earlier event or sends.
+// claims the attempt as claimCommentDeliveryAttempt does - the row's claim free, or at or past the
+// send's own and less than a lease after it (model.DeliveryClaimSinceSQL), each at some timing
+// within the slots - and then waits behind the earlier event or sends.
 func (r *cmRun) runTry(try *cmTry) {
 	try.ran = true
 	item := try.item
@@ -471,12 +497,14 @@ func (r *cmRun) runTry(try *cmTry) {
 		return
 	}
 	free := r.mayHaveLapsed(row.claim)
-	mine := !row.claim.Before(item.claimed) && !r.lapsed(item.claimed)
+	mine := !row.claim.Before(item.claimed) && cmSlotOf(row.claim)-cmSlotOf(item.claimed) <= cmLapseSlots
+	if r.v.takeNeedsLive {
+		mine = !row.claim.Before(item.claimed) && !r.lapsed(item.claimed)
+	}
 	if !free && !mine {
 		r.log("%s's try carries claim %s and finds the row's %s: the attempt is another sender's, and the send ends unsent",
 			cmComments[c], r.name(item.claimed), r.name(row.claim))
-		r.fail("dropped", "the sender's own send of %s is refused as another sender's: it carries claim %s, the row's %s is live",
-			cmComments[c], r.name(item.claimed), r.name(row.claim))
+		try.refused = true
 		return
 	}
 	row.claim = r.now()
@@ -488,7 +516,7 @@ func (r *cmRun) runTry(try *cmTry) {
 		r.log("%s's try claims its attempt %s and waits behind the earlier event", cmComments[c], r.name(row.claim))
 		return
 	}
-	r.deliver(c, fmt.Sprintf("%s's try claims its attempt %s and", cmComments[c], r.name(row.claim)))
+	r.deliver(c, fmt.Sprintf("%s's try claims its attempt %s and", cmComments[c], r.name(row.claim)), false)
 }
 
 // owed is whether the delivery sweep takes comment c's attempt: pending, committed a lease ago,
@@ -505,7 +533,7 @@ func (r *cmRun) sweep(c int) {
 	row := &r.rows[c]
 	row.claim = r.now()
 	if r.published {
-		r.deliver(c, fmt.Sprintf("the delivery sweep claims %s's owed attempt %s and", cmComments[c], r.name(row.claim)))
+		r.deliver(c, fmt.Sprintf("the delivery sweep claims %s's owed attempt %s and", cmComments[c], r.name(row.claim)), true)
 		return
 	}
 	item := r.item(c)
@@ -704,6 +732,14 @@ func (r *cmRun) apply(s cmStep) {
 		}
 		try.reply <- try.answer
 		r.settle(parked)
+		// A refused send is dropped when the sender lets it go with its attempt still pending:
+		// nothing sends it until its claim lapses and the sweep takes it, a lease on.
+		r.sender.mu.Lock()
+		_, holds := r.sender.held[try.item.key()]
+		r.sender.mu.Unlock()
+		if try.refused && !holds && r.rows[s.comment].pending {
+			r.fail("dropped", "the sender lets its refused send of %s go with the attempt still pending", cmComments[s.comment])
+		}
 	case cmTimerRuns:
 		lane := cmLane(s.held)
 		timer := r.timers[lane]
@@ -746,7 +782,9 @@ func (r *cmRun) apply(s cmStep) {
 		var names []string
 		for _, claim := range r.refresh.queued {
 			row := &r.rows[cmIndex(claim.key.comment)]
-			if row.pending && row.claim.Equal(claim.claimedAt) {
+			// refreshMentionClaims writes a row that carries the claim named while that claim is
+			// still live, which at the slot's boundary it may be.
+			if row.pending && row.claim.Equal(claim.claimedAt) && (r.v.revivesLapsed || !r.lapsed(claim.claimedAt)) {
 				row.claim = now
 				written = append(written, mentionClaim{key: claim.key, claimedAt: now})
 				names = append(names, claim.key.comment)
@@ -755,6 +793,17 @@ func (r *cmRun) apply(s cmStep) {
 		slices.Sort(names)
 		r.refresh.wrote, r.refresh.written = true, written
 		r.log("the refresh's statement commits, writing %s on %v", r.name(now), names)
+	case cmRefreshFailsUncommitted:
+		r.outages++
+		r.log("the refresh's statement fails before it commits: it writes nothing")
+		began := r.refresh.began
+		r.refresh.reply <- cmWritten{err: errCmLost}
+		r.refresh = nil
+		r.refreshing = true
+		r.settle(nil)
+		if r.refresh != nil {
+			r.refresh.began = began
+		}
 	case cmRefreshRecords, cmRefreshAnswerLost:
 		answer := cmWritten{claims: r.refresh.written}
 		if s.kind == cmRefreshAnswerLost {
@@ -862,6 +911,9 @@ func (r *cmRun) enabled() []cmStep {
 			}
 		case !f.wrote:
 			steps = append(steps, cmStep{kind: cmRefreshWrites})
+			if r.outages < r.v.outages {
+				steps = append(steps, cmStep{kind: cmRefreshFailsUncommitted})
+			}
 		default:
 			if !r.v.alwaysLoses {
 				steps = append(steps, cmStep{kind: cmRefreshRecords})

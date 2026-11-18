@@ -260,7 +260,7 @@ func openCommentDeliveryAttempt(
 // and reports the attempt as it stands (settled) - another sender's, or its outcome - and never
 // opens an attempt, since beside a live sender that would be a second frame on the session's
 // subject. Nobody else holds it when no sender does (model.DeliveryClaimFreeSQL) or when the
-// claim on it is the caller's own (model.DeliveryClaimMineSQL): the mention sender's send binds
+// claim on it is the caller's own (model.DeliveryClaimSinceSQL): the mention sender's send binds
 // to the attempt its comment committed, which this process has held claimed since
 // (mentionSender), and so does a keyed repeat's (replayComment); the delivery sweep binds to the
 // attempt it found owed, holding no claim of its own, so an older attempt a card retry overtook
@@ -312,7 +312,7 @@ func (s *server) claimCommentDeliveryAttempt(
 	if resume.attempt > 0 {
 		var stands, delivered bool
 		bound, err := scanCommentDelivery(tx.QueryRow(ctx, `
-			select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`,
+			select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimSinceSQL("$4")+`,
 			       `+model.MentionAttemptStandsSQL("comment_deliveries")+`,
 			       `+model.MentionAttemptDeliveredLaterSQL("comment_deliveries")+`
 			from comment_deliveries
@@ -417,7 +417,7 @@ func (claimed *claimedCommentDelivery) standDown(
 	_, err := tx.Exec(ctx, `
 		update comment_deliveries set claimed_at = null
 		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
-		  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
+		  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimSinceSQL("$4")+`)
 	`, pending.CommentID, pending.Target, pending.Attempt, resume.claimedAt)
 	return err
 }
@@ -514,7 +514,7 @@ func (s *server) supersedeCommentDelivery(
 			return scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries set state = 'failed', error = $5, claimed_at = null
 				where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
-				  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimMineSQL("$4")+`)
+				  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimSinceSQL("$4")+`)
 				  and `+model.MentionAttemptDeliveredLaterSQL("comment_deliveries")+`
 				returning `+commentDeliveryColumns,
 				comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError,

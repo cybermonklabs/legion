@@ -1614,7 +1614,7 @@ The issue's route is written by `PATCH /api/v1/issues/{key}` alone (`issue_patch
 A route written with no event would let the copy pass, so `TestOnlyTheIssuePatchWritesTheRoute` fails on any second writer of the column anywhere in this module - Go, migrations, scripts and seeds - and a new writer appends an event of the issue in its own transaction before it is named there.
 A Retry that overtook the queued attempt and was sent takes the mention over:
 the lane settles that attempt superseded without sending it (`MentionAttemptDeliveredLaterSQL`), and a Retry that is still in flight when the lane reaches the attempt it overtook decides it either way - the lane leaves it `pending` and unclaimed, for the sweep to send should the Retry fail and for the Retry's own sender to settle superseded should it land.
-The lane's own send takes its process's claim over (`model.DeliveryClaimMineSQL`) and refuses another sender's.
+The lane's own send takes its process's claim over (`model.DeliveryClaimSinceSQL`: the row's claim is at or past the one the sender recorded and less than a lease after it, which only this sender can have written) and refuses another sender's.
 A send past the queue's bound gives that claim back, so its attempt stays `pending` and unclaimed.
 Once the server's lifetime ends nothing more is queued - a comment that commits during the HTTP drain is answered, its refused send logged at WARN and its attempt's claim given back - no queued send starts, no claim is written again, and the sends in flight get 10 s (`mentionDrainTimeout`) before their context is cancelled;
 the drain then gives back the claim of every send it never started.

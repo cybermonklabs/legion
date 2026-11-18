@@ -28,7 +28,11 @@ func mentionClaimArrays(claims []mentionClaim) (comments, targets []string, atte
 // attempt the sender holds, and answers the claims it wrote. A row that no longer carries the
 // claim this sender recorded is left alone and not answered - a try has taken it for itself, or
 // another sender has, or it has settled - so refreshHeldClaims leaves that send's recorded claim
-// as it was.
+// as it was. So is a row whose recorded claim has lapsed: the attempt is free for any sender to
+// take (model.DeliveryClaimFreeSQL), the lane's own send among them, and a claim written on it
+// would be one more than a lease past the claim recorded, which no re-read of a lost answer can
+// tell from another sender's (rereadMentionClaims). Every claim this statement writes is
+// therefore less than a lease after the claim it names.
 func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 	comments, targets, attempts, claimed := mentionClaimArrays(queued)
 	rows, err := s.deps.Store.Pool.Query(ctx, `
@@ -37,6 +41,7 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 			as queued(comment_id, target, attempt, claimed_at)
 		where d.comment_id = queued.comment_id and d.target = queued.target and d.attempt = queued.attempt
 		  and d.state = 'pending' and d.claimed_at = queued.claimed_at
+		  and queued.claimed_at > now() - `+model.DeliveryClaimLapseInterval+`
 		returning d.comment_id::text, d.target, d.attempt, d.claimed_at
 	`, comments, targets, attempts, claimed)
 	if err != nil {
@@ -76,21 +81,21 @@ func collectMentionClaims(rows pgx.Rows) ([]mentionClaim, error) {
 	})
 }
 
-// releaseMentionClaims is the mention sender's release: one statement gives back the claims of the
-// attempts it names, so an attempt no lane took, or none started, is pending and unclaimed. The
-// sender gives a claim back only where no try of it is in flight - a send it refused, and the
-// drain's after every send in flight ended - so each is scoped to a claim of this sender's own, at
-// or past the claim it recorded and less than a lease after it (model.DeliveryClaimSinceSQL): the
-// row may carry a refresh's claim the sender never learned (mentionClaimState.unsure), and an
-// attempt another sender has taken since keeps that sender's claim.
+// releaseMentionClaims is the mention sender's release: one statement gives back the claims the
+// sender recorded on the attempts it names, so an attempt no lane took, or none started, is
+// pending and unclaimed. Each is scoped to that claim, so an attempt another sender has since
+// taken keeps that sender's claim. A row that carries a claim a lost refresh wrote, which a failed
+// re-read left unknown, is not given back: its claim lapses a lease after it was written, as a
+// killed process's claims do, and the delivery sweep then takes the attempt.
 func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) error {
 	comments, targets, attempts, claimed := mentionClaimArrays(held)
 	_, err := s.deps.Store.Pool.Exec(ctx, `
 		update comment_deliveries d set claimed_at = null
 		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
-			as held(comment_id, target, attempt, claim)
+			as held(comment_id, target, attempt, claimed_at)
 		where d.comment_id = held.comment_id and d.target = held.target and d.attempt = held.attempt
-		  and d.state = 'pending' and `+model.DeliveryClaimSinceSQL("held.claim"), comments, targets, attempts, claimed)
+		  and d.state = 'pending' and d.claimed_at = held.claimed_at
+	`, comments, targets, attempts, claimed)
 	return err
 }
 

@@ -2446,26 +2446,19 @@ var MentionSweepWindowInterval = fmt.Sprintf("interval '%d seconds'", int64(Ment
 // so, a comment mention's and a targeted message's alike.
 var DeliveryClaimFreeSQL = `(claimed_at is null or claimed_at < now() - ` + DeliveryClaimLapseInterval + `)`
 
-// DeliveryClaimMineSQL is true of a delivery attempt whose claim is the caller's own: the row was
-// claimed no earlier than the claim param names, and that claim is itself still live. A claim only
-// moves forward and a sender takes one only once the claim on the row has lapsed, so while the
-// caller's own claim is live every claim the row can carry is one the caller wrote itself - the
-// claim it took, and the refreshes it has made since. The mention sender's queued sends read it
-// beside DeliveryClaimFreeSQL (claimCommentDeliveryAttempt): each holds a claim from the moment
-// its attempt was committed, so the attempt its lane finally sends is claimed, and claimed by it.
-func DeliveryClaimMineSQL(param string) string {
-	return `(claimed_at >= ` + param + ` and ` + param + ` > now() - ` + DeliveryClaimLapseInterval + `)`
-}
-
 // DeliveryClaimSinceSQL is true of a delivery attempt whose claim was written by the holder of the
-// claim param names, at or after it: the row was claimed no earlier than param and less than
-// DeliveryClaimLapse after it. Another sender takes a claim only once the one on the row has lapsed
-// (DeliveryClaimFreeSQL), so the claim it writes is more than a lease past every claim the row
-// carried before it, param among them, and a claim inside the lease after param is its holder's
-// own whatever the time now, where DeliveryClaimMineSQL needs param itself still live. The mention
-// sender reads it where a refresh's answer was lost (rereadMentionClaims in internal/dispatch/api)
-// and where it gives claims back, which it does only for attempts with no try in flight, the one
-// other writer of its own a row can have.
+// claim param names: the row was claimed no earlier than param and less than DeliveryClaimLapse
+// after it. A claim only moves forward, and another sender takes one only once the claim on the
+// row has lapsed (DeliveryClaimFreeSQL), so the claim it writes is more than a lease past every
+// claim the row carried before it, param among them; and the mention sender writes a claim again
+// only while the one it names is live (refreshMentionClaims in internal/dispatch/api), so each of
+// its own is less than a lease past the one before. A claim inside the lease after param is
+// therefore its holder's own, whether or not param is still live - a refresh that wrote the row
+// just before param lapsed leaves it the holder's. The mention sender's bound sends read it beside
+// DeliveryClaimFreeSQL (claimCommentDeliveryAttempt), with the claim it recorded as param: each
+// holds a claim from the moment its attempt was committed, so the attempt its lane finally sends is
+// claimed, and claimed by it. So does its re-read of a claim a refresh whose answer was lost may
+// have written (rereadMentionClaims).
 func DeliveryClaimSinceSQL(param string) string {
 	return `(claimed_at >= ` + param + ` and claimed_at < ` + param + ` + ` + DeliveryClaimLapseInterval + `)`
 }
